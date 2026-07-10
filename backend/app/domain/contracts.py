@@ -118,6 +118,16 @@ class CommandStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class WorkflowEventType(str, Enum):
+    RUN_STATE_CHANGED = "run_state_changed"
+    STAGE_STATE_CHANGED = "stage_state_changed"
+    AGENT_STATE_CHANGED = "agent_state_changed"
+    VALIDATION_GATE_CHANGED = "validation_gate_changed"
+    ARTIFACT_CREATED = "artifact_created"
+    APPROVAL_REQUIRED = "approval_required"
+    WORKFLOW_COMPLETED = "workflow_completed"
+
+
 class MigrationStageDto(ContractModel):
     stage_id: str
     run_id: str
@@ -224,6 +234,15 @@ class WorkflowEventDto(ContractModel):
     run_id: str
     stage_id: str | None = None
     event_type: str
+    occurred_at: datetime
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class MigrationEventDto(ContractModel):
+    event_id: str
+    run_id: str
+    stage_id: str | None = None
+    event_type: WorkflowEventType
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
 
