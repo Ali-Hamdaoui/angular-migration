@@ -40,12 +40,12 @@ export function useMigrationEvents(
 
   useEffect(() => {
     const url = `${getBackendBaseUrl()}/migrations/${runId}/events`;
-    const source = createEventSource(url);
+    const source = new createEventSource(url);
     sourceRef.current = source;
 
     source.onopen = () => setStatus("open");
     source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
+      if (source.readyState === 2) {
         setStatus("closed");
       } else {
         setStatus("reconnecting");
