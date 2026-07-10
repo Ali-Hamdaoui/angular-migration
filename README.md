@@ -24,3 +24,13 @@ tests/      Cross-workspace and end-to-end test suites.
 - Agents and orchestration live behind backend boundaries; they can propose actions but cannot bypass backend validation or execution authority.
 - Fixture Angular applications belong in `demo-apps/`, never in production backend or frontend source trees.
 - Reusable contract references belong in `shared/`; avoid duplicating status vocabularies across applications.
+
+## Delivery status
+
+This repository currently contains the Sprint 0 workspace skeleton. The FastAPI, Next.js, contracts, persistence, workflow, and runtime features are introduced by their subsequent Sprint 0 issues.
+
+## Documentation
+
+- [MVP overview](docs/mvp_overview.md)
+- [Workflow specification](docs/workflow.md)
+- [Sprint 0 backlog](docs/sprint0.md)
