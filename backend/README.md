@@ -139,6 +139,37 @@ assert all(s["status"].value == "STAGE_COMMITTED" for s in state["stages"])
 Stage order is always Angular 18→19, 19→20, 20→21 as defined by the initial
 state's `stages` list.
 
+## Common agent contract
+
+All agents — mock or real — inherit `BaseMockAgent` and implement `execute`.
+They receive an `AgentInputEnvelope` and return an `AgentOutputEnvelope`,
+both defined as frozen Pydantic v2 models with `extra="forbid"`.
+
+**Input envelope fields:** `run_id`, `stage_id`, `workspace`,
+`client_constraints`, `current_workflow_state`, `allowed_actions`,
+`artifact_locations`, `approved_plan_checksum`.
+
+**Output envelope fields:** `agent_name`, `run_id`, `stage_id`, `status`,
+`summary`, `artifacts_created`, `risks`, `requires_human_action`,
+`next_recommended_state`.
+
+Eight mock agents are registered in `app/agents/registry.py`:
+
+| Agent | Mock behavior | Status |
+| --- | --- | --- |
+| AI Assistant Agent | Explains state; no artifacts | COMPLETED |
+| Eligibility and Constraint Agent | Accepts Angular 18.x; creates eligibility artifacts | COMPLETED |
+| Analysis Agent | Inventories workspace; reports dependency risk | COMPLETED |
+| Planning Agent | Generates upgrade ladder and toolchain profiles | COMPLETED |
+| Transformation Agent | Mock upgrade; creates sandbox transform artifacts | COMPLETED |
+| Build / Validation Agent | Mock build pass; reports manual browser-smoke risk | COMPLETED |
+| Repair Agent | No errors detected; repair skipped | SKIPPED |
+| Report Agent | Generates final evidence report artifacts | COMPLETED |
+
+Agents never call shell commands, mutate files, approve gates, or bypass
+backend authority. They return structured outputs only; the orchestrator
+records each call as an `AgentExecutionDto` and emits SSE events.
+
 ## Boundaries
 
 Frontend code and fixture applications do not belong here. Agents may propose

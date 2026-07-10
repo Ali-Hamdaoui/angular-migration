@@ -266,3 +266,66 @@ class MigrationRunDto(ContractModel):
     patch_ledger: list[PatchLedgerEntryDto] = Field(default_factory=list)
     repair_attempts: list[RepairAttemptDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
+
+
+# ── Common agent contract (AMF-S0-10) ──────────────────────────────
+
+
+class AllowedAction(str, Enum):
+    READ_FILE = "read_file"
+    RUN_APPROVED_COMMAND = "run_approved_command"
+    REQUEST_APPROVAL = "request_approval"
+    READ_ARTIFACT_SUMMARY = "read_artifact_summary"
+    CREATE_ARTIFACT = "create_artifact"
+
+
+class ClientConstraints(ContractModel):
+    preserve_ui: bool = True
+    preserve_behavior: bool = True
+    preserve_business_logic: bool = True
+    preserve_api_contracts: bool = True
+    preserve_authentication_authorization: bool = True
+    allow_optional_modernization: bool = False
+
+
+class WorkspaceRef(ContractModel):
+    sandbox_path: str
+    sandbox_branch: str
+
+
+class ArtifactLocations(ContractModel):
+    analysis: str | None = None
+    planning: str | None = None
+    validation: str | None = None
+    transform: str | None = None
+    repair: str | None = None
+    final: str | None = None
+
+
+class RiskEntry(ContractModel):
+    risk_id: str
+    severity: RiskLevel
+    description: str
+
+
+class AgentInputEnvelope(ContractModel):
+    run_id: str
+    stage_id: str | None = None
+    workspace: WorkspaceRef | None = None
+    client_constraints: ClientConstraints = Field(default_factory=ClientConstraints)
+    current_workflow_state: RunStatus
+    allowed_actions: list[AllowedAction] = Field(default_factory=list)
+    artifact_locations: ArtifactLocations = Field(default_factory=ArtifactLocations)
+    approved_plan_checksum: str | None = None
+
+
+class AgentOutputEnvelope(ContractModel):
+    agent_name: str
+    run_id: str
+    stage_id: str | None = None
+    status: AgentStatus
+    summary: str
+    artifacts_created: list[str] = Field(default_factory=list)
+    risks: list[RiskEntry] = Field(default_factory=list)
+    requires_human_action: bool = False
+    next_recommended_state: RunStatus
