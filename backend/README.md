@@ -96,6 +96,49 @@ mock event service emits a deterministic sequence covering every event type;
 the inter-event delay is controlled by `MOCK_EVENT_DELAY_SECONDS` (default 1s,
 patched to 0 in tests). No real orchestration drives this stream in Sprint 0.
 
+## Mock orchestrator
+
+The LangGraph mock orchestrator (`app/orchestration/`) defines the Sprint 0
+workflow graph shape with 11 mock nodes:
+
+```text
+create_run_mock → eligibility_mock → baseline_mock → analysis_mock
+  → wait_analysis_approval_mock
+      ↓ (conditional: approved → continue, rejected → END, no decision → pause)
+  planning_mock → wait_plan_approval_mock
+      ↓ (conditional: approved → continue, rejected → END, no decision → pause)
+  stage_18_to_19_mock → stage_19_to_20_mock → stage_20_to_21_mock
+  → report_mock → END
+```
+
+Nodes mutate `OrchestratorState` only and emit `MigrationEventDto` entries
+into `state["emitted_events"]`; they never write to the frontend or bypass
+state services. The `workflow_service` module wraps graph execution and
+exposes `run_mock_workflow`, `run_mock_workflow_step` (resume after
+approval), `get_emitted_events`, and `get_run_dto`.
+
+### Demo flow
+
+```python
+from app.services.workflow_service import run_mock_workflow
+from app.domain.contracts import ApprovalDecision
+
+# Pause at first approval gate
+state = run_mock_workflow()
+assert state["paused"] is True
+
+# Run end-to-end with auto-approvals
+state = run_mock_workflow(approvals={
+    "analysis": ApprovalDecision.APPROVED,
+    "plan": ApprovalDecision.APPROVED,
+})
+assert state["run_status"].value == "COMPLETED"
+assert all(s["status"].value == "STAGE_COMMITTED" for s in state["stages"])
+```
+
+Stage order is always Angular 18→19, 19→20, 20→21 as defined by the initial
+state's `stages` list.
+
 ## Boundaries
 
 Frontend code and fixture applications do not belong here. Agents may propose
