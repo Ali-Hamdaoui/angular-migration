@@ -4,6 +4,9 @@ Every node reads and mutates ``OrchestratorState`` only. Nodes emit
 ``MigrationEventDto`` entries into ``state["emitted_events"]`` so the
 backend service layer can persist and stream them — nodes never write
 to the frontend or bypass state services.
+
+LangGraph applies only the returned dict to the state, so every node
+must return all fields it mutated via ``_result``.
 """
 
 from datetime import UTC, datetime
@@ -14,7 +17,6 @@ from app.domain.contracts import (
     AgentExecutionDto,
     AgentStatus,
     ApprovalDecision,
-    ApprovalEventDto,
     ArtifactRefDto,
     ArtifactType,
     MigrationEventDto,
@@ -71,10 +73,27 @@ def _add_agent(
     return agent
 
 
+def _result(state: OrchestratorState, next_node: str, paused: bool = False) -> dict[str, Any]:
+    """Return all mutable state fields so LangGraph applies every change."""
+    return {
+        "run_status": state.get("run_status"),
+        "stages": list(state.get("stages", [])),
+        "agent_executions": list(state.get("agent_executions", [])),
+        "validation_gates": list(state.get("validation_gates", [])),
+        "artifacts": list(state.get("artifacts", [])),
+        "approval_events": list(state.get("approval_events", [])),
+        "emitted_events": list(state.get("emitted_events", [])),
+        "approval_decisions": dict(state.get("approval_decisions", {})),
+        "current_stage_index": state.get("current_stage_index", 0),
+        "paused": paused,
+        "next_node": next_node,
+    }
+
+
 def create_run_mock(state: OrchestratorState) -> dict[str, Any]:
     state["run_status"] = RunStatus.ELIGIBILITY_RUNNING
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.ELIGIBILITY_RUNNING.value})
-    return {"next_node": "eligibility_mock"}
+    return _result(state, "eligibility_mock")
 
 
 def eligibility_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -86,7 +105,7 @@ def eligibility_mock(state: OrchestratorState) -> dict[str, Any]:
     )
     state["run_status"] = RunStatus.BASELINE_RUNNING
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.BASELINE_RUNNING.value})
-    return {"next_node": "baseline_mock"}
+    return _result(state, "baseline_mock")
 
 
 def baseline_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -96,9 +115,11 @@ def baseline_mock(state: OrchestratorState) -> dict[str, Any]:
         WorkflowEventType.AGENT_STATE_CHANGED,
         {"execution_id": "agent-baseline", "agent_name": "Baseline Agent", "status": AgentStatus.COMPLETED.value},
     )
+    state["run_status"] = RunStatus.BASELINE_COMPLETED
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.BASELINE_COMPLETED.value})
     state["run_status"] = RunStatus.ANALYSIS_RUNNING
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.ANALYSIS_RUNNING.value})
-    return {"next_node": "analysis_mock"}
+    return _result(state, "analysis_mock")
 
 
 def analysis_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -110,7 +131,7 @@ def analysis_mock(state: OrchestratorState) -> dict[str, Any]:
     )
     state["run_status"] = RunStatus.WAITING_ANALYSIS_APPROVAL
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING_ANALYSIS_APPROVAL.value})
-    return {"next_node": "wait_analysis_approval_mock"}
+    return _result(state, "wait_analysis_approval_mock")
 
 
 def wait_analysis_approval_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -118,11 +139,11 @@ def wait_analysis_approval_mock(state: OrchestratorState) -> dict[str, Any]:
     if decision == ApprovalDecision.APPROVED:
         state["run_status"] = RunStatus.PLANNING_RUNNING
         _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.PLANNING_RUNNING.value})
-        return {"next_node": "planning_mock", "paused": False}
+        return _result(state, "planning_mock", paused=False)
     if decision == ApprovalDecision.REJECTED:
         state["run_status"] = RunStatus.FAILED
         _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.FAILED.value})
-        return {"next_node": "__end__", "paused": False}
+        return _result(state, "__end__", paused=False)
     state["paused"] = True
     state["run_status"] = RunStatus.WAITING_ANALYSIS_APPROVAL
     _emit(
@@ -130,7 +151,7 @@ def wait_analysis_approval_mock(state: OrchestratorState) -> dict[str, Any]:
         WorkflowEventType.APPROVAL_REQUIRED,
         {"approval_id": "approval-analysis", "decision": ApprovalDecision.PENDING.value, "rationale": "Mock analysis approval required."},
     )
-    return {"next_node": "__end__", "paused": True}
+    return _result(state, "__end__", paused=True)
 
 
 def planning_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -142,7 +163,7 @@ def planning_mock(state: OrchestratorState) -> dict[str, Any]:
     )
     state["run_status"] = RunStatus.WAITING_PLAN_APPROVAL
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING_PLAN_APPROVAL.value})
-    return {"next_node": "wait_plan_approval_mock"}
+    return _result(state, "wait_plan_approval_mock")
 
 
 def wait_plan_approval_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -150,11 +171,11 @@ def wait_plan_approval_mock(state: OrchestratorState) -> dict[str, Any]:
     if decision == ApprovalDecision.APPROVED:
         state["run_status"] = RunStatus.STAGE_RUNNING
         _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.STAGE_RUNNING.value})
-        return {"next_node": "stage_18_to_19_mock", "paused": False}
+        return _result(state, "stage_18_to_19_mock", paused=False)
     if decision == ApprovalDecision.REJECTED:
         state["run_status"] = RunStatus.FAILED
         _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.FAILED.value})
-        return {"next_node": "__end__", "paused": False}
+        return _result(state, "__end__", paused=False)
     state["paused"] = True
     state["run_status"] = RunStatus.WAITING_PLAN_APPROVAL
     _emit(
@@ -162,7 +183,7 @@ def wait_plan_approval_mock(state: OrchestratorState) -> dict[str, Any]:
         WorkflowEventType.APPROVAL_REQUIRED,
         {"approval_id": "approval-plan", "decision": ApprovalDecision.PENDING.value, "rationale": "Mock plan approval required."},
     )
-    return {"next_node": "__end__", "paused": True}
+    return _result(state, "__end__", paused=True)
 
 
 def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> dict[str, Any]:
@@ -226,7 +247,7 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
     _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.STAGE_COMMITTED.value}, stage_id=stage_id)
 
     state["current_stage_index"] = stage_index + 1
-    return {"next_node": next_node}
+    return _result(state, next_node)
 
 
 def stage_18_to_19_mock(state: OrchestratorState) -> dict[str, Any]:
@@ -250,4 +271,4 @@ def report_mock(state: OrchestratorState) -> dict[str, Any]:
     )
     state["run_status"] = RunStatus.COMPLETED
     _emit(state, WorkflowEventType.WORKFLOW_COMPLETED, {"status": RunStatus.COMPLETED.value})
-    return {"next_node": "__end__", "paused": False}
+    return _result(state, "__end__", paused=False)
