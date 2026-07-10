@@ -54,12 +54,25 @@ ignored by Git.
 | --- | --- | --- |
 | `APP_ENV` | `development` | Allowed values: `development`, `test`, `production`. |
 | `DATABASE_URL` | `sqlite:///./.migration-factory/migration-factory.db` | Used by AMF-S0-04. |
-| `ARTIFACT_ROOT` | `.migration-factory/runs` | Used by AMF-S0-11. |
-| `SANDBOX_ROOT` | `.migration-factory/sandboxes` | Used by later sandbox work. |
+| `ARTIFACT_ROOT` | `.migration-factory/runs` | Immutable run artifacts. |
+| `WORKSPACE_ROOT` | `.migration-factory/workspaces` | Internal mutable run workspaces. |
+| `SNAPSHOT_ROOT` | `.migration-factory/snapshots` | Immutable source snapshots. |
+| `DELIVERY_ROOT` | `.migration-factory/delivery` | Temporary delivery staging. |
+| `SANDBOX_ROOT` | `.migration-factory/sandboxes` | Legacy command working-root alias. |
+| `ALLOWED_SOURCE_ROOTS` | `demo-apps` | Comma-delimited normalized source roots. Windows example: `C:\projects\approved-sources`; POSIX example: `/opt/approved-sources`. |
+| `ALLOWED_TARGET_ROOTS` | `.migration-factory` | Comma-delimited normalized target roots. Windows example: `C:\tmp\migration-output`; POSIX example: `/tmp/migration-output`. |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000` | Comma-delimited allowlist. |
-| `COMMAND_TIMEOUT_SECONDS` | `300` | Must be a positive integer. |
+| `COMMAND_TIMEOUT_SECONDS` | `300` | Must be positive. |
+| `COMMAND_MAX_OUTPUT_BYTES` | `1000000` | Captured command output cap. |
+| `WORKER_LEASE_SECONDS` | `120` | Mock worker lease duration. |
+| `SSE_HEARTBEAT_SECONDS` | `15` | Event-stream heartbeat interval. |
+| `SSE_REPLAY_RETENTION_EVENTS` | `1000` | Event replay retention count. |
+| `LOG_CHUNK_BYTES` | `64000` | Log chunk size for future viewers. |
+| `SQLITE_WAL_ENABLED` | `true` | SQLite single-host MVP WAL toggle. |
+| `SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout. |
 | `LLM_ENABLED` | `false` | When true, all Azure settings are required. |
 | `AZURE_OPENAI_*` | unset | Server-side only; never expose or log the API key. |
+| `LLM_*` budget and price settings | `0` | Snapshot into runs before real LLM use. |
 
 The server applies the configured CORS allowlist at startup. Azure settings are
 validated only when LLM access is enabled. `AZURE_OPENAI_API_KEY` is held as a
