@@ -1,0 +1,24 @@
+/** Manually synchronized from backend/app/domain/contracts.py for Sprint 0. */
+
+export type RunStatus = "CREATED" | "CLIENT_CONSTRAINTS_CAPTURED" | "ELIGIBILITY_RUNNING" | "ELIGIBILITY_FAILED" | "ANALYSIS_RUNNING" | "ANALYSIS_COMPLETED" | "WAITING_ANALYSIS_APPROVAL" | "PLANNING_RUNNING" | "PLANNING_COMPLETED" | "WAITING_PLAN_APPROVAL" | "STAGE_RUNNING" | "TRANSFORMATION_RUNNING" | "BUILD_RUNNING" | "BUILD_FAILED" | "REPAIR_RUNNING" | "REPAIR_COMPLETED" | "REPAIR_FAILED" | "WAITING_REPAIR_APPROVAL" | "VALIDATION_RUNNING" | "REPORT_RUNNING" | "DIAGNOSTIC_HOLD" | "COMPLETED" | "COMPLETED_WITH_MANUAL_ITEMS" | "COMPLETED_WITH_ACCEPTED_RISK" | "FAILED" | "CANCELLED";
+export type StageStatus = "STAGE_CREATED" | "TOOLCHAIN_PROFILE_SELECTED" | "SANDBOX_READY" | "DEPENDENCY_AUDITED" | "MCP_CONTEXT_POLICY_RESOLVED" | "STAGE_RUNNING" | "TRANSFORMATION_RUNNING" | "STATIC_SYMBOL_CHECK_RUNNING" | "VALIDATION_RUNNING" | "VALIDATION_PASSED" | "REVIEW_READY" | "STAGE_COMMITTED" | "STAGE_ROLLED_BACK" | "DIAGNOSTIC_HOLD" | "FAILED" | "CANCELLED";
+export type AgentStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "SKIPPED" | "REQUIRES_APPROVAL";
+export type ValidationStatus = "passed" | "failed" | "not_configured" | "manual_validation_required" | "deferred_company_tool_required" | "blocked_by_environment" | "accepted_risk" | "skipped_not_applicable";
+export type ApprovalDecision = "PENDING" | "APPROVED" | "REJECTED" | "ACCEPTED_RISK" | "CANCELLED";
+export type RiskLevel = "low" | "medium" | "high" | "critical";
+export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
+export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
+
+export type HealthResponse = { status: string };
+export type VersionResponse = { name: string; version: string; environment: string };
+export type MigrationStageDto = { stage_id: string; run_id: string; stage_order: number; source_angular_version: string; target_angular_version: string; status: StageStatus; current_agent: string | null; created_at: string; started_at: string | null; completed_at: string | null };
+export type AgentExecutionDto = { execution_id: string; run_id: string; stage_id: string | null; agent_name: string; status: AgentStatus; started_at: string; finished_at: string | null; summary: string | null };
+export type ValidationGateDto = { gate_id: string; run_id: string; stage_id: string | null; name: string; status: ValidationStatus; checked_at: string; details: string | null };
+export type ApprovalEventDto = { approval_id: string; run_id: string; stage_id: string | null; decision: ApprovalDecision; requested_at: string; decided_at: string | null; actor: string | null; rationale: string | null };
+export type ArtifactRefDto = { artifact_id: string; run_id: string; stage_id: string | null; artifact_type: ArtifactType; relative_path: string; created_at: string; checksum: string | null };
+export type CommandRequestDto = { command_id: string; run_id: string; stage_id: string | null; requester: string; executable: string; arguments: string[]; working_directory: string; requested_at: string };
+export type CommandResultDto = { command_id: string; run_id: string; stage_id: string | null; status: CommandStatus; started_at: string; finished_at: string | null; duration_ms: number | null; exit_code: number | null; stdout_artifact: ArtifactRefDto | null; stderr_artifact: ArtifactRefDto | null };
+export type PatchLedgerEntryDto = { patch_id: string; run_id: string; stage_id: string; affected_files: string[]; change_summary: string; risk_level: RiskLevel; created_at: string; validation_status: ValidationStatus };
+export type RepairAttemptDto = { repair_attempt_id: string; run_id: string; stage_id: string; attempt_number: number; status: AgentStatus; risk_level: RiskLevel; created_at: string; diagnosis: string | null };
+export type WorkflowEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; payload: Record<string, unknown> };
+export type MigrationRunDto = { run_id: string; status: RunStatus; source_angular_version: string; target_angular_version: string; created_at: string; updated_at: string; stages: MigrationStageDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; workflow_events: WorkflowEventDto[] };

@@ -1,4 +1,4 @@
-import type { MigrationRun } from "@/types/migration";
+import type { MigrationRunDto as MigrationRun } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
 import { StatusPill } from "./StatusPill";
 

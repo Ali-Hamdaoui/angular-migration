@@ -13,3 +13,5 @@ frontend/.next/
 frontend/coverage/
 
 frontend/tsconfig.tsbuildinfo
+
+frontend/.env.local
