@@ -119,13 +119,15 @@ def _build_mock_event_sequence(run_id: str) -> list[MigrationEventDto]:
 
 async def generate_mock_events(
     run_id: str,
-    delay: float = MOCK_EVENT_DELAY_SECONDS,
+    delay: float | None = None,
 ) -> AsyncIterator[MigrationEventDto]:
     """Yield a fixed mock event sequence with pauses for SSE streaming.
 
     Tests may pass ``delay=0`` for instant iteration. The sequence is
     deterministic and covers every ``WorkflowEventType``.
     """
+    if delay is None:
+        delay = MOCK_EVENT_DELAY_SECONDS
     for event in _build_mock_event_sequence(run_id):
         yield event
         if delay > 0:
