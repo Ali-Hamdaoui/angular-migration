@@ -105,6 +105,27 @@ GET /migrations/{runId}/artifacts/{artifactPath}
 The first endpoint lists stored artifacts; the second opens a single artifact
 and returns the backend-owned metadata plus file content.
 
+## Command execution worker
+
+`app.command_execution` is the backend command-authority boundary. Agents and
+LLM-assisted code never run shell commands directly; they submit a structured
+`CommandRequestDto`, and the worker validates it before execution.
+
+Sprint 0 allows only preflight version commands:
+
+```text
+python --version
+node --version
+npm --version
+git --version
+```
+
+The worker rejects any command outside that allowlist and any working directory
+that is missing or outside `SANDBOX_ROOT`. It invokes subprocesses with
+`shell=False`, captures stdout/stderr/exit code/timing, and writes a command-log
+artifact to `04_workflow_state/command_logs/{commandId}.json`. Those logs are
+opened through the artifact API like any other run artifact.
+
 ## Run locally
 
 From this directory, install the declared dependencies, then run:
