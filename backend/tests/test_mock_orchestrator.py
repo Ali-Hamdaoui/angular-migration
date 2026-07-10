@@ -108,12 +108,12 @@ def test_graph_emits_workflow_completed_event() -> None:
 def test_graph_creates_agents_for_every_phase() -> None:
     state = run_mock_workflow(approvals=ALL_APPROVALS)
     agent_names = [a.agent_name for a in state["agent_executions"]]
-    assert "Eligibility Agent" in agent_names
-    assert "Baseline Agent" in agent_names
+    assert "Eligibility and Constraint Agent" in agent_names
     assert "Analysis Agent" in agent_names
     assert "Planning Agent" in agent_names
     assert "Transformation Agent" in agent_names
-    assert "Build Agent" in agent_names
+    assert "Build / Validation Agent" in agent_names
+    assert "Repair Agent" in agent_names
     assert "Report Agent" in agent_names
 
 
@@ -127,8 +127,8 @@ def test_graph_creates_validation_gates_for_each_stage() -> None:
 
 def test_graph_creates_artifacts_for_each_stage() -> None:
     state = run_mock_workflow(approvals=ALL_APPROVALS)
-    assert len(state["artifacts"]) == 3
-    stage_ids = {a.stage_id for a in state["artifacts"]}
+    stage_artifacts = [a for a in state["artifacts"] if a.stage_id is not None]
+    stage_ids = {a.stage_id for a in stage_artifacts}
     assert stage_ids == {"angular-18-to-19", "angular-19-to-20", "angular-20-to-21"}
 
 

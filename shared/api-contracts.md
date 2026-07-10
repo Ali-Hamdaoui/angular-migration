@@ -15,6 +15,10 @@ FastAPI OpenAPI document rather than creating local status values.
   auditable evidence and proposed/executed work.
 - `MigrationEventDto` carries a typed `WorkflowEventType` and is the SSE payload
   for the `GET /migrations/{runId}/events` stream.
+- `AgentInputEnvelope` and `AgentOutputEnvelope` define the common agent
+  contract. Every mock or real agent receives the input envelope and returns
+  the output envelope; the orchestrator records each call as an
+  `AgentExecutionDto` and emits corresponding SSE events.
 
 All DTOs require stable identifiers and timestamps where the record is created,
 requested, checked, started, finished, or observed. Contracts reject unknown
@@ -37,6 +41,11 @@ and `skipped_not_applicable`.
 `WorkflowEventType` covers the seven SSE event channels: `run_state_changed`,
 `stage_state_changed`, `agent_state_changed`, `validation_gate_changed`,
 `artifact_created`, `approval_required`, and `workflow_completed`.
+
+`AllowedAction` enumerates the bounded actions an agent may request:
+`read_file`, `run_approved_command`, `request_approval`,
+`read_artifact_summary`, and `create_artifact`. Agents never execute
+commands directly; they return action requests for the backend to validate.
 
 ## OpenAPI
 

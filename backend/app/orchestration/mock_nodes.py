@@ -1,9 +1,10 @@
 """Mock LangGraph node functions for the Sprint 0 orchestrator skeleton.
 
-Every node reads and mutates ``OrchestratorState`` only. Nodes emit
-``MigrationEventDto`` entries into ``state["emitted_events"]`` so the
-backend service layer can persist and stream them — nodes never write
-to the frontend or bypass state services.
+Every node reads and mutates ``OrchestratorState`` only. Nodes call mock
+agents through the shared ``AgentInputEnvelope`` / ``AgentOutputEnvelope``
+contract, record the result as an ``AgentExecutionDto``, and emit
+``MigrationEventDto`` entries into ``state["emitted_events"]``. Nodes
+never write to the frontend or bypass state services.
 
 LangGraph applies only the returned dict to the state, so every node
 must return all fields it mutated via ``_result``.
@@ -13,18 +14,25 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from app.agents.registry import get_agent
 from app.domain.contracts import (
     AgentExecutionDto,
+    AgentInputEnvelope,
+    AgentOutputEnvelope,
     AgentStatus,
+    AllowedAction,
     ApprovalDecision,
+    ArtifactLocations,
     ArtifactRefDto,
     ArtifactType,
+    ClientConstraints,
     MigrationEventDto,
     RunStatus,
     StageStatus,
     ValidationGateDto,
     ValidationStatus,
     WorkflowEventType,
+    WorkspaceRef,
 )
 from app.orchestration.state import OrchestratorState
 
@@ -52,25 +60,93 @@ def _emit(
     return event
 
 
-def _add_agent(
+def _build_input_envelope(
     state: OrchestratorState,
-    execution_id: str,
+    stage_id: str | None,
+    allowed_actions: list[AllowedAction],
+) -> AgentInputEnvelope:
+    """Build a shared input envelope from the orchestrator state."""
+    run_id = state["run_id"]
+    return AgentInputEnvelope(
+        run_id=run_id,
+        stage_id=stage_id,
+        workspace=WorkspaceRef(
+            sandbox_path=f"sandbox://runs/{run_id}/app",
+            sandbox_branch=f"migration/{run_id}",
+        ),
+        client_constraints=ClientConstraints(),
+        current_workflow_state=state["run_status"],
+        allowed_actions=allowed_actions,
+        artifact_locations=ArtifactLocations(
+            analysis=f"runs/{run_id}/02_analysis/",
+            planning=f"runs/{run_id}/03_planning/",
+            validation=f"runs/{run_id}/06_validation/",
+            transform=f"runs/{run_id}/05_sandbox_transform/",
+            repair=f"runs/{run_id}/07_repair/",
+            final=f"runs/{run_id}/08_final/",
+        ),
+    )
+
+
+def _run_agent(
+    state: OrchestratorState,
     agent_name: str,
-    status: AgentStatus,
-    stage_id: str | None = None,
-) -> AgentExecutionDto:
-    agent = AgentExecutionDto(
-        execution_id=execution_id,
+    stage_id: str | None,
+    allowed_actions: list[AllowedAction],
+) -> AgentOutputEnvelope:
+    """Call a mock agent through the shared contract and record the result."""
+    agent = get_agent(agent_name)
+    assert agent is not None, f"Agent '{agent_name}' not found in registry"
+    envelope = _build_input_envelope(state, stage_id, allowed_actions)
+    output = agent.execute(envelope)
+
+    execution = AgentExecutionDto(
+        execution_id=f"agent-exec-{uuid4().hex[:12]}",
         run_id=state["run_id"],
         stage_id=stage_id,
-        agent_name=agent_name,
-        status=status,
+        agent_name=output.agent_name,
+        status=output.status,
         started_at=_now(),
-        finished_at=_now() if status in (AgentStatus.COMPLETED, AgentStatus.SKIPPED) else None,
-        summary=None,
+        finished_at=_now(),
+        summary=output.summary,
     )
-    state.setdefault("agent_executions", []).append(agent)
-    return agent
+    state.setdefault("agent_executions", []).append(execution)
+
+    _emit(
+        state,
+        WorkflowEventType.AGENT_STATE_CHANGED,
+        {
+            "execution_id": execution.execution_id,
+            "agent_name": output.agent_name,
+            "status": output.status.value,
+        },
+        stage_id=stage_id,
+    )
+
+    for artifact_path in output.artifacts_created:
+        artifact = ArtifactRefDto(
+            artifact_id=f"artifact-{uuid4().hex[:12]}",
+            run_id=state["run_id"],
+            stage_id=stage_id,
+            artifact_type=ArtifactType.JSON,
+            relative_path=artifact_path,
+            created_at=_now(),
+            checksum=None,
+        )
+        state.setdefault("artifacts", []).append(artifact)
+        _emit(
+            state,
+            WorkflowEventType.ARTIFACT_CREATED,
+            {
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type.value,
+                "relative_path": artifact.relative_path,
+                "checksum": artifact.checksum,
+            },
+            stage_id=stage_id,
+        )
+
+    return output
 
 
 def _result(state: OrchestratorState, next_node: str, paused: bool = False) -> dict[str, Any]:
@@ -90,6 +166,10 @@ def _result(state: OrchestratorState, next_node: str, paused: bool = False) -> d
     }
 
 
+_READ_ONLY = [AllowedAction.READ_FILE, AllowedAction.READ_ARTIFACT_SUMMARY]
+_READ_AND_ARTIFACT = [AllowedAction.READ_FILE, AllowedAction.READ_ARTIFACT_SUMMARY, AllowedAction.CREATE_ARTIFACT]
+
+
 def create_run_mock(state: OrchestratorState) -> dict[str, Any]:
     state["run_status"] = RunStatus.ELIGIBILITY_RUNNING
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.ELIGIBILITY_RUNNING.value})
@@ -97,24 +177,13 @@ def create_run_mock(state: OrchestratorState) -> dict[str, Any]:
 
 
 def eligibility_mock(state: OrchestratorState) -> dict[str, Any]:
-    _add_agent(state, "agent-eligibility", "Eligibility Agent", AgentStatus.COMPLETED)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": "agent-eligibility", "agent_name": "Eligibility Agent", "status": AgentStatus.COMPLETED.value},
-    )
+    _run_agent(state, "Eligibility and Constraint Agent", None, _READ_ONLY)
     state["run_status"] = RunStatus.BASELINE_RUNNING
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.BASELINE_RUNNING.value})
     return _result(state, "baseline_mock")
 
 
 def baseline_mock(state: OrchestratorState) -> dict[str, Any]:
-    _add_agent(state, "agent-baseline", "Baseline Agent", AgentStatus.COMPLETED)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": "agent-baseline", "agent_name": "Baseline Agent", "status": AgentStatus.COMPLETED.value},
-    )
     state["run_status"] = RunStatus.BASELINE_COMPLETED
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.BASELINE_COMPLETED.value})
     state["run_status"] = RunStatus.ANALYSIS_RUNNING
@@ -123,12 +192,7 @@ def baseline_mock(state: OrchestratorState) -> dict[str, Any]:
 
 
 def analysis_mock(state: OrchestratorState) -> dict[str, Any]:
-    _add_agent(state, "agent-analysis", "Analysis Agent", AgentStatus.COMPLETED)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": "agent-analysis", "agent_name": "Analysis Agent", "status": AgentStatus.COMPLETED.value},
-    )
+    _run_agent(state, "Analysis Agent", None, _READ_AND_ARTIFACT)
     state["run_status"] = RunStatus.WAITING_ANALYSIS_APPROVAL
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING_ANALYSIS_APPROVAL.value})
     return _result(state, "wait_analysis_approval_mock")
@@ -155,12 +219,7 @@ def wait_analysis_approval_mock(state: OrchestratorState) -> dict[str, Any]:
 
 
 def planning_mock(state: OrchestratorState) -> dict[str, Any]:
-    _add_agent(state, "agent-planning", "Planning Agent", AgentStatus.COMPLETED)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": "agent-planning", "agent_name": "Planning Agent", "status": AgentStatus.COMPLETED.value},
-    )
+    _run_agent(state, "Planning Agent", None, _READ_AND_ARTIFACT)
     state["run_status"] = RunStatus.WAITING_PLAN_APPROVAL
     _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING_PLAN_APPROVAL.value})
     return _result(state, "wait_plan_approval_mock")
@@ -193,21 +252,9 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
     stage["status"] = StageStatus.STAGE_RUNNING
     _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.STAGE_RUNNING.value}, stage_id=stage_id)
 
-    _add_agent(state, f"agent-transform-{stage_id}", "Transformation Agent", AgentStatus.RUNNING, stage_id=stage_id)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": f"agent-transform-{stage_id}", "agent_name": "Transformation Agent", "status": AgentStatus.RUNNING.value},
-        stage_id=stage_id,
-    )
-
-    _add_agent(state, f"agent-build-{stage_id}", "Build Agent", AgentStatus.COMPLETED, stage_id=stage_id)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": f"agent-build-{stage_id}", "agent_name": "Build Agent", "status": AgentStatus.COMPLETED.value},
-        stage_id=stage_id,
-    )
+    _run_agent(state, "Transformation Agent", stage_id, _READ_AND_ARTIFACT)
+    _run_agent(state, "Build / Validation Agent", stage_id, _READ_AND_ARTIFACT)
+    _run_agent(state, "Repair Agent", stage_id, _READ_ONLY)
 
     gate = ValidationGateDto(
         gate_id=f"gate-build-{stage_id}",
@@ -223,23 +270,6 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
         state,
         WorkflowEventType.VALIDATION_GATE_CHANGED,
         {"gate_id": gate.gate_id, "name": "build", "status": ValidationStatus.PASSED.value},
-        stage_id=stage_id,
-    )
-
-    artifact = ArtifactRefDto(
-        artifact_id=f"artifact-diff-{stage_id}",
-        run_id=state["run_id"],
-        stage_id=stage_id,
-        artifact_type=ArtifactType.DIFF,
-        relative_path=f"05_sandbox_transform/{stage_id}_diff.patch",
-        created_at=_now(),
-        checksum=f"mock-checksum-{stage_id}",
-    )
-    state.setdefault("artifacts", []).append(artifact)
-    _emit(
-        state,
-        WorkflowEventType.ARTIFACT_CREATED,
-        {"artifact_id": artifact.artifact_id, "artifact_type": ArtifactType.DIFF.value, "relative_path": artifact.relative_path, "checksum": artifact.checksum},
         stage_id=stage_id,
     )
 
@@ -263,12 +293,7 @@ def stage_20_to_21_mock(state: OrchestratorState) -> dict[str, Any]:
 
 
 def report_mock(state: OrchestratorState) -> dict[str, Any]:
-    _add_agent(state, "agent-report", "Report Agent", AgentStatus.COMPLETED)
-    _emit(
-        state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": "agent-report", "agent_name": "Report Agent", "status": AgentStatus.COMPLETED.value},
-    )
+    _run_agent(state, "Report Agent", None, _READ_AND_ARTIFACT)
     state["run_status"] = RunStatus.COMPLETED
     _emit(state, WorkflowEventType.WORKFLOW_COMPLETED, {"status": RunStatus.COMPLETED.value})
     return _result(state, "__end__", paused=False)
