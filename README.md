@@ -1,0 +1,36 @@
+# AI Frontend Migration Factory
+
+The AI Frontend Migration Factory is a platform for controlled Angular frontend migrations. Its MVP reference path is Angular 18.x to Angular 21.x, using strict compatibility and functional-parity rules.
+
+The product is deliberately split into independent workspaces. The frontend provides the Control Tower experience; the backend is the only execution and workflow authority. Agents may analyse and propose work, but they never execute commands or mutate a migration workspace directly.
+
+## Workspace map
+
+```text
+backend/    Backend execution authority: APIs, state, orchestration, policies,
+            artifact access, command execution, and the LLM Gateway.
+frontend/   Next.js Control Tower UI. It renders backend-owned state only.
+shared/     Contract references, schema documentation, and generated shared types.
+demo-apps/  Fixture applications used for demos and later migration scenarios.
+scripts/    Local developer and repository automation scripts.
+docs/       Product, architecture, ADR, setup, and sprint documentation.
+tests/      Cross-workspace and end-to-end test suites.
+```
+
+## Boundary rules
+
+- Workflow state, approvals, artifact access, sandbox policy, and command execution belong to `backend/`.
+- The `frontend/` must not implement a workflow state machine or migration execution logic.
+- Agents and orchestration live behind backend boundaries; they can propose actions but cannot bypass backend validation or execution authority.
+- Fixture Angular applications belong in `demo-apps/`, never in production backend or frontend source trees.
+- Reusable contract references belong in `shared/`; avoid duplicating status vocabularies across applications.
+
+## Delivery status
+
+This repository currently contains the Sprint 0 workspace skeleton. The FastAPI, Next.js, contracts, persistence, workflow, and runtime features are introduced by their subsequent Sprint 0 issues.
+
+## Documentation
+
+- [MVP overview](docs/mvp_overview.md)
+- [Workflow specification](docs/workflow.md)
+- [Sprint 0 backlog](docs/sprint0.md)
