@@ -4,7 +4,7 @@ This workspace is the AI Frontend Migration Factory's execution authority. It
 owns API state, persistence, orchestration, artifacts, approvals, sandbox
 policy, command execution, and the LLM Gateway as those capabilities are added.
 
-## AMF-S0-02 FastAPI skeleton
+## Module structure
 
 The shell keeps routers thin and delegates response construction to services.
 The mock migration endpoint is deliberately read-only and static; it is not
@@ -12,18 +12,36 @@ orchestration or persistence.
 
 ```text
 app/
-  api/routes/          HTTP adapters only
+  api/                 HTTP adapters only - routers depend on services, not repositories
   core/                application metadata and configuration
-  domain/              Pydantic response models
-  services/            backend business-service boundary
-  repositories/        persistence boundary (AMF-S0-04)
-  orchestration/       workflow boundary (AMF-S0-09)
-  agents/              agent boundary (AMF-S0-10)
-  artifact_store/      artifact boundary (AMF-S0-11)
-  sandbox/             sandbox-policy boundary
-  command_execution/   command authority boundary (AMF-S0-12)
-  llm_gateway/         LLM access boundary (AMF-S0-14)
+  domain/              canonical Pydantic v2 contracts and state vocabulary
+  repositories/        persistence boundary (SQLAlchemy/Alembic)
+  state/               state transition service with optimistic concurrency
+  events/              ordered event persistence and SSE emission
+  orchestration/       LangGraph workflow boundary
+  components/          deterministic workflow components (non-LLM)
+  agents/              AI-assisted agents only
+  preflight/           preflight and runtime capability checks
+  snapshots/           immutable source snapshot service
+  runtime_profiles/    runtime-profile abstraction and registry
+  workspaces/          internal run workspace management
+  checkpoints/         checkpoint service for resume
+  delivery/            atomic delivery publication
+  artifact_store/      immutable, checksum-bound artifact store
+  command_execution/   structured command worker and supervisor
+  llm_gateway/         Azure OpenAI LLM Gateway abstraction
+  observability/       run metrics and diagnostics
+  policies/            command allowlists, auto-approval, sensitivity, topology
+  services/            shared backend service helpers
+  sandbox/             sandbox-policy boundary (legacy, merging into workspaces/)
 ```
+
+Deterministic components (`components/`) and AI-assisted agents (`agents/`)
+are clearly separated. Agents must not import command-worker implementations
+or secret-bearing configuration. API routers must depend on application
+services, not repositories or workers directly. LangGraph nodes must call
+state, event, artifact, and execution services rather than implement those
+concerns internally.
 
 ## Configuration
 

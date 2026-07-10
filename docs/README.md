@@ -11,4 +11,3 @@ The current source documents are:
 
 Keep documentation aligned with implementation decisions, especially execution
 authority, sandbox-only mutation, and backend-owned workflow state.
-diff --git a/tests/.gitkeep b/tests/.gitkeep
