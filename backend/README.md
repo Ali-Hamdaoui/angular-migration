@@ -47,6 +47,31 @@ The server applies the configured CORS allowlist at startup. Azure settings are
 validated only when LLM access is enabled. `AZURE_OPENAI_API_KEY` is held as a
 Pydantic secret and no configuration endpoint exists.
 
+## Persistence bootstrap
+
+SQLAlchemy owns the backend persistence boundary; API routers and agents do not
+access database sessions directly. The initial Alembic revision creates these
+placeholder tables: `migration_runs`, `migration_stages`, `agent_executions`,
+`artifact_metadata`, `approval_events`, and `workflow_events`. Their lifecycle
+values remain free-form placeholders until AMF-S0-05 defines the shared enums.
+
+The configured `DATABASE_URL` is used by both FastAPI startup connectivity and
+Alembic. The default is a local SQLite file. From `backend/`, create or upgrade
+the schema with:
+
+```powershell
+python -m alembic -c alembic.ini upgrade head
+```
+
+To inspect the applied revision:
+
+```powershell
+python -m alembic -c alembic.ini current
+```
+
+Do not use `Base.metadata.create_all()` in runtime application code; Alembic is
+the schema authority. It is used only in the repository unit test to isolate
+that adapter from migration execution.
 ## Run locally
 
 From this directory, install the declared dependencies, then run:
