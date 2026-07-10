@@ -1,79 +1,73 @@
-> Original Word header: AI Frontend Migration Factory - Angular Agent Architecture
->
-> Original Word footer: Generated architecture design - Angular 11+ strict parity MVP
-
 **AI Frontend Migration Factory**
 
 Angular 11+ Compatibility Migration  
-Reliable and Efficient Agent Architecture Design
+Reliable, Reproducible, and Auditable Agent Architecture
 
-Scope: Angular 11+ technical upgrade with strict functional parity  
-MVP reference: Angular 18.x -\> Angular 21.x, backend unchanged, version-range aware  
-LLM provider: Azure OpenAI API, default main model deployment: GPT-5 mini
+**Scope:** Angular 11+ technical compatibility upgrade with strict functional-parity controls  
+**MVP reference:** Angular 18.x → Angular 21.x, backend unchanged, version-range aware  
+**Architecture stack:** FastAPI, LangGraph, SQLite for the single-node MVP, local artifact store, sandbox worker, Server-Sent Events, Next.js, Azure OpenAI LLM Gateway  
+**LLM deployment:** GPT-5 mini as the configurable default deployment
 
-Prepared for architecture discussion and implementation planning
+**Updated after architecture audit:** 2026-07-10
+
+Prepared for architecture review, implementation planning, backlog generation, and MVP delivery.
 
 # Document Control
 
-| **Item**                       | **Decision / Value**                                                                                                                                                                                                                                                                                             |
-|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Document purpose               | Define the detailed agent architecture, agent contracts, inputs, outputs, artifacts, allowed tools, permissions, validation gates, MCP context policy, dynamic compatibility resolver, static symbol verification, rollback rules, and MVP implementation boundaries for the Angular 11+ Migration Factory.      |
-| Primary scope                  | Angular 11 and later only. AngularJS and pre-Angular-11 applications are out of scope.                                                                                                                                                                                                                           |
-| Migration objective            | Technical compatibility upgrade with minimum required code changes.                                                                                                                                                                                                                                              |
-| Strict parity objective        | Same UI, same behavior, same routes, same API contracts, same business logic, same validation behavior, and same expected outputs unless explicitly approved.                                                                                                                                                    |
-| MVP reference target           | Angular 18.x to Angular 21.x as the first reference POC. The workflow must not be hardcoded to Angular 18.2.x; Angular 18.0.x, 18.1.x, and 18.2.x must resolve through the same Angular 18 family profile. Node.js, TypeScript, RxJS, and Angular CLI versions are resolved per stage from compatibility policy. |
-| MVP tool exclusions            | Do not use Playwright, Cypress, OSV scanner, Snyk, SonarQube, or Semgrep in the current MVP. Browser, visual, security, and quality gates are manual, deferred, or existing-project-command-only until company-approved tools are available.                                                                     |
-| Reliability enhancements added | Compatibility Resolver, Stage Toolchain Profiles, Static Symbol Verification, Dependency Audit, Package Install Script Audit, Backend Contract Snapshot, Changed-File Risk Classification, Rollback Levels, Auto-Continue Rules, and Security Protocol Compliance reporting.                                     |
-| MCP policy                     | MCP is optional and disabled by default. If approved, it is used as read-only LLM context support for Angular documentation, migration guidance, best practices, and examples. It is not an execution dependency in the MVP.                                                                                     |
-| **LLM provider**               | Azure OpenAI API through a backend-controlled LLM Gateway. API keys, endpoints, deployment names, and API versions are backend configuration and must not be exposed to agents or the frontend.                                                                                                                  |
-| **Main LLM model**             | GPT-5 mini is the default/main LLM deployment for all agents. The deployment name must be configurable and environment-specific, not hardcoded inside agent prompts.                                                                                                                                             |
-| **LLM access policy**          | Every agent may request LLM assistance, but only through the LLM Gateway. The LLM proposes reasoning, summaries, plans, diagnoses, or patches; backend services remain responsible for execution, mutation, validation, rollback, and approvals.                                                                 |
+| Item | Decision / Value |
+|---|---|
+| Document purpose | Define an implementable architecture for an Angular migration factory, including deterministic services, bounded AI agents, workflow state, secure execution, evidence, recovery, validation, and delivery. |
+| Primary scope | Angular 11 and later. AngularJS and pre-Angular-11 applications are out of scope. Complex workspaces may be classified as unsupported by the MVP even when their Angular version is eligible. |
+| MVP reference | Angular 18.x → Angular 21.x. Angular 21 is the fixed POC target selected by the project; it must not be described as the latest Angular release. |
+| Migration objective | Technical compatibility upgrade with the minimum required changes. Modernization remains a separate, explicitly approved capability. |
+| Assurance model | Technical upgrade success, functional parity, security assurance, and delivery readiness are tracked independently. A successful build alone does not prove functional parity. |
+| Historical-version policy | Unsupported Angular source or intermediate versions are processed only through an internally validated historical compatibility catalog and receive an explicit support level. |
+| Baseline policy | No transformation starts before a baseline qualification captures the original install, build, test, lint, route, API, configuration, and known-failure state. |
+| Runtime policy | Every migration stage uses an explicit, isolated, exact-version toolchain profile with an immutable runtime-image digest or equivalent reproducible environment definition. |
+| Mutation policy | The original source remains read-only. All mutation occurs inside an isolated sandbox copy. |
+| Execution authority | Agents submit structured action requests. The backend validates executable, arguments, paths, environment, network, approval, and policy before execution. Arbitrary shell strings are forbidden. |
+| MVP tool exclusions | Playwright, Cypress, OSV scanner, Snyk, SonarQube, and Semgrep are excluded from the current MVP. Their gates are manual or deferred and are never reported as passed when not executed. |
+| LLM policy | The LLM is optional for deterministic components. It supports explanation, planning narrative, ambiguous diagnosis, bounded patch proposals, and reporting through the backend LLM Gateway. |
+| State policy | Backend state and persisted events are the source of truth. Transitions use state versions, idempotency keys, worker leases, checkpoints, and recovery rules. |
+| Artifact policy | Artifacts are immutable, checksum-bound, schema-versioned, and organized by run, stage, and repair attempt. |
+| MVP database | SQLite with WAL is acceptable only for a single-host, limited-concurrency MVP. PostgreSQL is required before distributed or multi-instance execution. |
 
 # Table of Contents
 
-- Appendix B. Glossary
-
+- 1. Executive Summary
+- 2. Architecture Principles
+- 3. Angular Version Support and Historical Compatibility Policy
+- 4. Version-Range Compatibility and Dynamic Version Resolution
+- 5. Compatibility Resolver and Stage Toolchain Profiles
+- 6. Source Intake, Workspace Topology, and Baseline Qualification
+- 7. Target System Architecture
+- 8. Toolchain Runtime Manager and Reproducible Execution
+- 9. Sandbox, Command, and Package Execution Security
+- 10. MCP Context Support Policy
+- 11. Agent Execution Model
+- 12. Common Agent Contract
+- 13. Agent Catalog and Responsibility Matrix
+- 14. Detailed Agent Specifications
+- 15. Workflow State Management
+- 16. Artifact Model and Audit Trail
+- 17. Tooling Policy and MVP Restrictions
+- 18. Validation Gates and Definition of Done
+- 19. Functional Parity Assurance, Browser Support, and Build-System Policy
+- 20. Dependency Audit, Install Script Audit, and Backend Contract Snapshot
+- 21. Repair Policy, Rollback, and Escalation Rules
+- 22. Azure OpenAI LLM Assistance Layer and Per-Agent LLM Access
+- 23. AI Quality Evaluation and Regression Suite
+- 24. Observability, Token Usage, Cost, Quotas, and Operations
+- 25. API and Schema Examples
+- 26. Delivery and Handover
+- 27. MVP Implementation Recommendation
+- 28. Prioritized Implementation Plan
+- 29. Roadmap and Future Extensions
 - Appendix A. Example Artifact Schemas
+- Appendix B. Glossary
+- References
 
-- 19\. Roadmap and Future Extensions
-
-- 18\. MVP Implementation Recommendation
-
-- 17\. API and Schema Examples
-
-- 16\. Repair Policy, Rollback, and Escalation Rules
-
-- 15\. Dependency Audit, Install Script Audit, and Backend Contract Snapshot
-
-- 14\. Validation Gates, Static Symbol Verification, and Definition of Done
-
-- 13\. Tooling Policy and MVP Restrictions
-
-- 12\. Artifact Model and Audit Trail
-
-- 11\. Workflow State Management
-
-- 10\. Detailed Agent Specifications
-
-- 9\. Agent Catalog and Responsibility Matrix
-
-- 8\. Common Agent Contract
-
-- 7\. Agent Execution Model
-
-- 6\. MCP Context Support Policy
-
-- 5\. Target System Architecture
-
-- 4\. Compatibility Resolver and Stage Toolchain Profiles
-
-- 3\. Version-Range Compatibility and Dynamic Version Resolution
-
-- 2\. Architecture Principles
-
-- 1\. Executive Summary
-
-# Executive Summary
+# 1. Executive Summary
 
 This document defines the detailed architecture of the Angular 11+ Compatibility Migration Factory from an agentic execution perspective. The factory is designed to upgrade Angular applications from version 11 or later to a client-approved supported target version while preserving strict functional parity.
 
@@ -85,7 +79,7 @@ The architecture uses a small number of specialized agents. Each agent has a lim
 
 - Use a single Angular 11+ compatibility upgrade path.
 
-- For the current POC, execute Angular 18 -\> 19 -\> 20 -\> 21 as staged upgrades.
+- For the current POC, execute Angular 18 → 19 → 20 → 21 as staged upgrades.
 
 - Keep the backend unchanged; only the Angular frontend is in scope.
 
@@ -99,7 +93,19 @@ The architecture uses a small number of specialized agents. Each agent has a lim
 
 - Persist every analysis, approval, command, patch, validation result, repair attempt, and report artifact.
 
-# Architecture Principles
+## 1.2 Updated Assurance Direction
+
+The revised architecture adds five mandatory controls that were previously under-specified:
+
+1. a source-compatible baseline qualification before any mutation;
+2. explicit historical support levels for unsupported Angular versions;
+3. reproducible per-stage runtime isolation;
+4. separate technical, parity, security, and delivery statuses;
+5. idempotent, recoverable, and security-hardened execution.
+
+The POC target remains Angular 21 because that is the approved project target. The platform must resolve the actual current Angular support landscape at planning time and must not infer “latest” from a static document.
+
+# 2. Architecture Principles
 
 | **Principle**                      | **Meaning**                                                                                                                                                                                  |
 |------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -136,7 +142,58 @@ The architecture uses a small number of specialized agents. Each agent has a lim
 
 - No introduction of unapproved external security, quality, browser, or E2E tools in the MVP.
 
-# Version-Range Compatibility and Dynamic Version Resolution
+# 3. Angular Version Support and Historical Compatibility Policy
+
+The factory supports Angular 11+ as a product scope, but it must not imply that every historical upgrade path is currently supported by the Angular team.
+
+As of the 2026-07-10 architecture update, Angular 22 is active, Angular 21 and Angular 20 are supported, and Angular 2 through 19 are outside official support. The Compatibility Resolver must therefore separate current official support from internal historical compatibility evidence.
+
+## 3.1 Support-Level Vocabulary
+
+| Support level | Meaning | Default behavior |
+|---|---|---|
+| `officially_supported` | Source-to-target transition satisfies current Angular support rules. | May proceed when all other policies pass. |
+| `historical_validated` | One or more versions are outside support, but the exact transition family passes the factory regression suite. | Proceed with a visible historical-risk notice. |
+| `historical_experimental` | Archived packages and migrations are available, but internal evidence is incomplete. | Human approval required before execution. |
+| `blocked` | No safe profile, toolchain, migration package, or evidence exists. | Stop before mutation. |
+
+## 3.2 Historical Compatibility Catalog
+
+The catalog is a versioned policy dataset owned by the platform, not generated by the LLM. It stores:
+
+- source Angular family;
+- target Angular family;
+- exact known-good Angular CLI ranges;
+- Node.js, npm, TypeScript, RxJS, and Zone.js constraints;
+- required archived package availability;
+- known migration warnings and breaking changes;
+- builder migration behavior;
+- private-package compatibility notes;
+- validated fixture projects;
+- last validation date;
+- catalog version and checksum.
+
+```yaml
+catalog_entry:
+  source_family: angular-18.x
+  target_family: angular-19.x
+  support_level: historical_validated
+  validated_fixture_suite: angular-18-to-19-v3
+  last_validated_at: 2026-07-10
+  official_support_at_validation_time: false
+  required_runtime_profile: node-22-stage
+  evidence_checksum: sha256:...
+```
+
+## 3.3 Target Selection Policy
+
+- The target is client-approved and company-approved.
+- The planner resolves an exact target patch at planning time and stores it in the approved stage profile.
+- The target must not be called “latest” unless the resolver verifies that fact at runtime.
+- Preview, `next`, release-candidate, developer-preview, or experimental targets are blocked by default.
+- A final target outside official support requires an explicit approved-risk decision.
+
+# 4. Version-Range Compatibility and Dynamic Version Resolution
 
 The Angular Migration Factory must not be hardcoded to exact Angular patch versions such as Angular 18.2.x only. The platform must support version families and compatibility ranges.
 
@@ -182,13 +239,13 @@ Version resolution must use official Angular compatibility data, company policy,
 
 This rule ensures the product supports Angular X → Angular Y migration instead of becoming a brittle script for one exact demo version.
 
-# Compatibility Resolver and Stage Toolchain Profiles
+# 5. Compatibility Resolver and Stage Toolchain Profiles
 
 The Compatibility Resolver is the component that makes the migration factory reliable across Angular version ranges. It prevents the platform from becoming a static script for one exact version, such as Angular 18.2.x. It receives exact detected versions from the Analysis Agent and converts them into normalized version families, compatibility decisions, and executable stage profiles.
 
-## 4.1 Compatibility Resolver Responsibilities
+## 5.1 Compatibility Resolver Responsibilities
 
-- Normalize exact detected versions into source families, for example 18.0.4 -\> Angular 18.x.
+- Normalize exact detected versions into source families, for example 18.0.4 → Angular 18.x.
 
 - Resolve the target Angular family from client policy, company policy, and supported Angular compatibility data.
 
@@ -200,7 +257,7 @@ The Compatibility Resolver is the component that makes the migration factory rel
 
 - Fail only when no safe compatibility profile exists, not when a patch version was not explicitly listed.
 
-## 4.2 Compatibility Resolution Output
+## 5.2 Compatibility Resolution Output
 
 {  
 "artifact": "03_planning/compatibility_resolution.json",  
@@ -220,7 +277,7 @@ The Compatibility Resolver is the component that makes the migration factory rel
 "decision": "compatible_profile_resolved"  
 }
 
-## 4.3 Stage Toolchain Profile
+## 5.3 Stage Toolchain Profile
 
 Every migration stage must have an explicit toolchain profile. The Transformation and Build agents must not infer or guess stage versions or commands. They must consume the approved stage profile generated by the Planning Agent and bound by checksum.
 
@@ -237,7 +294,7 @@ Every migration stage must have an explicit toolchain profile. The Transformatio
 | validation_plan                             | Required, conditional, manual, and deferred gates for the stage.                                |
 | rollback_point                              | The checkpoint to restore if the stage or a patch fails.                                        |
 
-## 4.4 Stage Toolchain Profile Example
+## 5.4 Stage Toolchain Profile Example
 
 {  
 "artifact": "03_planning/stage_toolchain_profiles.json",  
@@ -256,11 +313,125 @@ Every migration stage must have an explicit toolchain profile. The Transformatio
 "rollback_point": "stage_start_checkpoint"  
 }
 
-# Target System Architecture
+## 5.5 Builder Strategy in the Stage Profile
+
+Every stage profile includes an explicit builder decision:
+
+```yaml
+builder_strategy:
+  detected_builder: "@angular-devkit/build-angular:browser"
+  target_strategy: preserve
+  builder_migration_allowed: false
+  reason: strict_parity_framework_upgrade_only
+```
+
+Interactive prompts are disabled or handled through a preapproved deterministic answer policy. The factory must not silently accept optional modernization or build-system migration prompts.
+
+# 6. Source Intake, Workspace Topology, and Baseline Qualification
+
+This section adds the deterministic intake and baseline controls that must run before agentic planning.
+
+## 6.1 Source Intake Validator
+
+The validator accepts one of the following source types:
+
+- local directory path;
+- Git repository URL and branch or commit;
+- uploaded source archive.
+
+It must verify:
+
+- source exists and is readable;
+- target exists or can be created;
+- source and target are not the same path;
+- target is not nested inside source;
+- source is not nested inside target;
+- canonical paths remain inside configured allowed roots;
+- symlinks cannot escape the approved roots;
+- sufficient disk space exists;
+- source Git state and commit are captured when applicable;
+- a content hash is captured before any work begins.
+
+## 6.2 Workspace Topology Classification
+
+The factory must classify the workspace before deciding that it can migrate it.
+
+```text
+single_application
+multi_application
+application_with_local_libraries
+publishable_library_workspace
+nx_workspace
+microfrontend_workspace
+custom_builder_workspace
+ssr_or_hybrid_workspace
+unknown_or_unsupported
+```
+
+The MVP may support only `single_application` and a controlled subset of `application_with_local_libraries`. Other categories must be explicitly blocked or require a dedicated profile.
+
+The topology artifact identifies every Angular project, project type, source root, build target, test target, lint target, custom builder, local library, SSR target, service worker, i18n configuration, web worker, and deployment-specific configuration.
+
+## 6.3 Baseline Qualification Gate
+
+No transformation is allowed before baseline qualification completes.
+
+The baseline service uses the source-compatible toolchain profile and records:
+
+- clean/frozen dependency installation result;
+- Angular and toolchain versions;
+- build result for every required project and configuration;
+- existing TypeScript and Angular compiler diagnostics;
+- existing unit-test results;
+- existing lint results;
+- route and lazy-route manifest;
+- API/backend contract manifest;
+- browser-support and polyfill configuration;
+- bundle budgets and output metrics when available;
+- existing known failures and warnings;
+- application startup status when a safe startup command exists;
+- manual baseline observations.
+
+A failing baseline is not automatically rejected. Failures receive stable fingerprints so later validation can classify them as `pre_existing`, `changed_pre_existing`, `new_migration_failure`, or `resolved_pre_existing`.
+
+```json
+{
+  "baseline_status": "qualified_with_known_failures",
+  "migration_allowed": true,
+  "known_failures": [
+    {
+      "fingerprint": "TS2322:src/app/example.ts:42",
+      "classification": "pre_existing"
+    }
+  ],
+  "comparison_policy": "migration_must_not_introduce_new_failures"
+}
+```
+
+## 6.4 Baseline Artifacts
+
+```text
+01_baseline/
+├── source_snapshot_manifest.json
+├── source_toolchain_profile.json
+├── workspace_topology.json
+├── baseline_install_report.json
+├── baseline_build_report.json
+├── baseline_test_report.json
+├── baseline_lint_report.json
+├── baseline_route_manifest.json
+├── baseline_api_contract_manifest.json
+├── baseline_browser_policy.json
+├── baseline_bundle_metrics.json
+├── baseline_known_failures.json
+└── baseline_qualification_summary.json
+```
+
+# 7. Target System Architecture
 
 The Angular migration factory should reuse the same enterprise operating model as the Spring Boot Migration Factory: a Control Tower UI, a backend execution authority, an orchestrator, a sandbox workspace, an artifact store, and a state store.
 
-> Control Tower UI - \> AI Assistant  
+> Control Tower UI - > AI Assistant  
 > \|  
 > v  
 > FastAPI Backend / Execution Authority  
@@ -269,16 +440,16 @@ The Angular migration factory should reuse the same enterprise operating model a
 > LangGraph Orchestrator  
 > \|  
 > v  
-> Eligibility + Constraints -\> Analysis -\> Approval -\> Planning -\> Approval  
+> Eligibility + Constraints → Analysis → Approval → Planning → Approval  
 > \|  
 > v  
 > For each Angular major stage:  
-> Transformation -\> Build/Validation -\> Repair Loop -\> Checkpoint  
+> Transformation → Build/Validation → Repair Loop → Checkpoint  
 > \|  
 > v  
-> Report Agent -\> Final Evidence Report
+> Report Agent → Final Evidence Report
 
-## 4.1 Main Components
+## 7.1 Main Components
 
 | **Component**               | **Responsibility**                                                                                                                                            |
 |-----------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -290,11 +461,149 @@ The Angular migration factory should reuse the same enterprise operating model a
 | Artifact Store              | Stores analysis reports, plans, approvals, diffs, logs, validation reports, repair reports, and final evidence.                                               |
 | State Store                 | Stores run state, stage state, current agent, approval status, validation gate status, and repair attempt count. This is the source of truth for the UI.      |
 
-# MCP Context Support Policy
+## 7.2 Revised Component Boundaries
+
+The target architecture also includes deterministic infrastructure services: Source Intake Validator, Baseline Qualification Service, Workspace Topology Classifier, Historical Compatibility Catalog, Toolchain Runtime Manager, Command Policy Engine, Parity Evidence Engine, Worker Supervisor, Usage and Cost Collector, and Delivery Service.
+
+These services surround the agent workflow. They provide facts, execution, enforcement, and evidence; they are not implemented as free-form LLM agents.
+
+# 8. Toolchain Runtime Manager and Reproducible Execution
+
+A stage toolchain profile is not complete until it can be executed in a reproducible runtime. Angular 11 and Angular 21 require different Node.js and TypeScript ranges, so the full Angular 11+ product cannot depend on one globally installed Node.js runtime.
+
+## 8.1 Toolchain Runtime Manager
+
+The Runtime Manager resolves and prepares the exact execution environment for baseline and every migration stage.
+
+```yaml
+runtime:
+  operating_system: linux
+  architecture: amd64
+  node_exact_version: 22.12.0
+  npm_exact_version: approved_exact_version
+  angular_cli_exact_version: resolved_exact_version
+  typescript_exact_version: resolved_exact_version
+  environment_image_digest: sha256:...
+  package_cache_policy: read_only_shared_cache
+  network_policy: approved_registries_only
+```
+
+Permitted implementation approaches include company-approved containers, isolated worker images, or another immutable runtime mechanism. The runtime identity must be stored in every command artifact.
+
+## 8.2 Exact Version Resolution
+
+- Use version families to plan the upgrade ladder.
+- Resolve exact package versions before execution.
+- Store exact versions and registry metadata in the approved stage profile.
+- Prefer the latest approved patch within the chosen major, but never allow an unrecorded version drift after approval.
+- Reapproval is required when the exact version, registry source, runtime image, or command plan changes.
+
+## 8.3 Package-Manager Reproducibility
+
+The package-manager policy must distinguish between:
+
+- `npm install`;
+- `npm ci`;
+- `npm install --package-lock-only`;
+- `npm update`;
+- `ng update`.
+
+Baseline validation should use a frozen installation when a valid lockfile exists. After `ng update` changes package metadata, the stage must produce a new lockfile, validate it, and run a clean frozen installation before the stage can pass.
+
+The runtime profile captures `.npmrc`, proxy, certificate, private registry, workspace, Corepack, cache, and lifecycle-script policy without persisting secrets.
+
+## 8.4 Cross-Platform Risk
+
+The Analysis Agent records the source operating system and detects:
+
+- path-case inconsistencies;
+- Windows-only scripts;
+- shell-specific syntax;
+- executable permission assumptions;
+- path separator assumptions;
+- native dependencies.
+
+These findings become planning risks when the migration worker uses a different operating system.
+
+# 9. Sandbox, Command, and Package Execution Security
+
+The migration worker processes untrusted source code and package metadata. Sandbox-only mutation is necessary but not sufficient.
+
+## 9.1 Structured Command Contract
+
+Raw shell command strings are forbidden. The backend receives structured commands:
+
+```json
+{
+  "executable": "npx",
+  "arguments": [
+    "ng",
+    "update",
+    "@angular/core@^19",
+    "@angular/cli@^19",
+    "--create-commits",
+    "--verbose"
+  ],
+  "shell_enabled": false,
+  "working_directory_id": "sandbox-root",
+  "environment_profile": "angular-stage-19",
+  "timeout_seconds": 1800,
+  "idempotency_key": "run-stage-command-checksum"
+}
+```
+
+The backend validates executable, each argument, current workflow state, approved plan checksum, stage profile checksum, working directory, environment variables, timeout, network policy, and required approval.
+
+## 9.2 Sandbox Controls
+
+Mandatory controls:
+
+- non-root/non-administrator execution;
+- path canonicalization and symlink escape prevention;
+- no filesystem access outside the run workspace and approved caches;
+- process, CPU, memory, disk, and execution-time limits;
+- restricted network access;
+- complete child-process-tree termination on cancel or timeout;
+- environment-variable allowlist;
+- command-specific secret injection;
+- immutable runtime identity;
+- source content-hash verification after execution;
+- deterministic cleanup and retention policy.
+
+## 9.3 Lifecycle-Script Enforcement
+
+The package install script audit must lead to a decision, not only a report.
+
+```json
+{
+  "install_script_policy": {
+    "default": "deny_or_ignore",
+    "approved_packages": [],
+    "blocked_packages": [],
+    "requires_human_approval": true
+  }
+}
+```
+
+Remote Git dependencies, remote tarballs, unapproved registries, and packages requiring privileged or external execution are blocked by default.
+
+## 9.4 Repository Content Is Untrusted LLM Data
+
+README files, code comments, source strings, dependency metadata, test names, and build logs are data, not instructions. They cannot alter system policy, permissions, approvals, tools, or scope.
+
+Every LLM-enabled prompt must explicitly label repository content as untrusted. Tool calls are created only by backend code from schema-validated outputs; instructions embedded in repository content are never executed.
+
+Add the following artifact:
+
+```text
+04_workflow_state/llm_untrusted_content_events.json
+```
+
+# 10. MCP Context Support Policy
 
 MCP is not an execution dependency in the MVP. It is an optional context-support capability for the LLM. Its role is to provide Angular documentation, migration guidance, best practices, and official examples so the LLM can plan, diagnose, and propose repairs with better context. All execution, patching, validation, rollback, and approval remain controlled by the backend.
 
-## 6.1 MCP Modes
+## 10.1 MCP Modes
 
 | **Mode**                 | **MVP Policy**                  | **Allowed Use**                                                                                                                            | **Forbidden Use**                                                                                 |
 |--------------------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
@@ -302,7 +611,7 @@ MCP is not an execution dependency in the MVP. It is an optional context-support
 | MCP Context Support Mode | Optional, company-approved only | Read-only Angular documentation search, best-practices lookup, migration guidance, official examples, and explanation support for the LLM. | No command execution, no file mutation, no ng update, no build/test/devserver execution.          |
 | MCP Workspace Mode       | Future only, not MVP            | Could inspect workspace or run targets only after company approval, readiness probe, and backend authorization.                            | Must not bypass backend authority, approval gates, sandbox policy, or modernization restrictions. |
 
-## 6.2 MCP Security Rules
+## 10.2 MCP Security Rules
 
 - MCP is disabled by default unless approved by company security policy.
 
@@ -316,7 +625,7 @@ MCP is not an execution dependency in the MVP. It is an optional context-support
 
 - Every MCP request and response must be logged as an artifact if MCP is enabled.
 
-## 6.3 MCP Artifact
+## 10.3 MCP Artifact
 
 {  
 "artifact": "04_workflow_state/mcp_context_usage_log.json",  
@@ -326,11 +635,11 @@ MCP is not an execution dependency in the MVP. It is an optional context-support
 "execution_actions_allowed": false  
 }
 
-# Agent Execution Model
+# 11. Agent Execution Model
 
 Each agent is a bounded worker. It receives a structured input, reads only the artifacts it is allowed to read, requests only the actions it is allowed to request, and returns a structured result. The orchestrator decides the next state based on that result.
 
-## 5.1 Agent Permissions Model
+## 11.1 Agent Permissions Model
 
 | **Permission Type**             | **Allowed For**                                                                                                                        | **Rule**                                                                                       |
 |---------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
@@ -343,7 +652,7 @@ Each agent is a bounded worker. It receives a structured input, reads only the a
 | Static Symbol Verification Gate | Deterministically checks imports, symbols, Angular APIs, templates, and unapproved dependencies after patches.                         | No repair; only verifies and reports.                                                          |
 | Dependency Audit Gate           | Classifies dependencies, private packages, custom builders, UI libraries, state management, and install scripts before stage planning. | No external scanners in MVP; metadata-based only.                                              |
 
-## 5.2 Agent Result Statuses
+## 11.2 Agent Result Statuses
 
 | **Status**                  | **Meaning**                                                                                    | **Typical Next State**                          |
 |-----------------------------|------------------------------------------------------------------------------------------------|-------------------------------------------------|
@@ -353,65 +662,114 @@ Each agent is a bounded worker. It receives a structured input, reads only the a
 | requires_approval           | The agent found a risky or strategic decision that needs human review.                         | WAITING\_\*\_APPROVAL.                          |
 | completed_with_manual_items | Core technical checks passed but some company-tool or manual gates remain pending.             | Next state only if policy accepts manual items. |
 
-# Common Agent Contract
+## 11.3 Deterministic Components That Do Not Use the LLM
 
-All agents should use a shared input and output envelope so the orchestrator, backend, UI, and artifact store can handle agent responses consistently.
+The following components are deterministic services and do not call the LLM in their normal operation:
 
-## 6.1 Common Input Envelope
+- source intake validation;
+- version parsing and compatibility lookup;
+- workspace topology classification;
+- baseline execution;
+- command validation and execution;
+- lockfile parsing;
+- checksum and approval validation;
+- state transitions;
+- static symbol and template verification;
+- artifact persistence;
+- runtime selection.
 
-> {  
-> "run_id": "migration-run-001",  
-> "stage_id": "angular-18-to-19",  
-> "repository_source": {  
-> "source_repo_url": "...",  
-> "source_branch": "main",  
-> "source_read_only": true  
-> },  
-> "workspace": {  
-> "sandbox_path": "/sandbox/runs/migration-run-001/app",  
-> "sandbox_branch": "migration/angular-run-001"  
-> },  
-> "client_constraints": {  
-> "preserve_ui": true,  
-> "preserve_behavior": true,  
-> "preserve_business_logic": true,  
-> "preserve_api_contracts": true,  
-> "preserve_authentication_authorization": true,  
-> "allow_optional_modernization": false  
-> },  
-> "approved_plan_checksum": "sha256:...",  
-> "current_workflow_state": "TRANSFORMATION_RUNNING",  
-> "allowed_actions": \["read_file", "run_approved_command"\],  
-> "artifact_locations": {  
-> "analysis": "runs/{run_id}/02_analysis/",  
-> "planning": "runs/{run_id}/03_planning/",  
-> "validation": "runs/{run_id}/06_validation/"  
-> }  
-> }
+The LLM is reserved for tasks where language understanding or ambiguous diagnosis provides value.
 
-## 6.2 Common Output Envelope
+# 12. Common Agent Contract
 
-> {  
-> "agent_name": "analysis_agent",  
-> "run_id": "migration-run-001",  
-> "stage_id": null,  
-> "status": "completed",  
-> "summary": "Angular 18.x application detected and accepted for Angular 11+ compatibility migration.",  
-> "artifacts_created": \[  
-> "runs/migration-run-001/02_analysis/angular_workspace_analysis.json"  
-> \],  
-> "risks": \[  
-> {  
-> "risk_id": "dependency-peer-conflict-risk",  
-> "severity": "medium",  
-> "description": "Some packages may require version alignment during Angular 19 stage."  
-> }  
-> \],  
-> "requires_human_action": false,  
-> "next_recommended_state": "WAITING_ANALYSIS_APPROVAL"  
-> }
+All agents and deterministic services use a shared, versioned envelope so the orchestrator, backend, UI, and artifact store can process results consistently.
 
-# Agent Catalog and Responsibility Matrix
+## 12.1 Common Input Envelope
+
+```json
+{
+  "schema_version": "1.0",
+  "run_id": "migration-run-001",
+  "stage_id": "angular-18-to-19",
+  "source": {
+    "type": "local_path | git | archive",
+    "location_reference": "backend-managed-reference",
+    "branch_or_commit": "main-or-sha",
+    "source_read_only": true,
+    "source_snapshot_checksum": "sha256:..."
+  },
+  "workspace": {
+    "sandbox_id": "sandbox-run-001",
+    "sandbox_path_reference": "backend-managed-reference",
+    "sandbox_branch": "migration/angular-run-001"
+  },
+  "baseline": {
+    "qualification_status": "qualified",
+    "artifact_checksum": "sha256:..."
+  },
+  "client_constraints": {
+    "preserve_ui": true,
+    "preserve_behavior": true,
+    "preserve_business_logic": true,
+    "preserve_api_contracts": true,
+    "preserve_authentication_authorization": true,
+    "allow_optional_modernization": false
+  },
+  "policy": {
+    "migration_policy_version": "v1",
+    "approved_plan_checksum": "sha256:...",
+    "stage_toolchain_profile_checksum": "sha256:...",
+    "command_policy_version": "v1"
+  },
+  "workflow": {
+    "current_state": "TRANSFORMATION_RUNNING",
+    "state_version": 34,
+    "worker_lease_id": "uuid",
+    "idempotency_key": "run-stage-action-checksum"
+  },
+  "allowed_actions": ["read_file", "propose_patch", "request_approved_command"],
+  "artifact_locations": {
+    "analysis": "runs/{run_id}/global/02_analysis/",
+    "planning": "runs/{run_id}/global/03_planning/",
+    "stage": "runs/{run_id}/stages/{stage_id}/"
+  }
+}
+```
+
+Agents receive backend-managed references rather than unrestricted filesystem paths or secrets.
+
+## 12.2 Common Output Envelope
+
+```json
+{
+  "schema_version": "1.0",
+  "agent_name": "analysis_agent",
+  "run_id": "migration-run-001",
+  "stage_id": null,
+  "status": "completed",
+  "summary": "Angular 18.x application detected and accepted for the configured migration path.",
+  "facts": [],
+  "proposals": [],
+  "artifacts_created": [
+    "runs/migration-run-001/global/02_analysis/angular_workspace_analysis.json"
+  ],
+  "risks": [
+    {
+      "risk_id": "dependency-peer-conflict-risk",
+      "severity": "medium",
+      "description": "Some packages may require version alignment during the Angular 19 stage."
+    }
+  ],
+  "requires_human_action": false,
+  "next_recommended_state": "WAITING_ANALYSIS_APPROVAL",
+  "input_checksum_set": "sha256:...",
+  "output_checksum": "sha256:..."
+}
+```
+
+`facts` are grounded in deterministic evidence. `proposals` are not treated as executed actions.
+
+# 13. Agent Catalog and Responsibility Matrix
 
 | **Agent / Component**            | **Main Responsibility**                                                                                                                                               | **Primary Limitation**                        |
 |----------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------|
@@ -430,9 +788,24 @@ All agents should use a shared input and output envelope so the orchestrator, ba
 | MCP Context Support              | Optional and company-approved only. Read-only Angular documentation, migration guidance, best practices, and examples for LLM reasoning. No command execution in MVP. |                                               |
 | Static symbol verification       | Local deterministic checks using TypeScript/Angular compiler diagnostics, package metadata, and node_modules type definitions where available.                        |                                               |
 
-# Detailed Agent Specifications
+## 13.1 Deterministic Service Catalog
 
-## 8.1 AI Assistant Agent
+| Service | Responsibility | Primary limitation |
+|---|---|---|
+| Source Intake Validator | Canonical path checks, source snapshot, read-only proof, disk and source/target safety. | No migration reasoning or mutation. |
+| Workspace Topology Classifier | Identifies projects, libraries, targets, builders, SSR, Nx, and unsupported topologies. | Classification only. |
+| Baseline Qualification Service | Reproduces the source install/build/test/lint state and fingerprints known failures. | Does not repair the legacy source. |
+| Compatibility Resolver | Produces support level, exact versions, stage ladder, and toolchain profiles from policy. | Deterministic policy lookup only. |
+| Toolchain Runtime Manager | Provides the exact isolated runtime for baseline and each stage. | No planning decisions. |
+| Command Policy Engine | Validates executable, arguments, paths, environment, network, approval, and limits. | Rejects rather than repairs unsafe requests. |
+| Parity Evidence Engine | Builds and compares route, API, config, browser, and bundle manifests. | Does not prove manual visual behavior. |
+| Worker Supervisor | Owns process lifecycle, heartbeat, resource limits, cancellation, and cleanup. | No code reasoning. |
+| Usage and Cost Collector | Records tokens, latency, retries, quota, and cost. | Observability only. |
+| Delivery Service | Creates branch/patch/commit manifests and handover evidence. | Does not approve delivery. |
+
+# 14. Detailed Agent Specifications
+
+## 14.1 AI Assistant Agent
 
 The AI Assistant is the user-facing conversational layer. It helps the user understand the migration, review evidence, request modifications, and approve or reject workflow gates. It must not directly execute commands or modify source code.
 
@@ -514,7 +887,7 @@ The AI Assistant is the user-facing conversational layer. It helps the user unde
 
 - Approval/rejection/request-modification options only when backend state allows them.
 
-## 8.2 Eligibility and Constraint Agent
+## 14.2 Eligibility and Constraint Agent
 
 This agent protects the workflow before deep analysis begins. It confirms that the application is in scope and records the strict migration constraints.
 
@@ -604,7 +977,7 @@ This agent protects the workflow before deep analysis begins. It confirms that t
 
 - Reason for rejection if out of scope.
 
-## 8.3 Analysis Agent
+## 14.3 Analysis Agent
 
 The Analysis Agent builds the factual understanding of the Angular application. It does not change code. It inventories versions, dependencies, configuration, routes, tests, environments, backend integration points, and migration risks.
 
@@ -696,7 +1069,7 @@ The Analysis Agent builds the factual understanding of the Angular application. 
 
 - 02_analysis/backend_integration_inventory.json
 
-- 01_baseline/baseline_routes.json when baseline route inventory is generated
+- global/01_baseline/baseline_route_manifest.json when baseline route evidence is generated
 
 ### Stop / Escalation Rules
 
@@ -722,7 +1095,7 @@ The Analysis Agent builds the factual understanding of the Angular application. 
 
 - Approval request for Analysis Gate.
 
-## 8.3.1 Enhanced Analysis Outputs
+## 14.4 Enhanced Analysis Outputs
 
 To make the architecture more reliable, the Analysis Agent must now produce explicit dependency, install-script, backend-contract, and changed-file sensitivity inventories. These are used by the Planning, Build, Repair, and Report agents.
 
@@ -732,13 +1105,13 @@ To make the architecture more reliable, the Analysis Agent must now produce expl
 
 - 02_analysis/package_install_script_audit.json
 
-- 01_baseline/backend_contract_snapshot.json
+- global/01_baseline/baseline_api_contract_manifest.json
 
 - 02_analysis/changed_file_sensitivity_rules.json
 
-- 03_planning/compatibility_resolution.json
+The Compatibility Resolver, not the Analysis Agent, owns `global/03_planning/compatibility_resolution.json`.
 
-## 8.4 Human Approval Gate 1 - Analysis Approval
+## 14.5 Human Approval Gate 1 - Analysis Approval
 
 This backend gate allows the user to approve, reject, or request modification of the analysis and eligibility result before planning starts.
 
@@ -802,7 +1175,7 @@ This backend gate allows the user to approve, reject, or request modification of
 
 - Next state: planning, modification requested, or stopped.
 
-## 8.5 Planning Agent
+## 14.6 Planning Agent
 
 The Planning Agent converts the analysis result into a controlled, approved migration plan. It defines the upgrade ladder, version strategy, allowed changes, forbidden changes, validation gates, repair policy, rollback strategy, and checkpoints.
 
@@ -912,7 +1285,7 @@ The Planning Agent converts the analysis result into a controlled, approved migr
 
 - Approval request for Plan Gate.
 
-## 8.6 Human Approval Gate 2 - Plan Approval
+## 14.7 Human Approval Gate 2 - Plan Approval
 
 This gate protects the system before any sandbox mutation starts. The approved plan becomes the command and patch boundary for the Transformation and Repair agents.
 
@@ -982,7 +1355,7 @@ This gate protects the system before any sandbox mutation starts. The approved p
 
 - Start stage button or automatic continuation based on approved mode.
 
-## 8.7 Transformation Agent
+## 14.8 Transformation Agent
 
 The Transformation Agent applies approved technical upgrade actions in the sandbox. It uses official Angular CLI migrations and deterministic patching first. It must not apply optional modernization by default.
 
@@ -1090,7 +1463,7 @@ The Transformation Agent applies approved technical upgrade actions in the sandb
 
 - Next validation step.
 
-## 8.8 Build / Validation Agent
+## 14.9 Build / Validation Agent
 
 The Build / Validation Agent proves whether a migration stage is technically valid. It does not repair. It runs install, build, existing tests, existing lint, route inventory, backend configuration checks, and validation reporting. In the current MVP it must not use Playwright, Cypress, OSV, Snyk, SonarQube, or Semgrep.
 
@@ -1230,7 +1603,7 @@ The Build / Validation Agent proves whether a migration stage is technically val
 
 - Repair or escalation decision.
 
-## 8.9 Repair Agent
+## 14.10 Repair Agent
 
 The Repair Agent fixes migration-caused technical errors after validation fails. It is limited to low-risk and approved medium-risk compatibility repairs. It must stop after three attempts per stage or when risky behavior changes are required.
 
@@ -1348,7 +1721,7 @@ The Repair Agent fixes migration-caused technical errors after validation fails.
 
 - Escalation reason if blocked.
 
-## 8.10 Report Agent
+## 14.11 Report Agent
 
 The Report Agent generates final migration evidence from persisted artifacts. It should not invent results. It summarizes what was analyzed, changed, validated, repaired, accepted, deferred, or left as manual action.
 
@@ -1448,7 +1821,7 @@ The Report Agent generates final migration evidence from persisted artifacts. It
 
 - Manual actions and unresolved risks.
 
-## 8.9 Orchestrator
+## 14.12 Orchestrator
 
 The Orchestrator is the workflow controller. It may be implemented with LangGraph or another state-machine engine. It is responsible for deciding which agent runs next and for enforcing approval and retry rules.
 
@@ -1468,222 +1841,306 @@ The Orchestrator is the workflow controller. It may be implemented with LangGrap
 
 - Makes backend state the source of truth for the frontend.
 
-## 8.10 Backend Execution Authority
+## 14.13 Backend Execution Authority
 
-The Backend Execution Authority is the trusted execution layer. Agents do not directly execute commands. They submit structured action requests. The backend validates the action against the approved plan, command registry, sandbox policy, and risk policy before executing it.
+The Backend Execution Authority is the trusted execution layer. Agents do not execute shell commands directly. They submit structured action requests, and the backend validates the action against the approved plan, command policy, runtime profile, sandbox policy, current state, and risk policy.
 
-> {  
-> "requested_by": "transformation_agent",  
-> "action_type": "run_command",  
-> "command": "npx ng update @angular/core@19 @angular/cli@19",  
-> "working_directory": "/sandbox/runs/run-001/app",  
-> "stage_id": "angular-18-to-19",  
-> "requires_approval": true,  
-> "approved_plan_checksum": "sha256:..."  
-> }
+```json
+{
+  "requested_by": "transformation_agent",
+  "action_type": "run_command",
+  "executable": "npx",
+  "arguments": [
+    "ng",
+    "update",
+    "@angular/core@^19",
+    "@angular/cli@^19",
+    "--create-commits",
+    "--verbose"
+  ],
+  "shell_enabled": false,
+  "working_directory_id": "sandbox-root",
+  "environment_profile": "angular-stage-19",
+  "stage_id": "angular-18-to-19",
+  "timeout_seconds": 1800,
+  "approval_scope": "approved_plan_command",
+  "approved_plan_checksum": "sha256:...",
+  "stage_profile_checksum": "sha256:...",
+  "state_version": 34,
+  "idempotency_key": "run-stage-command-checksum"
+}
+```
 
-- Validate command is allowed for the current stage.
+The authority must:
 
-- Validate command runs only inside sandbox workspace.
+- validate the executable and every argument;
+- reject shell operators, command substitution, and arbitrary command strings;
+- validate that execution occurs inside the approved sandbox;
+- validate plan, stage profile, approval, state version, and idempotency key;
+- apply environment, network, resource, and timeout policies;
+- reject forbidden modernization actions and unapproved dependencies;
+- persist sanitized command metadata, stdout, stderr, exit code, duration, runtime identity, and generated artifacts;
+- return a structured execution result to the requester.
 
-- Validate plan approval checksum.
+# 15. Workflow State Management
 
-- Reject forbidden modernization actions.
+The frontend must not infer progress from local state. Backend state, persisted events, and artifact checksums are the source of truth.
 
-- Persist command, stdout, stderr, exit code, duration, and generated artifacts.
+## 15.1 Run and Stage State Families
 
-- Return structured execution result to the requesting agent.
-
-# Workflow State Management
-
-The frontend must not infer workflow progress from local component state or displayed cards. Every visible card, button, status, repair attempt number, and approval action must come from the backend state store.
-
-## 9.0 Enhanced Stage States
-
-The stage model should expose finer-grained state transitions so the Control Tower can show exactly where the migration is blocked and which component owns the next action.
-
-STAGE_CREATED  
-TOOLCHAIN_PROFILE_SELECTED  
-SANDBOX_READY  
-DEPENDENCY_AUDITED  
-MCP_CONTEXT_POLICY_RESOLVED  
-TRANSFORMATION_RUNNING  
-STATIC_SYMBOL_CHECK_RUNNING  
-VALIDATION_RUNNING  
-VALIDATION_PASSED  
-REVIEW_READY  
-STAGE_COMMITTED  
-STAGE_ROLLED_BACK  
+```text
+CREATED
+SOURCE_VALIDATION_RUNNING
+SOURCE_VALIDATED
+WORKSPACE_CLASSIFICATION_RUNNING
+BASELINE_RUNNING
+BASELINE_QUALIFIED
+CLIENT_CONSTRAINTS_CAPTURED
+ELIGIBILITY_RUNNING
+ANALYSIS_RUNNING
+WAITING_ANALYSIS_APPROVAL
+PLANNING_RUNNING
+WAITING_PLAN_APPROVAL
+STAGE_CREATED
+TOOLCHAIN_PROFILE_SELECTED
+SANDBOX_READY
+DEPENDENCY_AUDITED
+TRANSFORMATION_RUNNING
+STATIC_SYMBOL_CHECK_RUNNING
+VALIDATION_RUNNING
+REPAIR_RUNNING
+WAITING_REPAIR_APPROVAL
+REVIEW_READY
+STAGE_COMMITTED
+STAGE_ROLLED_BACK
 DIAGNOSTIC_HOLD
+REPORT_RUNNING
+DELIVERY_RUNNING
+COMPLETED
+FAILED
+CANCELLED
+```
 
-## 9.1 Core Run States
+## 15.2 Operational and Recovery States
 
-| **State**                                         | **Meaning**                                            |
-|---------------------------------------------------|--------------------------------------------------------|
-| CREATED                                           | Migration job created.                                 |
-| CLIENT_CONSTRAINTS_CAPTURED                       | Strict parity and scope constraints recorded.          |
-| ELIGIBILITY_RUNNING / ELIGIBILITY_FAILED          | Eligibility validation is running or failed.           |
-| ANALYSIS_RUNNING / ANALYSIS_COMPLETED             | Analysis is running or finished.                       |
-| WAITING_ANALYSIS_APPROVAL                         | Human decision required after analysis.                |
-| PLANNING_RUNNING / PLANNING_COMPLETED             | Planning is running or finished.                       |
-| WAITING_PLAN_APPROVAL                             | Human decision required before sandbox transformation. |
-| STAGE_RUNNING                                     | A migration stage is active.                           |
-| TRANSFORMATION_RUNNING                            | Approved stage transformation is running.              |
-| BUILD_RUNNING / BUILD_FAILED                      | Build/validation is running or failed.                 |
-| REPAIR_RUNNING / REPAIR_COMPLETED / REPAIR_FAILED | Repair loop status.                                    |
-| WAITING_REPAIR_APPROVAL                           | Risky or blocked repair needs human decision.          |
-| VALIDATION_RUNNING                                | Final gate validation is running.                      |
-| STAGE_COMPLETED                                   | Stage passed validation or accepted risk was recorded. |
-| REPORT_RUNNING                                    | Final report is being generated.                       |
-| COMPLETED / FAILED / CANCELLED                    | Terminal states.                                       |
+```text
+PAUSE_REQUESTED
+PAUSED
+RESUMING
+CANCEL_REQUESTED
+CANCELLING
+TIMED_OUT
+WORKER_LOST
+RECOVERY_RUNNING
+ORPHANED
+CLEANUP_RUNNING
+CLEANUP_FAILED
+```
 
-## 9.2 Stage State Schema
+## 15.3 Transition Contract
 
-> {  
-> "stage_id": "angular-18-to-19",  
-> "stage_order": 1,  
-> "source_angular_major": 18,  
-> "target_angular_major": 19,  
-> "stage_type": "compatibility_upgrade",  
-> "status": "running",  
-> "current_agent": "build_validation_agent",  
-> "repair_attempts": 0,  
-> "max_repair_attempts": 3,  
-> "requires_approval": false,  
-> "validation_gates": \["install", "build", "unit_tests_if_configured", "lint_if_configured"\],  
-> "manual_gates": \["browser_smoke", "visual_parity"\],  
-> "deferred_gates": \["external_security_scan", "external_quality_scan"\],  
-> "started_at": "...",  
-> "completed_at": null  
-> }
+```json
+{
+  "event_id": "uuid",
+  "event_sequence": 127,
+  "idempotency_key": "run-stage-action-checksum",
+  "previous_state": "TRANSFORMATION_RUNNING",
+  "next_state": "STATIC_SYMBOL_CHECK_RUNNING",
+  "expected_state_version": 34,
+  "new_state_version": 35,
+  "worker_lease_id": "uuid",
+  "artifact_transaction_id": "uuid",
+  "occurred_at": "ISO-8601"
+}
+```
 
-## 9.3 Frontend Display Rules
+Every write validates the expected state version. Duplicate idempotency keys return the original result rather than running the action again.
 
-- Every card status must come from backend state.
+## 15.4 Worker Ownership and Recovery
 
-- Approve buttons appear only in waiting approval states.
+- An active action has one worker lease and heartbeat.
+- A stale lease moves the run to `WORKER_LOST`.
+- Recovery verifies workspace hash, checkpoint, runtime image, policy version, and command history.
+- Unsafe or ambiguous recovery moves the run to `DIAGNOSTIC_HOLD`.
+- Resume never reruns a completed command without an idempotency decision.
 
-- Stage cards must show source and target Angular major version.
+## 15.5 Cancellation Semantics
 
-- Repair cards must show attempt count and risk level.
+Cancellation:
 
-- Manual/deferred validation gates should be shown clearly, not hidden.
+1. records `CANCEL_REQUESTED`;
+2. stops scheduling new actions;
+3. terminates the complete running process tree;
+4. preserves stdout, stderr, partial artifacts, and current workspace state;
+5. optionally restores the latest safe checkpoint according to policy;
+6. generates a partial evidence report;
+7. performs cleanup or retention action;
+8. transitions to `CANCELLED`.
 
-- A stage is completed only when validation passes or accepted risk is recorded.
+## 15.6 Approval Semantics
 
-- AI Assistant approvals and UI button approvals must create the same backend approval record.
+- UI and AI Assistant approvals create the same backend event.
+- Approval is bound to artifact checksums, state version, actor, scope, and expiry.
+- Auto-approval is a run policy stored before and throughout execution; it is not a frontend checkbox state.
+- Enabling auto-approval applies to all eligible future gates in the run until disabled or a non-auto-approvable risk appears.
+- A stale approval or changed plan never authorizes execution.
 
-# Artifact Model and Audit Trail
+## 15.7 Frontend Display Rules
 
-Artifacts are the evidence backbone of the migration factory. They make the system reviewable, auditable, and safe for consulting/client delivery.
+- Every card, button, attempt number, status, and owner comes from backend state.
+- The UI shows technical status, parity status, security assurance, and delivery readiness separately.
+- Approval buttons appear only for currently valid approval actions.
+- Repair cards show attempt count, risk, patch, validation, and escalation reason.
+- Manual and deferred gates remain visible.
 
-> runs/{run_id}/  
-> 00_job_setup/  
-> eligibility_result.json  
-> client_constraints.json  
-> target_version_policy.json  
-> read_only_verification.json  
->   
-> 01_baseline/  
-> baseline_run_report.json  
-> baseline_routes.json  
-> baseline_test_report.json  
-> manual_baseline_notes.md  
->   
-> 02_analysis/  
-> angular_workspace_analysis.json  
-> package_inventory.json  
-> dependency_graph.json  
-> route_inventory.json  
-> environment_inventory.json  
-> material_cdk_inventory.json  
-> test_inventory.json  
-> backend_integration_inventory.json  
->   
-> 03_planning/  
-> migration_plan.yaml  
-> upgrade_ladder.yaml  
-> migration_units.yaml  
-> allowed_and_forbidden_changes.yaml  
-> risk_assessment.json  
-> rollback_strategy.md  
-> approval_request.md  
->   
-> 04_workflow_state/  
-> migration_run_state.json  
-> stage_state_history.json  
-> agent_execution_history.json  
-> approval_events.json  
-> user_interaction_events.json  
->   
-> 05_sandbox_transform/  
-> sandbox_manifest.json  
-> applied_migrations.json  
-> patch_ledger.json  
-> minimal_diff_report.json  
-> package_json_diff.json  
-> angular_json_diff.json  
-> source_diff.patch  
->   
-> 06_validation/  
-> install_report.json  
-> build_report.json  
-> lint_report.json  
-> unit_test_report.json  
-> route_inventory_validation.json  
-> backend_config_report.json  
-> manual_parity_checklist.md  
-> security_quality_deferred_report.json  
-> stage_validation_summary.json  
->   
-> 07_repair/  
-> repair_attempts.json  
-> repair_diagnosis_reports.json  
-> repair_patch_ledger.json  
-> repair_risk_decisions.json  
-> human_escalation_requests.json  
->   
-> 08_final/  
-> final_migration_evidence_report.md  
-> compatibility_upgrade_summary.md  
-> manual_actions_required.md  
-> unresolved_blockers.json
+# 16. Artifact Model and Audit Trail
 
-## 10.1 Artifact Rules
+Artifacts are the immutable evidence backbone of the factory. They are organized by global run context, migration stage, and repair attempt so evidence is never overwritten.
 
-- Every artifact must include run_id and timestamp.
+## 16.1 Canonical Layout
 
-- Every artifact used for approval must be checksum-bound.
+```text
+runs/{run_id}/
+├── global/
+│   ├── 00_setup/
+│   │   ├── source_intake_result.json
+│   │   ├── source_snapshot_manifest.json
+│   │   ├── client_constraints.json
+│   │   ├── target_version_policy.json
+│   │   ├── browser_support_policy.json
+│   │   ├── read_only_verification.json
+│   │   └── llm_provider_config_redacted.json
+│   ├── 01_baseline/
+│   │   ├── workspace_topology.json
+│   │   ├── source_toolchain_profile.json
+│   │   ├── baseline_install_report.json
+│   │   ├── baseline_build_report.json
+│   │   ├── baseline_test_report.json
+│   │   ├── baseline_lint_report.json
+│   │   ├── baseline_route_manifest.json
+│   │   ├── baseline_api_contract_manifest.json
+│   │   ├── baseline_bundle_metrics.json
+│   │   ├── baseline_known_failures.json
+│   │   └── baseline_qualification_summary.json
+│   ├── 02_analysis/
+│   │   ├── angular_workspace_analysis.json
+│   │   ├── package_inventory.json
+│   │   ├── dependency_graph.json
+│   │   ├── dependency_audit.json
+│   │   ├── private_package_inventory.json
+│   │   ├── package_install_script_audit.json
+│   │   ├── route_inventory.json
+│   │   ├── environment_inventory.json
+│   │   ├── material_cdk_inventory.json
+│   │   ├── test_inventory.json
+│   │   ├── backend_integration_inventory.json
+│   │   └── changed_file_sensitivity_rules.json
+│   ├── 03_planning/
+│   │   ├── compatibility_resolution.json
+│   │   ├── historical_support_decision.json
+│   │   ├── migration_plan.yaml
+│   │   ├── upgrade_ladder.yaml
+│   │   ├── stage_toolchain_profiles.json
+│   │   ├── migration_units.yaml
+│   │   ├── builder_strategy.yaml
+│   │   ├── allowed_and_forbidden_changes.yaml
+│   │   ├── risk_assessment.json
+│   │   ├── rollback_strategy.md
+│   │   └── approval_request.md
+│   └── 04_workflow_state/
+│       ├── migration_run_state.json
+│       ├── state_event_log.jsonl
+│       ├── stage_state_history.json
+│       ├── agent_execution_history.json
+│       ├── approval_events.json
+│       ├── rollback_events.json
+│       ├── worker_lease_events.json
+│       ├── user_interaction_events.json
+│       ├── llm_interaction_log_redacted.json
+│       └── llm_untrusted_content_events.json
+├── stages/
+│   ├── angular-18-to-19/
+│   │   ├── transform/
+│   │   │   ├── sandbox_manifest.json
+│   │   │   ├── command_execution_log.jsonl
+│   │   │   ├── applied_migrations.json
+│   │   │   ├── patch_ledger.json
+│   │   │   ├── changed_file_risk_classification.json
+│   │   │   ├── minimal_diff_report.json
+│   │   │   ├── package_json_diff.json
+│   │   │   ├── angular_json_diff.json
+│   │   │   └── source_diff.patch
+│   │   ├── validation/
+│   │   │   ├── install_report.json
+│   │   │   ├── static_symbol_check_report.json
+│   │   │   ├── build_report.json
+│   │   │   ├── lint_report.json
+│   │   │   ├── unit_test_report.json
+│   │   │   ├── parity_manifest_diff.json
+│   │   │   ├── backend_contract_diff.json
+│   │   │   ├── bundle_metrics_diff.json
+│   │   │   ├── manual_parity_checklist.md
+│   │   │   └── stage_validation_summary.json
+│   │   ├── repair/
+│   │   │   ├── attempt-001/
+│   │   │   ├── attempt-002/
+│   │   │   └── attempt-003/
+│   │   └── checkpoint/
+│   │       ├── checkpoint_manifest.json
+│   │       └── stage_commit.json
+│   ├── angular-19-to-20/
+│   └── angular-20-to-21/
+├── 09_evaluation/
+├── delivery/
+│   ├── delivery_manifest.json
+│   ├── migration_patch_bundle.patch
+│   ├── stage_commit_manifest.json
+│   └── handover_checklist.md
+└── final/
+    ├── final_migration_evidence_report.md
+    ├── compatibility_upgrade_summary.md
+    ├── manual_actions_required.md
+    ├── unresolved_blockers.json
+    ├── security_protocol_compliance.md
+    ├── llm_usage_and_cost_summary.md
+    └── final_report_export.pdf
+```
 
-- Every command execution must store command, working directory, exit code, stdout, stderr, duration, and agent requester.
+## 16.2 Artifact Envelope
 
-- Every patch must include affected files, reason, risk level, expected behavior impact, and validation result.
+```json
+{
+  "schema_version": "1.0",
+  "artifact_id": "uuid",
+  "run_id": "uuid",
+  "stage_id": "angular-18-to-19",
+  "attempt": 1,
+  "producer": "repair_agent",
+  "created_at": "ISO-8601",
+  "input_artifact_hashes": [],
+  "policy_version": "migration-policy-v1",
+  "prompt_version": "repair-agent-v3",
+  "model_deployment": "deployment-alias-or-null",
+  "runtime_image_digest": "sha256:...",
+  "content_hash": "sha256:..."
+}
+```
 
-- Every manual/deferred validation gate must be visible in the final report.
+## 16.3 Artifact Rules
 
-- No final report should claim a gate passed if it was not executed.
+- Artifacts are append-only or versioned; they are never silently overwritten.
+- Every approval is bound to exact artifact checksums.
+- Every command stores executable, arguments, working directory, sanitized environment profile, runtime identity, exit code, stdout, stderr, duration, timeout, and requester.
+- Every patch stores reason, affected files, risk, expected behavior impact, source proposal, validation, and rollback result.
+- Raw secrets and unnecessary raw LLM prompts are not stored.
+- Final reports are generated only from persisted evidence.
+- Retention, deletion, export, and access policies are recorded per run.
 
-## Additional Reliability Artifacts
-
-The following artifacts are added to strengthen auditability, security, and repair safety:
-
-| **Artifact**                                               | **Owner**                   | **Purpose**                                                                                                |
-|------------------------------------------------------------|-----------------------------|------------------------------------------------------------------------------------------------------------|
-| 03_planning/compatibility_resolution.json                  | Compatibility Resolver      | Explains exact-version detection, normalized version families, target selection, and upgrade ladder.       |
-| 03_planning/stage_toolchain_profiles.json                  | Planning Agent              | Defines per-stage Node, TypeScript, RxJS, Angular CLI, command plan, validation plan, and rollback point.  |
-| 02_analysis/dependency_audit.json                          | Analysis Agent              | Classifies dependencies as safe, needs bump, needs guide, unknown risk, blocking, or approval-required.    |
-| 02_analysis/package_install_script_audit.json              | Analysis/Build Agent        | Reports preinstall/install/postinstall/prepare scripts before dependency installation in sandbox.          |
-| 01_baseline/backend_contract_snapshot.json                 | Analysis Agent              | Captures frontend/backend contract signals before migration.                                               |
-| 06_validation/static_symbol_check_report.json              | Build/Validation Agent      | Checks imports, symbols, Angular/RxJS/Material APIs, templates, and unapproved dependencies after patches. |
-| 05_sandbox_transform/changed_file_risk_classification.json | Transformation/Repair Agent | Classifies changed files by risk level before auto-continuation or escalation.                             |
-| 04_workflow_state/rollback_events.json                     | Orchestrator                | Records patch rollback, stage rollback, migration rollback, and diagnostic hold events.                    |
-| 08_final/security_protocol_compliance.md                   | Report Agent                | Documents that excluded tools were not used and sandbox/security rules were respected.                     |
-
-# Tooling Policy and MVP Restrictions
+# 17. Tooling Policy and MVP Restrictions
 
 Because company security protocol limits external tools, the current MVP must rely only on existing project commands, Angular CLI, package manager commands, file scanners, and internal backend validation. External browser automation and external security/quality scanners are excluded for now.
 
-## 11.1 MVP-Allowed Tools
+## 17.1 MVP-Allowed Tools
 
 | **Tool / Capability**         | **Allowed Use**                                                                        |
 |-------------------------------|----------------------------------------------------------------------------------------|
@@ -1697,7 +2154,7 @@ Because company security protocol limits external tools, the current MVP must re
 | TypeScript AST / ts-morph     | Targeted analysis and low-risk compatibility patches.                                  |
 | Git diff/checkpoint           | Generate evidence and stage checkpoints inside sandbox.                                |
 
-## 11.2 Excluded from Current MVP
+## 17.2 Excluded from Current MVP
 
 | **Excluded Tool** | **Current Policy**         |
 |-------------------|----------------------------|
@@ -1708,7 +2165,7 @@ Because company security protocol limits external tools, the current MVP must re
 | SonarQube         | Do not use in current MVP. |
 | Semgrep           | Do not use in current MVP. |
 
-## 11.3 How Excluded Gates Are Reported
+## 17.3 How Excluded Gates Are Reported
 
 - Browser smoke is reported as manual_validation_required for the MVP.
 
@@ -1720,7 +2177,7 @@ Because company security protocol limits external tools, the current MVP must re
 
 - These statuses should not fail the MVP automatically unless company policy says the gate is mandatory before delivery.
 
-# Validation Gates and Definition of Done
+# 18. Validation Gates and Definition of Done
 
 | **Gate**                         | **MVP Status**          | **Implementation**                                                                                                                                                      |
 |----------------------------------|-------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -1739,10 +2196,9 @@ Because company security protocol limits external tools, the current MVP must re
 | Static symbol verification       | Mandatory after patches | Run after Transformation Agent or Repair Agent patches before full build validation. Verify imports, symbols, template references, and unapproved dependency additions. |
 | Dependency audit                 | Mandatory evidence      | Classify Angular packages, UI libraries, state management, custom builders, private packages, and package risks before planning.                                        |
 | Package install script audit     | Mandatory evidence      | Detect preinstall/install/postinstall/prepare scripts and report packages requiring review before install in sandbox.                                                   |
-| Changed-file risk classification | Mandatory after diff    | Classify changed files as low, medium, high, or blocked based on path and sensitivity.                                                                                  |
 | Backend contract snapshot/diff   | Mandatory evidence      | Capture API base URLs, proxy config, interceptors, auth headers, token/cookie usage, request builders, response mappers, and error handling references.                 |
 
-## 12.1 Stage Definition of Done - MVP
+## 18.1 Stage Definition of Done - MVP
 
 - Install succeeds or environment blocker is documented and approved.
 
@@ -1770,7 +2226,7 @@ Because company security protocol limits external tools, the current MVP must re
 
 - Human accepted risk is recorded if any required gate cannot be executed.
 
-## Static Symbol Verification Gate
+## 18.2 Static Symbol Verification Gate
 
 Static Symbol Verification is required after every LLM-generated or Repair Agent patch. It is a cheap deterministic anti-hallucination gate that prevents the system from continuing with nonexistent imports, phantom APIs, invalid template references, or unapproved dependencies.
 
@@ -1782,14 +2238,8 @@ Static Symbol Verification is required after every LLM-generated or Repair Agent
 | Template diagnostics               | Changed templates pass Angular compiler/template diagnostics where available.                                                       |
 | Dependency approval                | No new dependency or package replacement appears without approved plan or human approval.                                           |
 | Changed file sensitivity           | Changed files are classified before auto-continuation.                                                                              |
-| Compatibility Resolver             | Architecture component that normalizes exact versions into version families and generates compatible stage profiles.                |
-| Stage Toolchain Profile            | Per-stage definition of Node.js, TypeScript, RxJS, Angular CLI, package manager, commands, validation gates, and rollback point.    |
-| Static Symbol Verification         | Deterministic gate that checks imports, symbols, APIs, template references, and dependencies after AI or repair patches.            |
-| MCP Context Support Mode           | Optional read-only mode where MCP gives Angular documentation and migration guidance context to the LLM without executing commands. |
-| Diagnostic hold                    | Safe stop state that preserves the failed workspace for human investigation and produces a blocker report.                          |
-| Changed-file risk classification   | Risk assessment based on which files changed and how sensitive those files are to behavior, auth, API, UI, or security.             |
 
-## Validation Status Vocabulary
+## 18.3 Validation Status Vocabulary
 
 Validation results must use explicit statuses so unavailable MVP tools are not hidden and are not falsely marked as failures.
 
@@ -1801,11 +2251,98 @@ deferred_company_tool_required
 blocked_by_environment  
 accepted_risk
 
-# Dependency Audit, Install Script Audit, and Backend Contract Snapshot
+## 18.4 Assurance Decision Rules
+
+- `technical_upgrade_status = passed` requires all mandatory technical gates to pass. An environment blocker may be documented or accepted, but it cannot be reported as a technical pass.
+- `functional_parity_status = verified` requires the approved parity procedure to complete. Generating a checklist alone results in `manual_validation_pending`.
+- Deferred security or quality tooling remains visible in `security_assurance_status` and does not become `passed`.
+- A run may be `completed` as a workflow while delivery readiness remains conditional or blocked.
+
+# 19. Functional Parity Assurance, Browser Support, and Build-System Policy
+
+Strict parity is a delivery objective, not a conclusion produced by a successful compilation. The factory therefore tracks technical validity and parity evidence separately.
+
+## 19.1 Independent Assurance Dimensions
+
+```json
+{
+  "run_status": "completed",
+  "technical_upgrade_status": "passed",
+  "functional_parity_status": "manual_validation_pending",
+  "security_assurance_status": "deferred_company_tool_required",
+  "delivery_readiness": "conditionally_ready"
+}
+```
+
+Allowed parity statuses:
+
+```text
+verified
+verified_with_accepted_differences
+manual_validation_pending
+not_verified
+failed
+accepted_risk
+```
+
+A stage may be technically complete while parity remains pending. Reports and the UI must never collapse these statuses into one generic “completed” label.
+
+## 19.2 Parity Manifest
+
+The baseline and every stage capture and compare, where deterministically possible:
+
+- route paths, redirects, lazy-loading boundaries, guards, and resolvers;
+- API base URLs, proxy configuration, HTTP methods, endpoint patterns, request builders, response mappers, and error handling;
+- authentication headers, token/cookie behavior, interceptors, and permission references;
+- reactive and template-driven form validators;
+- translation keys and locale configuration;
+- assets, stylesheets, themes, fonts, and global style order;
+- service-worker, SSR, prerendering, and hydration configuration;
+- build output paths and deployment-relevant files;
+- bundle budgets and principal bundle metrics;
+- browser polyfills and browser-support policy.
+
+## 19.3 Browser Support Contract
+
+Strict parity means equivalent approved behavior on the agreed target-browser matrix. The project must not assume that the legacy browser matrix and the target Angular browser matrix are identical.
+
+```json
+{
+  "artifact": "00_job_setup/browser_support_policy.json",
+  "legacy_supported_browsers": [],
+  "target_angular_supported_browsers": [],
+  "client_required_browsers": [],
+  "unsupported_client_requirements": [],
+  "decision": "approved_target_matrix"
+}
+```
+
+## 19.4 Build-System Migration Gate
+
+Angular framework migration and Angular build-system migration are separate migration units.
+
+The factory detects `browser`, `browser-esbuild`, `application`, custom builders, SSR builders, and webpack-specific configuration. Migration to `application`, `browser-esbuild`, esbuild, or a new SSR structure is blocked unless the approved plan explicitly contains a builder migration unit.
+
+Add to `forbidden_without_approval`:
+
+```yaml
+- build_system_migration
+- browser_builder_to_application_builder
+- browser_builder_to_browser_esbuild
+- custom_builder_replacement
+- webpack_to_esbuild_migration
+- ssr_builder_consolidation
+```
+
+## 19.5 MVP Manual Parity Procedure
+
+Because browser automation is excluded from the current MVP, the report must provide a route-based manual checklist, expected environment, test credentials policy, browser matrix, evidence owner, execution status, observations, screenshots or links when permitted, and explicit sign-off. Until that checklist is completed, parity remains `manual_validation_pending`.
+
+# 20. Dependency Audit, Install Script Audit, and Backend Contract Snapshot
 
 These lightweight checks improve reliability without introducing external security scanners. They rely on package metadata, lockfiles, source scanning, and backend configuration analysis.
 
-## 15.1 Dependency Audit Categories
+## 20.1 Dependency Audit Categories
 
 | **Category**           | **Examples**                                                        |
 |------------------------|---------------------------------------------------------------------|
@@ -1816,7 +2353,7 @@ These lightweight checks improve reliability without introducing external securi
 | State management       | NgRx, Akita, NGXS, services, custom stores                          |
 | Enterprise constraints | Private packages, abandoned packages, packages with install scripts |
 
-## 15.2 Dependency Risk Classification
+## 20.2 Dependency Risk Classification
 
 safe  
 needs_version_bump  
@@ -1825,11 +2362,11 @@ requires_approval
 unknown_risk  
 blocking
 
-## 15.3 Package Install Script Audit
+## 20.3 Package Install Script Audit
 
 Before package installation, the system should inspect package metadata and lockfile information where possible to identify packages that define preinstall, install, postinstall, or prepare scripts. These scripts must execute only inside the sandbox and must be reported in the final evidence.
 
-## 15.4 Backend Contract Snapshot
+## 20.4 Backend Contract Snapshot
 
 Because the backend remains unchanged in the MVP, the frontend migration must not silently change how the Angular application communicates with the Java/Spring Boot backend. The backend contract snapshot records API-related frontend behavior before migration and compares it after each stage where possible.
 
@@ -1845,7 +2382,7 @@ Because the backend remains unchanged in the MVP, the frontend migration must no
 
 - guards, resolvers, and route-level authorization references
 
-# Repair Policy and Escalation Rules
+# 21. Repair Policy and Escalation Rules
 
 | **Risk Level** | **Examples**                                                                                                        | **Default Action**                                               |
 |----------------|---------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
@@ -1854,7 +2391,7 @@ Because the backend remains unchanged in the MVP, the frontend migration must no
 | High           | Business logic, calculations, API payload, auth, permissions, security flow, UI behavior.                           | Human approval required before patch. Usually blocked for MVP.   |
 | Blocked        | Missing private package, unavailable backend, unclear expected behavior, unknown test expectation.                  | Stop automatic repair and escalate with diagnosis.               |
 
-## 13.1 Automatic Repair Scope
+## 21.1 Automatic Repair Scope
 
 - Missing imports and missing symbols.
 
@@ -1870,7 +2407,7 @@ Because the backend remains unchanged in the MVP, the frontend migration must no
 
 - Simple test setup updates when behavior and expected output are unchanged.
 
-## 13.2 Restricted Repair Scope
+## 21.2 Restricted Repair Scope
 
 - Business rules or calculation logic.
 
@@ -1888,7 +2425,7 @@ Because the backend remains unchanged in the MVP, the frontend migration must no
 
 - Any change where behavior preservation cannot be proven.
 
-## Rollback Levels
+## 21.3 Rollback Levels
 
 Rollback must be explicit and automated where safe. The system should never continue with a failed patch or unclear repair state.
 
@@ -1899,7 +2436,7 @@ Rollback must be explicit and automated where safe. The system should never cont
 | Migration rollback | The migration must be abandoned or restarted from the original baseline.               | Reset to the original read-only input state and preserve evidence.              |
 | Diagnostic hold    | The state is useful for human investigation but unsafe to continue automatically.      | Stop automation, preserve failed workspace, and generate blocker report.        |
 
-## Auto-Continue and Human Approval Rules
+## 21.4 Auto-Continue and Human Approval Rules
 
 Automatic continuation is allowed only when the stage is low risk and all mandatory technical gates pass. Otherwise, the workflow must wait for human review or accepted risk.
 
@@ -1939,7 +2476,7 @@ Automatic continuation is allowed only when the stage is low risk and all mandat
 
 - LLM confidence is low or behavior preservation cannot be proven.
 
-## Changed-File Risk Classification
+## 21.5 Changed-File Risk Classification
 
 | **Risk** | **File Examples**                                                                                                                | **Default Decision**                                              |
 |----------|----------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
@@ -1948,122 +2485,508 @@ Automatic continuation is allowed only when the stage is low risk and all mandat
 | High     | auth services, interceptors, guards, permissions, API mappers, form validators, calculation/business services, environment files | Human approval required.                                          |
 | Blocked  | Files where expected behavior cannot be determined or private package behavior is unknown                                        | Diagnostic hold or escalation.                                    |
 
-# API and Schema Examples
+# 22. Azure OpenAI LLM Assistance Layer and Per-Agent LLM Access
 
-## 14.1 Approval Endpoint Payload
+**Purpose.** Selected migration agents may use an LLM to improve reasoning, diagnosis, planning, explanation, and report generation. The LLM is not the execution authority. The backend remains responsible for command execution, file mutation, validation, rollback, and approval enforcement.
 
-> POST /migrations/{runId}/approvals  
+**Default provider and model.** The MVP uses Azure OpenAI API through a backend-controlled LLM Gateway. GPT-5 mini is the main/default model deployment. The deployment name, endpoint, API version, region, authentication method, timeout, and retry policy must be configuration values, not hardcoded in prompts or agents.
+
+**Design principle.** Only agents with an approved LLM use case can ask for LLM assistance, but no agent gets direct access to Azure credentials, shell execution, repository mutation, or approval bypass. LLM output is treated as a proposal that must pass deterministic backend checks before it affects the sandbox.
+
+| **Area**            | **Architecture Decision**                                                                                                                             |
+|---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Provider            | Azure OpenAI API, accessed only through the backend LLM Gateway.                                                                                      |
+| Main model          | GPT-5 mini as the default/main deployment for all agents.                                                                                             |
+| Configuration       | Endpoint, deployment name, API version, region, quotas, and authentication are environment configuration and must not be hardcoded.                   |
+| Agent access        | Only approved LLM-enabled agents can request assistance through structured calls to the LLM Gateway; deterministic services do not call the LLM.                                                                    |
+| Execution boundary  | The LLM cannot directly execute npm, ng, git, shell commands, MCP workspace tools, or file mutations.                                                 |
+| Validation boundary | LLM outputs that propose patches must pass static symbol verification, build validation, risk classification, and approval policy before progression. |
+| Data boundary       | Prompts must send the minimum necessary context. Secrets, tokens, private credentials, and production environment values must be redacted.            |
+| Traceability        | All LLM calls are logged with redacted prompts, response summaries, model deployment, timestamps, token usage if available, and artifact references.  |
+
+## 22.1 LLM Gateway Responsibilities
+
+- Centralize all Azure OpenAI API calls for every agent.
+
+- Inject the correct system prompt, agent role, context packet, and output schema.
+
+- Apply prompt-size limits, timeout limits, retry policy, and cost/token budget controls.
+
+- Redact secrets, credentials, tokens, API keys, private environment values, and sensitive headers before sending context to the model.
+
+- Prevent agents from sending entire repositories when targeted snippets, logs, or artifacts are enough.
+
+- Require structured JSON output for agent-to-system decisions such as plan proposal, failure diagnosis, patch proposal, risk classification, and report summary.
+
+- Store redacted LLM interaction logs as audit artifacts without persisting hidden chain-of-thought. Store concise decision summaries instead.
+
+- Support MCP Context Support Mode as optional documentation/context enrichment for the LLM, not as an execution dependency.
+
+## 22.2 Per-Agent LLM Usage Matrix
+
+| **Agent / Component**            | **How GPT-5 mini helps**                                                                                                                        | **LLM output expected**                                                                                  | **Hard boundary**                                                                                                |
+|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| AI Assistant                     | Explains workflow state, validation failures, approval options, and user feedback in natural language.                                          | User-facing explanation, structured modification request, approval-intent payload.                       | No direct execution, no silent approval, no scope expansion.                                                     |
+| Eligibility and Constraint Agent | Helps summarize ambiguous framework indicators and explain why a project is accepted or rejected.                                               | Eligibility rationale summary and unsupported-source explanation.                                        | Eligibility facts must come from project files and deterministic scans, not from the LLM alone.                  |
+| Analysis Agent                   | Summarizes workspace findings, detects risk patterns, groups dependencies, explains backend integration risks, and generates readable analysis. | Analysis summary, risk explanations, dependency classification suggestions.                              | No mutation, no dependency changes, no install/update commands from LLM output.                                  |
+| Planning Agent                   | Generates the migration plan from compatibility resolver output, company policy, and analysis artifacts.                                        | Upgrade ladder narrative, validation plan, risk model, approval request, rollback strategy.              | Cannot invent unsupported target versions or bypass one-major-at-a-time strategy unless explicitly approved.     |
+| Transformation Agent             | Uses LLM only to explain command intent or propose minimal compatibility patch ideas when deterministic tools are insufficient.                 | Action proposal or patch proposal with affected files, reason, and risk level.                           | Backend executes only approved commands. LLM cannot run ng update or mutate files directly.                      |
+| Build / Validation Agent         | Classifies build, install, TypeScript, template, test, and lint failures; summarizes logs for the user and Repair Agent.                        | Failure category, root-cause hypothesis, affected files, recommended next state.                         | No repair and no code changes. It only validates and reports.                                                    |
+| Repair Agent                     | Diagnoses migration-caused failures and proposes the smallest safe patch.                                                                       | Patch proposal, root cause, risk level, validation command to rerun, fallback/escalation recommendation. | Patch is not trusted until backend patching, static symbol verification, build validation, and risk policy pass. |
+| Report Agent                     | Turns persisted artifacts into client-facing and technical reports.                                                                             | Final report narrative, executive summary, manual action checklist.                                      | Cannot claim unexecuted gates passed or invent parity evidence.                                                  |
+| Orchestrator                     | May use LLM summaries for operator visibility, but workflow transitions are deterministic state-machine decisions.                              | Optional status summary only.                                                                            | LLM cannot decide state transitions independently of backend state and policy.                                   |
+| Backend Execution Authority      | Does not need LLM for execution. It may receive LLM proposals from agents and validate them.                                                    | Validated/rejected action result, execution artifact.                                                    | Backend is the trusted authority, not the LLM.                                                                   |
+
+## 22.3 LLM Call Contract
+
+**Every LLM request should use a structured context packet.** The goal is to make LLM assistance reproducible, reviewable, and safe.
+
 > {  
-> "approval_gate": "analysis \| planning \| repair",  
-> "approved_by": "user",  
-> "approval_source": "ui_button \| assistant_command",  
-> "checksum": "sha256:...",  
-> "decision": "approved \| rejected \| modification_requested \| approved_with_risk",  
-> "user_comment": "optional"  
-> }
-
-## 14.2 Build Failure Report
-
-> {  
-> "gate": "ng_build",  
-> "status": "failed",  
-> "category": "angular_template_compile_error",  
-> "root_cause_summary": "Template references a property not available after stricter compiler checks.",  
-> "affected_files": \["src/app/features/orders/order-list.component.html"\],  
-> "repair_attempt": 0,  
-> "max_repair_attempts": 3,  
-> "requires_human_review": false,  
-> "recommended_next_state": "REPAIR_RUNNING"  
-> }
-
-## 14.3 MVP Validation Summary
-
-> {  
+> "run_id": "migration-run-001",  
 > "stage_id": "angular-18-to-19",  
-> "validation_status": "passed_with_manual_items",  
-> "gates": {  
-> "install": "passed",  
-> "build": "passed",  
-> "type_check": "passed",  
-> "unit_tests": "passed_or_not_configured",  
-> "lint": "passed_or_not_configured",  
-> "route_inventory": "completed",  
-> "backend_config_check": "completed",  
-> "browser_smoke": "manual_validation_required",  
-> "visual_parity": "manual_validation_required",  
-> "security_scan": "deferred_company_tool_required",  
-> "quality_scan": "deferred_company_tool_required"  
+> "agent_name": "repair_agent",  
+> "llm_provider": "azure_openai",  
+> "model_deployment": "gpt-5-mini",  
+> "task_type": "failure_diagnosis_and_patch_proposal",  
+> "system_policy": {  
+> "strict_parity": true,  
+> "minimal_diff": true,  
+> "sandbox_only": true,  
+> "optional_modernization_allowed": false,  
+> "forbidden_changes": \[  
+> "business_logic_change",  
+> "api_contract_change",  
+> "authentication_authorization_change",  
+> "ui_redesign",  
+> "state_management_replacement"  
+> \]  
 > },  
-> "excluded_tools": \["Playwright", "Cypress", "OSV", "Snyk", "SonarQube", "Semgrep"\],  
-> "requires_human_review": false  
+> "context": {  
+> "compatibility_profile": "artifact://03_planning/compatibility_resolution.json",  
+> "stage_toolchain_profile": "artifact://03_planning/stage_toolchain_profiles.json#angular-18-to-19",  
+> "failed_gate": "ng_build",  
+> "error_excerpt": "redacted compiler/build excerpt",  
+> "affected_files_excerpt": \["targeted snippets only"\],  
+> "previous_attempts": 1  
+> },  
+> "required_output_schema": "repair_patch_proposal_v1"  
+> }
+>
+> {  
+> "diagnosis": "Missing import caused by stage migration and stricter compilation.",  
+> "proposed_patch": {  
+> "files": \["src/app/app.routes.ts"\],  
+> "change_summary": "Add missing component import only.",  
+> "minimal_diff": true,  
+> "behavior_change_expected": false  
+> },  
+> "risk_level": "low",  
+> "requires_human_approval": false,  
+> "validation_to_rerun": \["static_symbol_check", "ng_build"\],  
+> "fallback_plan": "Escalate if the import does not resolve or route behavior changes."  
 > }
 
-## 14.4 Repair Attempt Report
+## 22.4 LLM Security and Governance Rules
+
+- Azure OpenAI credentials must be stored only in backend-managed configuration, Key Vault, environment variables, or an equivalent company-approved secret store.
+
+- The frontend and agents must never receive the raw Azure OpenAI API key, endpoint secret, bearer token, or deployment credentials.
+
+- Before every LLM call, the LLM Gateway must redact secrets, tokens, cookies, Authorization headers, API keys, .env values, private registry credentials, and production URLs when required by policy.
+
+- Agents must send targeted context: relevant file snippets, compiler errors, diffs, and artifact references. They must not send the whole repository by default.
+
+- The LLM must not be used as the sole correctness gate. Deterministic checks such as compatibility resolver, static symbol verification, ng build, test/lint if configured, and backend approval policy remain mandatory.
+
+- LLM-generated patches must be applied by backend patch services only, never directly by the model.
+
+- The system must store redacted LLM call metadata and concise rationale summaries, but it should not store hidden chain-of-thought or sensitive raw prompts unnecessarily.
+
+- If Azure quota, timeout, rate limit, or API availability problems occur, the workflow should stop safely with a diagnostic artifact rather than applying unvalidated changes.
+
+## 22.5 LLM Artifacts
+
+| **Artifact**                                          | **Purpose**                                                                                                                                             |
+|-------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 00_job_setup/llm_provider_config_redacted.json        | Records provider, deployment alias, region/endpoint alias, and policy flags without secrets.                                                            |
+| 04_workflow_state/llm_interaction_log_redacted.json   | Audit log of LLM calls with timestamps, agent name, task type, model deployment, token usage if available, artifact references, and redacted summaries. |
+| 03_planning/llm_plan_rationale_summary.md             | Human-readable summary of how LLM assistance contributed to the plan, based only on approved artifacts.                                                 |
+| 06_validation/llm_failure_classification_summary.json | Optional LLM-assisted classification summary for validation failures.                                                                                   |
+| 07_repair/llm_patch_proposals.json                    | Patch proposals created by LLM assistance before backend validation and static checks.                                                                  |
+| 08_final/llm_usage_summary.md                         | Final report section documenting where LLM assistance was used and what was validated deterministically.                                                |
+
+## 22.6 Azure OpenAI Configuration Example - Redacted
 
 > {  
-> "attempt": 1,  
-> "stage": "angular-18-to-19",  
-> "error_category": "missing_import",  
-> "impacted_files": \["src/app/app.routes.ts"\],  
-> "diagnosis": "Route configuration references a component without importing it.",  
-> "repair_strategy": "Add missing import only. Do not change route path or behavior.",  
-> "risk_level": "low",  
-> "minimal_diff": true,  
-> "behavior_change_expected": false,  
-> "validation_result": "passed",  
-> "escalated_to_human": false  
+> "llm_provider": "azure_openai",  
+> "default_model_deployment": "gpt-5-mini",  
+> "deployment_alias": "main_reasoning_model",  
+> "endpoint_alias": "AZURE_OPENAI_ENDPOINT",  
+> "api_version_source": "environment_or_company_config",  
+> "auth_mode": "api_key_or_managed_identity_company_policy",  
+> "secrets_exposed_to_agents": false,  
+> "direct_llm_execution_allowed": false,  
+> "prompt_redaction_enabled": true,  
+> "store_raw_prompts": false,  
+> "store_redacted_interaction_log": true,  
+> "max_context_policy": "send_targeted_artifacts_and_snippets_only",  
+> "fallback_model_policy": "disabled_by_default_unless_company_approved"  
 > }
 
-## 14.5 Compatibility Resolution Schema
+## 22.7 Efficiency Rules for GPT-5 mini Usage
 
-{  
-"artifact": "03_planning/compatibility_resolution.json",  
-"source_family": "angular-18.x",  
-"target_family": "angular-21.x",  
-"accepted_source_range": "\>=11.0.0",  
-"exact_patch_supported_by_range": true,  
-"upgrade_ladder": \["angular-18-to-19", "angular-19-to-20", "angular-20-to-21"\]  
+- Use deterministic scanners first, then send only summarized findings or targeted excerpts to the model.
+
+- Cache reusable LLM outputs such as dependency risk summaries, migration plan rationale, and repeated error classifications by artifact checksum.
+
+- Prefer small task-specific prompts over large generic prompts.
+
+- Use structured JSON outputs to reduce parsing ambiguity and retries.
+
+- For repeated repair attempts, include only the delta from the previous attempt and the latest validation output.
+
+- Do not ask the model to re-read unchanged files when their artifact checksum is unchanged.
+
+- Use GPT-5 mini as the default model for cost and latency control; any larger-model escalation must be an explicit future option and company-approved.
+
+## 22.8 Additional Reference Notes for LLM Integration
+
+- Azure OpenAI API usage, authentication, deployment names, API versions, and availability must follow the company Azure setup and official Microsoft documentation.
+
+- GPT-5 mini is treated as the configured Azure OpenAI deployment for the MVP; the actual deployment name may differ by environment and should be resolved from backend configuration.
+
+- MCP remains a context-support option for the LLM only; it is not an execution dependency and does not replace backend command authority.
+
+- Azure OpenAI REST API reference: https://learn.microsoft.com/en-us/azure/foundry/openai/reference
+
+- Azure OpenAI reasoning models documentation: https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
+
+- OpenAI GPT-5 overview: https://openai.com/gpt-5/
+
+## 22.9 Prompt-Injection and Untrusted-Content Policy
+
+Repository content is always untrusted data. The LLM Gateway separates trusted platform policy from untrusted source excerpts and labels every context segment. Repository text cannot grant permissions, approve actions, change scope, reveal secrets, or create tools.
+
+Schema validation rejects model responses that contain unsupported actions, unknown files, raw shell commands, unapproved dependencies, policy changes, or approval claims.
+
+## 22.10 Model, Prompt, and Schema Versioning
+
+Every LLM call records:
+
+- provider and deployment alias;
+- model/version information available from the provider;
+- system-prompt version;
+- task-prompt version;
+- output-schema version;
+- policy version;
+- context artifact hashes;
+- token usage, latency, retries, and estimated cost;
+- validation and acceptance result.
+
+A model or prompt change must pass the evaluation promotion gate before becoming the default.
+
+# 23. AI Quality Evaluation and Regression Suite
+
+The migration factory must evaluate model, prompt, policy, and deterministic-rule changes before promoting them.
+
+## 23.1 Fixture Suite
+
+Maintain representative, legally usable test projects such as:
+
+- Angular 11 NgModule application;
+- Angular 13 application with Angular Material;
+- Angular 15 application with NgRx;
+- Angular 17 application using the legacy builder;
+- Angular 18 multi-project workspace;
+- application with deprecated RxJS patterns;
+- application with custom builder;
+- application with guards, interceptors, forms, and backend mappings;
+- application with deliberate compiler and template failures;
+- repository containing prompt-injection text.
+
+## 23.2 Evaluation Metrics
+
+| Metric | Purpose |
+|---|---|
+| Baseline reproduction rate | Measures whether the factory correctly reproduces the original state. |
+| First-pass build rate | Measures how often official migrations pass without AI repair. |
+| Repair success rate | Measures how often bounded repair solves migration-caused failures. |
+| False-repair rate | Detects unrelated or unnecessary changes. |
+| Patch size and sensitivity | Verifies minimal-diff and risk policies. |
+| Human escalation rate | Measures autonomy without hiding risk. |
+| New regression count | Detects route, contract, configuration, test, or build regressions. |
+| Token and cost per stage | Controls LLM efficiency. |
+| Retry and rollback rate | Measures workflow stability. |
+| Prompt-injection resistance | Verifies that repository content cannot change policy or trigger tools. |
+
+## 23.3 Promotion Gate
+
+A change to model deployment, system prompt, output schema, compatibility catalog, repair rule, command policy, or risk classifier must run against the evaluation suite. Promotion requires stored results and an approved quality threshold.
+
+Artifacts:
+
+```text
+09_evaluation/evaluation_run.json
+09_evaluation/fixture_results.json
+09_evaluation/regression_comparison.json
+09_evaluation/promotion_decision.json
+```
+
+# 24. Observability, Token Usage, Cost, Quotas, and Operations
+
+Operational observability must cover workflow, worker, command, LLM, cost, and artifact behavior.
+
+## 24.1 Required Metrics
+
+- migration duration by run and stage;
+- queue duration;
+- command duration and exit-code distribution;
+- worker CPU, memory, disk, timeout, cancellation, and cleanup events;
+- build, test, lint, repair, rollback, and escalation rates;
+- SSE connection and event-delivery failures;
+- artifact creation and checksum failures;
+- LLM latency, retry, timeout, rate-limit, and quota events;
+- input tokens, output tokens, total tokens, and cost by call, agent, stage, and run.
+
+## 24.2 LLM Budget Policy
+
+```json
+{
+  "llm_budget": {
+    "max_input_tokens_per_run": 0,
+    "max_output_tokens_per_run": 0,
+    "max_cost_usd_per_run": 0,
+    "max_repair_cost_usd_per_stage": 0,
+    "on_budget_exceeded": "diagnostic_hold"
+  }
 }
+```
 
-## 14.6 Static Symbol Check Schema
+Zero in the example means the deployment policy has not yet supplied a value; production execution must not silently interpret it as unlimited.
 
-{  
-"artifact": "06_validation/static_symbol_check_report.json",  
-"stage_id": "angular-18-to-19",  
-"status": "passed",  
-"checks": {  
-"imports_resolve": true,  
-"symbols_exist": true,  
-"angular_template_diagnostics_clean": true,  
-"no_phantom_packages": true,  
-"no_unapproved_dependency_added": true  
-}  
+## 24.3 Quota and Failure Handling
+
+- apply bounded retries with exponential backoff and jitter;
+- use per-deployment concurrency limits;
+- apply queue backpressure;
+- use a circuit breaker during repeated provider failures;
+- stop safely without applying unvalidated patches;
+- preserve a diagnostic artifact;
+- allow human continuation without LLM when the remaining workflow is deterministic.
+
+## 24.4 Authentication
+
+For Azure-hosted deployments, prefer Microsoft Entra ID and managed identity when company policy permits it. API-key authentication remains an environment-specific fallback and never reaches the frontend or agent prompts.
+
+## 24.5 SQLite MVP Boundary
+
+SQLite is limited to a single-host MVP with WAL enabled, configured busy timeout, small transactions, and artifacts stored outside database blobs. Move to PostgreSQL before multiple backend instances, distributed workers, high concurrency, or enterprise multi-user operation.
+
+# 25. API and Schema Examples
+
+## 25.1 Approval Endpoint Payload
+
+```http
+POST /migrations/{runId}/approvals
+Content-Type: application/json
+```
+
+```json
+{
+  "approval_gate": "analysis | planning | repair | parity | delivery",
+  "approved_by": "user-identifier",
+  "approval_source": "ui_button | assistant_command",
+  "artifact_checksums": ["sha256:..."],
+  "state_version": 34,
+  "approval_scope": "current_gate",
+  "decision": "approved | rejected | modification_requested | approved_with_risk",
+  "user_comment": "optional",
+  "expires_at": "ISO-8601-or-null"
 }
+```
 
-## 14.7 Security Protocol Compliance Schema
+## 25.2 Build Failure Report
 
-{  
-"artifact": "08_final/security_protocol_compliance.md",  
-"source_repository_mutated": false,  
-"sandbox_only_mutation": true,  
-"excluded_tools_used": \[\],  
-"excluded_tools_policy": \["Playwright", "Cypress", "OSV", "Snyk", "SonarQube", "Semgrep"\],  
-"mcp_mode": "disabled_or_context_support_only",  
-"manual_or_deferred_gates_documented": true  
+```json
+{
+  "gate": "ng_build",
+  "status": "failed",
+  "category": "angular_template_compile_error",
+  "root_cause_summary": "Template references a property not available after stricter compiler checks.",
+  "affected_files": [
+    "src/app/features/orders/order-list.component.html"
+  ],
+  "baseline_comparison": "new_migration_failure",
+  "repair_attempt": 0,
+  "max_repair_attempts": 3,
+  "requires_human_review": false,
+  "recommended_next_state": "REPAIR_RUNNING"
 }
+```
 
-# MVP Implementation Recommendation
+## 25.3 MVP Validation Summary
+
+```json
+{
+  "stage_id": "angular-18-to-19",
+  "workflow_stage_status": "completed",
+  "technical_upgrade_status": "passed",
+  "functional_parity_status": "manual_validation_pending",
+  "security_assurance_status": "deferred_company_tool_required",
+  "delivery_readiness": "conditionally_ready",
+  "gates": {
+    "install": "passed",
+    "static_symbol_check": "passed",
+    "build": "passed",
+    "type_check": "passed",
+    "unit_tests": "passed",
+    "lint": "not_configured",
+    "route_manifest_diff": "passed",
+    "backend_contract_diff": "passed",
+    "browser_smoke": "manual_validation_required",
+    "visual_parity": "manual_validation_required",
+    "security_scan": "deferred_company_tool_required",
+    "quality_scan": "deferred_company_tool_required"
+  },
+  "excluded_tools": [
+    "Playwright",
+    "Cypress",
+    "OSV",
+    "Snyk",
+    "SonarQube",
+    "Semgrep"
+  ],
+  "requires_manual_parity_signoff": true
+}
+```
+
+## 25.4 Repair Attempt Report
+
+```json
+{
+  "attempt": 1,
+  "stage_id": "angular-18-to-19",
+  "error_category": "missing_import",
+  "impacted_files": ["src/app/app.routes.ts"],
+  "diagnosis": "Route configuration references a component without importing it.",
+  "repair_strategy": "Add the missing import only; do not change route path or behavior.",
+  "risk_level": "low",
+  "minimal_diff": true,
+  "behavior_change_expected": false,
+  "static_symbol_validation": "passed",
+  "targeted_validation": "passed",
+  "full_validation": "passed",
+  "escalated_to_human": false
+}
+```
+
+## 25.5 Compatibility Resolution Schema
+
+```json
+{
+  "artifact": "global/03_planning/compatibility_resolution.json",
+  "source_family": "angular-18.x",
+  "target_family": "angular-21.x",
+  "accepted_source_range": ">=11.0.0",
+  "support_level": "historical_validated",
+  "exact_patch_resolution_required": true,
+  "upgrade_ladder": [
+    "angular-18-to-19",
+    "angular-19-to-20",
+    "angular-20-to-21"
+  ]
+}
+```
+
+## 25.6 Static Symbol Check Schema
+
+```json
+{
+  "artifact": "stages/angular-18-to-19/validation/static_symbol_check_report.json",
+  "stage_id": "angular-18-to-19",
+  "status": "passed",
+  "checks": {
+    "imports_resolve": true,
+    "symbols_exist": true,
+    "angular_template_diagnostics_clean": true,
+    "no_phantom_packages": true,
+    "no_unapproved_dependency_added": true
+  }
+}
+```
+
+## 25.7 Security Protocol Compliance Schema
+
+```json
+{
+  "artifact": "final/security_protocol_compliance.md",
+  "source_repository_mutated": false,
+  "sandbox_only_mutation": true,
+  "structured_command_policy_enforced": true,
+  "runtime_isolation_recorded": true,
+  "excluded_tools_used": [],
+  "excluded_tools_policy": [
+    "Playwright",
+    "Cypress",
+    "OSV",
+    "Snyk",
+    "SonarQube",
+    "Semgrep"
+  ],
+  "mcp_mode": "disabled_or_context_support_only",
+  "manual_or_deferred_gates_documented": true
+}
+```
+
+# 26. Delivery and Handover
+
+The factory must produce a controlled engineering handover, not only a report.
+
+## 26.1 Delivery Outputs
+
+Depending on company policy, the Delivery Service produces one or more of:
+
+- migration branch;
+- patch bundle;
+- ordered stage commits;
+- pull-request-ready package;
+- final source archive;
+- dependency and lockfile manifest;
+- validation evidence package;
+- manual parity checklist;
+- unresolved blocker and accepted-risk list;
+- rollback instructions.
+
+## 26.2 Delivery Gate
+
+Delivery readiness requires:
+
+- all mandatory technical gates passed;
+- final source hash recorded;
+- stage commits and provenance available;
+- no unapproved dependency or builder change;
+- unresolved risks visible;
+- parity status explicit;
+- security and quality deferrals explicit;
+- source repository unchanged;
+- cleanup and retention decision recorded.
+
+## 26.3 Pull Request Integration
+
+PR creation is a future integration unless explicitly included in the MVP. When enabled, the factory must not push directly to protected branches. It creates a migration branch and a reviewable PR containing the executive summary, stage history, validation results, changed-file risk classification, manual actions, and evidence links.
+
+# 27. MVP Implementation Recommendation
 
 The first MVP should prove the architecture with a small Angular 18.x application migrated to Angular 21.x. It should not try to implement all enterprise-grade quality and browser automation gates in the first iteration.
 
-## 15.1 Recommended MVP Agent Split
+## 27.1 Recommended MVP Agent Split
 
 | **MVP Agent**                    | **Build Now?** | **Reason**                                            |
 |----------------------------------|----------------|-------------------------------------------------------|
 | AI Assistant                     | Yes            | Needed for explanation, user feedback, and approvals. |
 | Eligibility and Constraint Agent | Yes            | Protects scope and records strict parity constraints. |
 | Analysis Agent                   | Yes            | Needed to understand current Angular app and risks.   |
-| Planning Agent                   | Yes            | Needed to generate 18 -\> 19 -\> 20 -\> 21 ladder.    |
+| Planning Agent                   | Yes            | Needed to generate 18 → 19 → 20 → 21 ladder.    |
 | Transformation Agent             | Yes            | Core migration execution in sandbox.                  |
 | Build / Validation Agent         | Yes            | Core proof that each stage installs and builds.       |
 | Repair Agent                     | Yes, limited   | Only low-risk repairs, max three attempts.            |
@@ -2072,7 +2995,7 @@ The first MVP should prove the architecture with a small Angular 18.x applicatio
 | Separate Browser Agent           | No             | Manual/browser parity checklist for MVP.              |
 | Separate Test Agent              | No             | Existing tests handled by Build Agent.                |
 
-## 15.2 MVP Stage Flow for Angular 18 -\> 21
+## 27.2 MVP Stage Flow for Angular 18 → 21
 
 1.  Create migration job and capture client constraints.
 
@@ -2080,7 +3003,7 @@ The first MVP should prove the architecture with a small Angular 18.x applicatio
 
 3.  Approve analysis.
 
-4.  Generate plan with stages: Angular 18 -\> 19, 19 -\> 20, 20 -\> 21.
+4.  Generate plan with stages: Angular 18 → 19, 19 → 20, 20 → 21.
 
 5.  Approve plan.
 
@@ -2088,7 +3011,7 @@ The first MVP should prove the architecture with a small Angular 18.x applicatio
 
 7.  Generate final report with validation results, manual/deferred gates, diff, repair history, and unresolved items.
 
-## 15.3 MVP Success Criteria
+## 27.3 MVP Success Criteria
 
 - Original source is never mutated.
 
@@ -2112,7 +3035,7 @@ The first MVP should prove the architecture with a small Angular 18.x applicatio
 
 - Final report includes completed actions, evidence, repair history, remaining risks, and manual blockers.
 
-## Security Protocol Compliance in Final Report
+## 27.4 Security Protocol Compliance in Final Report
 
 The final report must include a dedicated section proving that the migration respected company security constraints and MVP tool exclusions.
 
@@ -2128,13 +3051,79 @@ The final report must include a dedicated section proving that the migration res
 
 - Manual and deferred gates are visible and not falsely marked as passed.
 
-# Roadmap and Future Extensions
+## 27.5 Revised MVP Scope Boundary
+
+The first implementation supports one small or medium single-application Angular 18.x workspace migrated to Angular 21.x. The MVP must demonstrate the complete control loop rather than broad workspace compatibility.
+
+Mandatory MVP proof:
+
+- source and target path safety;
+- immutable source snapshot;
+- baseline installation and build;
+- exact stage runtime profiles;
+- Angular 18 → 19 → 20 → 21 staged execution;
+- structured command policy;
+- clean frozen installation after each stage;
+- static symbol and template checks;
+- build and existing tests/lint;
+- bounded repair loop;
+- persistent checkpoints and resume;
+- cancellation with process-tree termination;
+- per-stage immutable evidence;
+- separate technical and manual parity status;
+- final delivery patch or branch manifest;
+- token and cost report.
+
+The MVP does not claim generic Angular 11+ reliability until the historical fixture suite validates additional source-version families.
+
+# 28. Prioritized Implementation Plan
+
+## 28.1 P0 — Required Before Core POC Execution
+
+1. Baseline Qualification Gate.
+2. Historical migration support levels and catalog.
+3. Operational per-stage runtime manager.
+4. Exact-version and frozen-lockfile policy.
+5. Builder migration policy.
+6. Hardened structured command execution.
+7. Per-stage immutable artifact layout.
+8. Independent technical and parity statuses.
+9. Safe cancellation and process-tree termination.
+10. State idempotency and persistent checkpoints.
+
+## 28.2 P1 — Required Before Internal Demonstration
+
+1. Workspace topology classification.
+2. Parity manifest and deterministic comparison.
+3. Repository prompt-injection protection.
+4. Fixture-based AI and migration evaluation suite.
+5. Token, cost, retry, quota, and worker telemetry.
+6. Worker heartbeat, lease, stale-worker recovery, and resume validation.
+7. Browser-support contract.
+8. Bundle-size and build-output comparison.
+9. Delivery branch or patch generation.
+10. Clear auto-approval semantics across all stages.
+
+## 28.3 P2 — Required Before Enterprise Delivery
+
+1. Company-approved browser automation.
+2. Company-approved security and quality gates.
+3. PostgreSQL and distributed-worker architecture.
+4. Authentication, RBAC, and separation of approval duties.
+5. Tenant isolation and source-code retention policy.
+6. Encryption and artifact-access controls.
+7. Pull-request and CI/CD integration.
+8. Operational dashboards, alerts, backup, and disaster recovery.
+9. Complex workspace, Nx, microfrontend, SSR, and custom-builder support.
+10. Controlled modernization modules as separate products.
+
+# 29. Roadmap and Future Extensions
 
 | **Phase** | **Goal**                                      | **Deliverables**                                                                                             |
 |-----------|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------|
 | Phase 1   | Foundation and eligibility                    | Job creation, Angular 11+ eligibility, client constraints, artifact structure.                               |
 | Phase 2   | Workflow state and UI synchronization         | Run state, stage state, approval state, repair state, frontend card contract.                                |
-| Phase 3   | Angular 18 -\> 21 POC                         | Analysis, upgrade ladder, ng update orchestration, build/test gates, final report.                           |
+| Phase 3   | Angular 18 → 21 POC                         | Analysis, upgrade ladder, ng update orchestration, build/test gates, final report.                           |
 | Phase 4   | Repair Agent MVP                              | Failure classification, risk scoring, controlled repair loop, patch ledger, escalation after three attempts. |
 | Phase 5   | Manual parity evidence                        | Route inventory, backend config check, manual browser/visual checklist.                                      |
 | Phase 6   | Company-approved quality/security integration | Integrate only tools approved by company security protocol.                                                  |
@@ -2222,186 +3211,23 @@ The final report must include a dedicated section proving that the migration res
 
 # References
 
-- Source project proposal: Angular 11+ Compatibility Migration and Technical Upgrade - Strict Functional Parity Proposal.
+The compatibility resolver must use a versioned internal policy built from official sources and company-approved evidence. External documentation is context, not a runtime execution dependency.
 
-- Current MVP decisions from discussion: external tools Playwright, Cypress, OSV scanner, Snyk, SonarQube, and Semgrep are excluded from current MVP scope.
-
-- Implementation reference points: Angular CLI update workflow, Angular version compatibility policy, internal company security protocol, and backend-controlled sandbox execution.
-
-# Azure OpenAI LLM Assistance Layer and Per-Agent LLM Access
-
-**Purpose.** All migration agents may use an LLM to improve reasoning, diagnosis, planning, explanation, and report generation. The LLM is not the execution authority. The backend remains responsible for command execution, file mutation, validation, rollback, and approval enforcement.
-
-**Default provider and model.** The MVP uses Azure OpenAI API through a backend-controlled LLM Gateway. GPT-5 mini is the main/default model deployment. The deployment name, endpoint, API version, region, authentication method, timeout, and retry policy must be configuration values, not hardcoded in prompts or agents.
-
-**Design principle.** Every agent can ask for LLM assistance, but no agent gets direct access to Azure credentials, shell execution, repository mutation, or approval bypass. LLM output is treated as a proposal that must pass deterministic backend checks before it affects the sandbox.
-
-| **Area**            | **Architecture Decision**                                                                                                                             |
-|---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Provider            | Azure OpenAI API, accessed only through the backend LLM Gateway.                                                                                      |
-| Main model          | GPT-5 mini as the default/main deployment for all agents.                                                                                             |
-| Configuration       | Endpoint, deployment name, API version, region, quotas, and authentication are environment configuration and must not be hardcoded.                   |
-| Agent access        | All agents can request LLM assistance through structured calls to the LLM Gateway.                                                                    |
-| Execution boundary  | The LLM cannot directly execute npm, ng, git, shell commands, MCP workspace tools, or file mutations.                                                 |
-| Validation boundary | LLM outputs that propose patches must pass static symbol verification, build validation, risk classification, and approval policy before progression. |
-| Data boundary       | Prompts must send the minimum necessary context. Secrets, tokens, private credentials, and production environment values must be redacted.            |
-| Traceability        | All LLM calls are logged with redacted prompts, response summaries, model deployment, timestamps, token usage if available, and artifact references.  |
-
-## LLM Gateway Responsibilities
-
-- Centralize all Azure OpenAI API calls for every agent.
-
-- Inject the correct system prompt, agent role, context packet, and output schema.
-
-- Apply prompt-size limits, timeout limits, retry policy, and cost/token budget controls.
-
-- Redact secrets, credentials, tokens, API keys, private environment values, and sensitive headers before sending context to the model.
-
-- Prevent agents from sending entire repositories when targeted snippets, logs, or artifacts are enough.
-
-- Require structured JSON output for agent-to-system decisions such as plan proposal, failure diagnosis, patch proposal, risk classification, and report summary.
-
-- Store redacted LLM interaction logs as audit artifacts without persisting hidden chain-of-thought. Store concise decision summaries instead.
-
-- Support MCP Context Support Mode as optional documentation/context enrichment for the LLM, not as an execution dependency.
-
-## Per-Agent LLM Usage Matrix
-
-| **Agent / Component**            | **How GPT-5 mini helps**                                                                                                                        | **LLM output expected**                                                                                  | **Hard boundary**                                                                                                |
-|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| AI Assistant                     | Explains workflow state, validation failures, approval options, and user feedback in natural language.                                          | User-facing explanation, structured modification request, approval-intent payload.                       | No direct execution, no silent approval, no scope expansion.                                                     |
-| Eligibility and Constraint Agent | Helps summarize ambiguous framework indicators and explain why a project is accepted or rejected.                                               | Eligibility rationale summary and unsupported-source explanation.                                        | Eligibility facts must come from project files and deterministic scans, not from the LLM alone.                  |
-| Analysis Agent                   | Summarizes workspace findings, detects risk patterns, groups dependencies, explains backend integration risks, and generates readable analysis. | Analysis summary, risk explanations, dependency classification suggestions.                              | No mutation, no dependency changes, no install/update commands from LLM output.                                  |
-| Planning Agent                   | Generates the migration plan from compatibility resolver output, company policy, and analysis artifacts.                                        | Upgrade ladder narrative, validation plan, risk model, approval request, rollback strategy.              | Cannot invent unsupported target versions or bypass one-major-at-a-time strategy unless explicitly approved.     |
-| Transformation Agent             | Uses LLM only to explain command intent or propose minimal compatibility patch ideas when deterministic tools are insufficient.                 | Action proposal or patch proposal with affected files, reason, and risk level.                           | Backend executes only approved commands. LLM cannot run ng update or mutate files directly.                      |
-| Build / Validation Agent         | Classifies build, install, TypeScript, template, test, and lint failures; summarizes logs for the user and Repair Agent.                        | Failure category, root-cause hypothesis, affected files, recommended next state.                         | No repair and no code changes. It only validates and reports.                                                    |
-| Repair Agent                     | Diagnoses migration-caused failures and proposes the smallest safe patch.                                                                       | Patch proposal, root cause, risk level, validation command to rerun, fallback/escalation recommendation. | Patch is not trusted until backend patching, static symbol verification, build validation, and risk policy pass. |
-| Report Agent                     | Turns persisted artifacts into client-facing and technical reports.                                                                             | Final report narrative, executive summary, manual action checklist.                                      | Cannot claim unexecuted gates passed or invent parity evidence.                                                  |
-| Orchestrator                     | May use LLM summaries for operator visibility, but workflow transitions are deterministic state-machine decisions.                              | Optional status summary only.                                                                            | LLM cannot decide state transitions independently of backend state and policy.                                   |
-| Backend Execution Authority      | Does not need LLM for execution. It may receive LLM proposals from agents and validate them.                                                    | Validated/rejected action result, execution artifact.                                                    | Backend is the trusted authority, not the LLM.                                                                   |
-
-## LLM Call Contract
-
-**Every LLM request should use a structured context packet.** The goal is to make LLM assistance reproducible, reviewable, and safe.
-
-> {  
-> "run_id": "migration-run-001",  
-> "stage_id": "angular-18-to-19",  
-> "agent_name": "repair_agent",  
-> "llm_provider": "azure_openai",  
-> "model_deployment": "gpt-5-mini",  
-> "task_type": "failure_diagnosis_and_patch_proposal",  
-> "system_policy": {  
-> "strict_parity": true,  
-> "minimal_diff": true,  
-> "sandbox_only": true,  
-> "optional_modernization_allowed": false,  
-> "forbidden_changes": \[  
-> "business_logic_change",  
-> "api_contract_change",  
-> "authentication_authorization_change",  
-> "ui_redesign",  
-> "state_management_replacement"  
-> \]  
-> },  
-> "context": {  
-> "compatibility_profile": "artifact://03_planning/compatibility_resolution.json",  
-> "stage_toolchain_profile": "artifact://03_planning/stage_toolchain_profiles.json#angular-18-to-19",  
-> "failed_gate": "ng_build",  
-> "error_excerpt": "redacted compiler/build excerpt",  
-> "affected_files_excerpt": \["targeted snippets only"\],  
-> "previous_attempts": 1  
-> },  
-> "required_output_schema": "repair_patch_proposal_v1"  
-> }
->
-> {  
-> "diagnosis": "Missing import caused by stage migration and stricter compilation.",  
-> "proposed_patch": {  
-> "files": \["src/app/app.routes.ts"\],  
-> "change_summary": "Add missing component import only.",  
-> "minimal_diff": true,  
-> "behavior_change_expected": false  
-> },  
-> "risk_level": "low",  
-> "requires_human_approval": false,  
-> "validation_to_rerun": \["static_symbol_check", "ng_build"\],  
-> "fallback_plan": "Escalate if the import does not resolve or route behavior changes."  
-> }
-
-## LLM Security and Governance Rules
-
-- Azure OpenAI credentials must be stored only in backend-managed configuration, Key Vault, environment variables, or an equivalent company-approved secret store.
-
-- The frontend and agents must never receive the raw Azure OpenAI API key, endpoint secret, bearer token, or deployment credentials.
-
-- Before every LLM call, the LLM Gateway must redact secrets, tokens, cookies, Authorization headers, API keys, .env values, private registry credentials, and production URLs when required by policy.
-
-- Agents must send targeted context: relevant file snippets, compiler errors, diffs, and artifact references. They must not send the whole repository by default.
-
-- The LLM must not be used as the sole correctness gate. Deterministic checks such as compatibility resolver, static symbol verification, ng build, test/lint if configured, and backend approval policy remain mandatory.
-
-- LLM-generated patches must be applied by backend patch services only, never directly by the model.
-
-- The system must store redacted LLM call metadata and concise rationale summaries, but it should not store hidden chain-of-thought or sensitive raw prompts unnecessarily.
-
-- If Azure quota, timeout, rate limit, or API availability problems occur, the workflow should stop safely with a diagnostic artifact rather than applying unvalidated changes.
-
-## LLM Artifacts
-
-| **Artifact**                                          | **Purpose**                                                                                                                                             |
-|-------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 00_job_setup/llm_provider_config_redacted.json        | Records provider, deployment alias, region/endpoint alias, and policy flags without secrets.                                                            |
-| 04_workflow_state/llm_interaction_log_redacted.json   | Audit log of LLM calls with timestamps, agent name, task type, model deployment, token usage if available, artifact references, and redacted summaries. |
-| 03_planning/llm_plan_rationale_summary.md             | Human-readable summary of how LLM assistance contributed to the plan, based only on approved artifacts.                                                 |
-| 06_validation/llm_failure_classification_summary.json | Optional LLM-assisted classification summary for validation failures.                                                                                   |
-| 07_repair/llm_patch_proposals.json                    | Patch proposals created by LLM assistance before backend validation and static checks.                                                                  |
-| 08_final/llm_usage_summary.md                         | Final report section documenting where LLM assistance was used and what was validated deterministically.                                                |
-
-## Azure OpenAI Configuration Example - Redacted
-
-> {  
-> "llm_provider": "azure_openai",  
-> "default_model_deployment": "gpt-5-mini",  
-> "deployment_alias": "main_reasoning_model",  
-> "endpoint_alias": "AZURE_OPENAI_ENDPOINT",  
-> "api_version_source": "environment_or_company_config",  
-> "auth_mode": "api_key_or_managed_identity_company_policy",  
-> "secrets_exposed_to_agents": false,  
-> "direct_llm_execution_allowed": false,  
-> "prompt_redaction_enabled": true,  
-> "store_raw_prompts": false,  
-> "store_redacted_interaction_log": true,  
-> "max_context_policy": "send_targeted_artifacts_and_snippets_only",  
-> "fallback_model_policy": "disabled_by_default_unless_company_approved"  
-> }
-
-## Efficiency Rules for GPT-5 mini Usage
-
-- Use deterministic scanners first, then send only summarized findings or targeted excerpts to the model.
-
-- Cache reusable LLM outputs such as dependency risk summaries, migration plan rationale, and repeated error classifications by artifact checksum.
-
-- Prefer small task-specific prompts over large generic prompts.
-
-- Use structured JSON outputs to reduce parsing ambiguity and retries.
-
-- For repeated repair attempts, include only the delta from the previous attempt and the latest validation output.
-
-- Do not ask the model to re-read unchanged files when their artifact checksum is unchanged.
-
-- Use GPT-5 mini as the default model for cost and latency control; any larger-model escalation must be an explicit future option and company-approved.
-
-## Additional Reference Notes for LLM Integration
-
-- Azure OpenAI API usage, authentication, deployment names, API versions, and availability must follow the company Azure setup and official Microsoft documentation.
-
-- GPT-5 mini is treated as the configured Azure OpenAI deployment for the MVP; the actual deployment name may differ by environment and should be resolved from backend configuration.
-
-- MCP remains a context-support option for the LLM only; it is not an execution dependency and does not replace backend command authority.
-
+- Angular versioning and support policy: https://angular.dev/reference/releases
+- Angular Node.js, TypeScript, RxJS, and browser compatibility: https://angular.dev/reference/versions
+- Angular update guide: https://angular.dev/update-guide
+- Angular CLI `ng update` reference: https://angular.dev/cli/update
+- Angular application build-system migration: https://angular.dev/tools/cli/build-system-migration
+- npm clean installation (`npm ci`): https://docs.npmjs.com/cli/v11/commands/npm-ci
+- LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
 - Azure OpenAI REST API reference: https://learn.microsoft.com/en-us/azure/foundry/openai/reference
-
-- Azure OpenAI reasoning models documentation: https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
-
+- Azure OpenAI reasoning models: https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
+- Microsoft Entra ID and managed identity for Azure OpenAI: https://learn.microsoft.com/en-us/azure/foundry-classic/openai/how-to/managed-identity
 - OpenAI GPT-5 overview: https://openai.com/gpt-5/
+
+## Reference Governance
+
+- Record source URL, retrieval date, content checksum where possible, and policy version.
+- Do not resolve production migration decisions from live web content without review and caching.
+- Refresh the internal compatibility catalog on an approved schedule.
+- Re-run affected fixture migrations after catalog or toolchain updates.
