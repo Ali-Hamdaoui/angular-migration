@@ -16,3 +16,11 @@ scripts/    Local developer and repository automation scripts.
 docs/       Product, architecture, ADR, setup, and sprint documentation.
 tests/      Cross-workspace and end-to-end test suites.
 ```
+
+## Boundary rules
+
+- Workflow state, approvals, artifact access, sandbox policy, and command execution belong to `backend/`.
+- The `frontend/` must not implement a workflow state machine or migration execution logic.
+- Agents and orchestration live behind backend boundaries; they can propose actions but cannot bypass backend validation or execution authority.
+- Fixture Angular applications belong in `demo-apps/`, never in production backend or frontend source trees.
+- Reusable contract references belong in `shared/`; avoid duplicating status vocabularies across applications.
