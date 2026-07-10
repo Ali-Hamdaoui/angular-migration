@@ -4,7 +4,7 @@
 
 This file defines the mandatory working rules for any AI coding agent operating in the `angular-migration` repository.
 
-The agent must protect the repository, respect the project documentation, implement only the selected Sprint 0 issue, and leave all remote operations and merges to the user.
+The agent must protect the repository, respect the project documentation, implement only the selected Sprint 0 issue, push the completed issue branch, merge it safely into `dev`, push the updated `dev` branch, and finish with a fully synchronized local `dev` branch.
 
 These instructions are mandatory.
 
@@ -29,8 +29,10 @@ Branch responsibilities:
 
 - `main` contains the current final validated version.
 - `main` is protected and must not be modified, rebased, merged into, pushed to, or used as the base branch for issue work.
-- `dev` contains stable code that has already been reviewed and validated.
-- All issue branches must be created from the latest version of `dev`.
+- `dev` is the principal integration branch for stable, verified, and validated Sprint 0 work.
+- Completed issue branches must be pushed to `origin` and merged into `dev` only after all applicable validation succeeds.
+- The updated `dev` branch must then be pushed to `origin`.
+- All issue branches must be created from the latest synchronized version of `dev`.
 - Each Sprint 0 issue must be implemented in its own dedicated branch.
 - Never implement two unrelated issues in the same branch.
 
@@ -269,9 +271,11 @@ Before changing code, inspect the surrounding implementation and related tests.
 The agent must never:
 
 - modify `main`;
-- push any branch;
-- merge any branch;
-- open or merge a pull request;
+- push directly to `main`;
+- merge any branch into `main`;
+- merge an unvalidated issue branch into `dev`;
+- use force-push on an issue branch or `dev`;
+- open or merge a pull request unless the user explicitly requests a pull-request workflow;
 - delete local or remote branches;
 - rewrite published history;
 - alter user Git configuration;
@@ -380,41 +384,122 @@ Do not amend, squash, rebase, or rewrite commits unless the user explicitly asks
 
 ---
 
-## 12. Mandatory Stop Point
+## 12. Mandatory Completion and Integration Workflow
 
-After creating the local logical commits, the agent must stop.
+After implementation, testing, documentation updates, and local logical commits are complete, the agent must integrate the issue through the following controlled workflow.
 
-The agent must not:
+### 12.1 Push the Issue Branch
 
-```text
-push the branch
-merge into dev
-merge into main
-create a pull request
-approve a pull request
-delete the issue branch
+Confirm the current branch and working tree before pushing:
+
+```bash
+git status
+git branch --show-current
+git log --oneline --decorate -n 10
 ```
 
-The user will manually review, push, and merge the work into `dev`.
+Push the dedicated issue branch and configure its upstream:
+
+```bash
+git push -u origin issue/<issue-id>-<short-description>
+```
+
+The agent must never force-push.
+
+### 12.2 Synchronize `dev` Before Merging
+
+Remote `dev` may have changed while the issue was being implemented. Before merging, the agent must return to `dev` and synchronize it:
+
+```bash
+git switch dev
+git fetch origin
+git pull --ff-only origin dev
+```
+
+If `dev` has changed, the agent must verify that the issue branch is still compatible. When necessary, switch back to the issue branch, integrate the latest `dev`, resolve conflicts carefully, rerun validation, create any required conflict-resolution commit, and push the updated issue branch.
+
+The agent must never hide or guess through a merge conflict. If the correct resolution is not clear from the code and documentation, stop and ask the user.
+
+### 12.3 Merge the Issue Branch into `dev`
+
+Only after the issue branch passes all applicable validation, merge it into `dev`:
+
+```bash
+git switch dev
+git merge --no-ff issue/<issue-id>-<short-description>
+```
+
+Use a clear merge commit message when Git requires or allows one, for example:
+
+```text
+merge(dev): integrate S0-03 FastAPI backend skeleton
+```
+
+After the merge, run the relevant validation again from `dev`. The agent must verify the integrated state, not only the standalone issue branch.
+
+If post-merge validation fails:
+
+1. do not push `dev`;
+2. investigate the failure;
+3. correct the issue on the issue branch or with a clearly scoped follow-up commit;
+4. repeat validation before pushing `dev`.
+
+### 12.4 Push `dev`
+
+When the merged `dev` branch is validated successfully, push it normally:
+
+```bash
+git push origin dev
+```
+
+Do not use force-push, history rewriting, or direct changes to `main`.
+
+### 12.5 Finish on a Synchronized `dev`
+
+After pushing, the agent must remain on `dev` and perform one final synchronization check:
+
+```bash
+git switch dev
+git fetch origin
+git pull --ff-only origin dev
+git status
+```
+
+The final state must satisfy all of the following:
+
+```text
+Current branch: dev
+Working tree: clean
+Local dev: synchronized with origin/dev
+Issue branch: pushed to origin
+Issue work: merged into dev
+Remote dev: updated successfully
+main: untouched
+```
+
+The agent must not automatically delete the local or remote issue branch. Branch deletion remains a separate user decision.
 
 At the end, the agent must provide:
 
 ```text
-Branch name
-Implemented issue
-Summary of changes
+Issue identifier and title
+Issue branch name
+Summary of implemented changes
 Files changed
-Validation commands executed
-Validation results
-Local commits created
-Known limitations or follow-up items
-Suggested manual review steps
+Validation executed on the issue branch
+Validation executed after merging into dev
+Logical commits created
+Issue-branch push result
+Merge commit or merge result
+Dev push result
+Final synchronization status
+Known limitations or follow-up work
 ```
 
 The final statement must clearly say:
 
 ```text
-The work is committed locally. No push or merge was performed.
+The issue branch was pushed, merged into dev, and dev was pushed and synchronized. The main branch was not modified.
 ```
 
 ---
@@ -439,8 +524,14 @@ For every Sprint 0 issue, follow this sequence:
 13. Run all applicable validation.
 14. Review the complete diff.
 15. Create multiple logical local commits.
-16. Report the result.
-17. Stop before push, pull request, or merge.
+16. Push the issue branch to `origin`.
+17. Switch to `dev`, fetch, and pull using fast-forward only.
+18. Reconcile the issue branch with the latest `dev` when necessary and rerun validation.
+19. Merge the validated issue branch into `dev` using `--no-ff`.
+20. Run post-merge validation on `dev`.
+21. Push `dev` to `origin`.
+22. Fetch and pull `dev` again to confirm synchronization.
+23. Verify a clean working tree, report the result, and remain on `dev`.
 ```
 
 ---
