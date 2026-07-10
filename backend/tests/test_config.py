@@ -9,7 +9,7 @@ from app.core.config import Settings
 def test_settings_load_environment_values(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./test.db")
-    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "runs"))
     monkeypatch.setenv("SANDBOX_ROOT", str(tmp_path / "sandboxes"))
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "http://localhost:3000, https://control.example")
     monkeypatch.setenv("COMMAND_TIMEOUT_SECONDS", "90")
@@ -18,7 +18,7 @@ def test_settings_load_environment_values(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert settings.app_env == "test"
     assert settings.database_url == "sqlite:///./test.db"
-    assert settings.artifact_root == tmp_path / "artifacts"
+    assert settings.artifact_root == tmp_path / "runs"
     assert settings.sandbox_root == tmp_path / "sandboxes"
     assert settings.backend_cors_origins == ["http://localhost:3000", "https://control.example"]
     assert settings.command_timeout_seconds == 90

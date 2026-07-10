@@ -36,7 +36,7 @@ ignored by Git.
 | --- | --- | --- |
 | `APP_ENV` | `development` | Allowed values: `development`, `test`, `production`. |
 | `DATABASE_URL` | `sqlite:///./.migration-factory/migration-factory.db` | Used by AMF-S0-04. |
-| `ARTIFACT_ROOT` | `.migration-factory/artifacts` | Used by AMF-S0-11. |
+| `ARTIFACT_ROOT` | `.migration-factory/runs` | Used by AMF-S0-11. |
 | `SANDBOX_ROOT` | `.migration-factory/sandboxes` | Used by later sandbox work. |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000` | Comma-delimited allowlist. |
 | `COMMAND_TIMEOUT_SECONDS` | `300` | Must be a positive integer. |
@@ -72,6 +72,39 @@ python -m alembic -c alembic.ini current
 Do not use `Base.metadata.create_all()` in runtime application code; Alembic is
 the schema authority. It is used only in the repository unit test to isolate
 that adapter from migration execution.
+
+## Artifact store
+
+The local filesystem artifact store writes beneath `ARTIFACT_ROOT` using the
+Sprint 0 run layout:
+
+```text
+{ARTIFACT_ROOT}/{runId}/
+  00_job_setup/
+  01_baseline/
+  02_analysis/
+  03_planning/
+  04_workflow_state/
+  05_sandbox_transform/
+  06_validation/
+  07_repair/
+  08_final/
+```
+
+Artifacts are written as text files with a sibling `*.meta.json` sidecar that
+stores the backend-owned metadata, including checksum, timestamps, and the
+artifact type. The backend rejects paths that would escape the run folder.
+
+The public API surface for this store is:
+
+```http
+GET /migrations/{runId}/artifacts
+GET /migrations/{runId}/artifacts/{artifactPath}
+```
+
+The first endpoint lists stored artifacts; the second opens a single artifact
+and returns the backend-owned metadata plus file content.
+
 ## Run locally
 
 From this directory, install the declared dependencies, then run:
