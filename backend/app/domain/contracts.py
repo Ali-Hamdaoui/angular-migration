@@ -130,6 +130,76 @@ class WorkflowEventType(str, Enum):
     WORKFLOW_COMPLETED = "workflow_completed"
 
 
+
+class ErrorEnvelope(ContractModel):
+    error_code: str
+    message: str
+    correlation_id: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class PreflightRequestDto(ContractModel):
+    source_path: str = Field(min_length=1)
+    target_output_path: str = Field(min_length=1)
+    target_angular_family: str = Field(default="21.x", min_length=1)
+    migration_mode: str = Field(default="strict-functional-parity", min_length=1)
+    auto_approval_enabled: bool = False
+
+
+class PreflightResultDto(ContractModel):
+    preflight_id: str
+    checksum: str
+    expires_at: datetime
+    source_path: str
+    target_output_path: str
+    status: str
+    message: str
+
+
+class CreateMockMigrationRequestDto(ContractModel):
+    preflight_checksum: str = Field(min_length=1)
+    idempotency_key: str | None = None
+
+
+class OperationResultDto(ContractModel):
+    run_id: str
+    operation: str
+    status: str
+    idempotent: bool = True
+    message: str
+
+
+class ApprovalRequestDto(ContractModel):
+    gate_id: str = Field(min_length=1)
+    decision: ApprovalDecision
+    actor: str | None = None
+    rationale: str | None = None
+    idempotency_key: str | None = None
+
+
+class ApprovalPolicyRequestDto(ContractModel):
+    auto_approval_enabled: bool
+    actor: str | None = None
+    reason: str | None = None
+
+
+class ApprovalPolicyDto(ContractModel):
+    run_id: str
+    auto_approval_enabled: bool
+    reevaluated_gate_id: str | None = None
+    status: str
+
+
+class AssistantMessageRequestDto(ContractModel):
+    run_id: str | None = None
+    message: str = Field(min_length=1)
+
+
+class AssistantMessageResponseDto(ContractModel):
+    run_id: str | None = None
+    response: str
+    status: str
+
 class MigrationStageDto(ContractModel):
     stage_id: str
     run_id: str

@@ -1,18 +1,74 @@
-"""Migration read-model endpoints; no workflow logic lives in this router."""
+"""Migration route shells; no workflow logic lives in this router."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from app.domain.contracts import MigrationRunDto
+from app.api.errors import error_response
+from app.domain.contracts import (
+    ApprovalEventDto,
+    ApprovalPolicyDto,
+    ApprovalPolicyRequestDto,
+    ApprovalRequestDto,
+    AssistantMessageRequestDto,
+    AssistantMessageResponseDto,
+    CreateMockMigrationRequestDto,
+    MigrationRunDto,
+    OperationResultDto,
+    PreflightRequestDto,
+    PreflightResultDto,
+)
 from app.services.mock_event_service import format_sse_event, generate_mock_events
+from app.services.mock_migration_api_service import (
+    MockMigrationApiService,
+    PreflightChecksumError,
+    get_mock_migration_api_service,
+)
 from app.services.mock_migration_service import get_mock_migration_run
 
 router = APIRouter(prefix="/migrations", tags=["migrations"])
+assistant_router = APIRouter(prefix="/assistant", tags=["assistant"])
+
+
+def get_service() -> MockMigrationApiService:
+    return get_mock_migration_api_service()
+
+
+@router.post("/preflight", response_model=PreflightResultDto, summary="Validate mock migration setup")
+def validate_preflight(
+    request: PreflightRequestDto,
+    service: MockMigrationApiService = Depends(get_service),
+) -> PreflightResultDto:
+    return service.validate_preflight(request)
+
+
+@router.post("/mock", response_model=MigrationRunDto, summary="Create a checksum-bound mock migration run")
+def create_mock_migration(
+    request: CreateMockMigrationRequestDto,
+    http_request: Request,
+    service: MockMigrationApiService = Depends(get_service),
+):
+    try:
+        return service.create_mock_run(request)
+    except PreflightChecksumError as exc:
+        return error_response(
+            http_request,
+            status_code=400,
+            error_code=exc.error_code,
+            message=exc.message,
+        )
 
 
 @router.get("/mock-state", response_model=MigrationRunDto, summary="Read mock migration state")
 def read_mock_migration_state() -> MigrationRunDto:
     return get_mock_migration_run()
+
+
+@router.get("/{run_id}/state", response_model=MigrationRunDto, summary="Read migration state snapshot")
+def read_migration_state(
+    run_id: str,
+    service: MockMigrationApiService = Depends(get_service),
+) -> MigrationRunDto:
+    return service.get_state(run_id)
 
 
 @router.get("/{run_id}/events", summary="Stream mock workflow events via Server-Sent Events")
@@ -26,3 +82,45 @@ async def stream_migration_events(run_id: str) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@router.post("/{run_id}/approvals", response_model=ApprovalEventDto, summary="Submit a mock approval decision")
+def submit_approval(
+    run_id: str,
+    request: ApprovalRequestDto,
+    service: MockMigrationApiService = Depends(get_service),
+) -> ApprovalEventDto:
+    return service.submit_approval(run_id, request)
+
+
+@router.put("/{run_id}/approval-policy", response_model=ApprovalPolicyDto, summary="Update mock approval policy")
+def update_approval_policy(
+    run_id: str,
+    request: ApprovalPolicyRequestDto,
+    service: MockMigrationApiService = Depends(get_service),
+) -> ApprovalPolicyDto:
+    return service.update_approval_policy(run_id, request)
+
+
+@router.post("/{run_id}/cancel", response_model=OperationResultDto, summary="Cancel a mock migration run")
+def cancel_migration_run(
+    run_id: str,
+    service: MockMigrationApiService = Depends(get_service),
+) -> OperationResultDto:
+    return service.cancel_run(run_id)
+
+
+@router.post("/{run_id}/resume", response_model=OperationResultDto, summary="Resume a mock migration run")
+def resume_migration_run(
+    run_id: str,
+    service: MockMigrationApiService = Depends(get_service),
+) -> OperationResultDto:
+    return service.resume_run(run_id)
+
+
+@assistant_router.post("/messages", response_model=AssistantMessageResponseDto, summary="Send a mock assistant message")
+def send_assistant_message(
+    request: AssistantMessageRequestDto,
+    service: MockMigrationApiService = Depends(get_service),
+) -> AssistantMessageResponseDto:
+    return service.answer_assistant_message(request)

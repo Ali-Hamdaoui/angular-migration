@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.mock_migration_api_service import EXPIRED_PREFLIGHT_CHECKSUM, VALID_PREFLIGHT_CHECKSUM
 
 client = TestClient(app)
 
@@ -23,6 +24,86 @@ def test_version_returns_application_metadata() -> None:
     }
 
 
+def test_openapi_exposes_sprint0_route_shells() -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+    expected_paths = {
+        "/health",
+        "/version",
+        "/migrations/preflight",
+        "/migrations/mock",
+        "/migrations/{run_id}/state",
+        "/migrations/{run_id}/events",
+        "/migrations/{run_id}/approvals",
+        "/migrations/{run_id}/approval-policy",
+        "/migrations/{run_id}/cancel",
+        "/migrations/{run_id}/resume",
+        "/migrations/{run_id}/artifacts",
+        "/migrations/{run_id}/artifacts/{artifact_path}",
+        "/artifacts/{artifact_id}",
+        "/assistant/messages",
+    }
+    assert expected_paths.issubset(paths.keys())
+
+
+def test_preflight_returns_checksum_bound_result() -> None:
+    response = client.post(
+        "/migrations/preflight",
+        json={
+            "source_path": "C:/fixtures/angular-18-app",
+            "target_output_path": "C:/tmp/angular-migration-output",
+            "target_angular_family": "21.x",
+            "migration_mode": "strict-functional-parity",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checksum"] == VALID_PREFLIGHT_CHECKSUM
+    assert body["status"] == "valid"
+
+
+def test_create_mock_run_rejects_missing_preflight_checksum_with_error_envelope() -> None:
+    response = client.post(
+        "/migrations/mock",
+        json={},
+        headers={"x-correlation-id": "test-correlation-id"},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "validation_error"
+    assert body["correlation_id"] == "test-correlation-id"
+    assert "errors" in body["details"]
+
+
+def test_create_mock_run_rejects_mismatched_preflight_checksum() -> None:
+    response = client.post(
+        "/migrations/mock",
+        json={"preflight_checksum": "wrong-checksum"},
+        headers={"x-correlation-id": "test-correlation-id"},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body == {
+        "error_code": "preflight_checksum_invalid",
+        "message": "Create mock migration requires a valid preflight checksum.",
+        "correlation_id": "test-correlation-id",
+        "details": {},
+    }
+
+
+def test_create_mock_run_rejects_expired_preflight_checksum() -> None:
+    response = client.post("/migrations/mock", json={"preflight_checksum": EXPIRED_PREFLIGHT_CHECKSUM})
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "preflight_checksum_expired"
+
+
+def test_create_mock_run_accepts_valid_preflight_checksum() -> None:
+    response = client.post("/migrations/mock", json={"preflight_checksum": VALID_PREFLIGHT_CHECKSUM})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == "mock-run-angular-18-to-21"
+    assert body["status"] == "WAITING_PLAN_APPROVAL"
+
+
 def test_mock_migration_state_uses_shared_contracts() -> None:
     response = client.get("/migrations/mock-state")
     assert response.status_code == 200
@@ -35,6 +116,42 @@ def test_mock_migration_state_uses_shared_contracts() -> None:
         "angular-20-to-21",
     ]
     assert body["validation_gates"][0]["status"] == "manual_validation_required"
+
+
+def test_state_endpoint_returns_backend_snapshot_for_run_id() -> None:
+    response = client.get("/migrations/custom-run/state")
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "custom-run"
+
+
+def test_cancel_and_resume_are_idempotent_shells() -> None:
+    first_cancel = client.post("/migrations/mock-run/cancel")
+    second_cancel = client.post("/migrations/mock-run/cancel")
+    resume = client.post("/migrations/mock-run/resume")
+
+    assert first_cancel.status_code == 200
+    assert second_cancel.status_code == 200
+    assert first_cancel.json() == second_cancel.json()
+    assert first_cancel.json()["idempotent"] is True
+    assert resume.json()["operation"] == "resume"
+    assert resume.json()["idempotent"] is True
+
+
+def test_approval_policy_and_assistant_shells() -> None:
+    policy = client.put(
+        "/migrations/mock-run/approval-policy",
+        json={"auto_approval_enabled": True, "actor": "tester"},
+    )
+    assistant = client.post(
+        "/assistant/messages",
+        json={"run_id": "mock-run", "message": "What is waiting?"},
+    )
+
+    assert policy.status_code == 200
+    assert policy.json()["auto_approval_enabled"] is True
+    assert policy.json()["reevaluated_gate_id"] == "approval-plan"
+    assert assistant.status_code == 200
+    assert assistant.json()["status"] == "mock_unavailable"
 
 
 def test_application_lifespan_verifies_database_connection() -> None:
