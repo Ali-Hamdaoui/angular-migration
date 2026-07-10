@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite:///./.migration-factory/migration-factory.db"
-    artifact_root: Path = Path(".migration-factory/artifacts")
+    artifact_root: Path = Path(".migration-factory/runs")
     sandbox_root: Path = Path(".migration-factory/sandboxes")
     backend_cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"]

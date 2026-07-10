@@ -1,5 +1,11 @@
 """Tests for the mock LangGraph orchestrator graph and state transitions."""
 
+from pathlib import Path
+
+import pytest
+
+from app.artifact_store import ARTIFACT_LAYOUT
+from app.core.config import get_settings
 from app.domain.contracts import (
     AgentStatus,
     ApprovalDecision,
@@ -32,7 +38,16 @@ EXPECTED_EVENT_TYPES = {
 }
 
 
-# ── Graph structure tests ──────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def isolated_artifact_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    artifact_root = tmp_path / "runs"
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
+    get_settings.cache_clear()
+    yield artifact_root
+    get_settings.cache_clear()
+
+
+# Graph structure tests
 
 
 def test_graph_contains_all_eleven_mock_nodes() -> None:
@@ -57,13 +72,21 @@ def test_graph_compiles_successfully() -> None:
     assert graph is not None
 
 
-# ── End-to-end run tests ───────────────────────────────────────────
+# End-to-end run tests
 
 
 def test_mock_graph_runs_end_to_end_with_approvals() -> None:
     state = run_mock_workflow(approvals=ALL_APPROVALS)
     assert state["run_status"] == RunStatus.COMPLETED
     assert state["paused"] is False
+
+
+def test_mock_workflow_creates_artifact_run_layout(isolated_artifact_root: Path) -> None:
+    state = run_mock_workflow(approvals=ALL_APPROVALS)
+    run_root = isolated_artifact_root / state["run_id"]
+
+    assert run_root.is_dir()
+    assert all((run_root / folder).is_dir() for folder in ARTIFACT_LAYOUT)
 
 
 def test_stage_order_is_angular_18_to_19_then_19_to_20_then_20_to_21() -> None:
@@ -141,7 +164,7 @@ def test_state_to_run_dto_projects_stages_correctly() -> None:
     assert dto.stages[0].stage_id == "angular-18-to-19"
 
 
-# ── State transition / approval pause tests ────────────────────────
+# State transition / approval pause tests
 
 
 def test_graph_pauses_at_analysis_approval_without_decisions() -> None:
