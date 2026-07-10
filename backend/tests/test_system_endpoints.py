@@ -19,3 +19,10 @@ def test_mock_migration_state_is_backend_shaped() -> None:
     assert body["run_id"] == "mock-run-angular-18-to-21"
     assert body["status"] == "mock_ready"
     assert [stage["stage_id"] for stage in body["stages"]] == ["angular-18-to-19", "angular-19-to-20", "angular-20-to-21"]
+
+
+def test_application_lifespan_verifies_database_connection() -> None:
+    with TestClient(app) as lifespan_client:
+        response = lifespan_client.get("/health")
+
+    assert response.status_code == 200
