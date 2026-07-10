@@ -25,7 +25,21 @@ export function createApiClient(baseUrl = getBackendBaseUrl(), fetchImplementati
     return response.json() as Promise<T>;
   }
 
-  return { get };
+
+  async function post<TResponse, TBody>(path: string, body: TBody): Promise<TResponse> {
+    const response = await fetchImplementation(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      throw new ApiClientError(`Backend request failed: POST ${path}`, response.status);
+    }
+    return response.json() as Promise<TResponse>;
+  }
+
+  return { get, post };
 }
 
 export const apiClient = createApiClient();

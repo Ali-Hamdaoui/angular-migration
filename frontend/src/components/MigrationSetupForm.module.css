@@ -1,1 +1,18 @@
-.page { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }.panel { width: min(100%, 680px); border: 1px solid #294365; border-radius: .8rem; padding: 2rem; background: rgba(13, 29, 52, .9); }.kicker { color: #89b7ff; text-transform: uppercase; letter-spacing: .1em; font-size: .75rem; } .panel form { display: grid; gap: 1rem; margin-top: 1.5rem; }.panel label { display: grid; gap: .45rem; color: #dbe8ff; }.panel input, .panel select { width: 100%; padding: .7rem; border: 1px solid #3a557a; border-radius: .4rem; background: #0b1728; color: #eef4ff; }.panel .checkbox { display: flex; align-items: center; gap: .6rem; }.checkbox input { width: auto; }.panel button { padding: .8rem 1rem; border: 0; border-radius: .45rem; background: #5a8cff; color: #06101f; font-weight: 700; cursor: pointer; }
+.page { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }
+.panel { width: min(100%, 760px); border: 1px solid #294365; border-radius: .5rem; padding: 2rem; background: rgba(13, 29, 52, .9); }
+.kicker { color: #89b7ff; text-transform: uppercase; letter-spacing: .1em; font-size: .75rem; }
+.panel form { display: grid; gap: 1rem; margin-top: 1.5rem; }
+.panel label { display: grid; gap: .45rem; color: #dbe8ff; }
+.panel input, .panel select { width: 100%; padding: .7rem; border: 1px solid #3a557a; border-radius: .35rem; background: #0b1728; color: #eef4ff; }
+.panel .checkbox { display: flex; align-items: center; gap: .6rem; }
+.checkbox input { width: auto; }
+.actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+.panel button { padding: .8rem 1rem; border: 0; border-radius: .35rem; background: #5a8cff; color: #06101f; font-weight: 700; cursor: pointer; }
+.panel button:disabled { cursor: not-allowed; opacity: .55; }
+.error, .warning { margin-top: 1rem; padding: .75rem; border-radius: .35rem; }
+.error { background: #4f1420; color: #ffe8ed; }
+.warning { background: #493b12; color: #fff3c4; }
+.preflight { display: grid; gap: .75rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #294365; }
+.preflight div { display: grid; gap: .2rem; }
+.preflight span { overflow-wrap: anywhere; color: #dbe8ff; }
+.preflight ul { margin: 0; padding-left: 1.25rem; color: #dbe8ff; }

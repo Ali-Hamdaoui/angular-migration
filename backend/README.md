@@ -229,3 +229,11 @@ records each call as an `AgentExecutionDto` and emits SSE events.
 Frontend code and fixture applications do not belong here. Agents may propose
 actions only through backend contracts; they must not execute commands directly.
 The backend will validate and execute approved work only within a sandbox.
+
+## Runtime preflight
+
+Sprint 0 exposes `POST /migrations/preflight` to validate setup inputs before a mock run can be started. The result is bound to a normalized input checksum and expires after 15 minutes. Changing the source path, target output path, target Angular family, migration mode, or auto-approval policy requires a new preflight.
+
+The preflight checks controlled path safety rules, source readability, target writability, a disk-space estimate, and runtime availability for `python --version`, `node --version`, `npm --version`, `npx --version`, and `git --version` through the structured command worker. Sprint 0 does not run `npx` commands that download packages and does not mutate source files.
+
+Each preflight writes `00_job_setup/preflight-result.json` in the run artifact store so the Control Tower can display the backend-owned evidence.
