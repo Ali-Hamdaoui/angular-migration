@@ -1,4 +1,4 @@
-import type { MigrationRun } from "@/types/migration";
+import type { MigrationRunDto as MigrationRun } from "@/types/generated/api";
 import { AgentActivityPanel } from "./AgentActivityPanel";
 import { ApprovalPanel } from "./ApprovalPanel";
 import { ArtifactPanel } from "./ArtifactPanel";
