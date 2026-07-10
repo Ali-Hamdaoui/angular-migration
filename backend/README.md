@@ -152,8 +152,24 @@ From this directory, install the declared dependencies, then run:
 python -m uvicorn app.main:app --reload
 ```
 
-Initial endpoints: `GET /health`, `GET /version`,
-`GET /migrations/mock-state`, and `GET /migrations/{run_id}/events` (SSE).
+Initial AMF-S0-02 route shells:
+
+- `GET /health`
+- `GET /version`
+- `POST /migrations/preflight`
+- `POST /migrations/mock`
+- `GET /migrations/mock-state`
+- `GET /migrations/{run_id}/state`
+- `GET /migrations/{run_id}/events` (SSE)
+- `POST /migrations/{run_id}/approvals`
+- `PUT /migrations/{run_id}/approval-policy`
+- `POST /migrations/{run_id}/cancel`
+- `POST /migrations/{run_id}/resume`
+- `GET /migrations/{run_id}/artifacts`
+- `GET /migrations/{run_id}/artifacts/{artifact_path}`
+- `GET /artifacts/{artifact_id}`
+- `POST /assistant/messages`
+
 Interactive OpenAPI documentation is at `/docs`. Run tests with
 `python -m pytest`.
 

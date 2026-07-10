@@ -1,11 +1,13 @@
 """FastAPI application entry point."""
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.errors import error_response
 from app.api.router import api_router
 from app.core.application import APP_DESCRIPTION, APP_NAME, APP_VERSION
 from app.core.config import get_settings
@@ -33,4 +35,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return error_response(
+        request,
+        status_code=exc.status_code,
+        error_code="http_error",
+        message=str(exc.detail),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return error_response(
+        request,
+        status_code=422,
+        error_code="validation_error",
+        message="Request validation failed.",
+        details={"errors": exc.errors()},
+    )
+
+
 app.include_router(api_router)
