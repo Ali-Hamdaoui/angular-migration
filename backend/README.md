@@ -80,9 +80,21 @@ From this directory, install the declared dependencies, then run:
 python -m uvicorn app.main:app --reload
 ```
 
-Initial endpoints: `GET /health`, `GET /version`, and
-`GET /migrations/mock-state`. Interactive OpenAPI documentation is at `/docs`.
-Run tests with `python -m pytest`.
+Initial endpoints: `GET /health`, `GET /version`,
+`GET /migrations/mock-state`, and `GET /migrations/{run_id}/events` (SSE).
+Interactive OpenAPI documentation is at `/docs`. Run tests with
+`python -m pytest`.
+
+## Server-Sent Events
+
+The `GET /migrations/{run_id}/events` endpoint streams mock workflow events as
+`text/event-stream`. Each SSE block carries a typed `event:` line
+(`run_state_changed`, `stage_state_changed`, `agent_state_changed`,
+`validation_gate_changed`, `artifact_created`, `approval_required`,
+`workflow_completed`) and a `data:` line with a JSON `MigrationEventDto`. The
+mock event service emits a deterministic sequence covering every event type;
+the inter-event delay is controlled by `MOCK_EVENT_DELAY_SECONDS` (default 1s,
+patched to 0 in tests). No real orchestration drives this stream in Sprint 0.
 
 ## Boundaries
 

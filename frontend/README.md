@@ -33,6 +33,19 @@ dashboard (`/migrations/[runId]`) fetches backend-owned state through this
 client and is rendered dynamically, so the backend must be running for live
 data; the static fixture remains available for tests.
 
+## Server-Sent Events
+
+The run dashboard subscribes to `GET /migrations/{runId}/events` through the
+`useMigrationEvents` hook (`src/hooks/useMigrationEvents.ts`). The hook opens
+an `EventSource`, tracks connection status (`connecting`, `open`,
+`reconnecting`, `closed`), and collects typed `MigrationEventDto` payloads.
+The `applyEventToRun` reducer maps each event to the corresponding DTO fields
+— stage status, agent status, validation gate, artifact, approval, or run
+status — without inferring workflow transitions locally. A connection status
+bar appears when the stream is not open, and a live event stream panel shows
+received events. Refreshing the page reloads initial state from the backend
+mock endpoint via server-side rendering.
+
 ## Run locally
 
 ```powershell

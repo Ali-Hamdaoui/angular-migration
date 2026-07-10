@@ -8,6 +8,7 @@ export type ApprovalDecision = "PENDING" | "APPROVED" | "REJECTED" | "ACCEPTED_R
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
+export type WorkflowEventType = "run_state_changed" | "stage_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
@@ -21,4 +22,5 @@ export type CommandResultDto = { command_id: string; run_id: string; stage_id: s
 export type PatchLedgerEntryDto = { patch_id: string; run_id: string; stage_id: string; affected_files: string[]; change_summary: string; risk_level: RiskLevel; created_at: string; validation_status: ValidationStatus };
 export type RepairAttemptDto = { repair_attempt_id: string; run_id: string; stage_id: string; attempt_number: number; status: AgentStatus; risk_level: RiskLevel; created_at: string; diagnosis: string | null };
 export type WorkflowEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; payload: Record<string, unknown> };
+export type MigrationEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: WorkflowEventType; occurred_at: string; payload: Record<string, unknown> };
 export type MigrationRunDto = { run_id: string; status: RunStatus; source_angular_version: string; target_angular_version: string; created_at: string; updated_at: string; stages: MigrationStageDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; workflow_events: WorkflowEventDto[] };

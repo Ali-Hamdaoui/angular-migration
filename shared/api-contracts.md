@@ -13,6 +13,8 @@ FastAPI OpenAPI document rather than creating local status values.
 - `ArtifactRefDto`, `CommandRequestDto`, `CommandResultDto`,
   `PatchLedgerEntryDto`, `RepairAttemptDto`, and `WorkflowEventDto` represent
   auditable evidence and proposed/executed work.
+- `MigrationEventDto` carries a typed `WorkflowEventType` and is the SSE payload
+  for the `GET /migrations/{runId}/events` stream.
 
 All DTOs require stable identifiers and timestamps where the record is created,
 requested, checked, started, finished, or observed. Contracts reject unknown
@@ -31,6 +33,10 @@ Validation state values intentionally use the lower-case policy vocabulary:
 `passed`, `failed`, `not_configured`, `manual_validation_required`,
 `deferred_company_tool_required`, `blocked_by_environment`, `accepted_risk`,
 and `skipped_not_applicable`.
+
+`WorkflowEventType` covers the seven SSE event channels: `run_state_changed`,
+`stage_state_changed`, `agent_state_changed`, `validation_gate_changed`,
+`artifact_created`, `approval_required`, and `workflow_completed`.
 
 ## OpenAPI
 
