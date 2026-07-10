@@ -1,0 +1,12 @@
+.shell { max-width: 1220px; margin: 0 auto; padding: 2rem; }
+.header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; margin-bottom: 1.5rem; }
+.header h1, .panel h2, .shell h2 { margin: .15rem 0 .65rem; }
+.kicker { color: #89b7ff; text-transform: uppercase; letter-spacing: .1em; font-size: .75rem; margin: 0; }
+.status { display: inline-flex; align-items: center; padding: .3rem .55rem; border: 1px solid #4772b9; border-radius: 999px; color: #bcd7ff; font-size: .72rem; font-weight: 700; text-transform: uppercase; }
+.panel, .card { border: 1px solid #233957; border-radius: .75rem; background: rgba(13, 29, 52, .85); padding: 1rem; }
+.timeline { display: grid; gap: .8rem; padding-left: 1.25rem; }.timeline li { display: flex; justify-content: space-between; gap: 1rem; }
+.cardGrid, .twoColumns { display: grid; gap: 1rem; }.cardGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.twoColumns { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1rem; }
+.row { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid #203653; padding: .8rem 0; }.row p, .note { color: #a9bbd4; margin: .4rem 0 0; font-size: .9rem; }
+.list { padding: 0; list-style: none; }.list li { display: flex; justify-content: space-between; gap: 1rem; padding: .6rem 0; border-top: 1px solid #203653; }.list code { color: #bcd7ff; }
+.panel button { color: #8294ae; background: #17243a; border: 1px solid #324a6e; border-radius: .4rem; padding: .6rem; }
+@media (max-width: 760px) { .header, .timeline li, .row { flex-direction: column; }.cardGrid, .twoColumns { grid-template-columns: 1fr; }.shell { padding: 1rem; } }

@@ -1,10 +1,37 @@
 # Frontend
 
-This workspace contains the Next.js Control Tower UI. It will provide migration
-setup and migration-progress views using backend API contracts and server-sent
-events.
+This workspace contains the Next.js Control Tower UI. It renders backend-owned
+migration state only: it does not infer workflow transitions, execute migration
+commands, mutate sandboxes, or approve gates without a backend request.
 
-Boundary: the frontend renders backend-owned workflow state. It must not infer
-workflow transitions, execute migration commands, mutate sandboxes, or approve
-gates without a backend request.
-diff --git a/shared/README.md b/shared/README.md
+## AMF-S0-06 Control Tower shell
+
+The Sprint 0 shell provides:
+
+- `/migrations/new` for mock migration setup intent.
+- `/migrations/[runId]` for the run dashboard.
+- Setup, workflow, stage, agent, validation, approval, artifact, assistant, and
+  report components.
+- A static fixture shaped like the backend's `MigrationRunDto` response.
+
+The fixture is deliberately the only frontend data source in this issue. It has
+no timers, status transitions, approval actions, or command behavior. AMF-S0-07
+will replace it with a typed backend API client, and AMF-S0-08 will add SSE.
+
+## Run locally
+
+```powershell
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000/migrations/new`. Check the shell with:
+
+```powershell
+npm test
+npm run typecheck
+npm run build
+```
+
+The backend contract vocabulary is documented in
+[`shared/api-contracts.md`](../shared/api-contracts.md).
