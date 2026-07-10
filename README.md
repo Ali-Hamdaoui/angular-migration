@@ -91,3 +91,6 @@ subsequent Sprint 0 issues.
 - [MVP overview](docs/mvp_overview.md)
 - [Workflow specification](docs/workflow.md)
 - [Sprint 0 backlog](docs/sprint0.md)
+- [Architecture decisions](docs/adr/README.md)
+- [Sprint 0 threat overview](docs/threat-overview.md)
+- [Code review checklist](docs/code-review-checklist.md)
