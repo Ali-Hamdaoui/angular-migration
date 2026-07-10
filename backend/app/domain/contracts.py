@@ -1,0 +1,247 @@
+"""Shared API contracts for the Migration Factory backend and Control Tower."""
+
+from datetime import datetime
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ContractModel(BaseModel):
+    """Base behavior for public, immutable API contract models."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class RunStatus(str, Enum):
+    CREATED = "CREATED"
+    CLIENT_CONSTRAINTS_CAPTURED = "CLIENT_CONSTRAINTS_CAPTURED"
+    ELIGIBILITY_RUNNING = "ELIGIBILITY_RUNNING"
+    ELIGIBILITY_FAILED = "ELIGIBILITY_FAILED"
+    ANALYSIS_RUNNING = "ANALYSIS_RUNNING"
+    ANALYSIS_COMPLETED = "ANALYSIS_COMPLETED"
+    WAITING_ANALYSIS_APPROVAL = "WAITING_ANALYSIS_APPROVAL"
+    PLANNING_RUNNING = "PLANNING_RUNNING"
+    PLANNING_COMPLETED = "PLANNING_COMPLETED"
+    WAITING_PLAN_APPROVAL = "WAITING_PLAN_APPROVAL"
+    STAGE_RUNNING = "STAGE_RUNNING"
+    TRANSFORMATION_RUNNING = "TRANSFORMATION_RUNNING"
+    BUILD_RUNNING = "BUILD_RUNNING"
+    BUILD_FAILED = "BUILD_FAILED"
+    REPAIR_RUNNING = "REPAIR_RUNNING"
+    REPAIR_COMPLETED = "REPAIR_COMPLETED"
+    REPAIR_FAILED = "REPAIR_FAILED"
+    WAITING_REPAIR_APPROVAL = "WAITING_REPAIR_APPROVAL"
+    VALIDATION_RUNNING = "VALIDATION_RUNNING"
+    REPORT_RUNNING = "REPORT_RUNNING"
+    DIAGNOSTIC_HOLD = "DIAGNOSTIC_HOLD"
+    COMPLETED = "COMPLETED"
+    COMPLETED_WITH_MANUAL_ITEMS = "COMPLETED_WITH_MANUAL_ITEMS"
+    COMPLETED_WITH_ACCEPTED_RISK = "COMPLETED_WITH_ACCEPTED_RISK"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class StageStatus(str, Enum):
+    STAGE_CREATED = "STAGE_CREATED"
+    TOOLCHAIN_PROFILE_SELECTED = "TOOLCHAIN_PROFILE_SELECTED"
+    SANDBOX_READY = "SANDBOX_READY"
+    DEPENDENCY_AUDITED = "DEPENDENCY_AUDITED"
+    MCP_CONTEXT_POLICY_RESOLVED = "MCP_CONTEXT_POLICY_RESOLVED"
+    STAGE_RUNNING = "STAGE_RUNNING"
+    TRANSFORMATION_RUNNING = "TRANSFORMATION_RUNNING"
+    STATIC_SYMBOL_CHECK_RUNNING = "STATIC_SYMBOL_CHECK_RUNNING"
+    VALIDATION_RUNNING = "VALIDATION_RUNNING"
+    VALIDATION_PASSED = "VALIDATION_PASSED"
+    REVIEW_READY = "REVIEW_READY"
+    STAGE_COMMITTED = "STAGE_COMMITTED"
+    STAGE_ROLLED_BACK = "STAGE_ROLLED_BACK"
+    DIAGNOSTIC_HOLD = "DIAGNOSTIC_HOLD"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class AgentStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    BLOCKED = "BLOCKED"
+    SKIPPED = "SKIPPED"
+    REQUIRES_APPROVAL = "REQUIRES_APPROVAL"
+
+
+class ValidationStatus(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_CONFIGURED = "not_configured"
+    MANUAL_VALIDATION_REQUIRED = "manual_validation_required"
+    DEFERRED_COMPANY_TOOL_REQUIRED = "deferred_company_tool_required"
+    BLOCKED_BY_ENVIRONMENT = "blocked_by_environment"
+    ACCEPTED_RISK = "accepted_risk"
+    SKIPPED_NOT_APPLICABLE = "skipped_not_applicable"
+
+
+class ApprovalDecision(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    ACCEPTED_RISK = "ACCEPTED_RISK"
+    CANCELLED = "CANCELLED"
+
+
+class RiskLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ArtifactType(str, Enum):
+    JSON = "json"
+    YAML = "yaml"
+    MARKDOWN = "markdown"
+    TEXT_LOG = "text_log"
+    COMMAND_LOG = "command_log"
+    PATCH = "patch"
+    DIFF = "diff"
+    REPORT = "report"
+
+
+class CommandStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    REJECTED = "REJECTED"
+    TIMED_OUT = "TIMED_OUT"
+    CANCELLED = "CANCELLED"
+
+
+class MigrationStageDto(ContractModel):
+    stage_id: str
+    run_id: str
+    stage_order: int = Field(ge=1)
+    source_angular_version: str
+    target_angular_version: str
+    status: StageStatus
+    current_agent: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class AgentExecutionDto(ContractModel):
+    execution_id: str
+    run_id: str
+    stage_id: str | None = None
+    agent_name: str
+    status: AgentStatus
+    started_at: datetime
+    finished_at: datetime | None = None
+    summary: str | None = None
+
+
+class ValidationGateDto(ContractModel):
+    gate_id: str
+    run_id: str
+    stage_id: str | None = None
+    name: str
+    status: ValidationStatus
+    checked_at: datetime
+    details: str | None = None
+
+
+class ApprovalEventDto(ContractModel):
+    approval_id: str
+    run_id: str
+    stage_id: str | None = None
+    decision: ApprovalDecision
+    requested_at: datetime
+    decided_at: datetime | None = None
+    actor: str | None = None
+    rationale: str | None = None
+
+
+class ArtifactRefDto(ContractModel):
+    artifact_id: str
+    run_id: str
+    stage_id: str | None = None
+    artifact_type: ArtifactType
+    relative_path: str
+    created_at: datetime
+    checksum: str | None = None
+
+
+class CommandRequestDto(ContractModel):
+    command_id: str
+    run_id: str
+    stage_id: str | None = None
+    requester: str
+    executable: str
+    arguments: list[str] = Field(default_factory=list)
+    working_directory: str
+    requested_at: datetime
+
+
+class CommandResultDto(ContractModel):
+    command_id: str
+    run_id: str
+    stage_id: str | None = None
+    status: CommandStatus
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
+    exit_code: int | None = None
+    stdout_artifact: ArtifactRefDto | None = None
+    stderr_artifact: ArtifactRefDto | None = None
+
+
+class PatchLedgerEntryDto(ContractModel):
+    patch_id: str
+    run_id: str
+    stage_id: str
+    affected_files: list[str] = Field(min_length=1)
+    change_summary: str
+    risk_level: RiskLevel
+    created_at: datetime
+    validation_status: ValidationStatus
+
+
+class RepairAttemptDto(ContractModel):
+    repair_attempt_id: str
+    run_id: str
+    stage_id: str
+    attempt_number: int = Field(ge=1)
+    status: AgentStatus
+    risk_level: RiskLevel
+    created_at: datetime
+    diagnosis: str | None = None
+
+
+class WorkflowEventDto(ContractModel):
+    event_id: str
+    run_id: str
+    stage_id: str | None = None
+    event_type: str
+    occurred_at: datetime
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class MigrationRunDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    source_angular_version: str
+    target_angular_version: str
+    created_at: datetime
+    updated_at: datetime
+    stages: list[MigrationStageDto] = Field(min_length=1)
+    agent_executions: list[AgentExecutionDto] = Field(default_factory=list)
+    validation_gates: list[ValidationGateDto] = Field(default_factory=list)
+    approval_events: list[ApprovalEventDto] = Field(default_factory=list)
+    artifacts: list[ArtifactRefDto] = Field(default_factory=list)
+    command_requests: list[CommandRequestDto] = Field(default_factory=list)
+    command_results: list[CommandResultDto] = Field(default_factory=list)
+    patch_ledger: list[PatchLedgerEntryDto] = Field(default_factory=list)
+    repair_attempts: list[RepairAttemptDto] = Field(default_factory=list)
+    workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
