@@ -120,6 +120,19 @@ class CommandStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class PreflightStatus(str, Enum):
+    PASSED = "passed"
+    PASSED_WITH_WARNINGS = "passed_with_warnings"
+    BLOCKED = "blocked"
+    EXPIRED = "expired"
+
+
+class PreflightSeverity(str, Enum):
+    BLOCKER = "blocker"
+    WARNING = "warning"
+    INFO = "info"
+
+
 class WorkflowEventType(str, Enum):
     RUN_STATE_CHANGED = "run_state_changed"
     STAGE_STATE_CHANGED = "stage_state_changed"
@@ -207,6 +220,39 @@ class CommandResultDto(ContractModel):
     exit_code: int | None = None
     stdout_artifact: ArtifactRefDto | None = None
     stderr_artifact: ArtifactRefDto | None = None
+
+
+class PreflightRequestDto(ContractModel):
+    source_path: str
+    target_output_path: str
+    target_angular_family: str
+    migration_mode: str
+    auto_approval_enabled: bool = False
+
+
+class PreflightFindingDto(ContractModel):
+    code: str
+    severity: PreflightSeverity
+    message: str
+
+
+class RuntimeCapabilityDto(ContractModel):
+    tool: str
+    available: bool
+    version: str | None = None
+    finding_code: str | None = None
+
+
+class PreflightResultDto(ContractModel):
+    run_id: str
+    status: PreflightStatus
+    input_checksum: str
+    expires_at: datetime
+    source_path: str
+    target_output_path: str
+    findings: list[PreflightFindingDto] = Field(default_factory=list)
+    capabilities: list[RuntimeCapabilityDto] = Field(default_factory=list)
+    artifact: ArtifactRefDto | None = None
 
 
 class PatchLedgerEntryDto(ContractModel):

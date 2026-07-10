@@ -24,6 +24,7 @@ _ALLOWED_PREFLIGHT_COMMANDS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("python", ("--version",)),
     ("node", ("--version",)),
     ("npm", ("--version",)),
+    ("npx", ("--version",)),
     ("git", ("--version",)),
 )
 
