@@ -2,9 +2,10 @@ import type { ConnectionStatus } from "@/hooks/useMigrationEvents";
 import styles from "./ControlTowerShell.module.css";
 
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
-  connecting: "Connecting to backend event stream…",
-  open: "Live — receiving backend events",
-  reconnecting: "Connection lost. Reconnecting…",
+  connecting: "Connecting to backend event stream...",
+  open: "Live - receiving backend events",
+  reconnecting: "Connection lost. Reconnecting...",
+  recovering: "Refreshing backend snapshot...",
   closed: "Event stream closed.",
 };
 

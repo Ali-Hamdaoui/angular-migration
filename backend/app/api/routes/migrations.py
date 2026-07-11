@@ -17,7 +17,13 @@ from app.domain.contracts import (
     PreflightRequestDto,
     PreflightResultDto,
 )
-from app.services.mock_event_service import format_sse_event, generate_mock_events
+from app.core.config import get_settings
+from app.services.mock_event_service import (
+    ReplayUnavailableError,
+    format_replay_unavailable,
+    format_sse_event,
+    generate_mock_events,
+)
 from app.services.mock_migration_api_service import (
     MockMigrationApiService,
     PreflightChecksumError,
@@ -72,10 +78,21 @@ def read_migration_state(
 
 
 @router.get("/{run_id}/events", summary="Stream mock workflow events via Server-Sent Events")
-async def stream_migration_events(run_id: str) -> StreamingResponse:
+async def stream_migration_events(run_id: str, request: Request) -> StreamingResponse:
+    raw_last_event_id = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
+    last_event_id = int(raw_last_event_id) if raw_last_event_id and raw_last_event_id.isdigit() else None
+    settings = get_settings()
+
     async def event_stream():
-        async for event in generate_mock_events(run_id):
-            yield format_sse_event(event)
+        try:
+            async for event in generate_mock_events(
+                run_id,
+                last_event_id=last_event_id,
+                retention=settings.sse_replay_retention_events,
+            ):
+                yield event if isinstance(event, str) else format_sse_event(event)
+        except ReplayUnavailableError:
+            yield format_replay_unavailable(run_id, last_event_id)
 
     return StreamingResponse(
         event_stream(),

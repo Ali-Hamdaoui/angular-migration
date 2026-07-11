@@ -1,5 +1,5 @@
 import { createApiClient } from "@/api/client";
-import { createMockMigration, getHealth, getMockMigrationState, getVersion, validatePreflight } from "@/api/migrations";
+import { createMockMigration, getHealth, getMigrationState, getMockMigrationState, getVersion, validatePreflight } from "@/api/migrations";
 import { mockMigrationRun } from "@/data/mockMigrationRun";
 
 function jsonResponse(body: unknown) {
@@ -13,6 +13,7 @@ describe("migration API client", () => {
       .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
       .mockResolvedValueOnce(jsonResponse({ name: "AI Frontend Migration Factory API", version: "0.1.0", environment: "development" }))
       .mockResolvedValueOnce(jsonResponse(preflight))
+      .mockResolvedValueOnce(jsonResponse(mockMigrationRun))
       .mockResolvedValueOnce(jsonResponse(mockMigrationRun))
       .mockResolvedValueOnce(jsonResponse(mockMigrationRun));
     const client = createApiClient("http://backend.test", fetchMock);
@@ -28,12 +29,14 @@ describe("migration API client", () => {
     }, client)).resolves.toEqual(preflight);
     await expect(createMockMigration({ preflight_checksum: "sha256:test" }, client)).resolves.toEqual(mockMigrationRun);
     await expect(getMockMigrationState(client)).resolves.toEqual(mockMigrationRun);
+    await expect(getMigrationState("run-1", client)).resolves.toEqual(mockMigrationRun);
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://backend.test/health",
       "http://backend.test/version",
       "http://backend.test/migrations/preflight",
       "http://backend.test/migrations/mock",
-      "http://backend.test/migrations/mock-state"
+      "http://backend.test/migrations/mock-state",
+      "http://backend.test/migrations/run-1/state"
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
