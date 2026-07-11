@@ -64,7 +64,7 @@ class EligibilityAgent(BaseMockAgent):
             ],
             risks=[],
             requires_human_action=False,
-            next_recommended_state=RunStatus.BASELINE_RUNNING,
+            next_recommended_state=RunStatus.RUNNING,
         )
 
 
@@ -93,7 +93,7 @@ class AnalysisAgent(BaseMockAgent):
                 ),
             ],
             requires_human_action=False,
-            next_recommended_state=RunStatus.WAITING_ANALYSIS_APPROVAL,
+            next_recommended_state=RunStatus.WAITING,
         )
 
 
@@ -116,7 +116,7 @@ class PlanningAgent(BaseMockAgent):
             ],
             risks=[],
             requires_human_action=False,
-            next_recommended_state=RunStatus.WAITING_PLAN_APPROVAL,
+            next_recommended_state=RunStatus.WAITING,
         )
 
 
@@ -139,7 +139,7 @@ class TransformationAgent(BaseMockAgent):
             ],
             risks=[],
             requires_human_action=False,
-            next_recommended_state=RunStatus.BUILD_RUNNING,
+            next_recommended_state=RunStatus.RUNNING,
         )
 
 
@@ -168,7 +168,7 @@ class BuildValidationAgent(BaseMockAgent):
                 ),
             ],
             requires_human_action=False,
-            next_recommended_state=RunStatus.STAGE_RUNNING,
+            next_recommended_state=RunStatus.RUNNING,
         )
 
 
@@ -190,7 +190,7 @@ class RepairAgent(BaseMockAgent):
             ],
             risks=[],
             requires_human_action=False,
-            next_recommended_state=RunStatus.STAGE_RUNNING,
+            next_recommended_state=RunStatus.RUNNING,
         )
 
 

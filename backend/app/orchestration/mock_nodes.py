@@ -131,7 +131,7 @@ def _run_agent(
             artifact_type=ArtifactType.JSON,
             relative_path=artifact_path,
             created_at=_now(),
-            checksum=None,
+            checksum="mock-checksum",
         )
         state.setdefault("artifacts", []).append(artifact)
         _emit(
@@ -171,45 +171,45 @@ _READ_AND_ARTIFACT = [AllowedAction.READ_FILE, AllowedAction.READ_ARTIFACT_SUMMA
 
 
 def create_run_mock(state: OrchestratorState) -> dict[str, Any]:
-    state["run_status"] = RunStatus.ELIGIBILITY_RUNNING
-    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.ELIGIBILITY_RUNNING.value})
+    state["run_status"] = RunStatus.RUNNING
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.RUNNING.value})
     return _result(state, "eligibility_mock")
 
 
 def eligibility_mock(state: OrchestratorState) -> dict[str, Any]:
     _run_agent(state, "Eligibility and Constraint Agent", None, _READ_ONLY)
-    state["run_status"] = RunStatus.BASELINE_RUNNING
-    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.BASELINE_RUNNING.value})
+    state["run_status"] = RunStatus.RUNNING
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.RUNNING.value})
     return _result(state, "baseline_mock")
 
 
 def baseline_mock(state: OrchestratorState) -> dict[str, Any]:
-    state["run_status"] = RunStatus.BASELINE_COMPLETED
-    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.BASELINE_COMPLETED.value})
-    state["run_status"] = RunStatus.ANALYSIS_RUNNING
-    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.ANALYSIS_RUNNING.value})
+    state["run_status"] = RunStatus.RUNNING
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.RUNNING.value})
+    state["run_status"] = RunStatus.RUNNING
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.RUNNING.value})
     return _result(state, "analysis_mock")
 
 
 def analysis_mock(state: OrchestratorState) -> dict[str, Any]:
     _run_agent(state, "Analysis Agent", None, _READ_AND_ARTIFACT)
-    state["run_status"] = RunStatus.WAITING_ANALYSIS_APPROVAL
-    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING_ANALYSIS_APPROVAL.value})
+    state["run_status"] = RunStatus.WAITING
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING.value})
     return _result(state, "wait_analysis_approval_mock")
 
 
 def wait_analysis_approval_mock(state: OrchestratorState) -> dict[str, Any]:
     decision = state.get("approval_decisions", {}).get("analysis")
     if decision == ApprovalDecision.APPROVED:
-        state["run_status"] = RunStatus.PLANNING_RUNNING
-        _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.PLANNING_RUNNING.value})
+        state["run_status"] = RunStatus.RUNNING
+        _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.RUNNING.value})
         return _result(state, "planning_mock", paused=False)
     if decision == ApprovalDecision.REJECTED:
         state["run_status"] = RunStatus.FAILED
         _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.FAILED.value})
         return _result(state, "__end__", paused=False)
     state["paused"] = True
-    state["run_status"] = RunStatus.WAITING_ANALYSIS_APPROVAL
+    state["run_status"] = RunStatus.WAITING
     _emit(
         state,
         WorkflowEventType.APPROVAL_REQUIRED,
@@ -220,23 +220,23 @@ def wait_analysis_approval_mock(state: OrchestratorState) -> dict[str, Any]:
 
 def planning_mock(state: OrchestratorState) -> dict[str, Any]:
     _run_agent(state, "Planning Agent", None, _READ_AND_ARTIFACT)
-    state["run_status"] = RunStatus.WAITING_PLAN_APPROVAL
-    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING_PLAN_APPROVAL.value})
+    state["run_status"] = RunStatus.WAITING
+    _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.WAITING.value})
     return _result(state, "wait_plan_approval_mock")
 
 
 def wait_plan_approval_mock(state: OrchestratorState) -> dict[str, Any]:
     decision = state.get("approval_decisions", {}).get("plan")
     if decision == ApprovalDecision.APPROVED:
-        state["run_status"] = RunStatus.STAGE_RUNNING
-        _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.STAGE_RUNNING.value})
+        state["run_status"] = RunStatus.RUNNING
+        _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.RUNNING.value})
         return _result(state, "stage_18_to_19_mock", paused=False)
     if decision == ApprovalDecision.REJECTED:
         state["run_status"] = RunStatus.FAILED
         _emit(state, WorkflowEventType.RUN_STATE_CHANGED, {"status": RunStatus.FAILED.value})
         return _result(state, "__end__", paused=False)
     state["paused"] = True
-    state["run_status"] = RunStatus.WAITING_PLAN_APPROVAL
+    state["run_status"] = RunStatus.WAITING
     _emit(
         state,
         WorkflowEventType.APPROVAL_REQUIRED,
@@ -249,8 +249,8 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
     stage = state["stages"][stage_index]
     stage_id = stage["stage_id"]
 
-    stage["status"] = StageStatus.STAGE_RUNNING
-    _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.STAGE_RUNNING.value}, stage_id=stage_id)
+    stage["status"] = StageStatus.RUNNING
+    _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.RUNNING.value}, stage_id=stage_id)
 
     _run_agent(state, "Transformation Agent", stage_id, _READ_AND_ARTIFACT)
     _run_agent(state, "Build / Validation Agent", stage_id, _READ_AND_ARTIFACT)
@@ -273,8 +273,8 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
         stage_id=stage_id,
     )
 
-    stage["status"] = StageStatus.STAGE_COMMITTED
-    _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.STAGE_COMMITTED.value}, stage_id=stage_id)
+    stage["status"] = StageStatus.PASSED
+    _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.PASSED.value}, stage_id=stage_id)
 
     state["current_stage_index"] = stage_index + 1
     return _result(state, next_node)

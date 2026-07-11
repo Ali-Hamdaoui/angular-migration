@@ -144,7 +144,7 @@ def test_eligibility_agent_recommends_baseline_running() -> None:
     assert agent is not None
     output = agent.execute(_make_input())
     assert output.status == AgentStatus.COMPLETED
-    assert output.next_recommended_state == RunStatus.BASELINE_RUNNING
+    assert output.next_recommended_state == RunStatus.RUNNING
     assert "00_job_setup/eligibility_result.json" in output.artifacts_created
 
 
@@ -154,7 +154,7 @@ def test_analysis_agent_reports_risks() -> None:
     output = agent.execute(_make_input())
     assert output.status == AgentStatus.COMPLETED
     assert len(output.risks) > 0
-    assert output.next_recommended_state == RunStatus.WAITING_ANALYSIS_APPROVAL
+    assert output.next_recommended_state == RunStatus.WAITING
 
 
 def test_planning_agent_recommends_plan_approval() -> None:
@@ -162,7 +162,7 @@ def test_planning_agent_recommends_plan_approval() -> None:
     assert agent is not None
     output = agent.execute(_make_input())
     assert output.status == AgentStatus.COMPLETED
-    assert output.next_recommended_state == RunStatus.WAITING_PLAN_APPROVAL
+    assert output.next_recommended_state == RunStatus.WAITING
 
 
 def test_transformation_agent_creates_stage_artifacts() -> None:

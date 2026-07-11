@@ -46,7 +46,7 @@ def test_format_sse_event_produces_valid_sse_block() -> None:
     data_line = block.split("data: ", 1)[1].strip()
     payload = json.loads(data_line)
     assert payload["event_type"] == "run_state_changed"
-    assert payload["payload"]["status"] == "STAGE_RUNNING"
+    assert payload["payload"]["status"] == "RUNNING"
 
 
 def test_sse_endpoint_returns_text_event_stream(monkeypatch: pytest.MonkeyPatch) -> None:

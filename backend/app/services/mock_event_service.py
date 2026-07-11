@@ -28,7 +28,7 @@ def _build_mock_event_sequence(run_id: str) -> list[MigrationEventDto]:
             run_id=run_id,
             event_type=WorkflowEventType.RUN_STATE_CHANGED,
             occurred_at=now,
-            payload={"status": RunStatus.STAGE_RUNNING.value},
+            payload={"status": RunStatus.RUNNING.value},
         ),
         MigrationEventDto(
             event_id="evt-stage-running",
@@ -36,7 +36,7 @@ def _build_mock_event_sequence(run_id: str) -> list[MigrationEventDto]:
             stage_id=_MOCK_STAGE_ID,
             event_type=WorkflowEventType.STAGE_STATE_CHANGED,
             occurred_at=now,
-            payload={"status": StageStatus.STAGE_RUNNING.value},
+            payload={"status": StageStatus.RUNNING.value},
         ),
         MigrationEventDto(
             event_id="evt-agent-transformation-running",
@@ -93,7 +93,7 @@ def _build_mock_event_sequence(run_id: str) -> list[MigrationEventDto]:
             stage_id=_MOCK_STAGE_ID,
             event_type=WorkflowEventType.STAGE_STATE_CHANGED,
             occurred_at=now,
-            payload={"status": StageStatus.STAGE_COMMITTED.value},
+            payload={"status": StageStatus.PASSED.value},
         ),
         MigrationEventDto(
             event_id="evt-approval-required-stage-2",

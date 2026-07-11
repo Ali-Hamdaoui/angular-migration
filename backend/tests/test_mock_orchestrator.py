@@ -102,13 +102,13 @@ def test_stage_order_is_angular_18_to_19_then_19_to_20_then_20_to_21() -> None:
     assert stages[2]["stage_id"] == "angular-20-to-21"
     assert stages[2]["source_angular_version"] == "20.x"
     assert stages[2]["target_angular_version"] == "21.x"
-    assert all(s["status"] == StageStatus.STAGE_COMMITTED for s in stages)
+    assert all(s["status"] == StageStatus.PASSED for s in stages)
 
 
 def test_all_stages_are_committed_after_full_run() -> None:
     state = run_mock_workflow(approvals=ALL_APPROVALS)
     for stage in state["stages"]:
-        assert stage["status"] == StageStatus.STAGE_COMMITTED
+        assert stage["status"] == StageStatus.PASSED
 
 
 def test_graph_emits_all_seven_event_types() -> None:
@@ -170,7 +170,7 @@ def test_state_to_run_dto_projects_stages_correctly() -> None:
 def test_graph_pauses_at_analysis_approval_without_decisions() -> None:
     state = run_mock_workflow()
     assert state["paused"] is True
-    assert state["run_status"] == RunStatus.WAITING_ANALYSIS_APPROVAL
+    assert state["run_status"] == RunStatus.WAITING
     events = get_emitted_events(state)
     approval_events = [e for e in events if e.event_type == WorkflowEventType.APPROVAL_REQUIRED]
     assert len(approval_events) == 1
@@ -180,7 +180,7 @@ def test_graph_pauses_at_analysis_approval_without_decisions() -> None:
 def test_graph_pauses_at_plan_approval_after_analysis_approved() -> None:
     state = run_mock_workflow(approvals={"analysis": ApprovalDecision.APPROVED})
     assert state["paused"] is True
-    assert state["run_status"] == RunStatus.WAITING_PLAN_APPROVAL
+    assert state["run_status"] == RunStatus.WAITING
     events = get_emitted_events(state)
     approval_events = [e for e in events if e.event_type == WorkflowEventType.APPROVAL_REQUIRED]
     assert len(approval_events) == 1
@@ -214,4 +214,4 @@ def test_initial_state_has_three_stages_in_correct_order() -> None:
     assert state["stages"][0]["stage_id"] == "angular-18-to-19"
     assert state["stages"][1]["stage_id"] == "angular-19-to-20"
     assert state["stages"][2]["stage_id"] == "angular-20-to-21"
-    assert all(s["status"] == StageStatus.STAGE_CREATED for s in state["stages"])
+    assert all(s["status"] == StageStatus.PENDING for s in state["stages"])

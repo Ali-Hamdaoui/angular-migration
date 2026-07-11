@@ -41,15 +41,15 @@ def get_mock_migration_run() -> MigrationRunDto:
     )
     return MigrationRunDto(
         run_id=run_id,
-        status=RunStatus.WAITING_PLAN_APPROVAL,
+        status=RunStatus.WAITING,
         source_angular_version="18.x",
         target_angular_version="21.x",
         created_at=now,
         updated_at=now,
         stages=[
-            MigrationStageDto(stage_id=stage_id, run_id=run_id, stage_order=1, source_angular_version="18.x", target_angular_version="19.x", status=StageStatus.STAGE_CREATED, created_at=now),
-            MigrationStageDto(stage_id="angular-19-to-20", run_id=run_id, stage_order=2, source_angular_version="19.x", target_angular_version="20.x", status=StageStatus.STAGE_CREATED, created_at=now),
-            MigrationStageDto(stage_id="angular-20-to-21", run_id=run_id, stage_order=3, source_angular_version="20.x", target_angular_version="21.x", status=StageStatus.STAGE_CREATED, created_at=now),
+            MigrationStageDto(stage_id=stage_id, run_id=run_id, stage_order=1, source_angular_version="18.x", target_angular_version="19.x", status=StageStatus.PENDING, created_at=now),
+            MigrationStageDto(stage_id="angular-19-to-20", run_id=run_id, stage_order=2, source_angular_version="19.x", target_angular_version="20.x", status=StageStatus.PENDING, created_at=now),
+            MigrationStageDto(stage_id="angular-20-to-21", run_id=run_id, stage_order=3, source_angular_version="20.x", target_angular_version="21.x", status=StageStatus.PENDING, created_at=now),
         ],
         agent_executions=[AgentExecutionDto(execution_id="agent-execution-planning", run_id=run_id, agent_name="Planning Agent", status=AgentStatus.COMPLETED, started_at=now, finished_at=now, summary="Mock plan prepared for approval.")],
         validation_gates=[ValidationGateDto(gate_id="gate-browser-smoke", run_id=run_id, stage_id=stage_id, name="browser_smoke", status=ValidationStatus.MANUAL_VALIDATION_REQUIRED, checked_at=now, details="Manual validation is required in Sprint 0.")],
@@ -59,5 +59,5 @@ def get_mock_migration_run() -> MigrationRunDto:
         command_results=[CommandResultDto(command_id="command-stage-19", run_id=run_id, stage_id=stage_id, status=CommandStatus.PENDING, started_at=now)],
         patch_ledger=[PatchLedgerEntryDto(patch_id="patch-placeholder", run_id=run_id, stage_id=stage_id, affected_files=["src/app/app.config.ts"], change_summary="Mock placeholder only; no patch was applied.", risk_level=RiskLevel.LOW, created_at=now, validation_status=ValidationStatus.SKIPPED_NOT_APPLICABLE)],
         repair_attempts=[RepairAttemptDto(repair_attempt_id="repair-placeholder", run_id=run_id, stage_id=stage_id, attempt_number=1, status=AgentStatus.SKIPPED, risk_level=RiskLevel.LOW, created_at=now, diagnosis="No repair is required for mock state.")],
-        workflow_events=[WorkflowEventDto(event_id="event-approval-required", run_id=run_id, event_type="approval_required", occurred_at=now, payload={"approval_id": "approval-plan", "status": RunStatus.WAITING_PLAN_APPROVAL.value})],
+        workflow_events=[WorkflowEventDto(event_id="event-approval-required", run_id=run_id, event_type="approval_required", occurred_at=now, payload={"approval_id": "approval-plan", "status": RunStatus.WAITING.value})],
     )

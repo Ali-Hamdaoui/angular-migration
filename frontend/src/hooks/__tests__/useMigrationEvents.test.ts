@@ -59,7 +59,7 @@ function makeEvent(type: MigrationEventDto["event_type"], id: string): Migration
     stage_id: "angular-18-to-19",
     event_type: type,
     occurred_at: "2026-07-10T00:00:00Z",
-    payload: { status: "STAGE_RUNNING" },
+    payload: { status: "RUNNING" },
   };
 }
 
