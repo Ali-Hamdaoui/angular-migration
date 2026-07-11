@@ -7,7 +7,7 @@
 .timeline { display: grid; gap: .8rem; padding-left: 1.25rem; }.timeline li { display: flex; justify-content: space-between; gap: 1rem; }
 .cardGrid, .twoColumns { display: grid; gap: 1rem; }.cardGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.twoColumns { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1rem; }
 .row { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid #203653; padding: .8rem 0; }.row p, .note { color: #a9bbd4; margin: .4rem 0 0; font-size: .9rem; }
-.list { padding: 0; list-style: none; }.list li { display: flex; justify-content: space-between; gap: 1rem; padding: .6rem 0; border-top: 1px solid #203653; }.list code { color: #bcd7ff; }
+.list { padding: 0; list-style: none; }.list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1rem; padding: .6rem 0; border-top: 1px solid #203653; }.list code { color: #bcd7ff; overflow-wrap: anywhere; }.actionLink { color: #d8e8ff; font-weight: 700; text-decoration: none; }
 .panel button { color: #8294ae; background: #17243a; border: 1px solid #324a6e; border-radius: .4rem; padding: .6rem; }
 .connectionBar { padding: .6rem 1rem; border-radius: .5rem; margin-bottom: 1rem; font-weight: 700; font-size: .85rem; }
 .connectionBar[aria-live] { background: rgba(90, 140, 255, .15); border: 1px solid #5a8cff; color: #bcd7ff; }
