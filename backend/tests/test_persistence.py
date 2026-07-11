@@ -88,6 +88,7 @@ def test_alembic_creates_initial_sqlite_schema(tmp_path: Path) -> None:
         constraint["name"] for constraint in inspector.get_unique_constraints("command_executions")
     }
     assert "uq_workflow_events_run_sequence" in event_unique_constraints
+    assert "uq_workflow_events_run_idempotency" in event_unique_constraints
     assert "uq_command_executions_run_idempotency" in command_unique_constraints
     artifact_columns = {column["name"] for column in inspector.get_columns("artifact_metadata")}
     assert "checksum" in artifact_columns
