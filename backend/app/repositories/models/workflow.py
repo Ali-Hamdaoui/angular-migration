@@ -77,12 +77,18 @@ class AgentExecutionModel(Base):
 
 class WorkflowEventModel(Base):
     __tablename__ = "workflow_events"
-    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_workflow_events_run_sequence"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_workflow_events_run_sequence"),
+        UniqueConstraint("run_id", "idempotency_key", name="uq_workflow_events_run_idempotency"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
     stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    actor: Mapped[str | None] = mapped_column(String(128))
+    reason: Mapped[str | None] = mapped_column(Text)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

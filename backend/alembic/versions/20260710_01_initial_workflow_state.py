@@ -108,6 +108,9 @@ def upgrade() -> None:
         sa.Column("run_id", sa.String(length=64), nullable=False),
         sa.Column("stage_id", sa.String(length=64), nullable=True),
         sa.Column("event_type", sa.String(length=128), nullable=False),
+        sa.Column("idempotency_key", sa.String(length=128), nullable=True),
+        sa.Column("actor", sa.String(length=128), nullable=True),
+        sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("sequence", sa.Integer(), nullable=False),
         sa.Column("payload", sa.JSON(), nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
@@ -115,10 +118,12 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["stage_id"], ["migration_stages.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("run_id", "sequence", name="uq_workflow_events_run_sequence"),
+        sa.UniqueConstraint("run_id", "idempotency_key", name="uq_workflow_events_run_idempotency"),
     )
     op.create_index("ix_workflow_events_run_id", "workflow_events", ["run_id"])
     op.create_index("ix_workflow_events_stage_id", "workflow_events", ["stage_id"])
     op.create_index("ix_workflow_events_event_type", "workflow_events", ["event_type"])
+    op.create_index("ix_workflow_events_idempotency_key", "workflow_events", ["idempotency_key"])
 
     op.create_table(
         "approval_events",
