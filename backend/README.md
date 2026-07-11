@@ -159,8 +159,8 @@ an explicit conflict policy; the default policy refuses to overwrite it.
 
 ## Artifact store
 
-The local filesystem artifact store writes beneath `ARTIFACT_ROOT` using the
-Sprint 0 run layout:
+The local filesystem artifact store writes append-only evidence beneath
+`ARTIFACT_ROOT` using the Sprint 0 run layout:
 
 ```text
 {ARTIFACT_ROOT}/{runId}/
@@ -173,21 +173,33 @@ Sprint 0 run layout:
   06_validation/
   07_repair/
   08_final/
+  global/
+  stages/{stageId}/
+  repair_attempts/{stageId}/{attemptId}/
+  final_assurance/
+  delivery/
+  final_report/
 ```
 
-Artifacts are written as text files with a sibling `*.meta.json` sidecar that
-stores the backend-owned metadata, including checksum, timestamps, and the
-artifact type. The backend rejects paths that would escape the run folder.
+Artifacts are written with temporary files plus atomic rename where supported.
+An existing artifact path is never overwritten; a second write receives a new
+artifact ID and versioned relative path such as `report__v2.md`. Each artifact
+has a sibling `*.meta.json` envelope with schema version, artifact ID,
+run/stage/attempt, producer, artifact type, content type, input hashes, policy
+version, content hash, relative path, and timestamp. Artifact content remains on
+the filesystem, outside SQLite and workflow events.
 
-The public API surface for this store is:
+The backend rejects path traversal and symlink escapes. The public API surface
+for this store is:
 
 ```http
 GET /migrations/{runId}/artifacts
 GET /migrations/{runId}/artifacts/{artifactPath}
+GET /artifacts/{artifactId}
 ```
 
-The first endpoint lists stored artifacts; the second opens a single artifact
-and returns the backend-owned metadata plus file content.
+The first endpoint lists stored artifacts. The second keeps path-based access
+for run-scoped compatibility, and the third opens immutable artifacts by ID.
 
 ## Command execution worker
 
