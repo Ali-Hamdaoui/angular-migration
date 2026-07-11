@@ -234,7 +234,7 @@ state = run_mock_workflow(approvals={
     "plan": ApprovalDecision.APPROVED,
 })
 assert state["run_status"].value == "COMPLETED"
-assert all(s["status"].value == "STAGE_COMMITTED" for s in state["stages"])
+assert all(s["status"].value == "PASSED" for s in state["stages"])
 ```
 
 Stage order is always Angular 18→19, 19→20, 20→21 as defined by the initial

@@ -24,13 +24,36 @@ def test_contracts_reject_unknown_enum_values() -> None:
                         "stage_order": 1,
                         "source_angular_version": "18.x",
                         "target_angular_version": "19.x",
-                        "status": "STAGE_CREATED",
+                        "status": "PENDING",
                         "created_at": datetime.now(UTC),
                     }
                 ],
             }
         )
 
+def test_terminal_runs_reject_active_stage_statuses() -> None:
+    with pytest.raises(ValidationError):
+        MigrationRunDto.model_validate(
+            {
+                "run_id": "run-001",
+                "status": "COMPLETED",
+                "source_angular_version": "18.x",
+                "target_angular_version": "21.x",
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+                "stages": [
+                    {
+                        "stage_id": "stage-001",
+                        "run_id": "run-001",
+                        "stage_order": 1,
+                        "source_angular_version": "18.x",
+                        "target_angular_version": "19.x",
+                        "status": "RUNNING",
+                        "created_at": datetime.now(UTC),
+                    }
+                ],
+            }
+        )
 
 def test_openapi_publishes_every_sprint_zero_contract() -> None:
     schemas = app.openapi()["components"]["schemas"]
@@ -47,7 +70,9 @@ def test_openapi_publishes_every_sprint_zero_contract() -> None:
         "RepairAttemptDto",
         "WorkflowEventDto",
         "RunStatus",
+        "RunPhase",
         "StageStatus",
+        "StepStatus",
         "AgentStatus",
         "ValidationStatus",
         "ApprovalDecision",

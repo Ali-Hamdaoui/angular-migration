@@ -7,12 +7,16 @@ FastAPI OpenAPI document rather than creating local status values.
 
 ## Contract families
 
-- `MigrationRunDto` is the backend-owned aggregate read model.
-- `MigrationStageDto`, `AgentExecutionDto`, `ValidationGateDto`, and
-  `ApprovalEventDto` represent workflow visibility and human decision points.
-- `ArtifactRefDto`, `CommandRequestDto`, `CommandResultDto`,
-  `PatchLedgerEntryDto`, `RepairAttemptDto`, and `WorkflowEventDto` represent
-  auditable evidence and proposed/executed work.
+- `MigrationRunDto` is the backend-owned aggregate read model. It separates
+  `status` from `run_phase` and stores source/target version families apart
+  from detected or resolved exact versions.
+- `MigrationStageDto` and `StageStepDto` expose stage and deterministic-step
+  status separately from run status.
+- `AgentExecutionDto`, `ValidationGateDto`, and `ApprovalEventDto` represent
+  agent visibility, validation evidence, and human decision points.
+- `ArtifactRefDto`, `CommandRequestDto`, `CommandResultDto`, `WorkerLeaseDto`,
+  `PatchLedgerEntryDto`, `RepairAttemptDto`, `DeliveryManifestDto`, and
+  `LlmUsageRecordDto` represent auditable evidence and proposed/executed work.
 - `MigrationEventDto` carries a typed `WorkflowEventType` and is the SSE payload
   for the `GET /migrations/{runId}/events` stream.
 - `AgentInputEnvelope` and `AgentOutputEnvelope` define the common agent
@@ -26,26 +30,46 @@ fields and invalid enum values.
 
 ## Status vocabulary
 
-`RunStatus`, `StageStatus`, `AgentStatus`, `ValidationStatus`,
-`ApprovalDecision`, `RiskLevel`, `ArtifactType`, and `CommandStatus` are string
-enums. Run states use the architecture's uppercase names, including
-`WAITING_ANALYSIS_APPROVAL`, `WAITING_PLAN_APPROVAL`, `STAGE_RUNNING`,
-`REPAIR_RUNNING`, `WAITING_REPAIR_APPROVAL`, `DIAGNOSTIC_HOLD`, `CANCELLED`,
-`COMPLETED_WITH_MANUAL_ITEMS`, and `COMPLETED_WITH_ACCEPTED_RISK`.
+`RunStatus` is intentionally small and run-level only:
+
+```text
+CREATED, RUNNING, WAITING, CANCELLING, CANCELLED, COMPLETED, FAILED,
+DIAGNOSTIC_HOLD
+```
+
+`RunPhase` captures macro workflow position:
+
+```text
+PREFLIGHT_SNAPSHOT, DISCOVERY_BASELINE, FEASIBILITY_PLANNING,
+STAGED_MIGRATION, FINAL_ASSURANCE, DELIVERY_REPORTING
+```
+
+`StageStatus` and `StepStatus` are separate. Stage statuses are:
+
+```text
+PENDING, RUNNING, WAITING_APPROVAL, REPAIRING, PASSED, FAILED, ROLLED_BACK,
+CANCELLED, DIAGNOSTIC_HOLD
+```
+
+Step statuses are:
+
+```text
+PENDING, QUEUED, RUNNING, PASSED, FAILED, BLOCKED, WAITING_APPROVAL, SKIPPED,
+MANUAL, DEFERRED, ACCEPTED_RISK, CANCELLED
+```
+
+Overlapping global states such as `BUILD_RUNNING`, `VALIDATION_RUNNING`, and
+`WAITING_PLAN_APPROVAL` are not part of the canonical run-status vocabulary.
+Use run status plus phase, stage status, step status, gates, and events instead.
 
 Validation state values intentionally use the lower-case policy vocabulary:
 `passed`, `failed`, `not_configured`, `manual_validation_required`,
 `deferred_company_tool_required`, `blocked_by_environment`, `accepted_risk`,
 and `skipped_not_applicable`.
 
-`WorkflowEventType` covers the seven SSE event channels: `run_state_changed`,
-`stage_state_changed`, `agent_state_changed`, `validation_gate_changed`,
-`artifact_created`, `approval_required`, and `workflow_completed`.
-
-`AllowedAction` enumerates the bounded actions an agent may request:
-`read_file`, `run_approved_command`, `request_approval`,
-`read_artifact_summary`, and `create_artifact`. Agents never execute
-commands directly; they return action requests for the backend to validate.
+`StructuredCommandRequest` is represented by `CommandRequestDto`: it contains an
+executable and argument list, uses `shell=false`, and does not accept raw shell
+command strings.
 
 ## OpenAPI
 

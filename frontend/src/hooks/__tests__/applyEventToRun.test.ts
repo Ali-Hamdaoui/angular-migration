@@ -8,15 +8,15 @@ function event(type: MigrationEventDto["event_type"], payload: Record<string, un
 
 describe("applyEventToRun", () => {
   it("updates run status on run_state_changed", () => {
-    const updated = applyEventToRun(mockMigrationRun, event("run_state_changed", { status: "STAGE_RUNNING" }));
-    expect(updated.status).toBe("STAGE_RUNNING");
+    const updated = applyEventToRun(mockMigrationRun, event("run_state_changed", { status: "RUNNING" }));
+    expect(updated.status).toBe("RUNNING");
     expect(updated.updated_at).toBe("2026-07-10T12:00:00Z");
   });
 
   it("updates stage status on stage_state_changed", () => {
-    const updated = applyEventToRun(mockMigrationRun, event("stage_state_changed", { status: "STAGE_RUNNING" }));
-    expect(updated.stages[0].status).toBe("STAGE_RUNNING");
-    expect(updated.stages[1].status).toBe("STAGE_CREATED");
+    const updated = applyEventToRun(mockMigrationRun, event("stage_state_changed", { status: "RUNNING" }));
+    expect(updated.stages[0].status).toBe("RUNNING");
+    expect(updated.stages[1].status).toBe("PENDING");
   });
 
   it("updates existing agent execution status", () => {
@@ -80,7 +80,7 @@ describe("applyEventToRun", () => {
 
   it("does not mutate the original run", () => {
     const original: MigrationRunDto = { ...mockMigrationRun };
-    applyEventToRun(mockMigrationRun, event("run_state_changed", { status: "STAGE_RUNNING" }));
+    applyEventToRun(mockMigrationRun, event("run_state_changed", { status: "RUNNING" }));
     expect(mockMigrationRun).toEqual(original);
   });
 });

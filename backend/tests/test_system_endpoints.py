@@ -101,7 +101,7 @@ def test_create_mock_run_accepts_valid_preflight_checksum() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
-    assert body["status"] == "WAITING_PLAN_APPROVAL"
+    assert body["status"] == "WAITING"
 
 
 def test_mock_migration_state_uses_shared_contracts() -> None:
@@ -109,7 +109,7 @@ def test_mock_migration_state_uses_shared_contracts() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
-    assert body["status"] == "WAITING_PLAN_APPROVAL"
+    assert body["status"] == "WAITING"
     assert [stage["stage_id"] for stage in body["stages"]] == [
         "angular-18-to-19",
         "angular-19-to-20",

@@ -7,7 +7,7 @@ describe("ControlTowerShell", () => {
     render(<ControlTowerShell run={mockMigrationRun} />);
 
     expect(screen.getByRole("heading", { name: /18\.x.*21\.x/ })).toBeInTheDocument();
-    expect(screen.getByText("WAITING PLAN APPROVAL")).toBeInTheDocument();
+    expect(screen.getAllByText("WAITING")).toHaveLength(2);
     expect(screen.getByRole("heading", { name: /Angular 18\.x.*19\.x/ })).toBeInTheDocument();
     expect(screen.getByText("manual validation required")).toBeInTheDocument();
   });

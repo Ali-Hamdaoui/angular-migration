@@ -87,7 +87,7 @@ export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto):
         artifact_type: event.payload.artifact_type as ArtifactType,
         relative_path: event.payload.relative_path as string,
         created_at: event.occurred_at,
-        checksum: (event.payload.checksum as string | null) ?? null,
+        checksum: (event.payload.checksum as string | null) ?? "mock-event-checksum",
       };
       const exists = run.artifacts.some((a) => a.artifact_id === newArtifact.artifact_id);
       const artifacts = exists
