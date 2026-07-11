@@ -1,6 +1,9 @@
-"""Mock Server-Sent Events generator for Sprint 0 workflow validation."""
+"""Ordered mock Server-Sent Events generator for Sprint 0 workflow validation."""
+
+from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -15,14 +18,21 @@ from app.domain.contracts import (
 )
 
 MOCK_EVENT_DELAY_SECONDS = 1.0
-_MOCK_RUN_ID = "mock-run-angular-18-to-21"
 _MOCK_STAGE_ID = "angular-18-to-19"
+_RETAINED_EVENTS: dict[str, list[MigrationEventDto]] = {}
+
+
+class ReplayUnavailableError(ValueError):
+    """Raised when requested Last-Event-ID falls before retained history."""
 
 
 def _build_mock_event_sequence(run_id: str) -> list[MigrationEventDto]:
-    """Build a deterministic sequence covering every Sprint 0 event type."""
+    """Build and retain a deterministic, ordered sequence covering Sprint 0 event types."""
+    if run_id in _RETAINED_EVENTS:
+        return _RETAINED_EVENTS[run_id]
+
     now = datetime.now(UTC)
-    return [
+    events = [
         MigrationEventDto(
             event_id="evt-run-stage-running",
             run_id=run_id,
@@ -115,25 +125,56 @@ def _build_mock_event_sequence(run_id: str) -> list[MigrationEventDto]:
             payload={"status": RunStatus.COMPLETED.value},
         ),
     ]
+    ordered = [event.model_copy(update={"sequence": index}) for index, event in enumerate(events, start=1)]
+    _RETAINED_EVENTS[run_id] = ordered
+    return ordered
+
+
+def get_retained_events(run_id: str) -> list[MigrationEventDto]:
+    return list(_build_mock_event_sequence(run_id))
+
+
+def replay_events(run_id: str, *, last_event_id: int | None = None, retention: int = 1_000) -> list[MigrationEventDto]:
+    events = _build_mock_event_sequence(run_id)[-retention:]
+    if not events:
+        return []
+    first_sequence = events[0].sequence
+    if last_event_id is not None and last_event_id < first_sequence - 1:
+        raise ReplayUnavailableError("Requested event replay is outside retained history")
+    if last_event_id is None:
+        return events
+    return [event for event in events if event.sequence > last_event_id]
 
 
 async def generate_mock_events(
     run_id: str,
     delay: float | None = None,
-) -> AsyncIterator[MigrationEventDto]:
-    """Yield a fixed mock event sequence with pauses for SSE streaming.
-
-    Tests may pass ``delay=0`` for instant iteration. The sequence is
-    deterministic and covers every ``WorkflowEventType``.
-    """
+    *,
+    last_event_id: int | None = None,
+    retention: int = 1_000,
+    include_heartbeat: bool = True,
+) -> AsyncIterator[MigrationEventDto | str]:
+    """Yield retained ordered events, optional replay, and heartbeat frames."""
     if delay is None:
         delay = MOCK_EVENT_DELAY_SECONDS
-    for event in _build_mock_event_sequence(run_id):
+    for event in replay_events(run_id, last_event_id=last_event_id, retention=retention):
         yield event
         if delay > 0:
             await asyncio.sleep(delay)
+    if include_heartbeat:
+        yield format_heartbeat(run_id)
 
 
 def format_sse_event(event: MigrationEventDto) -> str:
-    """Format a single event as an SSE text block."""
-    return f"event: {event.event_type.value}\ndata: {event.model_dump_json()}\n\n"
+    """Format a single event as an SSE text block with sequence ID."""
+    return f"id: {event.sequence}\nevent: {event.event_type.value}\ndata: {event.model_dump_json()}\n\n"
+
+
+def format_heartbeat(run_id: str) -> str:
+    payload = json.dumps({"run_id": run_id, "occurred_at": datetime.now(UTC).isoformat()})
+    return f"event: heartbeat\ndata: {payload}\n\n"
+
+
+def format_replay_unavailable(run_id: str, last_event_id: int | None) -> str:
+    payload = json.dumps({"run_id": run_id, "last_event_id": last_event_id, "recovery": "snapshot_required"})
+    return f"event: replay_unavailable\ndata: {payload}\n\n"

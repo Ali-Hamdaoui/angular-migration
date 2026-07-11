@@ -29,3 +29,7 @@ export function createMockMigration(request: CreateMockMigrationRequestDto, clie
 export function getMockMigrationState(client: ApiClient = apiClient): Promise<MigrationRunDto> {
   return client.get<MigrationRunDto>("/migrations/mock-state");
 }
+
+export function getMigrationState(runId: string, client: ApiClient = apiClient): Promise<MigrationRunDto> {
+  return client.get<MigrationRunDto>(`/migrations/${runId}/state`);
+}

@@ -4,11 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getBackendBaseUrl } from "@/api/client";
 import type { MigrationEventDto, WorkflowEventType } from "@/types/generated/api";
 
-export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "closed";
+export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "recovering" | "closed";
 
 export interface UseMigrationEventsResult {
   status: ConnectionStatus;
   events: MigrationEventDto[];
+  lastSequence: number;
+  recoveryRequired: boolean;
+  clearRecoveryRequired: () => void;
 }
 
 const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
@@ -21,6 +24,8 @@ const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
   "workflow_completed",
 ];
 
+const MAX_LIVE_EVENTS = 200;
+
 export type EventSourceConstructor = typeof EventSource;
 
 export function useMigrationEvents(
@@ -29,21 +34,41 @@ export function useMigrationEvents(
 ): UseMigrationEventsResult {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [events, setEvents] = useState<MigrationEventDto[]>([]);
-  const sourceRef = useRef<EventSource | null>(null);
+  const [lastSequence, setLastSequence] = useState(0);
+  const [recoveryRequired, setRecoveryRequired] = useState(false);
+  const lastSequenceRef = useRef(0);
+  const seenEventIdsRef = useRef(new Set<string>());
 
-  const handleEvent = useCallback((type: WorkflowEventType) => {
-    return (raw: MessageEvent) => {
-      const data = JSON.parse(raw.data) as MigrationEventDto;
-      setEvents((prev) => [...prev, data]);
-    };
+  const markRecoveryRequired = useCallback(() => {
+    setRecoveryRequired(true);
+    setStatus("recovering");
   }, []);
+
+  const clearRecoveryRequired = useCallback(() => {
+    setRecoveryRequired(false);
+    setStatus((current) => (current === "recovering" ? "open" : current));
+  }, []);
+
+  const handleEvent = useCallback((raw: MessageEvent) => {
+    const data = JSON.parse(raw.data) as MigrationEventDto;
+    const previousSequence = lastSequenceRef.current;
+    if (seenEventIdsRef.current.has(data.event_id) || data.sequence <= previousSequence) return;
+    if (data.sequence > previousSequence + 1) {
+      markRecoveryRequired();
+      return;
+    }
+    seenEventIdsRef.current.add(data.event_id);
+    lastSequenceRef.current = data.sequence;
+    setLastSequence(data.sequence);
+    setEvents((prev) => [...prev, data].slice(-MAX_LIVE_EVENTS));
+  }, [markRecoveryRequired]);
 
   useEffect(() => {
     const url = `${getBackendBaseUrl()}/migrations/${runId}/events`;
     const source = new createEventSource(url);
-    sourceRef.current = source;
+    const listeners = new Map<string, EventListener>();
 
-    source.onopen = () => setStatus("open");
+    source.onopen = () => setStatus((current) => (current === "recovering" ? "recovering" : "open"));
     source.onerror = () => {
       if (source.readyState === 2) {
         setStatus("closed");
@@ -53,17 +78,21 @@ export function useMigrationEvents(
     };
 
     for (const type of WORKFLOW_EVENT_TYPES) {
-      source.addEventListener(type, handleEvent(type) as EventListener);
+      const listener = handleEvent as EventListener;
+      listeners.set(type, listener);
+      source.addEventListener(type, listener);
     }
+    const replayUnavailableListener = (() => markRecoveryRequired()) as EventListener;
+    listeners.set("replay_unavailable", replayUnavailableListener);
+    source.addEventListener("replay_unavailable", replayUnavailableListener);
 
     return () => {
-      for (const type of WORKFLOW_EVENT_TYPES) {
-        source.removeEventListener(type, handleEvent(type) as EventListener);
+      for (const [type, listener] of listeners) {
+        source.removeEventListener(type, listener);
       }
       source.close();
-      sourceRef.current = null;
     };
-  }, [runId, createEventSource, handleEvent]);
+  }, [runId, createEventSource, handleEvent, markRecoveryRequired]);
 
-  return { status, events };
+  return { status, events, lastSequence, recoveryRequired, clearRecoveryRequired };
 }
