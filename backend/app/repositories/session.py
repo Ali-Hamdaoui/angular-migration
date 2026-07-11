@@ -4,21 +4,44 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, make_url, text
+from sqlalchemy import Engine, create_engine, event, make_url, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 
 
-def create_database_engine(database_url: str) -> Engine:
-    """Create an engine and prepare a local parent directory for SQLite files."""
+def create_database_engine(
+    database_url: str,
+    *,
+    sqlite_wal_enabled: bool | None = None,
+    sqlite_busy_timeout_ms: int | None = None,
+) -> Engine:
+    """Create an engine and apply SQLite MVP connection pragmas."""
+    settings = get_settings()
+    wal_enabled = settings.sqlite_wal_enabled if sqlite_wal_enabled is None else sqlite_wal_enabled
+    busy_timeout_ms = (
+        settings.sqlite_busy_timeout_ms if sqlite_busy_timeout_ms is None else sqlite_busy_timeout_ms
+    )
     url = make_url(database_url)
     connect_args: dict[str, bool] = {}
     if url.get_backend_name() == "sqlite":
         connect_args["check_same_thread"] = False
         if url.database and url.database != ":memory:":
             Path(url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(url, connect_args=connect_args, future=True)
+    engine = create_engine(url, connect_args=connect_args, future=True)
+
+    if url.get_backend_name() == "sqlite":
+        is_file_database = bool(url.database and url.database != ":memory:")
+
+        @event.listens_for(engine, "connect")
+        def configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+            if wal_enabled and is_file_database:
+                cursor.execute("PRAGMA journal_mode = WAL")
+            cursor.close()
+
+    return engine
 
 
 engine = create_database_engine(get_settings().database_url)

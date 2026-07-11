@@ -81,14 +81,23 @@ Pydantic secret and no configuration endpoint exists.
 ## Persistence bootstrap
 
 SQLAlchemy owns the backend persistence boundary; API routers and agents do not
-access database sessions directly. The initial Alembic revision creates these
-placeholder tables: `migration_runs`, `migration_stages`, `agent_executions`,
-`artifact_metadata`, `approval_events`, and `workflow_events`. Their lifecycle
-values remain free-form placeholders until AMF-S0-05 defines the shared enums.
+access database sessions directly. The initial Alembic revision creates the
+Sprint 0 state tables: `migration_runs`, `migration_stages`, `stage_steps`,
+`agent_executions`, `workflow_events`, `approval_events`,
+`approval_policy_events`, `artifact_metadata`, `command_executions`,
+`worker_leases`, `repair_attempts`, `llm_usage_records`, and
+`run_assurance_statuses`.
+
+The schema stores run `state_version` for optimistic concurrency, ordered
+per-run workflow event `sequence` values, scoped command `idempotency_key`
+constraints, stage/attempt IDs, lease owner/expiry fields, artifact checksums
+and schema versions, and LLM usage price/cost snapshots. Artifact contents are
+not stored in SQLite; only metadata is persisted there.
 
 The configured `DATABASE_URL` is used by both FastAPI startup connectivity and
-Alembic. The default is a local SQLite file. From `backend/`, create or upgrade
-the schema with:
+Alembic. The default is a local SQLite file. File-backed SQLite connections
+apply `SQLITE_BUSY_TIMEOUT_MS` and, when `SQLITE_WAL_ENABLED=true`, WAL mode.
+From `backend/`, create or upgrade the schema with:
 
 ```powershell
 python -m alembic -c alembic.ini upgrade head
@@ -100,9 +109,11 @@ To inspect the applied revision:
 python -m alembic -c alembic.ini current
 ```
 
-Do not use `Base.metadata.create_all()` in runtime application code; Alembic is
-the schema authority. It is used only in the repository unit test to isolate
-that adapter from migration execution.
+To reset a local development database, stop the backend, remove the configured
+SQLite file under `.migration-factory/`, then run the upgrade command again. Do
+not use `Base.metadata.create_all()` in runtime application code; Alembic is the
+schema authority. It is used only in repository unit tests to isolate adapters
+from migration execution.
 
 ## Artifact store
 
