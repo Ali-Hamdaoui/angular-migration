@@ -116,6 +116,7 @@ def test_mock_migration_state_uses_shared_contracts() -> None:
         "angular-20-to-21",
     ]
     assert body["validation_gates"][0]["status"] == "manual_validation_required"
+    assert body["delivery"]["status"] == "not_published"
 
 
 def test_state_endpoint_returns_backend_snapshot_for_run_id() -> None:
