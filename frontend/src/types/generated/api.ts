@@ -17,6 +17,9 @@ export type WorkflowEventType = "run_state_changed" | "stage_state_changed" | "s
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
+export type PreflightRequestDto = { source_path: string; target_output_path: string; target_angular_family: string; migration_mode: string; auto_approval_enabled: boolean };
+export type PreflightResultDto = { preflight_id: string; checksum: string; expires_at: string; source_path: string; target_output_path: string; status: "passed" | "passed_with_warnings" | "blocked" | "expired" | string; message: string; blockers: string[]; warnings: string[]; capabilities: Record<string, string>; runtime_profile_available: boolean; registry_access: string; topology_status: string; angular_eligibility: string; artifact: ArtifactRefDto | null };
+export type CreateMockMigrationRequestDto = { preflight_checksum: string; idempotency_key?: string | null };
 export type MigrationStageDto = { stage_id: string; run_id: string; stage_order: number; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; status: StageStatus; current_agent: string | null; created_at: string; started_at: string | null; completed_at: string | null };
 export type StageStepDto = { step_id: string; run_id: string; stage_id: string | null; name: string; status: StepStatus; component_type: string; started_at: string | null; completed_at: string | null };
 export type AgentExecutionDto = { execution_id: string; run_id: string; stage_id: string | null; agent_name: string; status: AgentStatus; started_at: string; finished_at: string | null; summary: string | null };

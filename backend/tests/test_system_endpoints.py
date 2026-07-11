@@ -1,11 +1,41 @@
 """Endpoint tests for the FastAPI skeleton."""
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 
+from app.api.routes.migrations import get_service
+from app.domain.contracts import PreflightResultDto
 from app.main import app
-from app.services.mock_migration_api_service import EXPIRED_PREFLIGHT_CHECKSUM, VALID_PREFLIGHT_CHECKSUM
+from app.services.mock_migration_api_service import EXPIRED_PREFLIGHT_CHECKSUM, MockMigrationApiService
 
 client = TestClient(app)
+
+
+class FakePreflightService:
+    checksum = "sha256:route-test-preflight"
+
+    def validate(self, request):
+        return PreflightResultDto(
+            preflight_id="preflight-route-test",
+            checksum=self.checksum,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            source_path=request.source_path,
+            target_output_path=request.target_output_path,
+            status="passed",
+            message="Route test preflight passed.",
+        )
+
+    def is_current_and_runnable(self, checksum: str) -> bool:
+        return checksum == self.checksum
+
+
+def _override_service(fake: FakePreflightService) -> None:
+    app.dependency_overrides[get_service] = lambda: MockMigrationApiService(preflight_service=fake)
+
+
+def _clear_overrides() -> None:
+    app.dependency_overrides.clear()
 
 
 def test_health_returns_ok() -> None:
@@ -46,19 +76,24 @@ def test_openapi_exposes_sprint0_route_shells() -> None:
 
 
 def test_preflight_returns_checksum_bound_result() -> None:
-    response = client.post(
-        "/migrations/preflight",
-        json={
-            "source_path": "C:/fixtures/angular-18-app",
-            "target_output_path": "C:/tmp/angular-migration-output",
-            "target_angular_family": "21.x",
-            "migration_mode": "strict-functional-parity",
-        },
-    )
+    fake = FakePreflightService()
+    _override_service(fake)
+    try:
+        response = client.post(
+            "/migrations/preflight",
+            json={
+                "source_path": "C:/fixtures/angular-18-app",
+                "target_output_path": "C:/tmp/angular-migration-output",
+                "target_angular_family": "21.x",
+                "migration_mode": "strict-functional-parity",
+            },
+        )
+    finally:
+        _clear_overrides()
     assert response.status_code == 200
     body = response.json()
-    assert body["checksum"] == VALID_PREFLIGHT_CHECKSUM
-    assert body["status"] == "valid"
+    assert body["checksum"] == fake.checksum
+    assert body["status"] == "passed"
 
 
 def test_create_mock_run_rejects_missing_preflight_checksum_with_error_envelope() -> None:
@@ -97,7 +132,12 @@ def test_create_mock_run_rejects_expired_preflight_checksum() -> None:
 
 
 def test_create_mock_run_accepts_valid_preflight_checksum() -> None:
-    response = client.post("/migrations/mock", json={"preflight_checksum": VALID_PREFLIGHT_CHECKSUM})
+    fake = FakePreflightService()
+    _override_service(fake)
+    try:
+        response = client.post("/migrations/mock", json={"preflight_checksum": fake.checksum})
+    finally:
+        _clear_overrides()
     assert response.status_code == 200
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
