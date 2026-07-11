@@ -183,6 +183,14 @@ class PreflightResultDto(ContractModel):
     target_output_path: str
     status: str
     message: str
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    capabilities: dict[str, str] = Field(default_factory=dict)
+    runtime_profile_available: bool = True
+    registry_access: str = "placeholder_not_checked"
+    topology_status: str = "placeholder_not_scanned"
+    angular_eligibility: str = "placeholder_not_scanned"
+    artifact: dict[str, Any] | None = None
 
 
 class CreateMockMigrationRequestDto(ContractModel):

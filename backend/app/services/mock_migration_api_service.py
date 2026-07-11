@@ -1,6 +1,6 @@
-"""Thin mock API service for AMF-S0-02 route shells."""
+"""Thin mock API service for Sprint 0 route shells."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from app.domain.contracts import (
     ApprovalDecision,
@@ -16,6 +16,7 @@ from app.domain.contracts import (
     PreflightRequestDto,
     PreflightResultDto,
 )
+from app.preflight import PreflightService
 from app.services.mock_migration_service import get_mock_migration_run
 
 VALID_PREFLIGHT_CHECKSUM = "mock-preflight-checksum-angular-18-to-21"
@@ -34,17 +35,11 @@ class PreflightChecksumError(ValueError):
 class MockMigrationApiService:
     """Service boundary for Sprint 0 mock migration API shells."""
 
+    def __init__(self, preflight_service: PreflightService | None = None) -> None:
+        self._preflight_service = preflight_service or PreflightService()
+
     def validate_preflight(self, request: PreflightRequestDto) -> PreflightResultDto:
-        expires_at = datetime.now(UTC) + timedelta(minutes=15)
-        return PreflightResultDto(
-            preflight_id="mock-preflight-angular-18-to-21",
-            checksum=VALID_PREFLIGHT_CHECKSUM,
-            expires_at=expires_at,
-            source_path=request.source_path,
-            target_output_path=request.target_output_path,
-            status="valid",
-            message="Mock preflight accepted for the controlled Sprint 0 flow.",
-        )
+        return self._preflight_service.validate(request)
 
     def create_mock_run(self, request: CreateMockMigrationRequestDto) -> MigrationRunDto:
         if request.preflight_checksum == EXPIRED_PREFLIGHT_CHECKSUM:
@@ -52,7 +47,7 @@ class MockMigrationApiService:
                 "preflight_checksum_expired",
                 "Preflight checksum is expired; run preflight again.",
             )
-        if request.preflight_checksum != VALID_PREFLIGHT_CHECKSUM:
+        if not self._preflight_service.is_current_and_runnable(request.preflight_checksum):
             raise PreflightChecksumError(
                 "preflight_checksum_invalid",
                 "Create mock migration requires a valid preflight checksum.",

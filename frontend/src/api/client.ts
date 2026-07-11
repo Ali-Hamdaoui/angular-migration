@@ -14,18 +14,23 @@ export function getBackendBaseUrl(): string {
 }
 
 export function createApiClient(baseUrl = getBackendBaseUrl(), fetchImplementation: FetchImplementation = fetch) {
-  async function get<T>(path: string): Promise<T> {
+  async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const response = await fetchImplementation(`${baseUrl}${path}`, {
-      headers: { Accept: "application/json" },
-      cache: "no-store"
+      method,
+      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+      cache: "no-store",
+      body: body ? JSON.stringify(body) : undefined
     });
     if (!response.ok) {
-      throw new ApiClientError(`Backend request failed: GET ${path}`, response.status);
+      throw new ApiClientError(`Backend request failed: ${method} ${path}`, response.status);
     }
     return response.json() as Promise<T>;
   }
 
-  return { get };
+  return {
+    get: <T>(path: string) => request<T>("GET", path),
+    post: <T>(path: string, body: unknown) => request<T>("POST", path, body)
+  };
 }
 
 export const apiClient = createApiClient();
