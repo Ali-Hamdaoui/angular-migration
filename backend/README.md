@@ -115,6 +115,48 @@ not use `Base.metadata.create_all()` in runtime application code; Alembic is the
 schema authority. It is used only in repository unit tests to isolate adapters
 from migration execution.
 
+## Workspace, snapshot, and delivery layout
+
+AMF-S0-19 separates immutable source evidence, mutable migration work, run
+artifacts, and final publication:
+
+```text
+{target}/.migration-factory/snapshots/{snapshotId}/
+{target}/.migration-factory/workspaces/{runId}/repository/
+{ARTIFACT_ROOT}/{runId}/
+{target}/migrated-app/
+```
+
+`SourceManifestBuilder` records fixture file paths, sizes, and SHA-256 checksums.
+`SnapshotService` copies the source into an immutable snapshot and writes
+`source-manifest.json`. `WorkspaceService` copies the snapshot into the internal
+run workspace, never into `migrated-app`. `SourceIntegrityVerifier` compares the
+current source to the original manifest before delivery. `DeliveryService`
+publishes only non-failed/non-cancelled runs by copying workspace output to a
+temporary directory and renaming it to `migrated-app`. Existing output requires
+an explicit conflict policy; the default policy refuses to overwrite it.
+
+## Workspace, snapshot, and delivery layout
+
+AMF-S0-19 separates immutable source evidence, mutable migration work, run
+artifacts, and final publication:
+
+```text
+{target}/.migration-factory/snapshots/{snapshotId}/
+{target}/.migration-factory/workspaces/{runId}/repository/
+{ARTIFACT_ROOT}/{runId}/
+{target}/migrated-app/
+```
+
+`SourceManifestBuilder` records fixture file paths, sizes, and SHA-256 checksums.
+`SnapshotService` copies the source into an immutable snapshot and writes
+`source-manifest.json`. `WorkspaceService` copies the snapshot into the internal
+run workspace, never into `migrated-app`. `SourceIntegrityVerifier` compares the
+current source to the original manifest before delivery. `DeliveryService`
+publishes only non-failed/non-cancelled runs by copying workspace output to a
+temporary directory and renaming it to `migrated-app`. Existing output requires
+an explicit conflict policy; the default policy refuses to overwrite it.
+
 ## Artifact store
 
 The local filesystem artifact store writes beneath `ARTIFACT_ROOT` using the
