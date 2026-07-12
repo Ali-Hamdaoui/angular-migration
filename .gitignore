@@ -16,3 +16,10 @@ frontend/tsconfig.tsbuildinfo
 
 frontend/.env.local
 .migration-factory/
+
+# Demo fixture local artifacts
+demo-apps/**/node_modules/
+demo-apps/**/.angular/
+demo-apps/**/dist/
+demo-apps/**/coverage/
+demo-apps/**/out-tsc/

@@ -1,13 +1,18 @@
 # Sprint 0 Demo Notes
 
-The Sprint 0 demo should call out these architecture boundaries before showing
-mock workflow behavior:
+The Sprint 0 demo should call out these architecture boundaries before showing the Control Tower:
 
-1. Backend state is authoritative; the frontend renders snapshots and ordered events.
-2. Agents and LLMs propose structured outputs only; the backend validates and executes.
-3. The source project is immutable; mutation happens only in the internal workspace.
-4. Artifacts are immutable evidence with checksums and approved lookup paths.
-5. `migrated-app` appears only after the delivery gate succeeds.
-6. SQLite is a single-host MVP store, not the future distributed production store.
+- Backend state is the source of truth.
+- Commands are structured and backend-authorized.
+- Original source remains immutable.
+- Mutation happens only inside the internal run workspace.
+- Artifacts are checksum-bound evidence.
+- Manual and deferred validation gates are never shown as passed.
+
+## Angular 18 Fixture
+
+Use `demo-apps/angular-18-basic/` as the controlled source application for the Sprint 0 demo. The fixture includes route, lazy-route, API, interceptor, form-validation, style, environment, proxy, known-failure, and prompt-injection signals. Its expectation manifests live under `demo-apps/angular-18-basic/expectations/`.
+
+Sprint 0 regression tests copy the fixture into a temporary internal workspace and verify source integrity. Do not run migration mutations directly against the fixture directory.
 
 Reference the ADR index at [docs/adr/README.md](adr/README.md) during review.
