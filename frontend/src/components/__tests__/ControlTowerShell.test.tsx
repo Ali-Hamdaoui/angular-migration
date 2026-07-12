@@ -3,13 +3,15 @@ import { ControlTowerShell } from "@/components/ControlTowerShell";
 import { mockMigrationRun } from "@/data/mockMigrationRun";
 
 describe("ControlTowerShell", () => {
-  it("renders backend-shaped status, stages, and manual validation gates", () => {
+  it("renders backend-shaped status, stages, manual validation gates, and artifact preview metadata", () => {
     render(<ControlTowerShell run={mockMigrationRun} />);
 
     expect(screen.getByRole("heading", { name: /18\.x.*21\.x/ })).toBeInTheDocument();
     expect(screen.getAllByText("WAITING")).toHaveLength(2);
     expect(screen.getByRole("heading", { name: /Angular 18\.x.*19\.x/ })).toBeInTheDocument();
     expect(screen.getByText("manual validation required")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "http://127.0.0.1:8000/artifacts/artifact-mock-plan");
+    expect(screen.getByText("stages/angular-18-to-19/validation/build.log")).toBeInTheDocument();
+    expect(screen.getByText("sha256:mock-command-log")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Preview" })).toHaveLength(mockMigrationRun.artifacts.length);
   });
 });
