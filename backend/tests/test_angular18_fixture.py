@@ -14,7 +14,8 @@ def load_manifest(name: str) -> dict:
 
 
 def sha256_file(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    content = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
 def aggregate_hash(paths: list[dict], root: Path) -> str:

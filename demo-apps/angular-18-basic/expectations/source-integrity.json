@@ -1,7 +1,7 @@
 {
     "schema_version":  "1.0",
     "fixture_id":  "angular-18-basic",
-    "algorithm":  "sha256",
+    "algorithm":  "sha256-normalized-lf",
     "aggregate_hash":  "sha256:6c9297c0a1d4f9bea45c24db4b1cf348e8b6cb2ad40850fcbfb1c64411a24a49",
     "file_count":  27,
     "included_paths":  [
