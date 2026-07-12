@@ -7,10 +7,15 @@ from app.agents.base import BaseMockAgent
 from app.agents.mock_agents import MOCK_AGENTS, MOCK_AGENT_NAMES
 from app.agents.registry import get_agent, list_agent_names
 from app.domain.contracts import (
+    ActionProposalDto,
     AgentInputEnvelope,
+    AgentKind,
     AgentOutputEnvelope,
     AgentStatus,
     AllowedAction,
+    DeterministicComponentContract,
+    DeterministicComponentType,
+    PatchProposalDto,
     RunStatus,
 )
 from app.orchestration.state import create_initial_state
@@ -21,7 +26,7 @@ from app.services.workflow_service import (
 from app.domain.contracts import ApprovalDecision
 
 
-# ── Contract model tests ───────────────────────────────────────────
+# Contract model tests
 
 
 def test_agent_input_envelope_rejects_unknown_fields() -> None:
@@ -56,7 +61,52 @@ def test_agent_output_envelope_rejects_invalid_status() -> None:
         )
 
 
-# ── Mock agent contract tests ──────────────────────────────────────
+def test_deterministic_component_contract_rejects_llm_and_direct_commands() -> None:
+    with pytest.raises(ValidationError):
+        DeterministicComponentContract(
+            component_type=DeterministicComponentType.COMPATIBILITY_RESOLVER,
+            responsibility="Resolve version policy deterministically.",
+            may_call_llm=True,
+        )
+
+    with pytest.raises(ValidationError):
+        DeterministicComponentContract(
+            component_type=DeterministicComponentType.COMMAND_POLICY_ENGINE,
+            responsibility="Authorize structured command requests.",
+            may_execute_commands_directly=True,
+        )
+
+
+def test_action_proposal_requires_registered_action_for_commands() -> None:
+    with pytest.raises(ValidationError):
+        ActionProposalDto(
+            proposal_id="proposal-001",
+            action_type=AllowedAction.RUN_APPROVED_COMMAND,
+            rationale="Run the approved stage command.",
+        )
+
+
+def test_action_and_patch_proposals_cannot_authorize_effects() -> None:
+    with pytest.raises(ValidationError):
+        ActionProposalDto(
+            proposal_id="proposal-approval",
+            action_type=AllowedAction.REQUEST_APPROVAL,
+            rationale="Ask for user approval.",
+            authorizes_approval=True,
+        )
+
+    with pytest.raises(ValidationError):
+        PatchProposalDto(
+            proposal_id="patch-001",
+            files=["src/app/app.config.ts"],
+            rationale="Minimal compatibility patch.",
+            risk_level="low",
+            expected_behavior_impact="No behavior change expected.",
+            validation_requests=["static_symbol_gate"],
+            authorizes_application=True,
+        )
+
+# Mock agent contract tests
 
 
 def _make_input(stage_id: str | None = None) -> AgentInputEnvelope:
@@ -80,6 +130,8 @@ def test_every_mock_agent_uses_the_same_envelope(agent: BaseMockAgent) -> None:
     assert isinstance(output.risks, list)
     assert isinstance(output.requires_human_action, bool)
     assert isinstance(output.next_recommended_state, RunStatus)
+    assert output.authorizes_execution is False
+    assert output.authorizes_approval is False
 
 
 @pytest.mark.parametrize("agent", MOCK_AGENTS, ids=MOCK_AGENT_NAMES)
@@ -119,7 +171,7 @@ def test_mock_agent_names_match_catalog() -> None:
     ]
 
 
-# ── Registry tests ─────────────────────────────────────────────────
+# Registry tests
 
 
 def test_registry_lists_all_eight_agents() -> None:
@@ -136,7 +188,7 @@ def test_registry_returns_none_for_unknown_agent() -> None:
     assert get_agent("Nonexistent Agent") is None
 
 
-# ── Individual agent behavior tests ────────────────────────────────
+# Individual agent behavior tests
 
 
 def test_eligibility_agent_recommends_baseline_running() -> None:
@@ -205,7 +257,7 @@ def test_ai_assistant_does_not_create_artifacts() -> None:
     assert output.artifacts_created == []
 
 
-# ── Orchestrator integration tests ─────────────────────────────────
+# Orchestrator integration tests
 
 
 def test_orchestrator_records_agent_executions_from_shared_contract() -> None:
@@ -216,6 +268,7 @@ def test_orchestrator_records_agent_executions_from_shared_contract() -> None:
     assert "Eligibility and Constraint Agent" in agent_names
     assert "Analysis Agent" in agent_names
     assert "Planning Agent" in agent_names
+    assert all("Service" not in name and "Gate" not in name for name in agent_names)
     assert "Transformation Agent" in agent_names
     assert "Build / Validation Agent" in agent_names
     assert "Repair Agent" in agent_names
@@ -261,3 +314,37 @@ def test_orchestrator_emits_artifact_created_for_every_agent_artifact() -> None:
     events = get_emitted_events(state)
     artifact_events = [e for e in events if e.event_type.value == "artifact_created"]
     assert len(artifact_events) == len(state["artifacts"])
+
+
+def test_orchestrator_records_component_executions_separately_from_agents() -> None:
+    state = run_mock_workflow(
+        approvals={"analysis": ApprovalDecision.APPROVED, "plan": ApprovalDecision.APPROVED}
+    )
+    component_names = [c.component_name for c in state["component_executions"]]
+    agent_names = [a.agent_name for a in state["agent_executions"]]
+
+    assert "Snapshot Service" in component_names
+    assert "Toolchain Runtime Manager" in component_names
+    assert "Baseline Qualification Service" in component_names
+    assert "Delivery Service" in component_names
+    assert "Snapshot Service" not in agent_names
+    assert "Delivery Service" not in agent_names
+
+
+def test_orchestrator_emits_component_events_for_component_executions() -> None:
+    state = run_mock_workflow(
+        approvals={"analysis": ApprovalDecision.APPROVED, "plan": ApprovalDecision.APPROVED}
+    )
+    events = get_emitted_events(state)
+    component_events = [e for e in events if e.event_type.value == "component_state_changed"]
+    assert len(component_events) == len(state["component_executions"])
+
+
+def test_transformation_agent_returns_schema_validated_proposals() -> None:
+    agent = get_agent("Transformation Agent")
+    assert agent is not None
+    output = agent.execute(_make_input("angular-18-to-19"))
+    assert output.agent_kind == AgentKind.TRANSFORMATION
+    assert output.action_proposals[0].registered_action_id == "registered-ng-update-angular-18-to-19"
+    assert output.action_proposals[0].requires_backend_authorization is True
+    assert output.patch_proposals[0].files == ["package.json", "package-lock.json"]

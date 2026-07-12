@@ -70,6 +70,33 @@ class AgentStatus(str, Enum):
     REQUIRES_APPROVAL = "REQUIRES_APPROVAL"
 
 
+class DeterministicComponentType(str, Enum):
+    SOURCE_INTAKE_VALIDATOR = "SourceIntakeValidator"
+    SNAPSHOT_SERVICE = "SnapshotService"
+    WORKSPACE_TOPOLOGY_CLASSIFIER = "WorkspaceTopologyClassifier"
+    COMPATIBILITY_RESOLVER = "CompatibilityResolver"
+    TOOLCHAIN_RUNTIME_MANAGER = "ToolchainRuntimeManager"
+    COMMAND_POLICY_ENGINE = "CommandPolicyEngine"
+    BASELINE_QUALIFICATION_SERVICE = "BaselineQualificationService"
+    STATIC_SYMBOL_GATE = "StaticSymbolGate"
+    PARITY_EVIDENCE_ENGINE = "ParityEvidenceEngine"
+    CHECKPOINT_SERVICE = "CheckpointService"
+    ARTIFACT_SERVICE = "ArtifactService"
+    WORKER_SUPERVISOR = "WorkerSupervisor"
+    DELIVERY_SERVICE = "DeliveryService"
+
+
+class AgentKind(str, Enum):
+    ANALYSIS = "AnalysisAgent"
+    PLANNING = "PlanningAgent"
+    TRANSFORMATION = "TransformationAgent"
+    BUILD_VALIDATION = "BuildValidationAgent"
+    REPAIR = "RepairAgent"
+    REPORT = "ReportAgent"
+    ASSISTANT = "AssistantAgent"
+    ELIGIBILITY = "EligibilityAgent"
+
+
 class ValidationStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
@@ -153,6 +180,7 @@ class WorkflowEventType(str, Enum):
     RUN_STATE_CHANGED = "run_state_changed"
     STAGE_STATE_CHANGED = "stage_state_changed"
     STEP_STATE_CHANGED = "step_state_changed"
+    COMPONENT_STATE_CHANGED = "component_state_changed"
     AGENT_STATE_CHANGED = "agent_state_changed"
     VALIDATION_GATE_CHANGED = "validation_gate_changed"
     ARTIFACT_CREATED = "artifact_created"
@@ -266,11 +294,24 @@ class StageStepDto(ContractModel):
     completed_at: datetime | None = None
 
 
+class ComponentExecutionDto(ContractModel):
+    execution_id: str
+    run_id: str
+    stage_id: str | None = None
+    component_name: str
+    component_type: DeterministicComponentType
+    status: StepStatus
+    started_at: datetime
+    finished_at: datetime | None = None
+    summary: str | None = None
+
+
 class AgentExecutionDto(ContractModel):
     execution_id: str
     run_id: str
     stage_id: str | None = None
     agent_name: str
+    agent_kind: AgentKind | None = None
     status: AgentStatus
     started_at: datetime
     finished_at: datetime | None = None
@@ -448,6 +489,7 @@ class MigrationRunDto(ContractModel):
     updated_at: datetime
     stages: list[MigrationStageDto] = Field(min_length=1)
     steps: list[StageStepDto] = Field(default_factory=list)
+    component_executions: list[ComponentExecutionDto] = Field(default_factory=list)
     agent_executions: list[AgentExecutionDto] = Field(default_factory=list)
     validation_gates: list[ValidationGateDto] = Field(default_factory=list)
     approval_events: list[ApprovalEventDto] = Field(default_factory=list)
@@ -472,7 +514,43 @@ class MigrationRunDto(ContractModel):
         return self
 
 
-# Common agent contract (AMF-S0-10)
+# Deterministic component and AI-agent contracts (AMF-S0-10)
+
+
+class ComponentInputEnvelope(ContractModel):
+    run_id: str
+    stage_id: str | None = None
+    component_type: DeterministicComponentType
+    input_artifact_refs: list[str] = Field(default_factory=list)
+    policy_version: str = "migration-policy-v1"
+    state_version: int = Field(default=1, ge=1)
+
+
+class ComponentOutputEnvelope(ContractModel):
+    run_id: str
+    stage_id: str | None = None
+    component_type: DeterministicComponentType
+    status: StepStatus
+    summary: str
+    output_artifact_refs: list[str] = Field(default_factory=list)
+    recommended_next_step: str | None = None
+
+
+class DeterministicComponentContract(ContractModel):
+    component_type: DeterministicComponentType
+    responsibility: str
+    allowed_inputs: list[str] = Field(default_factory=list)
+    allowed_outputs: list[str] = Field(default_factory=list)
+    may_call_llm: bool = False
+    may_execute_commands_directly: bool = False
+
+    @model_validator(mode="after")
+    def enforce_deterministic_boundary(self) -> "DeterministicComponentContract":
+        if self.may_call_llm:
+            raise ValueError("deterministic components cannot call LLMs")
+        if self.may_execute_commands_directly:
+            raise ValueError("deterministic components cannot execute commands directly")
+        return self
 
 
 class AllowedAction(str, Enum):
@@ -481,7 +559,7 @@ class AllowedAction(str, Enum):
     REQUEST_APPROVAL = "request_approval"
     READ_ARTIFACT_SUMMARY = "read_artifact_summary"
     CREATE_ARTIFACT = "create_artifact"
-
+    PROPOSE_PATCH = "propose_patch"
 
 class ClientConstraints(ContractModel):
     preserve_ui: bool = True
@@ -512,24 +590,78 @@ class RiskEntry(ContractModel):
     description: str
 
 
+class UntrustedContextRef(ContractModel):
+    context_id: str
+    source: str
+    artifact_ref: str | None = None
+    reason: str = "repository content, comments, or logs are untrusted data"
+
+
+class ActionProposalDto(ContractModel):
+    proposal_id: str
+    action_type: AllowedAction
+    rationale: str
+    registered_action_id: str | None = None
+    requires_backend_authorization: bool = True
+    authorizes_execution: bool = False
+    authorizes_approval: bool = False
+
+    @model_validator(mode="after")
+    def enforce_proposal_boundary(self) -> "ActionProposalDto":
+        if self.action_type == AllowedAction.RUN_APPROVED_COMMAND and not self.registered_action_id:
+            raise ValueError("command proposals must reference a registered action id")
+        if self.authorizes_execution or self.authorizes_approval:
+            raise ValueError("agent proposals cannot authorize execution or approval")
+        return self
+
+
+class PatchProposalDto(ContractModel):
+    proposal_id: str
+    files: list[str] = Field(min_length=1)
+    rationale: str
+    risk_level: RiskLevel
+    expected_behavior_impact: str
+    validation_requests: list[str] = Field(min_length=1)
+    authorizes_application: bool = False
+
+    @model_validator(mode="after")
+    def enforce_patch_boundary(self) -> "PatchProposalDto":
+        if self.authorizes_application:
+            raise ValueError("patch proposals cannot authorize application")
+        return self
+
+
 class AgentInputEnvelope(ContractModel):
     run_id: str
     stage_id: str | None = None
+    agent_kind: AgentKind | None = None
     workspace: WorkspaceRef | None = None
     client_constraints: ClientConstraints = Field(default_factory=ClientConstraints)
     current_workflow_state: RunStatus
     allowed_actions: list[AllowedAction] = Field(default_factory=list)
     artifact_locations: ArtifactLocations = Field(default_factory=ArtifactLocations)
     approved_plan_checksum: str | None = None
+    untrusted_context: list[UntrustedContextRef] = Field(default_factory=list)
 
 
 class AgentOutputEnvelope(ContractModel):
     agent_name: str
+    agent_kind: AgentKind | None = None
     run_id: str
     stage_id: str | None = None
     status: AgentStatus
     summary: str
     artifacts_created: list[str] = Field(default_factory=list)
     risks: list[RiskEntry] = Field(default_factory=list)
+    action_proposals: list[ActionProposalDto] = Field(default_factory=list)
+    patch_proposals: list[PatchProposalDto] = Field(default_factory=list)
     requires_human_action: bool = False
+    authorizes_execution: bool = False
+    authorizes_approval: bool = False
     next_recommended_state: RunStatus
+
+    @model_validator(mode="after")
+    def enforce_agent_authority_boundary(self) -> "AgentOutputEnvelope":
+        if self.authorizes_execution or self.authorizes_approval:
+            raise ValueError("AI output cannot authorize execution or approval")
+        return self

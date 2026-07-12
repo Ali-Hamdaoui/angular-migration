@@ -27,7 +27,7 @@ AMF-S0-09 models the production workflow shape with mock-only behavior:
 14. `report_mock`
 
 The graph emits ordered backend events, records mock checkpoints, preserves
-parallel discovery branch state, and separates deterministic components from
+parallel discovery branch state, and separates deterministic components in `component_executions` from
 AI-assisted agents in `agent_executions`. Approval gates pause durably when no
 approval decision is present. Auto-approval can immediately approve eligible
 mock gates and remains active across the stage loop. Mock cancellation stops

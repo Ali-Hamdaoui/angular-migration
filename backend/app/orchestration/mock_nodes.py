@@ -13,6 +13,7 @@ from app.agents.registry import get_agent
 from app.domain.contracts import (
     AgentExecutionDto,
     AgentInputEnvelope,
+    ComponentExecutionDto,
     AgentOutputEnvelope,
     AgentStatus,
     AllowedAction,
@@ -21,10 +22,12 @@ from app.domain.contracts import (
     ArtifactRefDto,
     ArtifactType,
     ClientConstraints,
+    DeterministicComponentType,
     MigrationEventDto,
     RunPhase,
     RunStatus,
     StageStatus,
+    StepStatus,
     ValidationGateDto,
     ValidationStatus,
     WorkflowEventType,
@@ -61,25 +64,53 @@ def _checkpoint(state: OrchestratorState, checkpoint_id: str, stage_id: str | No
     state.setdefault("checkpoints", []).append({"checkpoint_id": checkpoint_id, "stage_id": stage_id, "created_at": _now().isoformat()})
 
 
-def _record_component(state: OrchestratorState, component_name: str, summary: str, stage_id: str | None = None) -> None:
-    execution = AgentExecutionDto(
+_COMPONENT_TYPES: dict[str, DeterministicComponentType] = {
+    "Source Intake Validator": DeterministicComponentType.SOURCE_INTAKE_VALIDATOR,
+    "Snapshot Service": DeterministicComponentType.SNAPSHOT_SERVICE,
+    "Workspace Topology Classifier": DeterministicComponentType.WORKSPACE_TOPOLOGY_CLASSIFIER,
+    "Compatibility Resolver": DeterministicComponentType.COMPATIBILITY_RESOLVER,
+    "Toolchain Runtime Manager": DeterministicComponentType.TOOLCHAIN_RUNTIME_MANAGER,
+    "Command Policy Engine": DeterministicComponentType.COMMAND_POLICY_ENGINE,
+    "Baseline Qualification Service": DeterministicComponentType.BASELINE_QUALIFICATION_SERVICE,
+    "Static Symbol Gate": DeterministicComponentType.STATIC_SYMBOL_GATE,
+    "Parity Evidence Engine": DeterministicComponentType.PARITY_EVIDENCE_ENGINE,
+    "Checkpoint Service": DeterministicComponentType.CHECKPOINT_SERVICE,
+    "Artifact Service": DeterministicComponentType.ARTIFACT_SERVICE,
+    "Worker Supervisor": DeterministicComponentType.WORKER_SUPERVISOR,
+    "Delivery Service": DeterministicComponentType.DELIVERY_SERVICE,
+}
+
+
+def _record_component(
+    state: OrchestratorState,
+    component_name: str,
+    component_type: DeterministicComponentType,
+    summary: str,
+    stage_id: str | None = None,
+) -> None:
+    execution = ComponentExecutionDto(
         execution_id=f"component-exec-{uuid4().hex[:12]}",
         run_id=state["run_id"],
         stage_id=stage_id,
-        agent_name=component_name,
-        status=AgentStatus.COMPLETED,
+        component_name=component_name,
+        component_type=component_type,
+        status=StepStatus.PASSED,
         started_at=_now(),
         finished_at=_now(),
         summary=summary,
     )
-    state.setdefault("agent_executions", []).append(execution)
+    state.setdefault("component_executions", []).append(execution)
     _emit(
         state,
-        WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": execution.execution_id, "agent_name": component_name, "status": execution.status.value},
+        WorkflowEventType.COMPONENT_STATE_CHANGED,
+        {
+            "execution_id": execution.execution_id,
+            "component_name": component_name,
+            "component_type": component_type.value,
+            "status": execution.status.value,
+        },
         stage_id=stage_id,
     )
-
 
 def _build_input_envelope(state: OrchestratorState, stage_id: str | None, allowed_actions: list[AllowedAction]) -> AgentInputEnvelope:
     run_id = state["run_id"]
@@ -111,6 +142,7 @@ def _run_agent(state: OrchestratorState, agent_name: str, stage_id: str | None, 
         run_id=state["run_id"],
         stage_id=stage_id,
         agent_name=output.agent_name,
+        agent_kind=output.agent_kind,
         status=output.status,
         started_at=_now(),
         finished_at=_now(),
@@ -120,7 +152,7 @@ def _run_agent(state: OrchestratorState, agent_name: str, stage_id: str | None, 
     _emit(
         state,
         WorkflowEventType.AGENT_STATE_CHANGED,
-        {"execution_id": execution.execution_id, "agent_name": output.agent_name, "status": output.status.value},
+        {"execution_id": execution.execution_id, "agent_name": output.agent_name, "agent_kind": output.agent_kind.value if output.agent_kind else None, "status": output.status.value},
         stage_id=stage_id,
     )
 
@@ -150,6 +182,7 @@ def _result(state: OrchestratorState, next_node: str, paused: bool = False) -> d
         "run_status": state.get("run_status"),
         "run_phase": state.get("run_phase"),
         "stages": list(state.get("stages", [])),
+        "component_executions": list(state.get("component_executions", [])),
         "agent_executions": list(state.get("agent_executions", [])),
         "validation_gates": list(state.get("validation_gates", [])),
         "artifacts": list(state.get("artifacts", [])),
@@ -188,14 +221,14 @@ def create_run_mock(state: OrchestratorState) -> dict[str, Any]:
 
 def snapshot_topology_mock(state: OrchestratorState) -> dict[str, Any]:
     _run_agent(state, "Eligibility and Constraint Agent", None, _READ_ONLY)
-    _record_component(state, "Snapshot Service", "Created immutable source snapshot placeholder.")
-    _record_component(state, "Workspace Topology Classifier", "Classified mock single-application Angular workspace.")
+    _record_component(state, "Snapshot Service", _COMPONENT_TYPES["Snapshot Service"], "Created immutable source snapshot placeholder.")
+    _record_component(state, "Workspace Topology Classifier", _COMPONENT_TYPES["Workspace Topology Classifier"], "Classified mock single-application Angular workspace.")
     _checkpoint(state, "snapshot-topology-ready")
     return _result(state, "source_runtime_resolution_mock")
 
 
 def source_runtime_resolution_mock(state: OrchestratorState) -> dict[str, Any]:
-    _record_component(state, "Toolchain Runtime Manager", "Resolved source-compatible runtime profile placeholder.")
+    _record_component(state, "Toolchain Runtime Manager", _COMPONENT_TYPES["Toolchain Runtime Manager"], "Resolved source-compatible runtime profile placeholder.")
     return _result(state, "parallel_discovery_fanout_mock")
 
 
@@ -212,13 +245,13 @@ def parallel_discovery_fanout_mock(state: OrchestratorState) -> dict[str, Any]:
 
 def parallel_discovery_join_mock(state: OrchestratorState) -> dict[str, Any]:
     state["parallel_discovery"] = {key: "completed" for key in state.get("parallel_discovery", {}) or {"source_scan": "queued", "dependency_audit": "queued", "topology_scan": "queued"}}
-    _record_component(state, "Discovery Join", "Joined source, dependency, and topology discovery branches.")
+    _record_component(state, "Compatibility Resolver", _COMPONENT_TYPES["Compatibility Resolver"], "Joined source, dependency, and topology discovery branches.")
     _checkpoint(state, "discovery-joined")
     return _result(state, "baseline_qualification_mock")
 
 
 def baseline_qualification_mock(state: OrchestratorState) -> dict[str, Any]:
-    _record_component(state, "Baseline Qualification Service", "Recorded mock baseline qualification.")
+    _record_component(state, "Baseline Qualification Service", _COMPONENT_TYPES["Baseline Qualification Service"], "Recorded mock baseline qualification.")
     return _result(state, "analysis_feasibility_mock")
 
 
@@ -304,14 +337,14 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
     stage["status"] = StageStatus.RUNNING
     _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.RUNNING.value}, stage_id=stage_id)
 
-    _record_component(state, "Checkpoint Service", "Created safe stage checkpoint.", stage_id)
+    _record_component(state, "Checkpoint Service", _COMPONENT_TYPES["Checkpoint Service"], "Created safe stage checkpoint.", stage_id)
     _run_agent(state, "Transformation Agent", stage_id, _READ_AND_ARTIFACT)
     _stage_gate(state, stage_id, "cheap_validation")
     _run_agent(state, "Build / Validation Agent", stage_id, _READ_AND_ARTIFACT)
     _stage_gate(state, stage_id, "expensive_validation")
-    _record_component(state, "Repair Decision", "No repair required for mock stage.", stage_id)
+    _record_component(state, "Static Symbol Gate", _COMPONENT_TYPES["Static Symbol Gate"], "No repair required for mock stage.", stage_id)
     _run_agent(state, "Repair Agent", stage_id, _READ_ONLY)
-    _record_component(state, "Risk Approval Decision", "Risk accepted by mock policy.", stage_id)
+    _record_component(state, "Command Policy Engine", _COMPONENT_TYPES["Command Policy Engine"], "Risk accepted by mock policy.", stage_id)
 
     stage["status"] = StageStatus.PASSED
     _emit(state, WorkflowEventType.STAGE_STATE_CHANGED, {"status": StageStatus.PASSED.value}, stage_id=stage_id)
@@ -322,13 +355,13 @@ def _run_stage(state: OrchestratorState, stage_index: int, next_node: str) -> di
 
 def final_assurance_mock(state: OrchestratorState) -> dict[str, Any]:
     _set_phase(state, RunPhase.FINAL_ASSURANCE)
-    _record_component(state, "Final Assurance", "Recorded mock final assurance evidence.")
+    _record_component(state, "Parity Evidence Engine", _COMPONENT_TYPES["Parity Evidence Engine"], "Recorded mock final assurance evidence.")
     return _result(state, "delivery_gate_mock")
 
 
 def delivery_gate_mock(state: OrchestratorState) -> dict[str, Any]:
     _set_phase(state, RunPhase.DELIVERY_REPORTING)
-    _record_component(state, "Delivery Gate", "Delivery remains unpublished in Sprint 0 mock run.")
+    _record_component(state, "Delivery Service", _COMPONENT_TYPES["Delivery Service"], "Delivery remains unpublished in Sprint 0 mock run.")
     return _result(state, "report_mock")
 
 

@@ -37,6 +37,22 @@ describe("applyEventToRun", () => {
     expect(updated.agent_executions[1].status).toBe("RUNNING");
   });
 
+  it("updates existing component execution status", () => {
+    const updated = applyEventToRun(
+      mockMigrationRun,
+      event("component_state_changed", { execution_id: "component-execution-topology", component_name: "Workspace Topology Classifier", component_type: "WorkspaceTopologyClassifier", status: "RUNNING" }, "evt-component", null),
+    );
+    expect(updated.component_executions[0].status).toBe("RUNNING");
+  });
+
+  it("creates a new component execution when it does not exist", () => {
+    const updated = applyEventToRun(
+      mockMigrationRun,
+      event("component_state_changed", { execution_id: "component-execution-snapshot", component_name: "Snapshot Service", component_type: "SnapshotService", status: "PASSED" }, "evt-component-new", null),
+    );
+    expect(updated.component_executions).toHaveLength(2);
+    expect(updated.component_executions[1].component_name).toBe("Snapshot Service");
+  });
   it("updates existing validation gate status", () => {
     const updated = applyEventToRun(
       mockMigrationRun,

@@ -118,7 +118,7 @@ def test_parallel_discovery_fanout_and_join_complete() -> None:
         "dependency_audit": "completed",
         "topology_scan": "completed",
     }
-    summaries = [execution.summary for execution in state["agent_executions"]]
+    summaries = [execution.summary for execution in state["component_executions"]]
     assert "Joined source, dependency, and topology discovery branches." in summaries
 
 
@@ -156,28 +156,31 @@ def test_graph_emits_workflow_completed_event() -> None:
 
 def test_graph_records_deterministic_components_and_ai_agents() -> None:
     state = run_mock_workflow(approvals=ALL_APPROVALS)
-    names = [a.agent_name for a in state["agent_executions"]]
+    agent_names = [a.agent_name for a in state["agent_executions"]]
+    component_names = [c.component_name for c in state["component_executions"]]
     for expected in [
         "Eligibility and Constraint Agent",
+        "Analysis Agent",
+        "Planning Agent",
+        "Transformation Agent",
+        "Build / Validation Agent",
+        "Repair Agent",
+        "Report Agent",
+    ]:
+        assert expected in agent_names
+    for expected in [
         "Snapshot Service",
         "Workspace Topology Classifier",
         "Toolchain Runtime Manager",
-        "Discovery Join",
+        "Compatibility Resolver",
         "Baseline Qualification Service",
-        "Analysis Agent",
-        "Planning Agent",
         "Checkpoint Service",
-        "Transformation Agent",
-        "Build / Validation Agent",
-        "Repair Decision",
-        "Repair Agent",
-        "Risk Approval Decision",
-        "Final Assurance",
-        "Delivery Gate",
-        "Report Agent",
+        "Static Symbol Gate",
+        "Command Policy Engine",
+        "Parity Evidence Engine",
+        "Delivery Service",
     ]:
-        assert expected in names
-
+        assert expected in component_names
 
 def test_graph_records_stage_validation_gates_for_cheap_and_expensive_checks() -> None:
     state = run_mock_workflow(approvals=ALL_APPROVALS)

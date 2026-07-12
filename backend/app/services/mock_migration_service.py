@@ -4,6 +4,9 @@ from datetime import UTC, datetime
 
 from app.domain.contracts import (
     AgentExecutionDto,
+    ComponentExecutionDto,
+    DeterministicComponentType,
+    StepStatus,
     AgentStatus,
     ApprovalDecision,
     ApprovalEventDto,
@@ -55,6 +58,7 @@ def get_mock_migration_run() -> MigrationRunDto:
             MigrationStageDto(stage_id="angular-19-to-20", run_id=run_id, stage_order=2, source_angular_version="19.x", target_angular_version="20.x", status=StageStatus.PENDING, created_at=now),
             MigrationStageDto(stage_id="angular-20-to-21", run_id=run_id, stage_order=3, source_angular_version="20.x", target_angular_version="21.x", status=StageStatus.PENDING, created_at=now),
         ],
+        component_executions=[ComponentExecutionDto(execution_id="component-execution-topology", run_id=run_id, component_name="Workspace Topology Classifier", component_type=DeterministicComponentType.WORKSPACE_TOPOLOGY_CLASSIFIER, status=StepStatus.PASSED, started_at=now, finished_at=now, summary="Mock topology classified deterministically.")],
         agent_executions=[AgentExecutionDto(execution_id="agent-execution-planning", run_id=run_id, agent_name="Planning Agent", status=AgentStatus.COMPLETED, started_at=now, finished_at=now, summary="Mock plan prepared for approval.")],
         validation_gates=[ValidationGateDto(gate_id="gate-browser-smoke", run_id=run_id, stage_id=stage_id, name="browser_smoke", status=ValidationStatus.MANUAL_VALIDATION_REQUIRED, checked_at=now, details="Manual validation is required in Sprint 0.")],
         approval_events=[ApprovalEventDto(approval_id="approval-plan", run_id=run_id, decision=ApprovalDecision.PENDING, requested_at=now, rationale="Mock plan approval is pending.")],

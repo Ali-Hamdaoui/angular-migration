@@ -10,6 +10,7 @@ from typing import TypedDict
 
 from app.domain.contracts import (
     AgentExecutionDto,
+    ComponentExecutionDto,
     ApprovalDecision,
     ApprovalEventDto,
     ArtifactRefDto,
@@ -40,6 +41,7 @@ class OrchestratorState(TypedDict, total=False):
     source_angular_version: str
     target_angular_version: str
     stages: list[StageState]
+    component_executions: list[ComponentExecutionDto]
     agent_executions: list[AgentExecutionDto]
     validation_gates: list[ValidationGateDto]
     approval_events: list[ApprovalEventDto]
@@ -86,6 +88,7 @@ def create_initial_state(run_id: str) -> OrchestratorState:
                 status=StageStatus.PENDING,
             ),
         ],
+        component_executions=[],
         agent_executions=[],
         validation_gates=[],
         approval_events=[],
@@ -128,6 +131,7 @@ def state_to_run_dto(state: OrchestratorState) -> MigrationRunDto:
         created_at=now,
         updated_at=now,
         stages=stages,
+        component_executions=state.get("component_executions", []),
         agent_executions=state.get("agent_executions", []),
         validation_gates=state.get("validation_gates", []),
         approval_events=state.get("approval_events", []),
