@@ -3,10 +3,12 @@ import type {
   AgentStatus,
   ArtifactRefDto,
   ArtifactType,
+  ComponentExecutionDto,
   MigrationEventDto,
   MigrationRunDto,
   RunStatus,
   StageStatus,
+  StepStatus,
   ValidationGateDto,
   ValidationStatus,
 } from "@/types/generated/api";
@@ -31,6 +33,31 @@ export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto):
         ),
       };
 
+    case "component_state_changed": {
+      const executionId = event.payload.execution_id as string;
+      const newStatus = event.payload.status as StepStatus;
+      const exists = run.component_executions.some((c) => c.execution_id === executionId);
+      const component_executions = exists
+        ? run.component_executions.map((c) =>
+            c.execution_id === executionId ? { ...c, status: newStatus } : c,
+          )
+        : [
+            ...run.component_executions,
+            {
+              execution_id: executionId,
+              run_id: run.run_id,
+              stage_id: event.stage_id,
+              component_name: event.payload.component_name as string,
+              component_type: event.payload.component_type as ComponentExecutionDto["component_type"],
+              status: newStatus,
+              started_at: event.occurred_at,
+              finished_at: null,
+              summary: null,
+            } satisfies ComponentExecutionDto,
+          ];
+      return { ...run, component_executions };
+    }
+
     case "agent_state_changed": {
       const executionId = event.payload.execution_id as string;
       const newStatus = event.payload.status as AgentStatus;
@@ -46,6 +73,7 @@ export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto):
               run_id: run.run_id,
               stage_id: event.stage_id,
               agent_name: event.payload.agent_name as string,
+              agent_kind: (event.payload.agent_kind as AgentExecutionDto["agent_kind"]) ?? null,
               status: newStatus,
               started_at: event.occurred_at,
               finished_at: null,

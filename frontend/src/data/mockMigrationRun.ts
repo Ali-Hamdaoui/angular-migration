@@ -21,8 +21,11 @@ export const mockMigrationRun: MigrationRunDto = {
   steps: [
     { step_id: "step-plan-approval", run_id: "mock-run-angular-18-to-21", stage_id: null, name: "plan_approval", status: "WAITING_APPROVAL", component_type: "deterministic_gate", started_at: null, completed_at: null }
   ],
+  component_executions: [
+    { execution_id: "component-execution-topology", run_id: "mock-run-angular-18-to-21", stage_id: null, component_name: "Workspace Topology Classifier", component_type: "WorkspaceTopologyClassifier", status: "PASSED", started_at: "2026-07-10T00:00:00Z", finished_at: "2026-07-10T00:00:00Z", summary: "Mock topology classified deterministically." }
+  ],
   agent_executions: [
-    { execution_id: "agent-execution-planning", run_id: "mock-run-angular-18-to-21", stage_id: null, agent_name: "Planning Agent", status: "COMPLETED", started_at: "2026-07-10T00:00:00Z", finished_at: "2026-07-10T00:00:00Z", summary: "Mock plan prepared for approval." }
+    { execution_id: "agent-execution-planning", run_id: "mock-run-angular-18-to-21", stage_id: null, agent_name: "Planning Agent", agent_kind: "PlanningAgent", status: "COMPLETED", started_at: "2026-07-10T00:00:00Z", finished_at: "2026-07-10T00:00:00Z", summary: "Mock plan prepared for approval." }
   ],
   validation_gates: [
     { gate_id: "gate-browser-smoke", run_id: "mock-run-angular-18-to-21", stage_id: "angular-18-to-19", name: "browser_smoke", status: "manual_validation_required", checked_at: "2026-07-10T00:00:00Z", details: "Manual validation is required in Sprint 0." }

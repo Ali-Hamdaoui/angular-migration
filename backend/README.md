@@ -265,16 +265,15 @@ patched to 0 in tests). No real orchestration drives this stream in Sprint 0.
 ## Mock orchestrator
 
 The LangGraph mock orchestrator (`app/orchestration/`) defines the Sprint 0
-workflow graph shape with 11 mock nodes:
+workflow graph shape with optimized mock nodes:
 
 ```text
-create_run_mock → eligibility_mock → baseline_mock → analysis_mock
-  → wait_analysis_approval_mock
-      ↓ (conditional: approved → continue, rejected → END, no decision → pause)
-  planning_mock → wait_plan_approval_mock
-      ↓ (conditional: approved → continue, rejected → END, no decision → pause)
-  stage_18_to_19_mock → stage_19_to_20_mock → stage_20_to_21_mock
-  → report_mock → END
+create_run_mock -> snapshot_topology_mock -> source_runtime_resolution_mock
+  -> parallel_discovery_fanout_mock -> parallel_discovery_join_mock
+  -> baseline_qualification_mock -> analysis_feasibility_mock
+  -> wait_analysis_approval_mock -> planning_mock -> wait_plan_approval_mock
+  -> stage_loop_mock -> final_assurance_mock -> delivery_gate_mock
+  -> report_mock -> END
 ```
 
 Nodes mutate `OrchestratorState` only and emit `MigrationEventDto` entries
@@ -302,22 +301,33 @@ assert state["run_status"].value == "COMPLETED"
 assert all(s["status"].value == "PASSED" for s in state["stages"])
 ```
 
-Stage order is always Angular 18→19, 19→20, 20→21 as defined by the initial
-state's `stages` list.
+Stage order is always Angular 18-to-19, 19-to-20, 20-to-21 as defined by the
+initial state's `stages` list.
+## Common component and agent contracts
 
-## Common agent contract
+Deterministic components use `ComponentInputEnvelope`,
+`ComponentOutputEnvelope`, and `DeterministicComponentContract`. Component
+contracts are frozen Pydantic v2 models with `extra="forbid"`; they reject LLM
+access and direct command execution. Component calls are exposed in the mock read
+model as `ComponentExecutionDto` entries under `component_executions`.
 
-All agents — mock or real — inherit `BaseMockAgent` and implement `execute`.
-They receive an `AgentInputEnvelope` and return an `AgentOutputEnvelope`,
-both defined as frozen Pydantic v2 models with `extra="forbid"`.
+All agents - mock or real - inherit `BaseMockAgent` and implement `execute`.
+They receive an `AgentInputEnvelope` and return an `AgentOutputEnvelope`, both
+frozen Pydantic v2 models with `extra="forbid"`.
 
-**Input envelope fields:** `run_id`, `stage_id`, `workspace`,
+**Input envelope fields:** `run_id`, `stage_id`, `agent_kind`, `workspace`,
 `client_constraints`, `current_workflow_state`, `allowed_actions`,
-`artifact_locations`, `approved_plan_checksum`.
+`artifact_locations`, `approved_plan_checksum`, and `untrusted_context`.
 
-**Output envelope fields:** `agent_name`, `run_id`, `stage_id`, `status`,
-`summary`, `artifacts_created`, `risks`, `requires_human_action`,
+**Output envelope fields:** `agent_name`, `agent_kind`, `run_id`, `stage_id`,
+`status`, `summary`, `artifacts_created`, `risks`, `action_proposals`,
+`patch_proposals`, `requires_human_action`, authorization flags, and
 `next_recommended_state`.
+
+`ActionProposalDto` references backend-registered action IDs for executable
+requests. `PatchProposalDto` identifies files, rationale, risk, expected
+behavior impact, and validation requests. AI output cannot authorize execution,
+approval, or patch application.
 
 Eight mock agents are registered in `app/agents/registry.py`:
 
@@ -327,14 +337,15 @@ Eight mock agents are registered in `app/agents/registry.py`:
 | Eligibility and Constraint Agent | Accepts Angular 18.x; creates eligibility artifacts | COMPLETED |
 | Analysis Agent | Inventories workspace; reports dependency risk | COMPLETED |
 | Planning Agent | Generates upgrade ladder and toolchain profiles | COMPLETED |
-| Transformation Agent | Mock upgrade; creates sandbox transform artifacts | COMPLETED |
+| Transformation Agent | Mock upgrade; creates sandbox transform artifacts and proposals | COMPLETED |
 | Build / Validation Agent | Mock build pass; reports manual browser-smoke risk | COMPLETED |
-| Repair Agent | No errors detected; repair skipped | SKIPPED |
+| Repair Agent | No errors detected; repair skipped with example patch proposal | SKIPPED |
 | Report Agent | Generates final evidence report artifacts | COMPLETED |
 
-Agents never call shell commands, mutate files, approve gates, or bypass
-backend authority. They return structured outputs only; the orchestrator
-records each call as an `AgentExecutionDto` and emits SSE events.
+Agents never call shell commands, mutate files, approve gates, or bypass backend
+authority. They return structured outputs only; the orchestrator records each AI
+call as an `AgentExecutionDto` and emits SSE events. Deterministic component
+activity is recorded separately and must be labeled separately in the UI.
 
 ## Boundaries
 
