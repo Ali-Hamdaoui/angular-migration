@@ -34,7 +34,11 @@ export const mockMigrationRun: MigrationRunDto = {
     { approval_id: "approval-plan", run_id: "mock-run-angular-18-to-21", stage_id: null, decision: "PENDING", requested_at: "2026-07-10T00:00:00Z", decided_at: null, actor: null, rationale: "Mock plan approval is pending." }
   ],
   artifacts: [
-    { artifact_id: "artifact-mock-plan", run_id: "mock-run-angular-18-to-21", stage_id: "angular-18-to-19", artifact_type: "markdown", relative_path: "03_planning/mock_migration_plan.md", created_at: "2026-07-10T00:00:00Z", checksum: "mock-checksum-plan" }
+    { artifact_id: "artifact-command-log", run_id: "mock-run-angular-18-to-21", stage_id: "angular-18-to-19", artifact_type: "command_log", relative_path: "stages/angular-18-to-19/validation/build.log", created_at: "2026-07-10T00:00:00Z", checksum: "sha256:mock-command-log" },
+    { artifact_id: "artifact-stage-diff", run_id: "mock-run-angular-18-to-21", stage_id: "angular-18-to-19", artifact_type: "diff", relative_path: "stages/angular-18-to-19/transform/source.diff", created_at: "2026-07-10T00:01:00Z", checksum: "sha256:mock-stage-diff" },
+    { artifact_id: "artifact-repair-diff", run_id: "mock-run-angular-18-to-21", stage_id: "angular-18-to-19", artifact_type: "patch", relative_path: "repair_attempts/angular-18-to-19/attempt-001/repair.patch", created_at: "2026-07-10T00:02:00Z", checksum: "sha256:mock-repair-diff" },
+    { artifact_id: "artifact-final-report", run_id: "mock-run-angular-18-to-21", stage_id: null, artifact_type: "markdown", relative_path: "final_report/final_migration_evidence_report.md", created_at: "2026-07-10T00:03:00Z", checksum: "sha256:mock-final-report" },
+    { artifact_id: "artifact-script-fixture", run_id: "mock-run-angular-18-to-21", stage_id: null, artifact_type: "markdown", relative_path: "final_report/script_injection_fixture.md", created_at: "2026-07-10T00:04:00Z", checksum: "sha256:mock-script-fixture" }
   ],
   command_requests: [
     { command_id: "command-stage-19", run_id: "mock-run-angular-18-to-21", stage_id: "angular-18-to-19", requested_by: "Transformation Agent", requester: "Transformation Agent", executable: "npx", arguments: ["ng", "update", "@angular/core@19"], shell: false, working_directory_alias: "run_workspace", working_directory: "sandbox://mock-run-angular-18-to-21", runtime_profile_id: "source-runtime-profile", timeout_seconds: 30, network_profile: "none", cancellation_policy: "terminate_process_tree", idempotency_key: "mock-command-stage-19", requested_at: "2026-07-10T00:00:00Z" }

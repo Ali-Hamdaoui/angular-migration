@@ -1,6 +1,7 @@
 import { apiClient, type createApiClient } from "./client";
 import type {
   CreateMockMigrationRequestDto,
+  ArtifactRefDto,
   HealthResponse,
   MigrationRunDto,
   PreflightRequestDto,
@@ -9,6 +10,8 @@ import type {
 } from "@/types/generated/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
+
+export type ArtifactContentResponse = { artifact: ArtifactRefDto; content: string; created_by: string | null };
 
 export function getHealth(client: ApiClient = apiClient): Promise<HealthResponse> {
   return client.get<HealthResponse>("/health");
@@ -32,4 +35,8 @@ export function getMockMigrationState(client: ApiClient = apiClient): Promise<Mi
 
 export function getMigrationState(runId: string, client: ApiClient = apiClient): Promise<MigrationRunDto> {
   return client.get<MigrationRunDto>(`/migrations/${runId}/state`);
+}
+
+export function getArtifactById(artifactId: string, client: ApiClient = apiClient): Promise<ArtifactContentResponse> {
+  return client.get<ArtifactContentResponse>(`/artifacts/${artifactId}`);
 }

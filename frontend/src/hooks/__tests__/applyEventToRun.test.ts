@@ -75,9 +75,9 @@ describe("applyEventToRun", () => {
       mockMigrationRun,
       event("artifact_created", { artifact_id: "artifact-patch", artifact_type: "patch", relative_path: "05_sandbox_transform/patch.patch", checksum: "sha256:abc" }),
     );
-    expect(updated.artifacts).toHaveLength(2);
-    expect(updated.artifacts[1].artifact_id).toBe("artifact-patch");
-    expect(updated.artifacts[1].artifact_type).toBe("patch");
+    expect(updated.artifacts).toHaveLength(mockMigrationRun.artifacts.length + 1);
+    expect(updated.artifacts.at(-1)?.artifact_id).toBe("artifact-patch");
+    expect(updated.artifacts.at(-1)?.artifact_type).toBe("patch");
   });
 
   it("appends a new approval event on approval_required", () => {
