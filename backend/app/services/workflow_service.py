@@ -1,10 +1,4 @@
-"""Workflow service that runs the mock orchestrator graph.
-
-The service is the boundary between the orchestrator and the rest of
-the backend. It exposes a synchronous ``run_mock_workflow`` for tests
-and a ``run_mock_workflow_async`` for future SSE integration. Graph
-nodes never bypass this service to write to the frontend or database.
-"""
+"""Workflow service that runs the optimized mock orchestrator graph."""
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import get_settings
@@ -22,17 +16,17 @@ def run_mock_workflow(
     run_id: str = "mock-run-angular-18-to-21",
     approvals: dict[str, ApprovalDecision] | None = None,
     artifact_store: LocalFilesystemArtifactStore | None = None,
+    *,
+    auto_approval_enabled: bool = False,
+    cancel_requested: bool = False,
 ) -> OrchestratorState:
-    """Run the mock graph end-to-end with pre-seeded approval decisions.
-
-    Pass ``approvals={"analysis": ApprovalDecision.APPROVED, "plan": ...}``
-    to auto-approve gates. Without approvals the graph pauses at the
-    first approval gate and returns early.
-    """
+    """Run the mock graph with optional approvals, auto-approval, or cancellation."""
     store = artifact_store or get_workflow_artifact_store()
     store.ensure_run_layout(run_id)
 
     state = create_initial_state(run_id)
+    state["auto_approval_enabled"] = auto_approval_enabled
+    state["cancel_requested"] = cancel_requested
     if approvals:
         state["approval_decisions"] = approvals
     graph = build_mock_graph()
@@ -51,6 +45,16 @@ def run_mock_workflow_step(
 
     state.setdefault("approval_decisions", {})[approval_gate] = decision
     state["paused"] = False
+    graph = build_mock_graph()
+    return graph.invoke(state)
+
+
+def resume_mock_workflow_from_checkpoint(state: OrchestratorState, artifact_store: LocalFilesystemArtifactStore | None = None) -> OrchestratorState:
+    """Resume from the last safe mock checkpoint without changing approval policy."""
+    store = artifact_store or get_workflow_artifact_store()
+    store.ensure_run_layout(state["run_id"])
+    state["paused"] = False
+    state["cancel_requested"] = False
     graph = build_mock_graph()
     return graph.invoke(state)
 

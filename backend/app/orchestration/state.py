@@ -6,7 +6,7 @@ directly; they emit events through ``emitted_events`` so the backend
 service layer can persist and stream them.
 """
 
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from app.domain.contracts import (
     AgentExecutionDto,
@@ -16,6 +16,7 @@ from app.domain.contracts import (
     MigrationEventDto,
     MigrationRunDto,
     MigrationStageDto,
+    RunPhase,
     RunStatus,
     StageStatus,
     ValidationGateDto,
@@ -35,6 +36,7 @@ class OrchestratorState(TypedDict, total=False):
 
     run_id: str
     run_status: RunStatus
+    run_phase: RunPhase
     source_angular_version: str
     target_angular_version: str
     stages: list[StageState]
@@ -47,13 +49,18 @@ class OrchestratorState(TypedDict, total=False):
     current_stage_index: int
     paused: bool
     next_node: str
+    parallel_discovery: dict[str, str]
+    checkpoints: list[dict[str, str | None]]
+    auto_approval_enabled: bool
+    cancel_requested: bool
 
 
 def create_initial_state(run_id: str) -> OrchestratorState:
-    """Build the entry-point state for a mock Angular 18 → 21 run."""
+    """Build the entry-point state for a mock Angular 18 to 21 run."""
     return OrchestratorState(
         run_id=run_id,
         run_status=RunStatus.CREATED,
+        run_phase=RunPhase.PREFLIGHT_SNAPSHOT,
         source_angular_version="18.x",
         target_angular_version="21.x",
         stages=[
@@ -88,6 +95,10 @@ def create_initial_state(run_id: str) -> OrchestratorState:
         current_stage_index=0,
         paused=False,
         next_node="create_run_mock",
+        parallel_discovery={},
+        checkpoints=[],
+        auto_approval_enabled=False,
+        cancel_requested=False,
     )
 
 
@@ -111,6 +122,7 @@ def state_to_run_dto(state: OrchestratorState) -> MigrationRunDto:
     return MigrationRunDto(
         run_id=state["run_id"],
         status=state["run_status"],
+        run_phase=state.get("run_phase", RunPhase.FEASIBILITY_PLANNING),
         source_angular_version=state.get("source_angular_version", ""),
         target_angular_version=state.get("target_angular_version", ""),
         created_at=now,
