@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from app.observability import build_diagnostics_summary
 from app.domain.contracts import (
     AgentExecutionDto,
     ComponentExecutionDto,
@@ -19,6 +20,7 @@ from app.domain.contracts import (
     CommandStatus,
     DeliveryManifestDto,
     DeliveryStatus,
+    LlmUsageRecordDto,
     MigrationRunDto,
     MigrationStageDto,
     PatchLedgerEntryDto,
@@ -46,7 +48,7 @@ def get_mock_migration_run() -> MigrationRunDto:
         created_at=now,
         checksum="mock-checksum-plan",
     )
-    return MigrationRunDto(
+    run = MigrationRunDto(
         run_id=run_id,
         status=RunStatus.WAITING,
         source_angular_version="18.x",
@@ -75,5 +77,7 @@ def get_mock_migration_run() -> MigrationRunDto:
             delivery_readiness=AssuranceStatus.NOT_EVALUATED,
         ),
         delivery=DeliveryManifestDto(run_id=run_id, status=DeliveryStatus.NOT_PUBLISHED),
+        llm_usage=[LlmUsageRecordDto(usage_id="llm-usage-mock", run_id=run_id, model="gpt-5-mini", input_tokens=1200, output_tokens=320, total_tokens=1520, input_price_per_million=0.25, output_price_per_million=2.0, cost_usd=0.00094, created_at=now)],
         workflow_events=[WorkflowEventDto(event_id="event-approval-required", run_id=run_id, event_type="approval_required", occurred_at=now, payload={"approval_id": "approval-plan", "status": RunStatus.WAITING.value})],
     )
+    return run.model_copy(update={"diagnostics": build_diagnostics_summary(run)})

@@ -12,6 +12,9 @@ describe("ControlTowerShell", () => {
     expect(screen.getByText("manual validation required")).toBeInTheDocument();
     expect(screen.getByText("stages/angular-18-to-19/validation/build.log")).toBeInTheDocument();
     expect(screen.getByText("sha256:mock-command-log")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Diagnostics" })).toBeInTheDocument();
+    expect(screen.getByText("llm.cost.total")).toBeInTheDocument();
+    expect(screen.getAllByText("$0.000940").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByRole("button", { name: "Preview" })).toHaveLength(mockMigrationRun.artifacts.length);
   });
 });
