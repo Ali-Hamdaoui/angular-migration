@@ -52,7 +52,9 @@ export const mockMigrationRun: MigrationRunDto = {
   assurance: { technical_upgrade_status: "not_evaluated", functional_parity_status: "manual_required", security_assurance_status: "not_evaluated", quality_assurance_status: "not_evaluated", delivery_readiness: "not_evaluated" },
   delivery: { run_id: "mock-run-angular-18-to-21", status: "not_published", delivery_path: null, manifest_checksum: null, published_at: null },
   topology: { package_manager: "npm", source_family: "angular-18.x", target_family: "angular-21.x", support_level: "historical_experimental" },
-  llm_usage: [],
+  llm_usage: [
+    { usage_id: "llm-usage-mock", run_id: "mock-run-angular-18-to-21", model: "gpt-5-mini", input_tokens: 1200, output_tokens: 320, total_tokens: 1520, input_price_per_million: 0.25, output_price_per_million: 2.0, cost_usd: 0.00094, created_at: "2026-07-10T00:00:00Z" }
+  ],
   workflow_events: [
     { event_id: "event-approval-required", run_id: "mock-run-angular-18-to-21", stage_id: null, event_type: "approval_required", occurred_at: "2026-07-10T00:00:00Z", sequence: 1, payload: { approval_id: "approval-plan", status: "WAITING" } }
   ]
