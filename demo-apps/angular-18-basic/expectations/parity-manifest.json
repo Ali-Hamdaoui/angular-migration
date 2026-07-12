@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "fixture_id": "angular-18-basic",
+  "must_preserve": [
+    "Primary navigation exposes Home, Orders, and About links.",
+    "Orders route remains lazy-loaded.",
+    "Order form requires customerName length >= 3.",
+    "Order quantity remains constrained to 1 through 10.",
+    "Order submission posts to /api/orders through the interceptor.",
+    "About route displays the configured API base URL.",
+    "Fixture styling keeps the primary and accent theme tokens."
+  ],
+  "manual_checks": ["Browser smoke", "Visual parity"]
+}

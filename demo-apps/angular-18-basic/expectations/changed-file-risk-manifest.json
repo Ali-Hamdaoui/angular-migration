@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "fixture_id": "angular-18-basic",
+  "risk_rules": [
+    { "glob": "src/app/app.routes.ts", "risk": "medium", "reason": "route behavior and lazy-loading contract" },
+    { "glob": "src/app/core/**/*.ts", "risk": "high", "reason": "backend API integration and interceptor behavior" },
+    { "glob": "src/app/features/orders/**/*.ts", "risk": "medium", "reason": "form validation and order submission behavior" },
+    { "glob": "src/environments/*.ts", "risk": "medium", "reason": "environment and API base URL" },
+    { "glob": "src/**/*.css", "risk": "low", "reason": "component styling signal" }
+  ]
+}

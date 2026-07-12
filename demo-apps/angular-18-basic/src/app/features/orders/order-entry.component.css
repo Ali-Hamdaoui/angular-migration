@@ -1,0 +1,7 @@
+.order-card { background: #ffffff; border: 1px solid #d7e0ee; border-radius: 6px; max-width: 480px; padding: 1rem; }
+form { display: grid; gap: .75rem; }
+label { display: grid; gap: .25rem; font-weight: 700; }
+input { border: 1px solid #9fb0c6; border-radius: 4px; padding: .45rem; }
+.checkbox { align-items: center; display: flex; gap: .5rem; }
+.error { color: #b42318; margin: 0; }
+.success { color: #0f766e; font-weight: 700; }
