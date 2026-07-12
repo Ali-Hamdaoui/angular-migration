@@ -8,3 +8,4 @@ if ($LASTEXITCODE -eq 0) {
 }
 if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
 Write-Host "Architecture check passed."
+exit 0
