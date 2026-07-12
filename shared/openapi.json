@@ -1,0 +1,2914 @@
+{
+  "components": {
+    "schemas": {
+      "AgentExecutionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentStatus"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "execution_id",
+          "run_id",
+          "agent_name",
+          "status",
+          "started_at"
+        ],
+        "title": "AgentExecutionDto",
+        "type": "object"
+      },
+      "AgentKind": {
+        "enum": [
+          "AnalysisAgent",
+          "PlanningAgent",
+          "TransformationAgent",
+          "BuildValidationAgent",
+          "RepairAgent",
+          "ReportAgent",
+          "AssistantAgent",
+          "EligibilityAgent"
+        ],
+        "title": "AgentKind",
+        "type": "string"
+      },
+      "AgentStatus": {
+        "enum": [
+          "PENDING",
+          "RUNNING",
+          "COMPLETED",
+          "FAILED",
+          "BLOCKED",
+          "SKIPPED",
+          "REQUIRES_APPROVAL"
+        ],
+        "title": "AgentStatus",
+        "type": "string"
+      },
+      "AlertEventDto": {
+        "additionalProperties": false,
+        "properties": {
+          "alert_id": {
+            "title": "Alert Id",
+            "type": "string"
+          },
+          "alert_type": {
+            "$ref": "#/components/schemas/AlertType"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/AlertSeverity"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "alert_id",
+          "run_id",
+          "alert_type",
+          "severity",
+          "message",
+          "created_at"
+        ],
+        "title": "AlertEventDto",
+        "type": "object"
+      },
+      "AlertSeverity": {
+        "enum": [
+          "info",
+          "warning",
+          "critical"
+        ],
+        "title": "AlertSeverity",
+        "type": "string"
+      },
+      "AlertType": {
+        "enum": [
+          "worker_loss",
+          "stuck_state",
+          "source_integrity_failure",
+          "disk_threshold",
+          "repeated_timeout",
+          "state_artifact_inconsistency",
+          "sqlite_contention"
+        ],
+        "title": "AlertType",
+        "type": "string"
+      },
+      "ApprovalDecision": {
+        "enum": [
+          "PENDING",
+          "APPROVED",
+          "REJECTED",
+          "ACCEPTED_RISK",
+          "CANCELLED"
+        ],
+        "title": "ApprovalDecision",
+        "type": "string"
+      },
+      "ApprovalEventDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "approval_id",
+          "run_id",
+          "decision",
+          "requested_at"
+        ],
+        "title": "ApprovalEventDto",
+        "type": "object"
+      },
+      "ApprovalPolicyDto": {
+        "additionalProperties": false,
+        "properties": {
+          "auto_approval_enabled": {
+            "title": "Auto Approval Enabled",
+            "type": "boolean"
+          },
+          "reevaluated_gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reevaluated Gate Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "auto_approval_enabled",
+          "status"
+        ],
+        "title": "ApprovalPolicyDto",
+        "type": "object"
+      },
+      "ApprovalPolicyRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "auto_approval_enabled": {
+            "title": "Auto Approval Enabled",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "auto_approval_enabled"
+        ],
+        "title": "ApprovalPolicyRequestDto",
+        "type": "object"
+      },
+      "ApprovalRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "gate_id": {
+            "minLength": 1,
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          }
+        },
+        "required": [
+          "gate_id",
+          "decision"
+        ],
+        "title": "ApprovalRequestDto",
+        "type": "object"
+      },
+      "ArtifactContentResponse": {
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactRefDto"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          }
+        },
+        "required": [
+          "artifact",
+          "content"
+        ],
+        "title": "ArtifactContentResponse",
+        "type": "object"
+      },
+      "ArtifactRefDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "artifact_type": {
+            "$ref": "#/components/schemas/ArtifactType"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "relative_path": {
+            "title": "Relative Path",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "run_id",
+          "artifact_type",
+          "relative_path",
+          "created_at",
+          "checksum"
+        ],
+        "title": "ArtifactRefDto",
+        "type": "object"
+      },
+      "ArtifactType": {
+        "enum": [
+          "json",
+          "yaml",
+          "markdown",
+          "text_log",
+          "command_log",
+          "patch",
+          "diff",
+          "report"
+        ],
+        "title": "ArtifactType",
+        "type": "string"
+      },
+      "AssistantMessageRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "AssistantMessageRequestDto",
+        "type": "object"
+      },
+      "AssistantMessageResponseDto": {
+        "additionalProperties": false,
+        "properties": {
+          "response": {
+            "title": "Response",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "response",
+          "status"
+        ],
+        "title": "AssistantMessageResponseDto",
+        "type": "object"
+      },
+      "AssuranceStatus": {
+        "enum": [
+          "passed",
+          "failed",
+          "conditional",
+          "manual_required",
+          "not_evaluated"
+        ],
+        "title": "AssuranceStatus",
+        "type": "string"
+      },
+      "AssuranceStatusDto": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_readiness": {
+            "$ref": "#/components/schemas/AssuranceStatus"
+          },
+          "functional_parity_status": {
+            "$ref": "#/components/schemas/AssuranceStatus"
+          },
+          "quality_assurance_status": {
+            "$ref": "#/components/schemas/AssuranceStatus"
+          },
+          "security_assurance_status": {
+            "$ref": "#/components/schemas/AssuranceStatus"
+          },
+          "technical_upgrade_status": {
+            "$ref": "#/components/schemas/AssuranceStatus"
+          }
+        },
+        "required": [
+          "technical_upgrade_status",
+          "functional_parity_status",
+          "security_assurance_status",
+          "quality_assurance_status",
+          "delivery_readiness"
+        ],
+        "title": "AssuranceStatusDto",
+        "type": "object"
+      },
+      "CancellationPolicy": {
+        "enum": [
+          "terminate_process_tree",
+          "wait_for_safe_point"
+        ],
+        "title": "CancellationPolicy",
+        "type": "string"
+      },
+      "CommandRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Arguments",
+            "type": "array"
+          },
+          "cancellation_policy": {
+            "$ref": "#/components/schemas/CancellationPolicy",
+            "default": "terminate_process_tree"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "executable": {
+            "title": "Executable",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "network_profile": {
+            "default": "none",
+            "title": "Network Profile",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "requester": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "runtime_profile_id": {
+            "default": "source-runtime-profile",
+            "title": "Runtime Profile Id",
+            "type": "string"
+          },
+          "shell": {
+            "default": false,
+            "title": "Shell",
+            "type": "boolean"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "timeout_seconds": {
+            "default": 30,
+            "exclusiveMinimum": 0.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "working_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Directory"
+          },
+          "working_directory_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Directory Alias"
+          }
+        },
+        "required": [
+          "command_id",
+          "run_id",
+          "executable",
+          "requested_at"
+        ],
+        "title": "CommandRequestDto",
+        "type": "object"
+      },
+      "CommandResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "stderr_artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRefDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stdout_artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRefDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "command_id",
+          "run_id",
+          "status",
+          "started_at"
+        ],
+        "title": "CommandResultDto",
+        "type": "object"
+      },
+      "CommandStatus": {
+        "enum": [
+          "PENDING",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "REJECTED",
+          "TIMED_OUT",
+          "CANCELLED"
+        ],
+        "title": "CommandStatus",
+        "type": "string"
+      },
+      "ComponentExecutionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "component_name": {
+            "title": "Component Name",
+            "type": "string"
+          },
+          "component_type": {
+            "$ref": "#/components/schemas/DeterministicComponentType"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepStatus"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "execution_id",
+          "run_id",
+          "component_name",
+          "component_type",
+          "status",
+          "started_at"
+        ],
+        "title": "ComponentExecutionDto",
+        "type": "object"
+      },
+      "CreateMockMigrationRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "preflight_checksum": {
+            "minLength": 1,
+            "title": "Preflight Checksum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preflight_checksum"
+        ],
+        "title": "CreateMockMigrationRequestDto",
+        "type": "object"
+      },
+      "DeliveryManifestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Path"
+          },
+          "manifest_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Checksum"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeliveryStatus"
+          }
+        },
+        "required": [
+          "run_id",
+          "status"
+        ],
+        "title": "DeliveryManifestDto",
+        "type": "object"
+      },
+      "DeliveryStatus": {
+        "enum": [
+          "not_published",
+          "published",
+          "published_with_manual_items",
+          "blocked"
+        ],
+        "title": "DeliveryStatus",
+        "type": "string"
+      },
+      "DeterministicComponentType": {
+        "enum": [
+          "SourceIntakeValidator",
+          "SnapshotService",
+          "WorkspaceTopologyClassifier",
+          "CompatibilityResolver",
+          "ToolchainRuntimeManager",
+          "CommandPolicyEngine",
+          "BaselineQualificationService",
+          "StaticSymbolGate",
+          "ParityEvidenceEngine",
+          "CheckpointService",
+          "ArtifactService",
+          "WorkerSupervisor",
+          "DeliveryService"
+        ],
+        "title": "DeterministicComponentType",
+        "type": "string"
+      },
+      "DiagnosticsSummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/AlertEventDto"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/RunMetricDto"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "run_id",
+          "generated_at"
+        ],
+        "title": "DiagnosticsSummaryDto",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "LlmUsageRecordDto": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_usd": {
+            "minimum": 0.0,
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "input_price_per_million": {
+            "minimum": 0.0,
+            "title": "Input Price Per Million",
+            "type": "number"
+          },
+          "input_tokens": {
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_price_per_million": {
+            "minimum": 0.0,
+            "title": "Output Price Per Million",
+            "type": "number"
+          },
+          "output_tokens": {
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "total_tokens": {
+            "minimum": 0.0,
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "usage_id": {
+            "title": "Usage Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "usage_id",
+          "run_id",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "input_price_per_million",
+          "output_price_per_million",
+          "cost_usd",
+          "created_at"
+        ],
+        "title": "LlmUsageRecordDto",
+        "type": "object"
+      },
+      "MigrationRunDto": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_executions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentExecutionDto"
+            },
+            "title": "Agent Executions",
+            "type": "array"
+          },
+          "approval_events": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalEventDto"
+            },
+            "title": "Approval Events",
+            "type": "array"
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRefDto"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "assurance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssuranceStatusDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "command_requests": {
+            "items": {
+              "$ref": "#/components/schemas/CommandRequestDto"
+            },
+            "title": "Command Requests",
+            "type": "array"
+          },
+          "command_results": {
+            "items": {
+              "$ref": "#/components/schemas/CommandResultDto"
+            },
+            "title": "Command Results",
+            "type": "array"
+          },
+          "component_executions": {
+            "items": {
+              "$ref": "#/components/schemas/ComponentExecutionDto"
+            },
+            "title": "Component Executions",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryManifestDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosticsSummaryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "llm_usage": {
+            "items": {
+              "$ref": "#/components/schemas/LlmUsageRecordDto"
+            },
+            "title": "Llm Usage",
+            "type": "array"
+          },
+          "patch_ledger": {
+            "items": {
+              "$ref": "#/components/schemas/PatchLedgerEntryDto"
+            },
+            "title": "Patch Ledger",
+            "type": "array"
+          },
+          "repair_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/RepairAttemptDto"
+            },
+            "title": "Repair Attempts",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_phase": {
+            "$ref": "#/components/schemas/RunPhase",
+            "default": "FEASIBILITY_PLANNING"
+          },
+          "source_angular_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Angular Version"
+          },
+          "source_version_detected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version Detected"
+          },
+          "source_version_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version Family"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/MigrationStageDto"
+            },
+            "minItems": 1,
+            "title": "Stages",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StageStepDto"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "target_angular_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Angular Version"
+          },
+          "target_version_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version Family"
+          },
+          "target_version_resolved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version Resolved"
+          },
+          "topology": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TopologySummaryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "validation_gates": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationGateDto"
+            },
+            "title": "Validation Gates",
+            "type": "array"
+          },
+          "worker_leases": {
+            "items": {
+              "$ref": "#/components/schemas/WorkerLeaseDto"
+            },
+            "title": "Worker Leases",
+            "type": "array"
+          },
+          "workflow_events": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEventDto"
+            },
+            "title": "Workflow Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "created_at",
+          "updated_at",
+          "stages"
+        ],
+        "title": "MigrationRunDto",
+        "type": "object"
+      },
+      "MigrationStageDto": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Agent"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_angular_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Angular Version"
+          },
+          "source_version_detected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version Detected"
+          },
+          "source_version_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version Family"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "stage_order": {
+            "minimum": 1.0,
+            "title": "Stage Order",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StageStatus"
+          },
+          "target_angular_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Angular Version"
+          },
+          "target_version_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version Family"
+          },
+          "target_version_resolved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version Resolved"
+          }
+        },
+        "required": [
+          "stage_id",
+          "run_id",
+          "stage_order",
+          "status",
+          "created_at"
+        ],
+        "title": "MigrationStageDto",
+        "type": "object"
+      },
+      "OperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotent": {
+            "default": true,
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "operation",
+          "status",
+          "message"
+        ],
+        "title": "OperationResultDto",
+        "type": "object"
+      },
+      "PatchLedgerEntryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_files": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "change_summary": {
+            "title": "Change Summary",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "patch_id": {
+            "title": "Patch Id",
+            "type": "string"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "validation_status": {
+            "$ref": "#/components/schemas/ValidationStatus"
+          }
+        },
+        "required": [
+          "patch_id",
+          "run_id",
+          "stage_id",
+          "affected_files",
+          "change_summary",
+          "risk_level",
+          "created_at",
+          "validation_status"
+        ],
+        "title": "PatchLedgerEntryDto",
+        "type": "object"
+      },
+      "PreflightRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "auto_approval_enabled": {
+            "default": false,
+            "title": "Auto Approval Enabled",
+            "type": "boolean"
+          },
+          "migration_mode": {
+            "default": "strict-functional-parity",
+            "minLength": 1,
+            "title": "Migration Mode",
+            "type": "string"
+          },
+          "source_path": {
+            "minLength": 1,
+            "title": "Source Path",
+            "type": "string"
+          },
+          "target_angular_family": {
+            "default": "21.x",
+            "minLength": 1,
+            "title": "Target Angular Family",
+            "type": "string"
+          },
+          "target_output_path": {
+            "minLength": 1,
+            "title": "Target Output Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_path",
+          "target_output_path"
+        ],
+        "title": "PreflightRequestDto",
+        "type": "object"
+      },
+      "PreflightResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "angular_eligibility": {
+            "default": "placeholder_not_scanned",
+            "title": "Angular Eligibility",
+            "type": "string"
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "capabilities": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "preflight_id": {
+            "title": "Preflight Id",
+            "type": "string"
+          },
+          "registry_access": {
+            "default": "placeholder_not_checked",
+            "title": "Registry Access",
+            "type": "string"
+          },
+          "runtime_profile_available": {
+            "default": true,
+            "title": "Runtime Profile Available",
+            "type": "boolean"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "target_output_path": {
+            "title": "Target Output Path",
+            "type": "string"
+          },
+          "topology_status": {
+            "default": "placeholder_not_scanned",
+            "title": "Topology Status",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "preflight_id",
+          "checksum",
+          "expires_at",
+          "source_path",
+          "target_output_path",
+          "status",
+          "message"
+        ],
+        "title": "PreflightResultDto",
+        "type": "object"
+      },
+      "RepairAttemptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_number": {
+            "minimum": 1.0,
+            "title": "Attempt Number",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "diagnosis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnosis"
+          },
+          "repair_attempt_id": {
+            "title": "Repair Attempt Id",
+            "type": "string"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentStatus"
+          }
+        },
+        "required": [
+          "repair_attempt_id",
+          "run_id",
+          "stage_id",
+          "attempt_number",
+          "status",
+          "risk_level",
+          "created_at"
+        ],
+        "title": "RepairAttemptDto",
+        "type": "object"
+      },
+      "RiskLevel": {
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "title": "RiskLevel",
+        "type": "string"
+      },
+      "RunMetricDto": {
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "object"
+          },
+          "metric_name": {
+            "title": "Metric Name",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "minimum": 0.0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "metric_name",
+          "run_id",
+          "value",
+          "unit"
+        ],
+        "title": "RunMetricDto",
+        "type": "object"
+      },
+      "RunPhase": {
+        "enum": [
+          "PREFLIGHT_SNAPSHOT",
+          "DISCOVERY_BASELINE",
+          "FEASIBILITY_PLANNING",
+          "STAGED_MIGRATION",
+          "FINAL_ASSURANCE",
+          "DELIVERY_REPORTING"
+        ],
+        "title": "RunPhase",
+        "type": "string"
+      },
+      "RunStatus": {
+        "enum": [
+          "CREATED",
+          "RUNNING",
+          "WAITING",
+          "CANCELLING",
+          "CANCELLED",
+          "COMPLETED",
+          "FAILED",
+          "DIAGNOSTIC_HOLD"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "StageStatus": {
+        "enum": [
+          "PENDING",
+          "RUNNING",
+          "WAITING_APPROVAL",
+          "REPAIRING",
+          "PASSED",
+          "FAILED",
+          "ROLLED_BACK",
+          "CANCELLED",
+          "DIAGNOSTIC_HOLD"
+        ],
+        "title": "StageStatus",
+        "type": "string"
+      },
+      "StageStepDto": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "component_type": {
+            "title": "Component Type",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepStatus"
+          },
+          "step_id": {
+            "title": "Step Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step_id",
+          "run_id",
+          "name",
+          "status",
+          "component_type"
+        ],
+        "title": "StageStepDto",
+        "type": "object"
+      },
+      "StepStatus": {
+        "enum": [
+          "PENDING",
+          "QUEUED",
+          "RUNNING",
+          "PASSED",
+          "FAILED",
+          "BLOCKED",
+          "WAITING_APPROVAL",
+          "SKIPPED",
+          "MANUAL",
+          "DEFERRED",
+          "ACCEPTED_RISK",
+          "CANCELLED"
+        ],
+        "title": "StepStatus",
+        "type": "string"
+      },
+      "TopologySummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "package_manager": {
+            "title": "Package Manager",
+            "type": "string"
+          },
+          "source_family": {
+            "title": "Source Family",
+            "type": "string"
+          },
+          "support_level": {
+            "$ref": "#/components/schemas/TopologySupportLevel"
+          },
+          "target_family": {
+            "title": "Target Family",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_manager",
+          "source_family",
+          "target_family",
+          "support_level"
+        ],
+        "title": "TopologySummaryDto",
+        "type": "object"
+      },
+      "TopologySupportLevel": {
+        "enum": [
+          "officially_supported",
+          "historical_validated",
+          "historical_experimental",
+          "blocked"
+        ],
+        "title": "TopologySupportLevel",
+        "type": "string"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "ValidationGateDto": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "gate_id": {
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ValidationStatus"
+          }
+        },
+        "required": [
+          "gate_id",
+          "run_id",
+          "name",
+          "status",
+          "checked_at"
+        ],
+        "title": "ValidationGateDto",
+        "type": "object"
+      },
+      "ValidationStatus": {
+        "enum": [
+          "passed",
+          "failed",
+          "not_configured",
+          "manual_validation_required",
+          "deferred_company_tool_required",
+          "blocked_by_environment",
+          "accepted_risk",
+          "skipped_not_applicable"
+        ],
+        "title": "ValidationStatus",
+        "type": "string"
+      },
+      "VersionResponse": {
+        "properties": {
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "environment"
+        ],
+        "title": "VersionResponse",
+        "type": "object"
+      },
+      "WorkerLeaseDto": {
+        "additionalProperties": false,
+        "properties": {
+          "acquired_at": {
+            "format": "date-time",
+            "title": "Acquired At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "lease_id": {
+            "title": "Lease Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "worker_id": {
+            "title": "Worker Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_id",
+          "run_id",
+          "worker_id",
+          "acquired_at",
+          "expires_at"
+        ],
+        "title": "WorkerLeaseDto",
+        "type": "object"
+      },
+      "WorkflowEventDto": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "event_type",
+          "occurred_at"
+        ],
+        "title": "WorkflowEventDto",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Backend execution-authority API for controlled frontend migration workflows.",
+    "title": "AI Frontend Migration Factory API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/artifacts/{artifact_id}": {
+      "get": {
+        "operationId": "read_artifact_by_id_artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactContentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a stored artifact by ID",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/assistant/messages": {
+      "post": {
+        "operationId": "send_assistant_message_assistant_messages_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantMessageRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantMessageResponseDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send a mock assistant message",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "read_health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read service health",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/migrations/mock": {
+      "post": {
+        "operationId": "create_mock_migration_migrations_mock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMockMigrationRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a checksum-bound mock migration run",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/mock-state": {
+      "get": {
+        "operationId": "read_mock_migration_state_migrations_mock_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read mock migration state",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/preflight": {
+      "post": {
+        "operationId": "validate_preflight_migrations_preflight_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreflightRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate mock migration setup",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/approval-policy": {
+      "put": {
+        "operationId": "update_approval_policy_migrations__run_id__approval_policy_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalPolicyRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPolicyDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update mock approval policy",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/approvals": {
+      "post": {
+        "operationId": "submit_approval_migrations__run_id__approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalEventDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit a mock approval decision",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/artifacts": {
+      "get": {
+        "operationId": "list_run_artifacts_migrations__run_id__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactRefDto"
+                  },
+                  "title": "Response List Run Artifacts Migrations  Run Id  Artifacts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List run artifacts",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/migrations/{run_id}/artifacts/{artifact_path}": {
+      "get": {
+        "operationId": "read_run_artifact_migrations__run_id__artifacts__artifact_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_path",
+            "required": true,
+            "schema": {
+              "title": "Artifact Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactContentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a stored artifact by run path",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/migrations/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_migration_run_migrations__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a mock migration run",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/diagnostics": {
+      "get": {
+        "operationId": "read_migration_diagnostics_migrations__run_id__diagnostics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stage Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsSummaryDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read non-authoritative run diagnostics",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/events": {
+      "get": {
+        "operationId": "stream_migration_events_migrations__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream mock workflow events via Server-Sent Events",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/resume": {
+      "post": {
+        "operationId": "resume_migration_run_migrations__run_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume a mock migration run",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/migrations/{run_id}/state": {
+      "get": {
+        "operationId": "read_migration_state_migrations__run_id__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read migration state snapshot",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/version": {
+      "get": {
+        "operationId": "read_version_version_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read application version",
+        "tags": [
+          "system"
+        ]
+      }
+    }
+  }
+}

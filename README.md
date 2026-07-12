@@ -94,3 +94,7 @@ subsequent Sprint 0 issues.
 - [Architecture decisions](docs/adr/README.md)
 - [Sprint 0 threat overview](docs/threat-overview.md)
 - [Code review checklist](docs/code-review-checklist.md)
+
+## Developer setup
+
+Use [docs/developer-setup.md](docs/developer-setup.md) for PowerShell-compatible setup, local startup, quality gates, database commands, mock workflow demos, SSE replay checks, and proxy/certificate troubleshooting.
