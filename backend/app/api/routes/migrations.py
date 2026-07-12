@@ -12,17 +12,20 @@ from app.domain.contracts import (
     AssistantMessageRequestDto,
     AssistantMessageResponseDto,
     CreateMockMigrationRequestDto,
+    DiagnosticsSummaryDto,
     MigrationRunDto,
     OperationResultDto,
     PreflightRequestDto,
     PreflightResultDto,
 )
 from app.core.config import get_settings
+from app.observability import build_diagnostics_summary
 from app.services.mock_event_service import (
     ReplayUnavailableError,
     format_replay_unavailable,
     format_sse_event,
     generate_mock_events,
+    get_retained_events,
 )
 from app.services.mock_migration_api_service import (
     MockMigrationApiService,
@@ -76,6 +79,16 @@ def read_migration_state(
 ) -> MigrationRunDto:
     return service.get_state(run_id)
 
+
+
+@router.get("/{run_id}/diagnostics", response_model=DiagnosticsSummaryDto, summary="Read non-authoritative run diagnostics")
+def read_migration_diagnostics(
+    run_id: str,
+    stage_id: str | None = None,
+    service: MockMigrationApiService = Depends(get_service),
+) -> DiagnosticsSummaryDto:
+    run = service.get_state(run_id)
+    return build_diagnostics_summary(run, events=get_retained_events(run_id), stage_id=stage_id)
 
 @router.get("/{run_id}/events", summary="Stream mock workflow events via Server-Sent Events")
 async def stream_migration_events(run_id: str, request: Request) -> StreamingResponse:

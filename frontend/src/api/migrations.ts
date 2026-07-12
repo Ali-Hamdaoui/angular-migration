@@ -1,6 +1,7 @@
 import { apiClient, type createApiClient } from "./client";
 import type {
   CreateMockMigrationRequestDto,
+  DiagnosticsSummaryDto,
   ArtifactRefDto,
   HealthResponse,
   MigrationRunDto,
@@ -39,4 +40,8 @@ export function getMigrationState(runId: string, client: ApiClient = apiClient):
 
 export function getArtifactById(artifactId: string, client: ApiClient = apiClient): Promise<ArtifactContentResponse> {
   return client.get<ArtifactContentResponse>(`/artifacts/${artifactId}`);
+}
+export function getMigrationDiagnostics(runId: string, stageId?: string, client: ApiClient = apiClient): Promise<DiagnosticsSummaryDto> {
+  const suffix = stageId ? `?stage_id=${encodeURIComponent(stageId)}` : "";
+  return client.get<DiagnosticsSummaryDto>(`/migrations/${runId}/diagnostics${suffix}`);
 }

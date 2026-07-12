@@ -455,6 +455,50 @@ class LlmUsageRecordDto(ContractModel):
     created_at: datetime
 
 
+
+class AlertSeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AlertType(str, Enum):
+    WORKER_LOSS = "worker_loss"
+    STUCK_STATE = "stuck_state"
+    SOURCE_INTEGRITY_FAILURE = "source_integrity_failure"
+    DISK_THRESHOLD = "disk_threshold"
+    REPEATED_TIMEOUT = "repeated_timeout"
+    STATE_ARTIFACT_INCONSISTENCY = "state_artifact_inconsistency"
+    SQLITE_CONTENTION = "sqlite_contention"
+
+
+class RunMetricDto(ContractModel):
+    metric_name: str
+    run_id: str
+    stage_id: str | None = None
+    value: float = Field(ge=0)
+    unit: str
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class AlertEventDto(ContractModel):
+    alert_id: str
+    run_id: str
+    alert_type: AlertType
+    severity: AlertSeverity
+    message: str
+    created_at: datetime
+    stage_id: str | None = None
+    correlation_id: str | None = None
+
+
+class DiagnosticsSummaryDto(ContractModel):
+    run_id: str
+    stage_id: str | None = None
+    generated_at: datetime
+    metrics: list[RunMetricDto] = Field(default_factory=list)
+    alerts: list[AlertEventDto] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 class WorkflowEventDto(ContractModel):
     event_id: str
     run_id: str
@@ -503,6 +547,7 @@ class MigrationRunDto(ContractModel):
     delivery: DeliveryManifestDto | None = None
     topology: TopologySummaryDto | None = None
     llm_usage: list[LlmUsageRecordDto] = Field(default_factory=list)
+    diagnostics: DiagnosticsSummaryDto | None = None
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 
     @model_validator(mode="after")

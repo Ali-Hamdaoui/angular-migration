@@ -59,7 +59,23 @@ export const mockMigrationRun: MigrationRunDto = {
   llm_usage: [
     { usage_id: "llm-usage-mock", run_id: "mock-run-angular-18-to-21", model: "gpt-5-mini", input_tokens: 1200, output_tokens: 320, total_tokens: 1520, input_price_per_million: 0.25, output_price_per_million: 2.0, cost_usd: 0.00094, created_at: "2026-07-10T00:00:00Z" }
   ],
-  workflow_events: [
+  diagnostics: {
+    run_id: "mock-run-angular-18-to-21",
+    stage_id: null,
+    generated_at: "2026-07-10T00:05:00Z",
+    metrics: [
+      { metric_name: "command.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 1, unit: "count", labels: {} },
+      { metric_name: "artifact.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 5, unit: "count", labels: {} },
+      { metric_name: "sse.event.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 1, unit: "count", labels: {} },
+      { metric_name: "sse.reconnect.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 0, unit: "count", labels: {} },
+      { metric_name: "llm.call.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 1, unit: "count", labels: {} },
+      { metric_name: "llm.cost.total", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 0.00094, unit: "usd", labels: {} },
+      { metric_name: "manual_item.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 1, unit: "count", labels: {} },
+      { metric_name: "repair_attempt.count", run_id: "mock-run-angular-18-to-21", stage_id: null, value: 1, unit: "count", labels: {} }
+    ],
+    alerts: [],
+    notes: ["Diagnostics are derived from canonical records and are not workflow state."]
+  },  workflow_events: [
     { event_id: "event-approval-required", run_id: "mock-run-angular-18-to-21", stage_id: null, event_type: "approval_required", occurred_at: "2026-07-10T00:00:00Z", sequence: 1, payload: { approval_id: "approval-plan", status: "WAITING" } }
   ]
 };

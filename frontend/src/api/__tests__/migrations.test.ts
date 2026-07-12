@@ -1,5 +1,5 @@
 import { createApiClient } from "@/api/client";
-import { createMockMigration, getArtifactById, getHealth, getMigrationState, getMockMigrationState, getVersion, validatePreflight } from "@/api/migrations";
+import { createMockMigration, getArtifactById, getHealth, getMigrationDiagnostics, getMigrationState, getMockMigrationState, getVersion, validatePreflight } from "@/api/migrations";
 import { mockMigrationRun } from "@/data/mockMigrationRun";
 
 function jsonResponse(body: unknown) {
@@ -16,7 +16,8 @@ describe("migration API client", () => {
       .mockResolvedValueOnce(jsonResponse(mockMigrationRun))
       .mockResolvedValueOnce(jsonResponse(mockMigrationRun))
       .mockResolvedValueOnce(jsonResponse(mockMigrationRun))
-      .mockResolvedValueOnce(jsonResponse({ artifact: mockMigrationRun.artifacts[0], content: "build ok", created_by: "artifact-service" }));
+      .mockResolvedValueOnce(jsonResponse({ artifact: mockMigrationRun.artifacts[0], content: "build ok", created_by: "artifact-service" }))
+      .mockResolvedValueOnce(jsonResponse(mockMigrationRun.diagnostics));
     const client = createApiClient("http://backend.test", fetchMock);
 
     await expect(getHealth(client)).resolves.toEqual({ status: "ok" });
@@ -32,6 +33,7 @@ describe("migration API client", () => {
     await expect(getMockMigrationState(client)).resolves.toEqual(mockMigrationRun);
     await expect(getMigrationState("run-1", client)).resolves.toEqual(mockMigrationRun);
     await expect(getArtifactById("artifact-command-log", client)).resolves.toMatchObject({ content: "build ok", created_by: "artifact-service" });
+    await expect(getMigrationDiagnostics("run-1", "angular-18-to-19", client)).resolves.toMatchObject({ run_id: "mock-run-angular-18-to-21" });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://backend.test/health",
       "http://backend.test/version",
@@ -39,7 +41,8 @@ describe("migration API client", () => {
       "http://backend.test/migrations/mock",
       "http://backend.test/migrations/mock-state",
       "http://backend.test/migrations/run-1/state",
-      "http://backend.test/artifacts/artifact-command-log"
+      "http://backend.test/artifacts/artifact-command-log",
+      "http://backend.test/migrations/run-1/diagnostics?stage_id=angular-18-to-19"
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
