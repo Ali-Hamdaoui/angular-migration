@@ -3,7 +3,7 @@ import type { MigrationEventDto, MigrationRunDto } from "@/types/generated/api";
 import { mockMigrationRun } from "@/data/mockMigrationRun";
 
 function event(type: MigrationEventDto["event_type"], payload: Record<string, unknown>, id = "evt-test", stageId: string | null = "angular-18-to-19"): MigrationEventDto {
-  return { event_id: id, run_id: "mock-run-angular-18-to-21", stage_id: stageId, event_type: type, occurred_at: "2026-07-10T12:00:00Z", payload };
+  return { event_id: id, run_id: "mock-run-angular-18-to-21", stage_id: stageId, event_type: type, occurred_at: "2026-07-10T12:00:00Z", sequence: 1, payload };
 }
 
 describe("applyEventToRun", () => {

@@ -23,3 +23,6 @@ demo-apps/**/.angular/
 demo-apps/**/dist/
 demo-apps/**/coverage/
 demo-apps/**/out-tsc/
+.tmp/
+tmp-pytest*/
+backend/Usershamdaoui.aliangular-migrationtmp-pytest/
