@@ -1,4 +1,4 @@
-# AI Frontend Migration Factory
+﻿# AI Frontend Migration Factory
 
 The AI Frontend Migration Factory is a platform for controlled Angular frontend
 migrations. Its MVP reference path is Angular 18.x to Angular 21.x, using strict
@@ -98,3 +98,27 @@ subsequent Sprint 0 issues.
 ## Developer setup
 
 Use [docs/developer-setup.md](docs/developer-setup.md) for PowerShell-compatible setup, local startup, quality gates, database commands, mock workflow demos, SSE replay checks, and proxy/certificate troubleshooting.
+
+## Run The Solution Locally
+
+Start the backend and frontend in separate PowerShell terminals:
+
+```powershell
+.\scripts\dev-backend.ps1
+```
+
+```powershell
+.\scripts\dev-frontend.ps1
+```
+
+The scripts launch:
+
+- Backend: python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+- Frontend: $env:NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8765"
+            npm run dev
+
+If you want to validate the full workspace after startup, run:
+
+```powershell
+.\scripts\quality.ps1
+```
