@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "fixture_id": "angular-18-basic-known-failure",
+  "category": "template_validation",
+  "message_fingerprint": "NG8002: Cannot bind to 'unknownInput' since it is not a known property",
+  "classification": "controlled_regression_fixture",
+  "expected_handling": "detect_as_fixture_only_do_not_repair_source"
+}

@@ -1,0 +1,16 @@
+<section class="order-card">
+  <h2>Create Order</h2>
+  <form [formGroup]="orderForm" (ngSubmit)="submit()">
+    <label>Customer name <input formControlName="customerName" /></label>
+    @if (orderForm.controls.customerName.touched && orderForm.controls.customerName.invalid) {
+      <p class="error">Customer name is required and must be at least 3 characters.</p>
+    }
+    <label>Quantity <input type="number" formControlName="quantity" /></label>
+    @if (orderForm.controls.quantity.touched && orderForm.controls.quantity.invalid) {
+      <p class="error">Quantity must be between 1 and 10.</p>
+    }
+    <label class="checkbox"><input type="checkbox" formControlName="rush" /> Rush order</label>
+    <button type="submit">Submit</button>
+  </form>
+  @if (submitted) { <p class="success">Order submitted.</p> }
+</section>

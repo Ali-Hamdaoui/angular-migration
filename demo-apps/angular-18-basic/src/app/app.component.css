@@ -1,0 +1,4 @@
+.app-header { background: #ffffff; border-bottom: 1px solid #d7e0ee; padding: 1rem 1.5rem; }
+.app-header h1 { margin: 0 0 .75rem; font-size: 1.35rem; }
+nav { display: flex; gap: 1rem; }
+main { padding: 1.5rem; }

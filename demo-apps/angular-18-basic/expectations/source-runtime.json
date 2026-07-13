@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "fixture_id": "angular-18-basic",
+  "node": "20.19.x or 22.12.x compatible with Angular 18.2.x policy",
+  "npm": "10.x",
+  "angular_cli": "18.2.12",
+  "build_command": "npm ci && npm run build",
+  "test_command": "npm run test",
+  "notes": "Sprint 0 tests validate the fixture manifests and source integrity without mutating the fixture. A local build requires installing dependencies from package-lock.json."
+}

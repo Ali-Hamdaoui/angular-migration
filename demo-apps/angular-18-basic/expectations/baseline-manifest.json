@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "fixture_id": "angular-18-basic",
+  "expected_commands": {
+    "install": "npm ci",
+    "build": "npm run build",
+    "test": "npm run test",
+    "lint": "npm run lint"
+  },
+  "expected_statuses": {
+    "install": "not_executed_in_sprint0_regression",
+    "build": "documented_fixture_command",
+    "test": "documented_fixture_command",
+    "lint": "not_configured"
+  },
+  "known_failure_fingerprints": ["NG8002: Cannot bind to 'unknownInput' since it is not a known property"]
+}
