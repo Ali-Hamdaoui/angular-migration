@@ -49,3 +49,46 @@ export type DiagnosticsSummaryDto = { run_id: string; stage_id: string | null; g
 export type WorkflowEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; sequence: number; payload: Record<string, unknown> };
 export type MigrationEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: WorkflowEventType; occurred_at: string; sequence: number; payload: Record<string, unknown> };
 export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: RunPhase; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; created_at: string; updated_at: string; stages: MigrationStageDto[]; steps: StageStepDto[]; component_executions: ComponentExecutionDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; worker_leases: WorkerLeaseDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; assurance: AssuranceStatusDto | null; delivery: DeliveryManifestDto | null; topology: TopologySummaryDto | null; llm_usage: LlmUsageRecordDto[]; diagnostics: DiagnosticsSummaryDto | null; workflow_events: WorkflowEventDto[] };
+export type RuntimeInventoryEntry = {
+  name: "node" | "npm" | "npx" | "git" | "python";
+  executable: string | null;
+  version: string | null;
+  installation_root: string | null;
+  status: "available" | "missing" | "failed";
+};
+export type LocalStorageReadiness = {
+  database_path: string;
+  artifact_root: string;
+  writable: boolean;
+  local_filesystem: boolean;
+  free_bytes: number;
+  status: "available" | "degraded" | "blocked";
+};
+export type CorporateNetworkReadiness = {
+  registry_configured: boolean;
+  proxy_configured: boolean;
+  https_proxy_configured: boolean;
+  strict_ssl: boolean;
+  custom_ca_configured: boolean;
+  credentials_redacted: boolean;
+};
+export type EnvironmentCapabilitySnapshot = {
+  snapshot_id: string;
+  captured_at: string;
+  policy_version: string;
+  status: "available" | "degraded" | "blocked";
+  runtimes: RuntimeInventoryEntry[];
+  node_npm_npx_paired: boolean;
+  git_ready: boolean;
+  python_ready: boolean;
+  storage: LocalStorageReadiness;
+  network: CorporateNetworkReadiness;
+  blockers: string[];
+  warnings: string[];
+  checksum: string;
+};
+export type EnvironmentCapabilityResult = {
+  snapshot: EnvironmentCapabilitySnapshot;
+  artifact: Record<string, string> | null;
+};
+export type RefreshEnvironmentRequest = { idempotency_key: string; actor?: string | null };

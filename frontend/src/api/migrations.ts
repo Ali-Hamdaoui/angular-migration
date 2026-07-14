@@ -7,7 +7,9 @@ import type {
   MigrationRunDto,
   PreflightRequestDto,
   PreflightResultDto,
-  VersionResponse
+  VersionResponse,
+  EnvironmentCapabilityResult,
+  RefreshEnvironmentRequest
 } from "@/types/generated/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -44,4 +46,14 @@ export function getArtifactById(artifactId: string, client: ApiClient = apiClien
 export function getMigrationDiagnostics(runId: string, stageId?: string, client: ApiClient = apiClient): Promise<DiagnosticsSummaryDto> {
   const suffix = stageId ? `?stage_id=${encodeURIComponent(stageId)}` : "";
   return client.get<DiagnosticsSummaryDto>(`/migrations/${runId}/diagnostics${suffix}`);
+}
+export function getEnvironmentDiagnostics(client: ApiClient = apiClient): Promise<EnvironmentCapabilityResult> {
+  return client.get<EnvironmentCapabilityResult>("/environment/diagnostics");
+}
+
+export function refreshEnvironment(
+  request: RefreshEnvironmentRequest,
+  client: ApiClient = apiClient,
+): Promise<EnvironmentCapabilityResult> {
+  return client.post<EnvironmentCapabilityResult>("/environment/refresh", request);
 }
