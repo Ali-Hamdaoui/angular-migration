@@ -38,6 +38,9 @@ class OrchestratorState(TypedDict, total=False):
     run_id: str
     run_status: RunStatus
     run_phase: RunPhase
+    phase_status: str
+    approval_status: str
+    repair_status: str
     source_angular_version: str
     target_angular_version: str
     stages: list[StageState]
@@ -63,6 +66,9 @@ def create_initial_state(run_id: str) -> OrchestratorState:
         run_id=run_id,
         run_status=RunStatus.CREATED,
         run_phase=RunPhase.PREFLIGHT_SNAPSHOT,
+        phase_status="running",
+        approval_status="not_required",
+        repair_status="not_required",
         source_angular_version="18.x",
         target_angular_version="21.x",
         stages=[
@@ -126,6 +132,9 @@ def state_to_run_dto(state: OrchestratorState) -> MigrationRunDto:
         run_id=state["run_id"],
         status=state["run_status"],
         run_phase=state.get("run_phase", RunPhase.FEASIBILITY_PLANNING),
+        phase_status=state.get("phase_status", "running"),
+        approval_status=state.get("approval_status", "not_required"),
+        repair_status=state.get("repair_status", "not_required"),
         source_angular_version=state.get("source_angular_version", ""),
         target_angular_version=state.get("target_angular_version", ""),
         created_at=now,

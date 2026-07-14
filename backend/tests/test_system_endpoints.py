@@ -142,6 +142,9 @@ def test_create_mock_run_accepts_valid_preflight_checksum() -> None:
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
     assert body["status"] == "WAITING"
+    assert body["phase_status"] == "running"
+    assert body["approval_status"] == "not_required"
+    assert body["repair_status"] == "not_required"
 
 
 def test_mock_migration_state_uses_shared_contracts() -> None:
@@ -150,6 +153,9 @@ def test_mock_migration_state_uses_shared_contracts() -> None:
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
     assert body["status"] == "WAITING"
+    assert body["phase_status"] == "running"
+    assert body["approval_status"] == "not_required"
+    assert body["repair_status"] == "not_required"
     assert [stage["stage_id"] for stage in body["stages"]] == [
         "angular-18-to-19",
         "angular-19-to-20",
@@ -188,9 +194,8 @@ def test_approval_policy_and_assistant_shells() -> None:
         json={"run_id": "mock-run", "message": "What is waiting?"},
     )
 
-    assert policy.status_code == 200
-    assert policy.json()["auto_approval_enabled"] is True
-    assert policy.json()["reevaluated_gate_id"] == "approval-plan"
+    assert policy.status_code == 409
+    assert policy.json()["error_code"] == "AUTO_APPROVAL_NOT_ALLOWED"
     assert assistant.status_code == 200
     assert assistant.json()["status"] == "mock_unavailable"
 
