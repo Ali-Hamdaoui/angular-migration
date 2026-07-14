@@ -4,7 +4,11 @@
 
 This file defines the mandatory working rules for any AI coding agent operating in the `angular-migration` repository.
 
-The agent must protect the repository, respect the project documentation, implement only the selected Sprint 0 issue, push the completed issue branch, merge it safely into `dev`, push the updated `dev` branch, and finish with a fully synchronized local `dev` branch.
+The agent must protect the repository, preserve the stability of `main` and `dev`, respect the approved project documentation, and implement work only inside an explicitly authorized feature branch.
+
+A feature may contain multiple related issues. Therefore, branches are created per feature, not per issue.
+
+The agent must never automatically create branches, commit changes, push changes, merge branches, or modify protected branches. Every repository-changing Git action requires explicit user authorization at the appropriate approval gate.
 
 These instructions are mandatory.
 
@@ -18,171 +22,359 @@ Repository:
 angular-migration
 ```
 
-Permanent branches:
+Permanent protected branches:
 
 ```text
 main
 dev
 ```
 
-Branch responsibilities:
+### 2.1 `main`
 
-- `main` contains the current final validated version.
-- `main` is protected and must not be modified, rebased, merged into, pushed to, or used as the base branch for issue work.
-- `dev` is the principal integration branch for stable, verified, and validated Sprint 0 work.
-- Completed issue branches must be pushed to `origin` and merged into `dev` only after all applicable validation succeeds.
-- The updated `dev` branch must then be pushed to `origin`.
-- All issue branches must be created from the latest synchronized version of `dev`.
-- Each Sprint 0 issue must be implemented in its own dedicated branch.
-- Never implement two unrelated issues in the same branch.
+- `main` contains the final validated and approved version.
+- `main` must not be modified during normal development.
+- The agent must not commit to, push to, merge into, rebase, reset, or rewrite `main`.
+- The agent must not use `main` as the base branch for feature development.
+- Integration into `main` remains a separate human-controlled release decision.
 
-Recommended issue branch format:
+### 2.2 `dev`
+
+- `dev` is the stable integration branch.
+- `dev` must remain untouched during feature implementation.
+- The agent must not implement code while checked out on `dev`.
+- The agent must not commit directly to `dev`.
+- The agent must not push directly to `dev`.
+- The agent must not automatically merge a feature branch into `dev`.
+- The agent must not rebase, reset, rewrite, or force-update `dev`.
+- Integration into `dev` must be performed through a separately authorized and reviewed integration process, preferably a pull request.
+
+Reading, fetching, and comparing against `origin/dev` are allowed because they do not modify the protected `dev` branch.
+
+### 2.3 Feature branches
+
+- Development work must be performed in a dedicated branch for the selected feature.
+- One feature branch may contain several related issues belonging to the same documented feature.
+- Do not create a separate branch for every issue.
+- Do not mix unrelated features in the same branch.
+- Do not create a new feature branch while another feature branch is active unless the user explicitly authorizes parallel work.
+- Do not create a replacement or duplicate feature branch when a suitable branch already exists.
+- A feature branch must be based on the latest fetched `origin/dev`.
+- The agent must obtain explicit user permission before creating any feature branch.
+
+Recommended feature branch format:
 
 ```text
-issue/<issue-id>-<short-description>
+feature/<feature-id>-<short-description>
 ```
 
-Example:
+Examples:
 
 ```text
-issue/s0-03-bootstrap-fastapi-backend
+feature/s0-f03-backend-foundation
+feature/s1-f02-migration-job-creation
+feature/s2-f04-stage-execution-control
 ```
 
-Use the exact issue identifier defined in the project documentation whenever one exists.
+Use the exact documented feature identifier whenever one exists.
+
+Issue identifiers must be tracked inside the feature branch through commit messages, documentation updates, pull-request descriptions, or a feature progress record. Issue identifiers must not be encoded by creating separate issue branches.
 
 ---
 
-## 3. Mandatory Startup Workflow
+## 3. Git Action Permission Model
 
-Before reading, editing, generating, or committing implementation code, the agent must:
+Git operations are divided into read-only actions and repository-changing actions.
 
-1. Confirm that the current repository is `angular-migration`.
-2. Inspect the current Git status.
-3. Ensure there are no unexpected uncommitted changes.
-4. Fetch the latest remote state.
-5. Switch to `dev`.
-6. Pull the latest version of `dev`.
-7. Read the relevant project documentation.
-8. Identify the exact Sprint 0 issue to implement.
-9. Create a new issue branch from the updated local `dev`.
+### 3.1 Read-only actions allowed without additional permission
 
-Expected workflow:
+The agent may perform the following actions to inspect the repository and prepare a proposal:
 
 ```bash
 git status
-git fetch origin
-git switch dev
-git pull --ff-only origin dev
-git switch -c issue/<issue-id>-<short-description>
+git branch --show-current
+git branch --list
+git remote -v
+git fetch --prune origin
+git log
+git show
+git diff
+git diff --staged
+git ls-files
+git rev-parse
 ```
 
-The agent must not use `git pull` without first confirming the active branch.
+The agent may also inspect files, documentation, tests, configuration, and repository history.
 
-The agent must not use force operations such as:
+`git fetch` is allowed because it updates remote-tracking references without committing to or merging into `dev`.
 
-```bash
-git push --force
-git push --force-with-lease
-git reset --hard
-git clean -fd
+### 3.2 Actions requiring explicit permission
+
+The agent must ask for and receive explicit user permission before performing any of the following:
+
+```text
+creating a branch
+switching to a newly created branch
+creating a commit
+amending a commit
+pushing a branch
+creating a pull request
+updating a pull request
+merging a branch
+deleting a local branch
+deleting a remote branch
+creating or deleting a tag
+performing a rebase
+performing a reset
+restoring or discarding user changes
+changing Git configuration
 ```
 
-unless the user explicitly requests the exact operation and understands its impact.
+Permission for one action does not imply permission for later actions.
+
+Examples:
+
+- Permission to create a branch does not authorize commits.
+- Permission to commit does not authorize pushing.
+- Permission to push does not authorize creating a pull request.
+- Permission to create a pull request does not authorize merging.
+- Permission to work on one feature does not authorize creating the next feature branch.
+
+### 3.3 Approval must be informed
+
+Before requesting permission, the agent must explain the exact proposed action.
+
+For branch creation, provide:
+
+```text
+Feature identifier
+Feature title
+Issues expected in the feature
+Proposed branch name
+Base reference
+Base commit
+Reason a new branch is needed
+```
+
+For a commit, provide:
+
+```text
+Issue identifier
+Purpose of the commit
+Files to be included
+Files intentionally excluded
+Proposed commit message
+Validation already executed
+Known limitations
+```
+
+For a push, provide:
+
+```text
+Branch to push
+Remote destination
+Commits that will be published
+Working-tree status
+Validation status
+```
+
+The agent must wait for an explicit approval such as:
+
+```text
+Create the branch.
+Commit these changes.
+Push the feature branch.
+Create the pull request.
+```
+
+Silence, an unrelated reply, or earlier general permission must not be treated as authorization.
 
 ---
 
-## 4. Documentation Is the Source of Truth
+## 4. Mandatory Startup and Repository Inspection
 
-Before implementing an issue, the agent must inspect the `docs/` directory and read:
+Before editing implementation code, the agent must:
 
-- the Sprint 0 backlog or Sprint 0 issue definition;
-- the architecture documentation;
-- the workflow documentation;
-- the technical stack documentation;
-- the product vision and MVP scope;
-- any coding, API, database, agent, orchestration, security, testing, or UI conventions relevant to the issue.
+1. Confirm that the repository is `angular-migration`.
+2. Identify the current branch.
+3. Inspect the working tree.
+4. Detect staged, unstaged, and untracked files.
+5. Confirm that existing user work will not be overwritten.
+6. Fetch the latest remote state using `git fetch --prune origin`.
+7. Inspect the latest `origin/dev` commit.
+8. Read the relevant project documentation.
+9. Identify the selected feature and its related issues.
+10. Determine whether an existing feature branch should be reused.
+11. Present the feature execution proposal.
+12. Ask for explicit permission before creating a branch.
 
-The agent must use the documentation as the primary source of truth.
+Safe inspection workflow:
+
+```bash
+git status
+git branch --show-current
+git remote -v
+git fetch --prune origin
+git log --oneline --decorate -n 10 origin/dev
+```
+
+The agent must not switch to `dev` merely to synchronize it.
+
+When a new feature branch is approved, create it directly from the fetched remote-tracking branch:
+
+```bash
+git switch -c feature/<feature-id>-<short-description> origin/dev
+```
+
+This keeps local `dev` untouched.
+
+If the current branch is `dev`, the agent must not edit files. It must first inspect the repository, request branch-creation permission, and move to the approved feature branch.
+
+If unexpected local changes exist, the agent must stop before editing and report:
+
+```text
+Current branch
+Changed files
+Whether changes are staged
+Whether files are tracked
+Potential conflict with the requested work
+```
+
+The agent must not stash, discard, reset, clean, overwrite, or commit unexpected user changes without explicit permission.
+
+---
+
+## 5. Documentation Is the Source of Truth
+
+Before implementing a feature or issue, inspect the `docs/` directory and read all relevant material, including:
+
+- the backlog and sprint documentation;
+- the selected feature definition;
+- the selected issue definition;
+- architecture documentation;
+- workflow documentation;
+- technical stack documentation;
+- product vision and MVP scope;
+- state-machine and transition rules;
+- API and database conventions;
+- agent and orchestration responsibilities;
+- sandbox and command-execution rules;
+- security constraints;
+- testing conventions;
+- frontend and UI conventions;
+- relevant architecture decision records.
+
+The documentation is the primary source of truth.
 
 The agent must:
 
-- implement the issue according to its documented acceptance criteria;
+- implement documented acceptance criteria;
 - preserve the complete project vision;
-- verify dependencies on earlier or related issues;
-- respect established naming, folder structure, architecture, and technology decisions;
-- update documentation when the implementation changes documented behavior, setup, configuration, APIs, or architecture.
+- respect feature and issue dependencies;
+- respect established naming and folder structure;
+- respect approved architecture and technology decisions;
+- update documentation when behavior, setup, configuration, APIs, schema, workflow, or architecture changes;
+- identify conflicts between documents before implementation;
+- prefer the newest explicitly approved document when document versions conflict, while reporting the conflict.
 
 The agent must not:
 
 - invent requirements;
-- silently expand the issue scope;
-- replace documented technologies with preferred alternatives;
+- silently expand scope;
+- replace approved technologies with preferred alternatives;
 - introduce architecture that conflicts with the project vision;
 - assume missing acceptance criteria;
-- implement future-sprint functionality unless it is strictly required by the current issue.
+- implement future feature behavior unless strictly required by the current issue;
+- use generated code as authority when it conflicts with documentation.
 
-If the requested issue cannot be identified in `docs/`, the agent must stop and ask the user which documented issue should be implemented.
-
----
-
-## 5. Clarification Rule
-
-The agent must ask the user a focused question before implementation when a missing decision could materially affect:
-
-- architecture;
-- public APIs;
-- database schema;
-- workflow or state transitions;
-- security;
-- artifact layout;
-- sandbox behavior;
-- agent responsibilities;
-- user-facing behavior;
-- acceptance criteria;
-- compatibility with another Sprint 0 issue.
-
-The agent must not guess or invent a project decision.
-
-The agent may make small, reversible implementation choices only when they:
-
-- follow existing repository conventions;
-- do not alter product behavior;
-- do not conflict with the documentation;
-- are documented in the final summary.
-
-Questions must be specific and limited to information that cannot be determined from the repository or documentation.
+If the selected feature or issue cannot be identified in `docs/`, the agent must stop and ask the user to identify the correct documented work item.
 
 ---
 
-## 6. Issue Scope
+## 6. Feature and Issue Scope Management
 
-For every issue, the agent must first establish:
+### 6.1 Feature definition
+
+Before requesting permission to create a feature branch, establish:
+
+```text
+Feature identifier
+Feature title
+Feature objective
+Sprint
+Related issue identifiers
+Relevant documentation
+Dependencies
+Expected backend scope
+Expected frontend scope
+Expected database scope
+Expected workflow scope
+Expected files or modules
+Validation strategy
+Out-of-scope items
+```
+
+A feature branch must have one coherent objective.
+
+### 6.2 Issue execution inside the feature branch
+
+Issues must be implemented one at a time inside the approved feature branch.
+
+Before starting an issue, establish:
 
 ```text
 Issue identifier
 Issue title
 Objective
-Relevant documentation
 Acceptance criteria
 Dependencies
-Files expected to change
-Validation required
+Current feature branch
+Expected files to change
+Tests required
+Manual validation required
 Out-of-scope items
 ```
 
-The implementation must remain limited to the selected issue.
+After completing an issue, the agent must stop at an issue review checkpoint before starting the next issue.
+
+The review checkpoint must include:
+
+```text
+Issue implemented
+Summary of changes
+Files changed
+Tests added or updated
+Validation commands and results
+Current diff status
+Known limitations
+Proposed commit plan
+Recommended next issue
+```
+
+The agent must not automatically commit, push, or start the next issue.
+
+The user may:
+
+- inspect and commit the changes manually;
+- ask the agent to adjust the implementation;
+- explicitly authorize one or more commits;
+- explicitly authorize a push;
+- authorize work on the next issue in the same feature branch.
+
+### 6.3 Scope restrictions
 
 Do not perform unrelated:
 
 - refactoring;
 - dependency upgrades;
-- formatting changes across the repository;
+- repository-wide formatting;
 - file renaming;
 - architecture redesign;
 - feature additions;
-- cleanup outside the affected area.
+- cleanup outside the affected area;
+- speculative abstractions;
+- premature optimization.
 
-A necessary supporting change is allowed only when it is directly required by the issue and is included in the implementation summary.
+A supporting change is allowed only when it is directly necessary for the selected issue and is clearly reported.
 
 ---
 
@@ -212,15 +404,24 @@ The agent must:
 - avoid hard-coded environment-specific paths, secrets, credentials, tokens, or URLs;
 - preserve backward compatibility unless the issue explicitly changes it;
 - add or update tests for implemented behavior;
-- avoid adding dependencies unless they are necessary and aligned with the documented stack.
+- avoid adding dependencies unless necessary and aligned with the approved stack;
+- preserve strict Angular migration functional parity;
+- keep LangGraph as an orchestration adapter rather than the state database or execution authority;
+- keep SQLite as authoritative persistent state for the MVP;
+- keep the Transition Service authoritative for legal state changes;
+- keep the CommandExecutor authoritative for command execution;
+- keep the Artifact Store authoritative for execution evidence;
+- keep workspace mutation inside the approved sandbox execution boundary.
 
-Temporary placeholders, fake implementations, silent fallbacks, and unfinished TODO-based behavior are not acceptable unless the issue explicitly requires a scaffold. Any intentional scaffold must be clearly marked and documented.
+Temporary placeholders, fake implementations, silent fallbacks, and unfinished TODO-based behavior are not acceptable unless the issue explicitly requires a scaffold.
+
+Any intentional scaffold must be clearly marked, tested where practical, and documented.
 
 ---
 
 ## 8. Project Stack Constraints
 
-The current approved stack must be respected.
+The approved stack must be respected.
 
 ### Backend
 
@@ -258,42 +459,64 @@ The current approved stack must be respected.
 - Custom unified diff viewer
 - Markdown report viewer
 
-Do not replace an approved technology without explicit user approval and a documented project decision.
+Do not replace an approved technology without explicit user approval and a documented architecture decision.
+
+Do not introduce excluded or company-restricted tools without explicit approval.
 
 ---
 
 ## 9. Safety and Repository Protection
 
-The agent must preserve existing stable behavior.
+The agent must preserve existing stable behavior and user work.
 
-Before changing code, inspect the surrounding implementation and related tests.
+Before changing code, inspect the surrounding implementation, contracts, migrations, tests, and documentation.
 
 The agent must never:
 
 - modify `main`;
-- push directly to `main`;
-- merge any branch into `main`;
-- merge an unvalidated issue branch into `dev`;
-- use force-push on an issue branch or `dev`;
-- open or merge a pull request unless the user explicitly requests a pull-request workflow;
-- delete local or remote branches;
+- commit to `main`;
+- push to `main`;
+- merge into `main`;
+- modify `dev` during feature implementation;
+- commit directly to `dev`;
+- push directly to `dev`;
+- automatically merge a feature branch into `dev`;
+- force-push any branch;
 - rewrite published history;
+- delete branches without permission;
 - alter user Git configuration;
 - commit secrets or local environment files;
 - bypass failing tests by disabling them;
-- remove validation to make an issue appear complete;
+- remove validation to make work appear complete;
 - modify unrelated user work;
-- discard uncommitted changes that were not created by the agent.
+- discard changes not created by the agent;
+- use destructive commands without exact, informed authorization;
+- claim a Git action was performed when it was not.
 
-When unexpected local changes exist, stop and explain what was found before continuing.
+Prohibited by default:
+
+```bash
+git push --force
+git push --force-with-lease
+git reset --hard
+git clean -fd
+git clean -fdx
+git checkout -- .
+git restore .
+git restore --staged .
+git rebase
+git commit --amend
+```
+
+A destructive command requires a separate, exact user instruction that identifies the command or its intended effect and acknowledges the impact.
 
 ---
 
 ## 10. Validation Requirements
 
-Before committing, the agent must run the relevant validation available in the repository.
+Validation must be performed before presenting an issue as complete.
 
-Depending on the affected area, this may include:
+Depending on the affected area, validation may include:
 
 ```text
 formatting
@@ -308,36 +531,57 @@ backend startup validation
 production build
 sandbox worker validation
 SSE workflow validation
+state-transition validation
+artifact-generation validation
+manual end-to-end validation
 ```
 
-The agent must not claim that validation passed unless the corresponding command was actually executed successfully.
+The agent must:
 
-If a validation command cannot run because of an environment limitation, missing dependency, unavailable service, or existing repository failure, the agent must:
+- run the smallest relevant checks during implementation;
+- run the complete applicable validation before the issue review checkpoint;
+- record the exact commands executed;
+- report pass, fail, skipped, and blocked checks separately;
+- distinguish pre-existing failures from failures introduced by the changes;
+- avoid claiming validation passed when a command was not executed;
+- avoid changing tests merely to hide a product defect.
 
-1. report the exact limitation;
-2. distinguish it from failures caused by the new changes;
-3. complete all other available validation;
-4. avoid presenting the issue as fully verified.
+If validation cannot run because of environment limitations, missing dependencies, unavailable services, corporate restrictions, or existing repository failures, report:
+
+```text
+Blocked command
+Exact error or limitation
+Whether the limitation is pre-existing
+What validation was still completed
+Residual risk
+```
 
 ---
 
-## 11. Commit Rules
+## 11. Commit Rules and Approval Gate
 
-After the implementation and validation are complete, the agent must commit the work locally.
+The default behavior is to leave completed issue changes uncommitted for human review.
 
-Do not put the entire issue into one large commit when the work contains multiple logical changes.
+The developer may inspect, modify, stage, commit, and push manually after being satisfied with the implementation.
 
-Each commit must:
+The agent must not create a commit unless the user explicitly authorizes it.
+
+### 11.1 Commit proposal
+
+At the issue review checkpoint, the agent must propose logical commits when appropriate.
+
+Each proposed commit must:
 
 - represent one clear purpose;
-- keep the repository in a coherent state where practical;
-- use a concise and descriptive message;
-- avoid mixing implementation, tests, documentation, and unrelated cleanup without reason.
+- reference the relevant issue identifier when practical;
+- keep the repository coherent;
+- use a concise descriptive message;
+- avoid unrelated changes.
 
 Preferred commit message format:
 
 ```text
-<type>(<scope>): <clear description>
+<type>(<scope>): <clear description> [<issue-id>]
 ```
 
 Common types:
@@ -353,16 +597,17 @@ build
 ci
 ```
 
-Example commit sequence:
+Example proposal:
 
 ```text
-chore(backend): add FastAPI application skeleton
-feat(config): add typed application settings
-test(backend): add application health endpoint tests
-docs(setup): document local backend startup
+feat(api): add migration job creation endpoint [S1-F02-I01]
+test(api): cover migration job validation [S1-F02-I01]
+docs(api): document migration job contract [S1-F02-I01]
 ```
 
-Before every commit, inspect:
+### 11.2 Before an authorized commit
+
+Before every authorized commit, inspect:
 
 ```bash
 git status
@@ -370,173 +615,376 @@ git diff
 git diff --staged
 ```
 
-Stage only the files that belong to that logical commit.
+The agent must then show or summarize:
+
+```text
+Files to stage
+Files excluded
+Proposed commit message
+Validation status
+```
+
+Stage only the approved files.
 
 Do not use:
 
 ```bash
 git add .
+git add -A
 ```
 
-without first reviewing all changed files.
+without first reviewing and listing all affected files.
 
-Do not amend, squash, rebase, or rewrite commits unless the user explicitly asks for it.
+Authorization to create one commit applies only to the described commit. Additional commits require additional approval unless the user explicitly approves a named multi-commit plan.
+
+The agent must not amend, squash, rebase, or rewrite commits unless explicitly authorized.
 
 ---
 
-## 12. Mandatory Completion and Integration Workflow
+## 12. Push Rules and Approval Gate
 
-After implementation, testing, documentation updates, and local logical commits are complete, the agent must integrate the issue through the following controlled workflow.
+The default behavior is not to push.
 
-### 12.1 Push the Issue Branch
+The developer may push manually after reviewing the issue implementation and commits.
 
-Confirm the current branch and working tree before pushing:
+The agent must not push unless the user explicitly authorizes the exact branch push.
 
-```bash
-git status
-git branch --show-current
-git log --oneline --decorate -n 10
+Before requesting push permission, provide:
+
+```text
+Current branch
+Remote destination
+Commits to be pushed
+Ahead/behind status
+Working-tree status
+Validation status
+Known limitations
 ```
 
-Push the dedicated issue branch and configure its upstream:
+Authorized push format:
 
 ```bash
-git push -u origin issue/<issue-id>-<short-description>
+git push -u origin feature/<feature-id>-<short-description>
+```
+
+For later pushes:
+
+```bash
+git push origin feature/<feature-id>-<short-description>
 ```
 
 The agent must never force-push.
 
-### 12.2 Synchronize `dev` Before Merging
+A push authorization does not authorize creating a pull request or merging into `dev`.
 
-Remote `dev` may have changed while the issue was being implemented. Before merging, the agent must return to `dev` and synchronize it:
+---
 
-```bash
-git switch dev
-git fetch origin
-git pull --ff-only origin dev
-```
+## 13. Pull Request and Integration Rules
 
-If `dev` has changed, the agent must verify that the issue branch is still compatible. When necessary, switch back to the issue branch, integrate the latest `dev`, resolve conflicts carefully, rerun validation, create any required conflict-resolution commit, and push the updated issue branch.
+A feature should normally be integrated only after all of its related issues and feature-level acceptance criteria are complete.
 
-The agent must never hide or guess through a merge conflict. If the correct resolution is not clear from the code and documentation, stop and ask the user.
-
-### 12.3 Merge the Issue Branch into `dev`
-
-Only after the issue branch passes all applicable validation, merge it into `dev`:
-
-```bash
-git switch dev
-git merge --no-ff issue/<issue-id>-<short-description>
-```
-
-Use a clear merge commit message when Git requires or allows one, for example:
+Before proposing integration, the agent must provide a feature completion report:
 
 ```text
-merge(dev): integrate S0-03 FastAPI backend skeleton
+Feature identifier and title
+Feature branch
+Included issue identifiers
+Completed acceptance criteria
+Incomplete or deferred items
+Commits
+Files and modules changed
+Database migrations
+API changes
+Frontend changes
+Workflow or state-machine changes
+Validation results
+Manual verification results
+Known limitations
+Documentation updates
+Risk assessment
 ```
 
-After the merge, run the relevant validation again from `dev`. The agent must verify the integrated state, not only the standalone issue branch.
+The agent must not automatically create a pull request.
 
-If post-merge validation fails:
+A pull request requires explicit permission.
 
-1. do not push `dev`;
-2. investigate the failure;
-3. correct the issue on the issue branch or with a clearly scoped follow-up commit;
-4. repeat validation before pushing `dev`.
+The pull request should:
 
-### 12.4 Push `dev`
+- target `dev`;
+- use the feature branch as the source;
+- list all included issues;
+- describe scope and out-of-scope items;
+- include validation evidence;
+- disclose database, API, configuration, and migration impacts;
+- identify remaining risks;
+- avoid unrelated changes.
 
-When the merged `dev` branch is validated successfully, push it normally:
+The agent must not merge the pull request or merge the feature branch into `dev`.
 
-```bash
-git push origin dev
-```
+Merging into `dev` remains a human-controlled action unless the user creates a separate, explicit integration task that authorizes the exact merge after review.
 
-Do not use force-push, history rewriting, or direct changes to `main`.
+Even when separately authorized, the agent must never push directly to `dev` without explicit permission for that exact push.
 
-### 12.5 Finish on a Synchronized `dev`
+The agent must not delete the feature branch automatically after integration.
 
-After pushing, the agent must remain on `dev` and perform one final synchronization check:
+---
 
-```bash
-git switch dev
-git fetch origin
-git pull --ff-only origin dev
-git status
-```
+## 14. Feature Branch Lifecycle
 
-The final state must satisfy all of the following:
+A feature branch progresses through the following states:
 
 ```text
-Current branch: dev
-Working tree: clean
-Local dev: synchronized with origin/dev
-Issue branch: pushed to origin
-Issue work: merged into dev
-Remote dev: updated successfully
-main: untouched
+PROPOSED
+AUTHORIZED
+ACTIVE
+ISSUE_REVIEW
+FEATURE_REVIEW
+READY_FOR_PR
+INTEGRATED
+ARCHIVED
 ```
 
-The agent must not automatically delete the local or remote issue branch. Branch deletion remains a separate user decision.
+Expected behavior:
 
-At the end, the agent must provide:
+1. `PROPOSED`
+   - Feature and issues are identified.
+   - Branch name and base commit are proposed.
+   - No branch exists yet.
+
+2. `AUTHORIZED`
+   - The user explicitly approves branch creation.
+
+3. `ACTIVE`
+   - The branch exists.
+   - One approved issue is being implemented.
+
+4. `ISSUE_REVIEW`
+   - The selected issue is implemented and validated.
+   - Changes remain uncommitted by default.
+   - The user decides whether to adjust, commit, push, or continue.
+
+5. `FEATURE_REVIEW`
+   - All intended issues are implemented.
+   - Feature-level validation is complete.
+
+6. `READY_FOR_PR`
+   - The feature branch is committed and pushed with permission.
+   - A pull request may be created only with separate permission.
+
+7. `INTEGRATED`
+   - A human-controlled integration into `dev` is complete.
+
+8. `ARCHIVED`
+   - Branch deletion or archival occurs only with explicit permission.
+
+The agent must not create the next feature branch merely because the current feature is complete. It must present the completion status and ask the user which feature should be authorized next.
+
+---
+
+## 15. Required Execution Sequence
+
+For each feature, follow this sequence:
 
 ```text
+1. Inspect the repository and current Git state.
+2. Confirm that no protected branch will be modified.
+3. Fetch and prune origin.
+4. Inspect the latest origin/dev reference.
+5. Read all relevant documentation.
+6. Identify the feature and its related issues.
+7. Check whether an appropriate feature branch already exists.
+8. Present the proposed feature branch, issue set, scope, and base commit.
+9. Ask for explicit branch-creation permission.
+10. Create the feature branch from origin/dev only after approval.
+11. Select one issue from the authorized feature.
+12. Confirm its acceptance criteria and dependencies.
+13. Inspect the existing implementation and related tests.
+14. Implement only that issue.
+15. Add or update tests.
+16. Update relevant documentation.
+17. Run applicable validation.
+18. Review the complete diff.
+19. Present the issue review checkpoint.
+20. Leave changes uncommitted by default.
+21. Commit only after explicit permission, or allow the developer to commit manually.
+22. Push only after explicit permission, or allow the developer to push manually.
+23. Start the next issue in the same feature branch only after user direction.
+24. Repeat the issue workflow until the feature is complete.
+25. Run feature-level validation.
+26. Present the feature completion report.
+27. Create a pull request only after explicit permission.
+28. Do not merge into or push directly to dev.
+29. Do not create another feature branch without new explicit permission.
+```
+
+---
+
+## 16. Required Final Report for Each Issue
+
+At the end of each issue, provide:
+
+```text
+Feature identifier and title
+Feature branch
 Issue identifier and title
-Issue branch name
 Summary of implemented changes
 Files changed
-Validation executed on the issue branch
-Validation executed after merging into dev
-Logical commits created
-Issue-branch push result
-Merge commit or merge result
-Dev push result
-Final synchronization status
-Known limitations or follow-up work
+Tests added or updated
+Validation commands executed
+Validation results
+Current Git status
+Whether changes are committed
+Whether changes are pushed
+Proposed commit plan
+Known limitations
+Recommended next step
 ```
 
-The final statement must clearly say:
+Do not state that work is committed, pushed, merged, or synchronized unless the exact action was actually performed.
+
+---
+
+## 17. Recommended Repository Governance
+
+The following repository controls are strongly recommended:
+
+### 17.1 Protect `main` and `dev` remotely
+
+Configure repository branch protection so that:
+
+- direct pushes are blocked;
+- force pushes are blocked;
+- branch deletion is blocked;
+- pull requests are required;
+- required CI checks must pass;
+- required reviews must approve;
+- conversations must be resolved before merge;
+- the source branch must be up to date before merge.
+
+### 17.2 Add ownership rules
+
+Add a `CODEOWNERS` file for sensitive areas such as:
 
 ```text
-The issue branch was pushed, merged into dev, and dev was pushed and synchronized. The main branch was not modified.
+backend state and transitions
+database migrations
+command execution
+sandbox security
+LLM gateway
+frontend workflow state
+CI and deployment configuration
+```
+
+### 17.3 Standardize feature and issue traceability
+
+Maintain clear identifiers across:
+
+```text
+backlog
+documentation
+feature branch
+commit messages
+pull requests
+tests
+release notes
+```
+
+A lightweight feature progress file may be kept under:
+
+```text
+docs/features/<feature-id>/progress.md
+```
+
+It should record completed issues, remaining issues, decisions, validation, and known risks without becoming an alternative source of authoritative runtime state.
+
+### 17.4 Add pull-request templates
+
+The pull-request template should require:
+
+```text
+feature and issue identifiers
+scope
+acceptance criteria
+validation evidence
+manual verification
+database changes
+API changes
+configuration changes
+security impact
+rollback considerations
+known limitations
+documentation updates
+```
+
+### 17.5 Add required CI checks
+
+At minimum, CI should verify the applicable:
+
+```text
+backend formatting and linting
+backend type checking
+backend tests
+database migration validity
+frontend formatting and linting
+frontend type checking
+frontend tests
+frontend production build
+secret scanning
+dependency lockfile consistency
+```
+
+### 17.6 Record architectural decisions
+
+Use Architecture Decision Records under:
+
+```text
+docs/adr/
+```
+
+Create an ADR for material decisions affecting architecture, security, execution authority, state ownership, external dependencies, or public contracts.
+
+### 17.7 Keep local-only files out of Git
+
+Maintain an accurate `.gitignore`.
+
+Provide safe templates such as:
+
+```text
+.env.example
+configuration examples
+local development setup documentation
+```
+
+Never commit real secrets, tokens, credentials, private paths, generated sandboxes, runtime databases, or local artifacts unless the project explicitly requires a safe fixture.
+
+### 17.8 Define merge strategy
+
+Choose and document one repository-wide merge strategy for feature branches, such as:
+
+```text
+merge commit
+squash merge
+rebase merge
+```
+
+The selected strategy should preserve the desired issue traceability and must be applied by the human-controlled integration process.
+
+### 17.9 Add release and rollback discipline
+
+For changes that affect schemas, workflows, commands, or configuration, document:
+
+```text
+forward migration
+backward compatibility
+rollback limitations
+data recovery
+artifact compatibility
+configuration migration
 ```
 
 ---
 
-## 13. Required Execution Sequence
-
-For every Sprint 0 issue, follow this sequence:
-
-```text
-1. Inspect repository and Git status.
-2. Fetch origin.
-3. Switch to dev.
-4. Pull dev using fast-forward only.
-5. Read the relevant files under docs/.
-6. Identify the exact Sprint 0 issue and its acceptance criteria.
-7. Ask a focused question only when a material requirement is missing.
-8. Create a dedicated issue branch from the updated dev branch.
-9. Inspect the existing implementation and related tests.
-10. Implement only the selected issue.
-11. Add or update tests.
-12. Update relevant documentation.
-13. Run all applicable validation.
-14. Review the complete diff.
-15. Create multiple logical local commits.
-16. Push the issue branch to `origin`.
-17. Switch to `dev`, fetch, and pull using fast-forward only.
-18. Reconcile the issue branch with the latest `dev` when necessary and rerun validation.
-19. Merge the validated issue branch into `dev` using `--no-ff`.
-20. Run post-merge validation on `dev`.
-21. Push `dev` to `origin`.
-22. Fetch and pull `dev` again to confirm synchronization.
-23. Verify a clean working tree, report the result, and remain on `dev`.
-```
-
----
-
-## 14. Priority of Instructions
+## 18. Priority of Instructions
 
 When instructions conflict, use this priority:
 
@@ -548,4 +996,8 @@ When instructions conflict, use this priority:
 5. General engineering best practices
 ```
 
-No instruction may override repository safety rules unless the user explicitly requests the exact exceptional action.
+No general instruction authorizes modification of `main` or `dev`.
+
+No earlier permission authorizes a later branch, commit, push, pull-request, or merge operation.
+
+When uncertain, the agent must preserve user work, keep protected branches untouched, avoid irreversible actions, and ask for a focused decision.
