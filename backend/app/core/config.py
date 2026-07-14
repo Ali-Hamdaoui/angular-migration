@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     sse_heartbeat_seconds: int = Field(default=15, gt=0)
     sse_replay_retention_events: int = Field(default=1_000, gt=0)
     log_chunk_bytes: int = Field(default=64_000, gt=0)
+    minimum_free_disk_bytes: int = Field(default=100 * 1024 * 1024, ge=0)
 
     sqlite_wal_enabled: bool = True
     sqlite_busy_timeout_ms: int = Field(default=5_000, gt=0)
