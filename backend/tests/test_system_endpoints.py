@@ -207,3 +207,17 @@ def test_application_lifespan_verifies_database_connection() -> None:
         response = lifespan_client.get("/health")
 
     assert response.status_code == 200
+
+def test_versioned_production_auto_approval_is_rejected() -> None:
+    response = client.put(
+        "/api/v1/migrations/mock-run/approval-policy",
+        json={"auto_approval_enabled": True, "actor": "tester"},
+        headers={"x-correlation-id": "auto-approval-test"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "error_code": "AUTO_APPROVAL_NOT_ALLOWED",
+        "message": "Production auto-approval is disabled; submit an explicit human decision.",
+        "correlation_id": "auto-approval-test",
+        "details": {},
+    }
