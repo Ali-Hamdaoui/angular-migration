@@ -3,6 +3,7 @@
 from app.repositories.models.base import Base
 from app.repositories.models.workflow import (
     AgentExecutionModel,
+    ActiveRunClaimModel,
     ApprovalEventModel,
     ApprovalPolicyEventModel,
     ArtifactMetadataModel,
@@ -24,6 +25,7 @@ from app.repositories.models.workflow import (
 
 __all__ = [
     "AgentExecutionModel",
+    "ActiveRunClaimModel",
     "ApprovalEventModel",
     "ApprovalPolicyEventModel",
     "ArtifactMetadataModel",

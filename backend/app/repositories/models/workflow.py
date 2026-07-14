@@ -25,6 +25,15 @@ class MigrationRunModel(Base):
     target_version_resolved: Mapped[str | None] = mapped_column(String(64))
     source_angular_version: Mapped[str | None] = mapped_column(String(32))
     target_angular_version: Mapped[str | None] = mapped_column(String(32))
+    preflight_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    source_path: Mapped[str | None] = mapped_column(Text)
+    target_output_path: Mapped[str | None] = mapped_column(Text)
+    graph_thread_id: Mapped[str | None] = mapped_column(String(128), unique=True)
+    client_constraints: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    target_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    run_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    pricing_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    actor: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -161,6 +170,20 @@ class WorkerLeaseModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
     worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    lease_owner: Mapped[str] = mapped_column(String(128), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class ActiveRunClaimModel(Base):
+    """Durable single-run and target ownership claim."""
+
+    __tablename__ = "active_run_claims"
+    __table_args__ = (UniqueConstraint("run_id", name="uq_active_run_claim_run"), UniqueConstraint("target_output_path", name="uq_active_run_claim_target"))
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    target_output_path: Mapped[str] = mapped_column(Text, nullable=False)
     lease_owner: Mapped[str] = mapped_column(String(128), nullable=False)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
