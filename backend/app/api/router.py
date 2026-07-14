@@ -9,9 +9,19 @@ from app.api.routes.migrations import assistant_router, router as migrations_rou
 from app.api.routes.version import router as version_router
 
 api_router = APIRouter()
+api_v1_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health_router)
 api_router.include_router(version_router)
 api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
 api_router.include_router(artifacts_router)
 api_router.include_router(environment_router)
+
+# Versioned production surface; legacy unversioned paths remain compatibility aliases.
+api_v1_router.include_router(health_router)
+api_v1_router.include_router(version_router)
+api_v1_router.include_router(migrations_router)
+api_v1_router.include_router(assistant_router)
+api_v1_router.include_router(artifacts_router)
+api_v1_router.include_router(environment_router)
+api_router.include_router(api_v1_router)

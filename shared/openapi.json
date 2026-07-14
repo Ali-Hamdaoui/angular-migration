@@ -194,6 +194,8 @@
           "APPROVED",
           "REJECTED",
           "ACCEPTED_RISK",
+          "MODIFICATION_REQUESTED",
+          "APPROVED_WITH_RISK",
           "CANCELLED"
         ],
         "title": "ApprovalDecision",
@@ -395,6 +397,20 @@
         ],
         "title": "ApprovalRequestDto",
         "type": "object"
+      },
+      "ApprovalStatus": {
+        "enum": [
+          "not_required",
+          "pending",
+          "approved",
+          "rejected",
+          "modification_requested",
+          "approved_with_risk",
+          "expired",
+          "cancelled"
+        ],
+        "title": "ApprovalStatus",
+        "type": "string"
       },
       "ArtifactContentResponse": {
         "properties": {
@@ -1168,6 +1184,10 @@
             "title": "Approval Events",
             "type": "array"
           },
+          "approval_status": {
+            "$ref": "#/components/schemas/ApprovalStatus",
+            "default": "not_required"
+          },
           "artifacts": {
             "items": {
               "$ref": "#/components/schemas/ArtifactRefDto"
@@ -1245,12 +1265,20 @@
             "title": "Patch Ledger",
             "type": "array"
           },
+          "phase_status": {
+            "$ref": "#/components/schemas/PhaseStatus",
+            "default": "running"
+          },
           "repair_attempts": {
             "items": {
               "$ref": "#/components/schemas/RepairAttemptDto"
             },
             "title": "Repair Attempts",
             "type": "array"
+          },
+          "repair_status": {
+            "$ref": "#/components/schemas/RepairStatus",
+            "default": "not_required"
           },
           "run_id": {
             "title": "Run Id",
@@ -1613,6 +1641,20 @@
         "title": "PatchLedgerEntryDto",
         "type": "object"
       },
+      "PhaseStatus": {
+        "description": "Status of a workflow phase, independent from the run current state.",
+        "enum": [
+          "not_started",
+          "running",
+          "waiting_approval",
+          "completed",
+          "blocked",
+          "failed",
+          "cancelled"
+        ],
+        "title": "PhaseStatus",
+        "type": "string"
+      },
       "PreflightRequestDto": {
         "additionalProperties": false,
         "properties": {
@@ -1804,6 +1846,20 @@
         "title": "RepairAttemptDto",
         "type": "object"
       },
+      "RepairStatus": {
+        "enum": [
+          "not_required",
+          "pending",
+          "running",
+          "waiting_approval",
+          "completed",
+          "failed",
+          "escalated",
+          "cancelled"
+        ],
+        "title": "RepairStatus",
+        "type": "string"
+      },
       "RiskLevel": {
         "enum": [
           "low",
@@ -1877,9 +1933,44 @@
       "RunStatus": {
         "enum": [
           "CREATED",
+          "SOURCE_VALIDATION_RUNNING",
+          "SOURCE_VALIDATED",
+          "WORKSPACE_CLASSIFICATION_RUNNING",
+          "BASELINE_RUNNING",
+          "BASELINE_QUALIFIED",
+          "CLIENT_CONSTRAINTS_CAPTURED",
+          "ELIGIBILITY_RUNNING",
+          "ANALYSIS_RUNNING",
+          "WAITING_ANALYSIS_APPROVAL",
+          "PLANNING_RUNNING",
+          "WAITING_PLAN_APPROVAL",
+          "STAGE_CREATED",
+          "TOOLCHAIN_PROFILE_SELECTED",
+          "SANDBOX_READY",
+          "DEPENDENCY_AUDITED",
+          "TRANSFORMATION_RUNNING",
+          "STATIC_SYMBOL_CHECK_RUNNING",
+          "VALIDATION_RUNNING",
+          "REPAIR_RUNNING",
+          "WAITING_REPAIR_APPROVAL",
+          "REVIEW_READY",
+          "STAGE_COMMITTED",
+          "STAGE_ROLLED_BACK",
+          "REPORT_RUNNING",
+          "DELIVERY_RUNNING",
+          "PAUSE_REQUESTED",
+          "PAUSED",
+          "RESUMING",
+          "CANCEL_REQUESTED",
+          "CANCELLING",
+          "TIMED_OUT",
+          "WORKER_LOST",
+          "RECOVERY_RUNNING",
+          "ORPHANED",
+          "CLEANUP_RUNNING",
+          "CLEANUP_FAILED",
           "RUNNING",
           "WAITING",
-          "CANCELLING",
           "CANCELLED",
           "COMPLETED",
           "FAILED",
@@ -1891,10 +1982,13 @@
       "StageStatus": {
         "enum": [
           "PENDING",
+          "preparing",
           "RUNNING",
           "WAITING_APPROVAL",
           "REPAIRING",
           "PASSED",
+          "passed_with_known_baseline_failures",
+          "passed_with_manual_items",
           "FAILED",
           "ROLLED_BACK",
           "CANCELLED",
@@ -2257,6 +2351,659 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/artifacts/{artifact_id}": {
+      "get": {
+        "operationId": "read_artifact_by_id_api_v1_artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactContentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a stored artifact by ID",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/assistant/messages": {
+      "post": {
+        "operationId": "send_assistant_message_api_v1_assistant_messages_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantMessageRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantMessageResponseDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send a mock assistant message",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "read_health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read service health",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/migrations/mock": {
+      "post": {
+        "operationId": "create_mock_migration_api_v1_migrations_mock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMockMigrationRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a checksum-bound mock migration run",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/mock-state": {
+      "get": {
+        "operationId": "read_mock_migration_state_api_v1_migrations_mock_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read mock migration state",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/preflight": {
+      "post": {
+        "operationId": "validate_preflight_api_v1_migrations_preflight_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreflightRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate mock migration setup",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/approval-policy": {
+      "put": {
+        "operationId": "update_approval_policy_api_v1_migrations__run_id__approval_policy_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalPolicyRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPolicyDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update mock approval policy",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/approvals": {
+      "post": {
+        "operationId": "submit_approval_api_v1_migrations__run_id__approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalEventDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit a mock approval decision",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/artifacts": {
+      "get": {
+        "operationId": "list_run_artifacts_api_v1_migrations__run_id__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactRefDto"
+                  },
+                  "title": "Response List Run Artifacts Api V1 Migrations  Run Id  Artifacts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List run artifacts",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/artifacts/{artifact_path}": {
+      "get": {
+        "operationId": "read_run_artifact_api_v1_migrations__run_id__artifacts__artifact_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_path",
+            "required": true,
+            "schema": {
+              "title": "Artifact Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactContentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a stored artifact by run path",
+        "tags": [
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_migration_run_api_v1_migrations__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a mock migration run",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/diagnostics": {
+      "get": {
+        "operationId": "read_migration_diagnostics_api_v1_migrations__run_id__diagnostics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stage Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsSummaryDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read non-authoritative run diagnostics",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/events": {
+      "get": {
+        "operationId": "stream_migration_events_api_v1_migrations__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream mock workflow events via Server-Sent Events",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/resume": {
+      "post": {
+        "operationId": "resume_migration_run_api_v1_migrations__run_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume a mock migration run",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/migrations/{run_id}/state": {
+      "get": {
+        "operationId": "read_migration_state_api_v1_migrations__run_id__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read migration state snapshot",
+        "tags": [
+          "migrations"
+        ]
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "operationId": "read_version_api_v1_version_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read application version",
+        "tags": [
+          "system"
+        ]
+      }
+    },
     "/artifacts/{artifact_id}": {
       "get": {
         "operationId": "read_artifact_by_id_artifacts__artifact_id__get",

@@ -29,6 +29,7 @@ from app.services.mock_event_service import (
 )
 from app.services.mock_migration_api_service import (
     MockMigrationApiService,
+    AutoApprovalNotAllowedError,
     PreflightChecksumError,
     get_mock_migration_api_service,
 )
@@ -127,9 +128,18 @@ def submit_approval(
 def update_approval_policy(
     run_id: str,
     request: ApprovalPolicyRequestDto,
+    http_request: Request,
     service: MockMigrationApiService = Depends(get_service),
 ) -> ApprovalPolicyDto:
-    return service.update_approval_policy(run_id, request)
+    try:
+        return service.update_approval_policy(run_id, request)
+    except AutoApprovalNotAllowedError as exc:
+        return error_response(
+            http_request,
+            status_code=409,
+            error_code=exc.error_code,
+            message=exc.message,
+        )
 
 
 @router.post("/{run_id}/cancel", response_model=OperationResultDto, summary="Cancel a mock migration run")
