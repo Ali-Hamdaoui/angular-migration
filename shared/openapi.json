@@ -916,6 +916,44 @@
         "title": "ComponentExecutionDto",
         "type": "object"
       },
+      "CorporateNetworkReadiness": {
+        "properties": {
+          "credentials_redacted": {
+            "default": true,
+            "title": "Credentials Redacted",
+            "type": "boolean"
+          },
+          "custom_ca_configured": {
+            "title": "Custom Ca Configured",
+            "type": "boolean"
+          },
+          "https_proxy_configured": {
+            "title": "Https Proxy Configured",
+            "type": "boolean"
+          },
+          "proxy_configured": {
+            "title": "Proxy Configured",
+            "type": "boolean"
+          },
+          "registry_configured": {
+            "title": "Registry Configured",
+            "type": "boolean"
+          },
+          "strict_ssl": {
+            "title": "Strict Ssl",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "registry_configured",
+          "proxy_configured",
+          "https_proxy_configured",
+          "strict_ssl",
+          "custom_ca_configured"
+        ],
+        "title": "CorporateNetworkReadiness",
+        "type": "object"
+      },
       "CreateMockMigrationRequestDto": {
         "additionalProperties": false,
         "properties": {
@@ -1075,6 +1113,252 @@
         "title": "DiagnosticsSummaryDto",
         "type": "object"
       },
+      "EnvironmentCapabilityResult": {
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/EnvironmentCapabilitySnapshot"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "EnvironmentCapabilityResult",
+        "type": "object"
+      },
+      "EnvironmentCapabilitySnapshot": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "git_ready": {
+            "title": "Git Ready",
+            "type": "boolean"
+          },
+          "network": {
+            "$ref": "#/components/schemas/CorporateNetworkReadiness"
+          },
+          "node_npm_npx_paired": {
+            "title": "Node Npm Npx Paired",
+            "type": "boolean"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "python_ready": {
+            "title": "Python Ready",
+            "type": "boolean"
+          },
+          "runtimes": {
+            "items": {
+              "$ref": "#/components/schemas/RuntimeInventoryEntry"
+            },
+            "title": "Runtimes",
+            "type": "array"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "degraded",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/LocalStorageReadiness"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "captured_at",
+          "policy_version",
+          "status",
+          "runtimes",
+          "node_npm_npx_paired",
+          "git_ready",
+          "python_ready",
+          "storage",
+          "network",
+          "checksum"
+        ],
+        "title": "EnvironmentCapabilitySnapshot",
+        "type": "object"
+      },
+      "G01Decision": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "artifact_set_checksum": {
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "gate_id": {
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "input_checksum": {
+            "title": "Input Checksum",
+            "type": "string"
+          },
+          "preflight_id": {
+            "title": "Preflight Id",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decision_id",
+          "preflight_id",
+          "gate_id",
+          "decision",
+          "actor",
+          "decided_at",
+          "input_checksum",
+          "artifact_set_checksum",
+          "state_version"
+        ],
+        "title": "G01Decision",
+        "type": "object"
+      },
+      "G01DecisionRequest": {
+        "properties": {
+          "actor": {
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "artifact_set_checksum": {
+            "minLength": 1,
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "approved_with_comment",
+              "modification_requested",
+              "rejected"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "gate_id": {
+            "minLength": 1,
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "input_checksum": {
+            "minLength": 1,
+            "title": "Input Checksum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "gate_id",
+          "decision",
+          "expected_state_version",
+          "input_checksum",
+          "artifact_set_checksum",
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "G01DecisionRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1165,6 +1449,50 @@
           "created_at"
         ],
         "title": "LlmUsageRecordDto",
+        "type": "object"
+      },
+      "LocalStorageReadiness": {
+        "properties": {
+          "artifact_root": {
+            "title": "Artifact Root",
+            "type": "string"
+          },
+          "database_path": {
+            "title": "Database Path",
+            "type": "string"
+          },
+          "free_bytes": {
+            "minimum": 0.0,
+            "title": "Free Bytes",
+            "type": "integer"
+          },
+          "local_filesystem": {
+            "title": "Local Filesystem",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "degraded",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "writable": {
+            "title": "Writable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "database_path",
+          "artifact_root",
+          "writable",
+          "local_filesystem",
+          "free_bytes",
+          "status"
+        ],
+        "title": "LocalStorageReadiness",
         "type": "object"
       },
       "MigrationRunDto": {
@@ -1641,6 +1969,171 @@
         "title": "PatchLedgerEntryDto",
         "type": "object"
       },
+      "PathRuleResult": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "warning",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "status",
+          "message"
+        ],
+        "title": "PathRuleResult",
+        "type": "object"
+      },
+      "PathValidationRequest": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "idempotency_key": {
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "source_path": {
+            "minLength": 1,
+            "title": "Source Path",
+            "type": "string"
+          },
+          "target_output_path": {
+            "minLength": 1,
+            "title": "Target Output Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_path",
+          "target_output_path",
+          "idempotency_key"
+        ],
+        "title": "PathValidationRequest",
+        "type": "object"
+      },
+      "PathValidationResult": {
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/PathValidationSnapshot"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "PathValidationResult",
+        "type": "object"
+      },
+      "PathValidationSnapshot": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/PathRuleResult"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "source_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Fingerprint"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "passed_with_warnings",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_output_path": {
+            "title": "Target Output Path",
+            "type": "string"
+          },
+          "target_reservation_eligible": {
+            "title": "Target Reservation Eligible",
+            "type": "boolean"
+          },
+          "validation_id": {
+            "title": "Validation Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "validation_id",
+          "captured_at",
+          "policy_version",
+          "status",
+          "source_path",
+          "target_output_path",
+          "source_fingerprint",
+          "rules",
+          "target_reservation_eligible",
+          "checksum"
+        ],
+        "title": "PathValidationSnapshot",
+        "type": "object"
+      },
       "PhaseStatus": {
         "description": "Status of a workflow phase, independent from the run current state.",
         "enum": [
@@ -1654,6 +2147,55 @@
         ],
         "title": "PhaseStatus",
         "type": "string"
+      },
+      "PreflightRequest": {
+        "properties": {
+          "actor": {
+            "default": "control-tower",
+            "title": "Actor",
+            "type": "string"
+          },
+          "environment_snapshot_id": {
+            "minLength": 1,
+            "title": "Environment Snapshot Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "migration_mode": {
+            "minLength": 1,
+            "title": "Migration Mode",
+            "type": "string"
+          },
+          "path_validation_id": {
+            "minLength": 1,
+            "title": "Path Validation Id",
+            "type": "string"
+          },
+          "source_analysis_id": {
+            "minLength": 1,
+            "title": "Source Analysis Id",
+            "type": "string"
+          },
+          "target_angular_family": {
+            "minLength": 1,
+            "title": "Target Angular Family",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path_validation_id",
+          "environment_snapshot_id",
+          "source_analysis_id",
+          "target_angular_family",
+          "migration_mode",
+          "idempotency_key"
+        ],
+        "title": "PreflightRequest",
+        "type": "object"
       },
       "PreflightRequestDto": {
         "additionalProperties": false,
@@ -1691,6 +2233,18 @@
           "target_output_path"
         ],
         "title": "PreflightRequestDto",
+        "type": "object"
+      },
+      "PreflightResult": {
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/PreflightSnapshot"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "PreflightResult",
         "type": "object"
       },
       "PreflightResultDto": {
@@ -1789,6 +2343,169 @@
           "message"
         ],
         "title": "PreflightResultDto",
+        "type": "object"
+      },
+      "PreflightSnapshot": {
+        "properties": {
+          "approval_status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "approved",
+              "approved_with_comment",
+              "modification_requested",
+              "rejected",
+              "expired",
+              "stale"
+            ],
+            "title": "Approval Status",
+            "type": "string"
+          },
+          "artifact_set_checksum": {
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Artifacts",
+            "type": "object"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Decision History",
+            "type": "array"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "gate_id": {
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_version": {
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "input_checksum": {
+            "title": "Input Checksum",
+            "type": "string"
+          },
+          "migration_mode": {
+            "title": "Migration Mode",
+            "type": "string"
+          },
+          "preflight_id": {
+            "title": "Preflight Id",
+            "type": "string"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "state_version": {
+            "minimum": 1.0,
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "passed_with_warnings",
+              "blocked",
+              "expired",
+              "stale"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_angular_family": {
+            "title": "Target Angular Family",
+            "type": "string"
+          },
+          "target_output_path": {
+            "title": "Target Output Path",
+            "type": "string"
+          },
+          "target_reservation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Reservation Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "preflight_id",
+          "gate_id",
+          "gate_version",
+          "state_version",
+          "status",
+          "created_at",
+          "expires_at",
+          "input_checksum",
+          "artifact_set_checksum",
+          "target_angular_family",
+          "migration_mode",
+          "source_path",
+          "target_output_path"
+        ],
+        "title": "PreflightSnapshot",
+        "type": "object"
+      },
+      "RefreshEnvironmentRequest": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "idempotency_key": {
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "RefreshEnvironmentRequest",
         "type": "object"
       },
       "RepairAttemptDto": {
@@ -1978,6 +2695,69 @@
         ],
         "title": "RunStatus",
         "type": "string"
+      },
+      "RuntimeInventoryEntry": {
+        "properties": {
+          "executable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executable"
+          },
+          "installation_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installation Root"
+          },
+          "name": {
+            "enum": [
+              "node",
+              "npm",
+              "npx",
+              "git",
+              "python"
+            ],
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "missing",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "title": "RuntimeInventoryEntry",
+        "type": "object"
       },
       "StageStatus": {
         "enum": [
@@ -2431,6 +3211,68 @@
         "summary": "Send a mock assistant message",
         "tags": [
           "assistant"
+        ]
+      }
+    },
+    "/api/v1/environment/diagnostics": {
+      "get": {
+        "operationId": "read_environment_diagnostics_api_v1_environment_diagnostics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentCapabilityResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Environment Diagnostics",
+        "tags": [
+          "environment"
+        ]
+      }
+    },
+    "/api/v1/environment/refresh": {
+      "post": {
+        "operationId": "refresh_environment_api_v1_environment_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshEnvironmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentCapabilityResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh Environment",
+        "tags": [
+          "environment"
         ]
       }
     },
@@ -2983,6 +3825,325 @@
         ]
       }
     },
+    "/api/v1/preflights": {
+      "post": {
+        "operationId": "create_preflight_api_v1_preflights_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Preflight",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/api/v1/preflights/{preflight_id}": {
+      "get": {
+        "operationId": "read_preflight_api_v1_preflights__preflight_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preflight_id",
+            "required": true,
+            "schema": {
+              "title": "Preflight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Preflight",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/api/v1/preflights/{preflight_id}/events": {
+      "get": {
+        "operationId": "stream_preflight_events_api_v1_preflights__preflight_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preflight_id",
+            "required": true,
+            "schema": {
+              "title": "Preflight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Preflight Events",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/api/v1/preflights/{preflight_id}/g01/decisions": {
+      "post": {
+        "operationId": "decide_g01_api_v1_preflights__preflight_id__g01_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preflight_id",
+            "required": true,
+            "schema": {
+              "title": "Preflight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G01DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G01Decision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G01",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/api/v1/runs/drafts/{draft_id}/approvals/{gate_id}/decisions": {
+      "post": {
+        "operationId": "decide_g01_draft_api_v1_runs_drafts__draft_id__approvals__gate_id__decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "gate_id",
+            "required": true,
+            "schema": {
+              "title": "Gate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G01DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G01Decision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G01 Draft",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/api/v1/sources/path-validations/{validation_id}": {
+      "get": {
+        "operationId": "get_path_validation_api_v1_sources_path_validations__validation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "validation_id",
+            "required": true,
+            "schema": {
+              "title": "Validation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathValidationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Path Validation",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/api/v1/sources/validate-paths": {
+      "post": {
+        "operationId": "validate_paths_api_v1_sources_validate_paths_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathValidationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathValidationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Paths",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
     "/api/v1/version": {
       "get": {
         "operationId": "read_version_api_v1_version_get",
@@ -3084,6 +4245,68 @@
         "summary": "Send a mock assistant message",
         "tags": [
           "assistant"
+        ]
+      }
+    },
+    "/environment/diagnostics": {
+      "get": {
+        "operationId": "read_environment_diagnostics_environment_diagnostics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentCapabilityResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Environment Diagnostics",
+        "tags": [
+          "environment"
+        ]
+      }
+    },
+    "/environment/refresh": {
+      "post": {
+        "operationId": "refresh_environment_environment_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshEnvironmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentCapabilityResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh Environment",
+        "tags": [
+          "environment"
         ]
       }
     },
@@ -3633,6 +4856,325 @@
         "summary": "Read migration state snapshot",
         "tags": [
           "migrations"
+        ]
+      }
+    },
+    "/preflights": {
+      "post": {
+        "operationId": "create_preflight_preflights_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Preflight",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/preflights/{preflight_id}": {
+      "get": {
+        "operationId": "read_preflight_preflights__preflight_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preflight_id",
+            "required": true,
+            "schema": {
+              "title": "Preflight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Preflight",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/preflights/{preflight_id}/events": {
+      "get": {
+        "operationId": "stream_preflight_events_preflights__preflight_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preflight_id",
+            "required": true,
+            "schema": {
+              "title": "Preflight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Preflight Events",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/preflights/{preflight_id}/g01/decisions": {
+      "post": {
+        "operationId": "decide_g01_preflights__preflight_id__g01_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preflight_id",
+            "required": true,
+            "schema": {
+              "title": "Preflight Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G01DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G01Decision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G01",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/runs/drafts/{draft_id}/approvals/{gate_id}/decisions": {
+      "post": {
+        "operationId": "decide_g01_draft_runs_drafts__draft_id__approvals__gate_id__decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "gate_id",
+            "required": true,
+            "schema": {
+              "title": "Gate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G01DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G01Decision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G01 Draft",
+        "tags": [
+          "preflights"
+        ]
+      }
+    },
+    "/sources/path-validations/{validation_id}": {
+      "get": {
+        "operationId": "get_path_validation_sources_path_validations__validation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "validation_id",
+            "required": true,
+            "schema": {
+              "title": "Validation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathValidationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Path Validation",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/sources/validate-paths": {
+      "post": {
+        "operationId": "validate_paths_sources_validate_paths_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathValidationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathValidationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Paths",
+        "tags": [
+          "sources"
         ]
       }
     },
