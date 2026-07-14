@@ -231,6 +231,19 @@ class EnvironmentDiagnosticEventModel(Base):
     actor: Mapped[str | None] = mapped_column(String(128))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+class SourceAnalysisModel(Base):
+    __tablename__ = "source_analyses"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_source_analysis_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 class PathValidationModel(Base):
     __tablename__ = "path_validations"
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_path_validation_idempotency"),)
