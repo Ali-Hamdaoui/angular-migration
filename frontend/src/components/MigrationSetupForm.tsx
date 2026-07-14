@@ -12,7 +12,6 @@ type SetupInputs = {
   targetOutputPath: string;
   targetAngularFamily: string;
   migrationMode: string;
-  autoApprovalEnabled: boolean;
 };
 
 const initialInputs: SetupInputs = {
@@ -20,7 +19,6 @@ const initialInputs: SetupInputs = {
   targetOutputPath: "",
   targetAngularFamily: "21.x",
   migrationMode: "strict-functional-parity",
-  autoApprovalEnabled: false
 };
 
 function inputKey(inputs: SetupInputs): string {
@@ -53,7 +51,7 @@ export function MigrationSetupForm() {
         target_output_path: inputs.targetOutputPath,
         target_angular_family: inputs.targetAngularFamily,
         migration_mode: inputs.migrationMode,
-        auto_approval_enabled: inputs.autoApprovalEnabled
+        auto_approval_enabled: false
       });
       setPreflight(result);
       setValidatedKey(currentKey);
@@ -81,7 +79,7 @@ export function MigrationSetupForm() {
     }
   }
 
-  const artifactHref = preflight?.artifact ? `${getBackendBaseUrl()}/artifacts/${preflight.artifact.artifact_id}` : null;
+  const artifactHref = preflight?.artifact ? `${getBackendBaseUrl()}/api/v1/artifacts/${preflight.artifact.artifact_id}` : null;
 
   return (
     <main className={styles.page}>
@@ -128,15 +126,6 @@ export function MigrationSetupForm() {
             >
               <option value="strict-functional-parity">Strict functional parity</option>
             </select>
-          </label>
-          <label className={styles.checkbox}>
-            <input
-              name="autoApprovalEnabled"
-              type="checkbox"
-              checked={inputs.autoApprovalEnabled}
-              onChange={(event) => setInputs({ ...inputs, autoApprovalEnabled: event.target.checked })}
-            />
-            Auto-approval
           </label>
           <div className={styles.actions}>
             <button type="button" onClick={runPreflight} disabled={isValidating || !inputs.sourcePath || !inputs.targetOutputPath}>

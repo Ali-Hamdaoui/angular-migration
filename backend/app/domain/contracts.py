@@ -15,14 +15,48 @@ class ContractModel(BaseModel):
 
 class RunStatus(str, Enum):
     CREATED = "CREATED"
+    SOURCE_VALIDATION_RUNNING = "SOURCE_VALIDATION_RUNNING"
+    SOURCE_VALIDATED = "SOURCE_VALIDATED"
+    WORKSPACE_CLASSIFICATION_RUNNING = "WORKSPACE_CLASSIFICATION_RUNNING"
+    BASELINE_RUNNING = "BASELINE_RUNNING"
+    BASELINE_QUALIFIED = "BASELINE_QUALIFIED"
+    CLIENT_CONSTRAINTS_CAPTURED = "CLIENT_CONSTRAINTS_CAPTURED"
+    ELIGIBILITY_RUNNING = "ELIGIBILITY_RUNNING"
+    ANALYSIS_RUNNING = "ANALYSIS_RUNNING"
+    WAITING_ANALYSIS_APPROVAL = "WAITING_ANALYSIS_APPROVAL"
+    PLANNING_RUNNING = "PLANNING_RUNNING"
+    WAITING_PLAN_APPROVAL = "WAITING_PLAN_APPROVAL"
+    STAGE_CREATED = "STAGE_CREATED"
+    TOOLCHAIN_PROFILE_SELECTED = "TOOLCHAIN_PROFILE_SELECTED"
+    SANDBOX_READY = "SANDBOX_READY"
+    DEPENDENCY_AUDITED = "DEPENDENCY_AUDITED"
+    TRANSFORMATION_RUNNING = "TRANSFORMATION_RUNNING"
+    STATIC_SYMBOL_CHECK_RUNNING = "STATIC_SYMBOL_CHECK_RUNNING"
+    VALIDATION_RUNNING = "VALIDATION_RUNNING"
+    REPAIR_RUNNING = "REPAIR_RUNNING"
+    WAITING_REPAIR_APPROVAL = "WAITING_REPAIR_APPROVAL"
+    REVIEW_READY = "REVIEW_READY"
+    STAGE_COMMITTED = "STAGE_COMMITTED"
+    STAGE_ROLLED_BACK = "STAGE_ROLLED_BACK"
+    REPORT_RUNNING = "REPORT_RUNNING"
+    DELIVERY_RUNNING = "DELIVERY_RUNNING"
+    PAUSE_REQUESTED = "PAUSE_REQUESTED"
+    PAUSED = "PAUSED"
+    RESUMING = "RESUMING"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"
+    CANCELLING = "CANCELLING"
+    TIMED_OUT = "TIMED_OUT"
+    WORKER_LOST = "WORKER_LOST"
+    RECOVERY_RUNNING = "RECOVERY_RUNNING"
+    ORPHANED = "ORPHANED"
+    CLEANUP_RUNNING = "CLEANUP_RUNNING"
+    CLEANUP_FAILED = "CLEANUP_FAILED"
     RUNNING = "RUNNING"
     WAITING = "WAITING"
-    CANCELLING = "CANCELLING"
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     DIAGNOSTIC_HOLD = "DIAGNOSTIC_HOLD"
-
 
 class RunPhase(str, Enum):
     PREFLIGHT_SNAPSHOT = "PREFLIGHT_SNAPSHOT"
@@ -32,18 +66,31 @@ class RunPhase(str, Enum):
     FINAL_ASSURANCE = "FINAL_ASSURANCE"
     DELIVERY_REPORTING = "DELIVERY_REPORTING"
 
+class PhaseStatus(str, Enum):
+    """Status of a workflow phase, independent from the run current state."""
+
+    NOT_STARTED = "not_started"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
 
 class StageStatus(str, Enum):
     PENDING = "PENDING"
+    PREPARING = "preparing"
     RUNNING = "RUNNING"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     REPAIRING = "REPAIRING"
     PASSED = "PASSED"
+    PASSED_WITH_KNOWN_BASELINE_FAILURES = "passed_with_known_baseline_failures"
+    PASSED_WITH_MANUAL_ITEMS = "passed_with_manual_items"
     FAILED = "FAILED"
     ROLLED_BACK = "ROLLED_BACK"
     CANCELLED = "CANCELLED"
     DIAGNOSTIC_HOLD = "DIAGNOSTIC_HOLD"
-
 
 class StepStatus(str, Enum):
     PENDING = "PENDING"
@@ -58,7 +105,6 @@ class StepStatus(str, Enum):
     DEFERRED = "DEFERRED"
     ACCEPTED_RISK = "ACCEPTED_RISK"
     CANCELLED = "CANCELLED"
-
 
 class AgentStatus(str, Enum):
     PENDING = "PENDING"
@@ -113,8 +159,29 @@ class ApprovalDecision(str, Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     ACCEPTED_RISK = "ACCEPTED_RISK"
+    MODIFICATION_REQUESTED = "MODIFICATION_REQUESTED"
+    APPROVED_WITH_RISK = "APPROVED_WITH_RISK"
     CANCELLED = "CANCELLED"
 
+class ApprovalStatus(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    MODIFICATION_REQUESTED = "modification_requested"
+    APPROVED_WITH_RISK = "approved_with_risk"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+class RepairStatus(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ESCALATED = "escalated"
+    CANCELLED = "cancelled"
 
 class AutoApprovalMode(str, Enum):
     OFF = "off"
@@ -177,6 +244,8 @@ class CancellationPolicy(str, Enum):
 
 
 class WorkflowEventType(str, Enum):
+    STATE_CONTRACT_MIGRATED = "STATE_CONTRACT_MIGRATED"
+    APPROVAL_POLICY_DISABLED_FOR_PRODUCTION = "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION"
     RUN_STATE_CHANGED = "run_state_changed"
     STAGE_STATE_CHANGED = "stage_state_changed"
     STEP_STATE_CHANGED = "step_state_changed"
@@ -523,6 +592,9 @@ class MigrationRunDto(ContractModel):
     run_id: str
     status: RunStatus
     run_phase: RunPhase = RunPhase.FEASIBILITY_PLANNING
+    phase_status: PhaseStatus = PhaseStatus.RUNNING
+    approval_status: ApprovalStatus = ApprovalStatus.NOT_REQUIRED
+    repair_status: RepairStatus = RepairStatus.NOT_REQUIRED
     source_version_family: str | None = None
     target_version_family: str | None = None
     source_version_detected: str | None = None

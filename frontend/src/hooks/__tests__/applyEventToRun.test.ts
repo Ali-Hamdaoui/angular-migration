@@ -100,3 +100,19 @@ describe("applyEventToRun", () => {
     expect(mockMigrationRun).toEqual(original);
   });
 });
+
+describe("authoritative workflow dimensions", () => {
+  it("projects contract migration dimensions from the backend event", () => {
+    const updated = applyEventToRun(
+      mockMigrationRun,
+      event("STATE_CONTRACT_MIGRATED", {
+        phase_status: "completed",
+        approval_status: "approved",
+        repair_status: "not_required",
+      }),
+    );
+    expect(updated.phase_status).toBe("completed");
+    expect(updated.approval_status).toBe("approved");
+    expect(updated.repair_status).toBe("not_required");
+  });
+});

@@ -23,6 +23,13 @@ VALID_PREFLIGHT_CHECKSUM = "mock-preflight-checksum-angular-18-to-21"
 EXPIRED_PREFLIGHT_CHECKSUM = "expired-preflight-checksum"
 
 
+class AutoApprovalNotAllowedError(ValueError):
+    """Production workflow never advances gates through automatic approval."""
+
+    error_code = "AUTO_APPROVAL_NOT_ALLOWED"
+    message = "Production auto-approval is disabled; submit an explicit human decision."
+
+
 class PreflightChecksumError(ValueError):
     """Raised when mock run creation is not bound to a current preflight."""
 
@@ -71,6 +78,8 @@ class MockMigrationApiService:
         )
 
     def update_approval_policy(self, run_id: str, request: ApprovalPolicyRequestDto) -> ApprovalPolicyDto:
+        if request.auto_approval_enabled:
+            raise AutoApprovalNotAllowedError()
         return ApprovalPolicyDto(
             run_id=run_id,
             auto_approval_enabled=request.auto_approval_enabled,
