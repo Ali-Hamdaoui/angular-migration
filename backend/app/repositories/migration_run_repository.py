@@ -35,6 +35,9 @@ class MigrationRunRepository:
         status: str,
         run_phase: str,
         updated_at: datetime,
+        phase_status: str = "running",
+        approval_status: str = "not_required",
+        repair_status: str = "not_required",
     ) -> MigrationRunModel:
         result = self._session.execute(
             update(MigrationRunModel)
@@ -43,6 +46,9 @@ class MigrationRunRepository:
             .values(
                 status=status,
                 run_phase=run_phase,
+                phase_status=phase_status,
+                approval_status=approval_status,
+                repair_status=repair_status,
                 state_version=MigrationRunModel.state_version + 1,
                 updated_at=updated_at,
             )

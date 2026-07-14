@@ -77,3 +77,10 @@ Run the backend and inspect `/openapi.json` or `/docs`. The mock-state response
 nests every Sprint 0 DTO, allowing AMF-S0-07 to derive or synchronize frontend
 types without contract drift. These contracts describe data only; they do not
 authorize commands, mutations, approvals, or workflow transitions.
+## Authoritative Sprint 1 dimensions
+
+Sprint 1 extends the read model with independent `phase_status`, `approval_status`, and `repair_status` fields. The run state vocabulary includes the source-intake, baseline, analysis, planning, stage-execution, recovery, delivery, and cleanup states defined in `docs/mvp_overview.md` section 15. Legacy Sprint 0 coarse values remain readable only for migration compatibility.
+
+Stage outcomes include `preparing`, `passed_with_known_baseline_failures`, and `passed_with_manual_items`. Approval and repair statuses are separate from run and stage status.
+
+Production auto-approval is disabled. Requests that attempt to enable it return `AUTO_APPROVAL_NOT_ALLOWED`; automatic approval remains available only to isolated mock fixtures used by tests.

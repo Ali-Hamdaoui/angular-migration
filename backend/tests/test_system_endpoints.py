@@ -73,6 +73,8 @@ def test_openapi_exposes_sprint0_route_shells() -> None:
         "/assistant/messages",
     }
     assert expected_paths.issubset(paths.keys())
+    assert "/api/v1/migrations/{run_id}/state" in paths
+    assert "/api/v1/health" in paths
 
 
 def test_preflight_returns_checksum_bound_result() -> None:
@@ -142,6 +144,9 @@ def test_create_mock_run_accepts_valid_preflight_checksum() -> None:
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
     assert body["status"] == "WAITING"
+    assert body["phase_status"] == "running"
+    assert body["approval_status"] == "not_required"
+    assert body["repair_status"] == "not_required"
 
 
 def test_mock_migration_state_uses_shared_contracts() -> None:
@@ -150,6 +155,9 @@ def test_mock_migration_state_uses_shared_contracts() -> None:
     body = response.json()
     assert body["run_id"] == "mock-run-angular-18-to-21"
     assert body["status"] == "WAITING"
+    assert body["phase_status"] == "running"
+    assert body["approval_status"] == "not_required"
+    assert body["repair_status"] == "not_required"
     assert [stage["stage_id"] for stage in body["stages"]] == [
         "angular-18-to-19",
         "angular-19-to-20",
@@ -188,9 +196,8 @@ def test_approval_policy_and_assistant_shells() -> None:
         json={"run_id": "mock-run", "message": "What is waiting?"},
     )
 
-    assert policy.status_code == 200
-    assert policy.json()["auto_approval_enabled"] is True
-    assert policy.json()["reevaluated_gate_id"] == "approval-plan"
+    assert policy.status_code == 409
+    assert policy.json()["error_code"] == "AUTO_APPROVAL_NOT_ALLOWED"
     assert assistant.status_code == 200
     assert assistant.json()["status"] == "mock_unavailable"
 
@@ -200,3 +207,17 @@ def test_application_lifespan_verifies_database_connection() -> None:
         response = lifespan_client.get("/health")
 
     assert response.status_code == 200
+
+def test_versioned_production_auto_approval_is_rejected() -> None:
+    response = client.put(
+        "/api/v1/migrations/mock-run/approval-policy",
+        json={"auto_approval_enabled": True, "actor": "tester"},
+        headers={"x-correlation-id": "auto-approval-test"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "error_code": "AUTO_APPROVAL_NOT_ALLOWED",
+        "message": "Production auto-approval is disabled; submit an explicit human decision.",
+        "correlation_id": "auto-approval-test",
+        "details": {},
+    }

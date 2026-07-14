@@ -80,7 +80,7 @@ def test_alembic_creates_initial_sqlite_schema(tmp_path: Path) -> None:
     inspector = inspect(engine)
     assert EXPECTED_TABLES.issubset(inspector.get_table_names())
     run_columns = {column["name"] for column in inspector.get_columns("migration_runs")}
-    assert {"run_phase", "state_version", "source_version_family", "target_version_resolved"}.issubset(run_columns)
+    assert {"run_phase", "phase_status", "approval_status", "repair_status", "state_version", "source_version_family", "target_version_resolved"}.issubset(run_columns)
     event_unique_constraints = {
         constraint["name"] for constraint in inspector.get_unique_constraints("workflow_events")
     }
@@ -281,9 +281,14 @@ def test_stale_expected_state_version_is_rejected(tmp_path: Path) -> None:
         expected_state_version=1,
         status="RUNNING",
         run_phase="DISCOVERY_BASELINE",
+        phase_status="completed",
+        approval_status="pending",
+        repair_status="not_required",
         updated_at=now,
     )
     assert updated.state_version == 2
+    assert updated.phase_status == "completed"
+    assert updated.approval_status == "pending"
     with pytest.raises(StaleStateVersionError):
         repository.update_status_with_version(
             run_id="mock-run-001",

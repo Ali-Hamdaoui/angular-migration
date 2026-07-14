@@ -35,14 +35,14 @@ describe("migration API client", () => {
     await expect(getArtifactById("artifact-command-log", client)).resolves.toMatchObject({ content: "build ok", created_by: "artifact-service" });
     await expect(getMigrationDiagnostics("run-1", "angular-18-to-19", client)).resolves.toMatchObject({ run_id: "mock-run-angular-18-to-21" });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "http://backend.test/health",
-      "http://backend.test/version",
-      "http://backend.test/migrations/preflight",
-      "http://backend.test/migrations/mock",
-      "http://backend.test/migrations/mock-state",
-      "http://backend.test/migrations/run-1/state",
-      "http://backend.test/artifacts/artifact-command-log",
-      "http://backend.test/migrations/run-1/diagnostics?stage_id=angular-18-to-19"
+      "http://backend.test/api/v1/health",
+      "http://backend.test/api/v1/version",
+      "http://backend.test/api/v1/migrations/preflight",
+      "http://backend.test/api/v1/migrations/mock",
+      "http://backend.test/api/v1/migrations/mock-state",
+      "http://backend.test/api/v1/migrations/run-1/state",
+      "http://backend.test/api/v1/artifacts/artifact-command-log",
+      "http://backend.test/api/v1/migrations/run-1/diagnostics?stage_id=angular-18-to-19"
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
