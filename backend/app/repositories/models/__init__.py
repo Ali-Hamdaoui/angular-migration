@@ -13,6 +13,7 @@ from app.repositories.models.workflow import (
     RepairAttemptModel,
     RunAssuranceStatusModel,
     StageStepModel,
+    SourceAnalysisModel,
     WorkflowEventModel,
     WorkerLeaseModel,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "RepairAttemptModel",
     "RunAssuranceStatusModel",
     "StageStepModel",
+    "SourceAnalysisModel",
     "WorkflowEventModel",
     "WorkerLeaseModel",
 ]
