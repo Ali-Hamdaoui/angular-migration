@@ -49,3 +49,20 @@ export type DiagnosticsSummaryDto = { run_id: string; stage_id: string | null; g
 export type WorkflowEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; sequence: number; payload: Record<string, unknown> };
 export type MigrationEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: WorkflowEventType; occurred_at: string; sequence: number; payload: Record<string, unknown> };
 export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: RunPhase; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; created_at: string; updated_at: string; stages: MigrationStageDto[]; steps: StageStepDto[]; component_executions: ComponentExecutionDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; worker_leases: WorkerLeaseDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; assurance: AssuranceStatusDto | null; delivery: DeliveryManifestDto | null; topology: TopologySummaryDto | null; llm_usage: LlmUsageRecordDto[]; diagnostics: DiagnosticsSummaryDto | null; workflow_events: WorkflowEventDto[] };
+export type PathRuleResult = { code: string; status: "passed" | "warning" | "blocked"; message: string };
+export type PathValidationSnapshot = {
+  validation_id: string;
+  captured_at: string;
+  policy_version: string;
+  status: "passed" | "passed_with_warnings" | "blocked";
+  source_path: string;
+  target_output_path: string;
+  source_fingerprint: string | null;
+  rules: PathRuleResult[];
+  blockers: string[];
+  warnings: string[];
+  target_reservation_eligible: boolean;
+  checksum: string;
+};
+export type PathValidationResult = { snapshot: PathValidationSnapshot };
+export type PathValidationRequest = { source_path: string; target_output_path: string; idempotency_key: string; actor?: string | null };

@@ -7,7 +7,9 @@ import type {
   MigrationRunDto,
   PreflightRequestDto,
   PreflightResultDto,
-  VersionResponse
+  VersionResponse,
+  PathValidationRequest,
+  PathValidationResult
 } from "@/types/generated/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -44,4 +46,17 @@ export function getArtifactById(artifactId: string, client: ApiClient = apiClien
 export function getMigrationDiagnostics(runId: string, stageId?: string, client: ApiClient = apiClient): Promise<DiagnosticsSummaryDto> {
   const suffix = stageId ? `?stage_id=${encodeURIComponent(stageId)}` : "";
   return client.get<DiagnosticsSummaryDto>(`/migrations/${runId}/diagnostics${suffix}`);
+}
+export function validatePaths(
+  request: PathValidationRequest,
+  client: ApiClient = apiClient,
+): Promise<PathValidationResult> {
+  return client.post<PathValidationResult>("/sources/validate-paths", request);
+}
+
+export function getPathValidation(
+  validationId: string,
+  client: ApiClient = apiClient,
+): Promise<PathValidationResult> {
+  return client.get<PathValidationResult>("/sources/path-validations/" + encodeURIComponent(validationId));
 }
