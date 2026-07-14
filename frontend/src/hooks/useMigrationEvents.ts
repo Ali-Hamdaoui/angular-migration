@@ -15,6 +15,8 @@ export interface UseMigrationEventsResult {
 }
 
 const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
+  "STATE_CONTRACT_MIGRATED",
+  "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION",
   "run_state_changed",
   "stage_state_changed",
   "agent_state_changed",
@@ -64,7 +66,7 @@ export function useMigrationEvents(
   }, [markRecoveryRequired]);
 
   useEffect(() => {
-    const url = `${getBackendBaseUrl()}/migrations/${runId}/events`;
+    const url = `${getBackendBaseUrl()}/api/v1/migrations/${runId}/events`;
     const source = new createEventSource(url);
     const listeners = new Map<string, EventListener>();
 

@@ -21,7 +21,7 @@ import type {
 export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto): MigrationRunDto {
   switch (event.event_type) {
     case "run_state_changed":
-      return { ...run, status: event.payload.status as RunStatus, updated_at: event.occurred_at };
+      return { ...run, status: event.payload.status as RunStatus, phase_status: (event.payload.phase_status as MigrationRunDto["phase_status"]) ?? run.phase_status, approval_status: (event.payload.approval_status as MigrationRunDto["approval_status"]) ?? run.approval_status, repair_status: (event.payload.repair_status as MigrationRunDto["repair_status"]) ?? run.repair_status, updated_at: event.occurred_at };
 
     case "stage_state_changed":
       return {
@@ -127,6 +127,7 @@ export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto):
     case "approval_required":
       return {
         ...run,
+        approval_status: "pending",
         approval_events: [
           ...run.approval_events,
           {
@@ -142,8 +143,11 @@ export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto):
         ],
       };
 
+    case "STATE_CONTRACT_MIGRATED":
+      return { ...run, phase_status: (event.payload.phase_status as MigrationRunDto["phase_status"]) ?? run.phase_status, approval_status: (event.payload.approval_status as MigrationRunDto["approval_status"]) ?? run.approval_status, repair_status: (event.payload.repair_status as MigrationRunDto["repair_status"]) ?? run.repair_status, updated_at: event.occurred_at };
+
     case "workflow_completed":
-      return { ...run, status: event.payload.status as RunStatus, updated_at: event.occurred_at };
+      return { ...run, status: event.payload.status as RunStatus, phase_status: (event.payload.phase_status as MigrationRunDto["phase_status"]) ?? run.phase_status, approval_status: (event.payload.approval_status as MigrationRunDto["approval_status"]) ?? run.approval_status, repair_status: (event.payload.repair_status as MigrationRunDto["repair_status"]) ?? run.repair_status, updated_at: event.occurred_at };
 
     default:
       return run;
