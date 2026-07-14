@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -72,3 +72,10 @@ class RefreshEnvironmentRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
     idempotency_key: str = Field(min_length=1)
     actor: str | None = None
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("idempotency_key must not be blank")
+        return value

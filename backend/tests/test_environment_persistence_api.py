@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -142,3 +143,12 @@ def test_environment_routes_expose_typed_refresh_and_latest():
             assert latest.json()["snapshot"]["status"] == "available"
     finally:
         app.dependency_overrides.clear()
+def test_refresh_request_rejects_whitespace_idempotency():
+    from app.domain.system import RefreshEnvironmentRequest
+
+    try:
+        RefreshEnvironmentRequest(idempotency_key="   ")
+    except ValidationError as exc:
+        assert "idempotency_key" in str(exc)
+    else:
+        raise AssertionError("whitespace idempotency keys must be rejected")
