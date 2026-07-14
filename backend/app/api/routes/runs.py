@@ -1,6 +1,10 @@
 """Versioned authoritative migration-run API."""
 
+import json
+
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from app.api.errors import error_response
 from app.core.config import get_settings
@@ -11,6 +15,8 @@ from app.domain.contracts import (
     StartAuthoritativeRunRequestDto,
 )
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
+from app.repositories.models import WorkflowEventModel
+from app.repositories.session import session_scope
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -34,6 +40,8 @@ def create_run(request: CreateAuthoritativeRunRequestDto, http_request: Request,
         ))
     except MigrationRunError as error:
         return _error(http_request, error)
+
+
     return AuthoritativeRunMutationResultDto(
         run_id=result.run_id, status=result.status, state_version=result.state_version,
         event_sequence=result.event_sequence, graph_thread_id=result.graph_thread_id,
@@ -60,3 +68,18 @@ def read_run_state(run_id: str, http_request: Request, service: MigrationRunServ
         return service.get_state(run_id)
     except MigrationRunError as error:
         return _error(http_request, error)
+
+
+@router.get("/{run_id}/events")
+def stream_run_events(run_id: str, request: Request):
+    raw_last_event_id = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
+    last_sequence = int(raw_last_event_id) if raw_last_event_id and raw_last_event_id.isdigit() else 0
+    with session_scope() as session:
+        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).where(WorkflowEventModel.sequence > last_sequence).order_by(WorkflowEventModel.sequence)))
+
+    async def event_stream():
+        for event in events:
+            payload = {"event_id": event.id, "run_id": event.run_id, "stage_id": event.stage_id, "event_type": event.event_type, "occurred_at": event.occurred_at.isoformat(), "sequence": event.sequence, "payload": event.payload}
+            yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, sort_keys=True)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})

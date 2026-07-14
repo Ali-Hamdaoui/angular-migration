@@ -18,7 +18,7 @@ export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_requ
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
@@ -111,6 +111,10 @@ export type PathValidationSnapshot = {
   checksum: string;
 };
 export type PathValidationResult = { snapshot: PathValidationSnapshot };
+export type CreateAuthoritativeRunRequestDto = { preflight_id: string; input_checksum: string; artifact_set_checksum: string; idempotency_key: string; actor: string; client_constraints: Record<string, boolean>; pricing_snapshot: Record<string, string | number> };
+export type StartAuthoritativeRunRequestDto = { expected_state_version: number; idempotency_key: string; actor: string };
+export type AuthoritativeRunMutationResultDto = { run_id: string; status: RunStatus; state_version: number; event_sequence: number; graph_thread_id: string; idempotent_replay: boolean; artifacts: ArtifactRefDto[] };
+export type AuthoritativeRunStateDto = { run_id: string; status: RunStatus; run_phase: RunPhase; phase_status: string; approval_status: ApprovalStatus; repair_status: RepairStatus; state_version: number; preflight_id: string; source_path: string; target_output_path: string; graph_thread_id: string; created_at: string; updated_at: string; artifacts: ArtifactRefDto[]; workflow_events: WorkflowEventDto[] };
 export type PathValidationRequest = { source_path: string; target_output_path: string; idempotency_key: string; actor?: string | null };
 export type G01Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";
 export type G01DecisionResponse = { decision_id: string; preflight_id: string; gate_id: string; decision: G01Decision; actor: string; comment: string | null; decided_at: string; input_checksum: string; artifact_set_checksum: string; state_version: number; idempotent_replay: boolean };
