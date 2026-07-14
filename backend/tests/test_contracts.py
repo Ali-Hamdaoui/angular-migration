@@ -71,6 +71,9 @@ def test_openapi_publishes_every_sprint_zero_contract() -> None:
         "WorkflowEventDto",
         "RunStatus",
         "RunPhase",
+        "PhaseStatus",
+        "ApprovalStatus",
+        "RepairStatus",
         "StageStatus",
         "StepStatus",
         "AgentStatus",
@@ -87,3 +90,27 @@ def test_openapi_publishes_every_sprint_zero_contract() -> None:
         ["content"]["application/json"]["schema"]["$ref"]
         == "#/components/schemas/MigrationRunDto"
     )
+
+def test_authoritative_dimensions_accept_documented_values() -> None:
+    run = MigrationRunDto.model_validate(
+        {
+            "run_id": "run-authoritative",
+            "status": "WAITING_ANALYSIS_APPROVAL",
+            "phase_status": "waiting_approval",
+            "approval_status": "pending",
+            "repair_status": "not_required",
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            "stages": [
+                {
+                    "stage_id": "stage-001",
+                    "run_id": "run-authoritative",
+                    "stage_order": 1,
+                    "status": "passed_with_manual_items",
+                    "created_at": datetime.now(UTC),
+                }
+            ],
+        }
+    )
+    assert run.approval_status.value == "pending"
+    assert run.stages[0].status.value == "passed_with_manual_items"

@@ -1,21 +1,24 @@
 /** Manually synchronized from backend/app/domain/contracts.py for Sprint 0. */
 
-export type RunStatus = "CREATED" | "RUNNING" | "WAITING" | "CANCELLING" | "CANCELLED" | "COMPLETED" | "FAILED" | "DIAGNOSTIC_HOLD";
+export type RunStatus = "CREATED" | "SOURCE_VALIDATION_RUNNING" | "SOURCE_VALIDATED" | "WORKSPACE_CLASSIFICATION_RUNNING" | "BASELINE_RUNNING" | "BASELINE_QUALIFIED" | "CLIENT_CONSTRAINTS_CAPTURED" | "ELIGIBILITY_RUNNING" | "ANALYSIS_RUNNING" | "WAITING_ANALYSIS_APPROVAL" | "PLANNING_RUNNING" | "WAITING_PLAN_APPROVAL" | "STAGE_CREATED" | "TOOLCHAIN_PROFILE_SELECTED" | "SANDBOX_READY" | "DEPENDENCY_AUDITED" | "TRANSFORMATION_RUNNING" | "STATIC_SYMBOL_CHECK_RUNNING" | "VALIDATION_RUNNING" | "REPAIR_RUNNING" | "WAITING_REPAIR_APPROVAL" | "REVIEW_READY" | "STAGE_COMMITTED" | "STAGE_ROLLED_BACK" | "REPORT_RUNNING" | "DELIVERY_RUNNING" | "PAUSE_REQUESTED" | "PAUSED" | "RESUMING" | "CANCEL_REQUESTED" | "CANCELLING" | "TIMED_OUT" | "WORKER_LOST" | "RECOVERY_RUNNING" | "ORPHANED" | "CLEANUP_RUNNING" | "CLEANUP_FAILED" | "RUNNING" | "WAITING" | "CANCELLED" | "COMPLETED" | "FAILED" | "DIAGNOSTIC_HOLD";
 export type RunPhase = "PREFLIGHT_SNAPSHOT" | "DISCOVERY_BASELINE" | "FEASIBILITY_PLANNING" | "STAGED_MIGRATION" | "FINAL_ASSURANCE" | "DELIVERY_REPORTING";
-export type StageStatus = "PENDING" | "RUNNING" | "WAITING_APPROVAL" | "REPAIRING" | "PASSED" | "FAILED" | "ROLLED_BACK" | "CANCELLED" | "DIAGNOSTIC_HOLD";
+export type PhaseStatus = "not_started" | "running" | "waiting_approval" | "completed" | "blocked" | "failed" | "cancelled";
+export type StageStatus = "PENDING" | "preparing" | "RUNNING" | "WAITING_APPROVAL" | "REPAIRING" | "PASSED" | "passed_with_known_baseline_failures" | "passed_with_manual_items" | "FAILED" | "ROLLED_BACK" | "CANCELLED" | "DIAGNOSTIC_HOLD";
 export type StepStatus = "PENDING" | "QUEUED" | "RUNNING" | "PASSED" | "FAILED" | "BLOCKED" | "WAITING_APPROVAL" | "SKIPPED" | "MANUAL" | "DEFERRED" | "ACCEPTED_RISK" | "CANCELLED";
 export type AgentStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "SKIPPED" | "REQUIRES_APPROVAL";
 export type DeterministicComponentType = "SourceIntakeValidator" | "SnapshotService" | "WorkspaceTopologyClassifier" | "CompatibilityResolver" | "ToolchainRuntimeManager" | "CommandPolicyEngine" | "BaselineQualificationService" | "StaticSymbolGate" | "ParityEvidenceEngine" | "CheckpointService" | "ArtifactService" | "WorkerSupervisor" | "DeliveryService";
 export type AgentKind = "AnalysisAgent" | "PlanningAgent" | "TransformationAgent" | "BuildValidationAgent" | "RepairAgent" | "ReportAgent" | "AssistantAgent" | "EligibilityAgent";
 export type ValidationStatus = "passed" | "failed" | "not_configured" | "manual_validation_required" | "deferred_company_tool_required" | "blocked_by_environment" | "accepted_risk" | "skipped_not_applicable";
-export type ApprovalDecision = "PENDING" | "APPROVED" | "REJECTED" | "ACCEPTED_RISK" | "CANCELLED";
+export type ApprovalDecision = "PENDING" | "APPROVED" | "REJECTED" | "ACCEPTED_RISK" | "MODIFICATION_REQUESTED" | "APPROVED_WITH_RISK" | "CANCELLED";
+export type ApprovalStatus = "not_required" | "pending" | "approved" | "rejected" | "modification_requested" | "approved_with_risk" | "expired" | "cancelled";
+export type RepairStatus = "not_required" | "pending" | "running" | "waiting_approval" | "completed" | "failed" | "escalated" | "cancelled";
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 export type TopologySupportLevel = "officially_supported" | "historical_validated" | "historical_experimental" | "blocked";
 export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_required" | "not_evaluated";
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
@@ -48,7 +51,50 @@ export type AlertEventDto = { alert_id: string; run_id: string; alert_type: Aler
 export type DiagnosticsSummaryDto = { run_id: string; stage_id: string | null; generated_at: string; metrics: RunMetricDto[]; alerts: AlertEventDto[]; notes: string[] };
 export type WorkflowEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; sequence: number; payload: Record<string, unknown> };
 export type MigrationEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: WorkflowEventType; occurred_at: string; sequence: number; payload: Record<string, unknown> };
-export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: RunPhase; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; created_at: string; updated_at: string; stages: MigrationStageDto[]; steps: StageStepDto[]; component_executions: ComponentExecutionDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; worker_leases: WorkerLeaseDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; assurance: AssuranceStatusDto | null; delivery: DeliveryManifestDto | null; topology: TopologySummaryDto | null; llm_usage: LlmUsageRecordDto[]; diagnostics: DiagnosticsSummaryDto | null; workflow_events: WorkflowEventDto[] };
+export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: RunPhase; phase_status: PhaseStatus; approval_status: ApprovalStatus; repair_status: RepairStatus; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; created_at: string; updated_at: string; stages: MigrationStageDto[]; steps: StageStepDto[]; component_executions: ComponentExecutionDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; worker_leases: WorkerLeaseDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; assurance: AssuranceStatusDto | null; delivery: DeliveryManifestDto | null; topology: TopologySummaryDto | null; llm_usage: LlmUsageRecordDto[]; diagnostics: DiagnosticsSummaryDto | null; workflow_events: WorkflowEventDto[] };
+export type RuntimeInventoryEntry = {
+  name: "node" | "npm" | "npx" | "git" | "python";
+  executable: string | null;
+  version: string | null;
+  installation_root: string | null;
+  status: "available" | "missing" | "failed";
+};
+export type LocalStorageReadiness = {
+  database_path: string;
+  artifact_root: string;
+  writable: boolean;
+  local_filesystem: boolean;
+  free_bytes: number;
+  status: "available" | "degraded" | "blocked";
+};
+export type CorporateNetworkReadiness = {
+  registry_configured: boolean;
+  proxy_configured: boolean;
+  https_proxy_configured: boolean;
+  strict_ssl: boolean;
+  custom_ca_configured: boolean;
+  credentials_redacted: boolean;
+};
+export type EnvironmentCapabilitySnapshot = {
+  snapshot_id: string;
+  captured_at: string;
+  policy_version: string;
+  status: "available" | "degraded" | "blocked";
+  runtimes: RuntimeInventoryEntry[];
+  node_npm_npx_paired: boolean;
+  git_ready: boolean;
+  python_ready: boolean;
+  storage: LocalStorageReadiness;
+  network: CorporateNetworkReadiness;
+  blockers: string[];
+  warnings: string[];
+  checksum: string;
+};
+export type EnvironmentCapabilityResult = {
+  snapshot: EnvironmentCapabilitySnapshot;
+  artifact: Record<string, string> | null;
+};
+export type RefreshEnvironmentRequest = { idempotency_key: string; actor?: string | null };
 export type PathRuleResult = { code: string; status: "passed" | "warning" | "blocked"; message: string };
 export type PathValidationSnapshot = {
   validation_id: string;

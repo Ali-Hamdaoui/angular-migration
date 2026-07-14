@@ -53,7 +53,10 @@ describe("MigrationSetupForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Validate" }));
 
     await screen.findAllByText("passed");
-    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/artifacts/artifact-preflight");
+    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
+
+    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
+
     expect(start).toBeEnabled();
 
     fireEvent.change(screen.getByLabelText("Target output path"), { target: { value: "changed-target" } });

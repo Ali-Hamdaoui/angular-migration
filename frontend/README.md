@@ -27,8 +27,8 @@ for a local override. The synchronized TypeScript contract types live in
 `src/types/generated/api.ts`, with the backend OpenAPI document remaining the
 source of truth.
 
-The client currently exposes typed calls for `/health`, `/version`, and
-`/migrations/mock-state`. No component calls `fetch()` directly. The run
+The client exposes typed calls for `/health`, `/version`, `/environment/diagnostics`,
+`/environment/refresh`, and the migration endpoints. No component calls `fetch()` directly. The run
 dashboard (`/migrations/[runId]`) fetches backend-owned state through this
 client and is rendered dynamically, so the backend must be running for live
 data; the static fixture remains available for tests.
@@ -53,7 +53,9 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000/migrations/new`. Check the shell with:
+Open `http://localhost:3000/` to inspect Environment Diagnostics, then use
+Refresh to capture the current machine snapshot. `/migrations/new` remains available
+for mock migration setup. Check the shell with:
 
 ```powershell
 npm test
@@ -75,3 +77,14 @@ Security-sensitive cases are fail-closed: network locations, source/target
 overlap, internal-root access, disallowed roots, non-writable targets, and
 uncertain symlink/reparse-point escapes are reported as blockers. Reservation
 metadata expires and is persisted by the backend.
+
+## Environment diagnostics manual check
+
+1. Start the backend and frontend.
+2. Open the Control Tower landing page and select **Refresh** under Environment Diagnostics.
+3. Confirm Node, npm, npx, Git, and Python show only safe executable/version/root metadata.
+4. Confirm storage, registry, proxy, HTTPS proxy, strict SSL, and custom-CA indicators show status only.
+5. Verify a blocked result names an actionable blocker such as RUNTIME_PAIR_MISMATCH.
+6. Confirm retrying a refresh with the same idempotency key returns the persisted snapshot without additional probes.
+
+Credentials, proxy URLs, certificate contents, and other secret values must never be displayed or persisted.

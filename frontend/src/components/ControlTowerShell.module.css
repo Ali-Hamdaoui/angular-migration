@@ -43,3 +43,7 @@
 .markdownBullet::before { content: "- "; color: #89b7ff; }
 .markdownBreak { height: .4rem; }
 @media (max-width: 760px) { .previewHeader { flex-direction: column; }.metadataGrid { grid-template-columns: 1fr; }.previewHeader button { width: 100%; } }
+
+.dimensionGrid { display: grid; grid-template-columns: repeat(2, minmax(0, auto)); gap: .45rem .65rem; }
+.dimensionGrid div { display: grid; gap: .2rem; }
+.dimensionGrid span { color: #6f88ac; font-size: .68rem; font-weight: 700; text-transform: uppercase; }
