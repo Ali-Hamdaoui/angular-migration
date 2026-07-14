@@ -48,7 +48,7 @@ dev
 - The agent must not rebase, reset, rewrite, or force-update `dev`.
 - Integration into `dev` must be performed through a separately authorized and reviewed integration process, preferably a pull request.
 
-Reading, fetching, and comparing against `origin/dev` are allowed because they do not modify the protected `dev` branch.
+Reading, fetching, and synchronizing the local `dev` branch with `origin/dev` are allowed as part of the mandatory new-feature startup workflow. This does not authorize implementation work, commits, pushes, merges, rebases, resets, or rewrites on `dev`.
 
 ### 2.3 Feature branches
 
@@ -207,6 +207,22 @@ Before editing implementation code, the agent must:
 11. Present the feature execution proposal.
 12. Ask for explicit permission before creating a branch.
 
+When starting work on a new feature, the agent must first synchronize from `dev` using this sequence:
+
+```bash
+git switch dev
+git fetch --prune origin
+git pull --ff-only origin dev
+```
+
+After the pull completes successfully and the latest `dev` state has been inspected, the agent must create the approved feature branch from the updated local `dev`:
+
+```bash
+git switch -c feature/<feature-id>-<short-description> dev
+```
+
+The agent must never start a new feature from a stale local branch or from another feature branch. If the working tree contains changes that would prevent switching to `dev` or pulling safely, the agent must stop and report them before taking further action.
+
 Safe inspection workflow:
 
 ```bash
@@ -217,15 +233,7 @@ git fetch --prune origin
 git log --oneline --decorate -n 10 origin/dev
 ```
 
-The agent must not switch to `dev` merely to synchronize it.
-
-When a new feature branch is approved, create it directly from the fetched remote-tracking branch:
-
-```bash
-git switch -c feature/<feature-id>-<short-description> origin/dev
-```
-
-This keeps local `dev` untouched.
+When a new feature branch is approved, create it from the synchronized local `dev` branch as described above. Pulling updates local `dev` to the latest fast-forward from `origin/dev`; implementation changes must then be made only on the feature branch.
 
 If the current branch is `dev`, the agent must not edit files. It must first inspect the repository, request branch-creation permission, and move to the approved feature branch.
 
@@ -788,33 +796,35 @@ For each feature, follow this sequence:
 ```text
 1. Inspect the repository and current Git state.
 2. Confirm that no protected branch will be modified.
-3. Fetch and prune origin.
-4. Inspect the latest origin/dev reference.
-5. Read all relevant documentation.
-6. Identify the feature and its related issues.
-7. Check whether an appropriate feature branch already exists.
-8. Present the proposed feature branch, issue set, scope, and base commit.
-9. Ask for explicit branch-creation permission.
-10. Create the feature branch from origin/dev only after approval.
-11. Select one issue from the authorized feature.
-12. Confirm its acceptance criteria and dependencies.
-13. Inspect the existing implementation and related tests.
-14. Implement only that issue.
-15. Add or update tests.
-16. Update relevant documentation.
-17. Run applicable validation.
-18. Review the complete diff.
-19. Present the issue review checkpoint.
-20. Leave changes uncommitted by default.
-21. Commit only after explicit permission, or allow the developer to commit manually.
-22. Push only after explicit permission, or allow the developer to push manually.
-23. Start the next issue in the same feature branch only after user direction.
-24. Repeat the issue workflow until the feature is complete.
-25. Run feature-level validation.
-26. Present the feature completion report.
-27. Create a pull request only after explicit permission.
-28. Do not merge into or push directly to dev.
-29. Do not create another feature branch without new explicit permission.
+3. Switch to `dev`.
+4. Fetch and prune origin.
+5. Pull the latest `origin/dev` into local `dev` with fast-forward-only behavior.
+6. Inspect the updated `dev` reference.
+7. Read all relevant documentation.
+8. Identify the feature and its related issues.
+9. Check whether an appropriate feature branch already exists.
+10. Present the proposed feature branch, issue set, scope, and base commit.
+11. Ask for explicit branch-creation permission.
+12. Create the feature branch from the synchronized local `dev` only after approval.
+13. Select one issue from the authorized feature.
+14. Confirm its acceptance criteria and dependencies.
+15. Inspect the existing implementation and related tests.
+16. Implement only that issue.
+17. Add or update tests.
+18. Update relevant documentation.
+19. Run applicable validation.
+20. Review the complete diff.
+21. Present the issue review checkpoint.
+22. Leave changes uncommitted by default.
+23. Commit only after explicit permission, or allow the developer to commit manually.
+24. Push only after explicit permission, or allow the developer to push manually.
+25. Start the next issue in the same feature branch only after user direction.
+26. Repeat the issue workflow until the feature is complete.
+27. Run feature-level validation.
+28. Present the feature completion report.
+29. Create a pull request only after explicit permission.
+30. Do not merge into or push directly to dev.
+31. Do not create another feature branch without new explicit permission.
 ```
 
 ---
