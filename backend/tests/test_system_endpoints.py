@@ -73,6 +73,8 @@ def test_openapi_exposes_sprint0_route_shells() -> None:
         "/assistant/messages",
     }
     assert expected_paths.issubset(paths.keys())
+    assert "/api/v1/migrations/{run_id}/state" in paths
+    assert "/api/v1/health" in paths
 
 
 def test_preflight_returns_checksum_bound_result() -> None:
