@@ -9,7 +9,9 @@ import type {
   PreflightResultDto,
   VersionResponse,
   EnvironmentCapabilityResult,
-  RefreshEnvironmentRequest
+  RefreshEnvironmentRequest,
+  PathValidationRequest,
+  PathValidationResult
 } from "@/types/generated/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -58,4 +60,17 @@ export function refreshEnvironment(
   client: ApiClient = apiClient,
 ): Promise<EnvironmentCapabilityResult> {
   return client.post<EnvironmentCapabilityResult>("/environment/refresh", request);
+}
+export function validatePaths(
+  request: PathValidationRequest,
+  client: ApiClient = apiClient,
+): Promise<PathValidationResult> {
+  return client.post<PathValidationResult>("/sources/validate-paths", request);
+}
+
+export function getPathValidation(
+  validationId: string,
+  client: ApiClient = apiClient,
+): Promise<PathValidationResult> {
+  return client.get<PathValidationResult>("/sources/path-validations/" + encodeURIComponent(validationId));
 }

@@ -2,9 +2,9 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createMockMigration, validatePreflight } from "@/api/migrations";
+import { createMockMigration, validatePaths, validatePreflight } from "@/api/migrations";
 import { getBackendBaseUrl } from "@/api/client";
-import type { PreflightResultDto } from "@/types/generated/api";
+import type { PathValidationResult, PreflightResultDto } from "@/types/generated/api";
 import styles from "./MigrationSetupForm.module.css";
 
 type SetupInputs = {
@@ -35,6 +35,7 @@ export function MigrationSetupForm() {
   const router = useRouter();
   const [inputs, setInputs] = useState(initialInputs);
   const [preflight, setPreflight] = useState<PreflightResultDto | null>(null);
+  const [pathValidation, setPathValidation] = useState<PathValidationResult | null>(null);
   const [validatedKey, setValidatedKey] = useState<string | null>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -46,6 +47,18 @@ export function MigrationSetupForm() {
     setIsValidating(true);
     setError(null);
     try {
+      const pathResult = await validatePaths({
+        source_path: inputs.sourcePath,
+        target_output_path: inputs.targetOutputPath,
+        idempotency_key: "path-ui-" + Date.now(),
+        actor: "control-tower",
+      });
+      setPathValidation(pathResult);
+      if (pathResult.snapshot.status === "blocked") {
+        setPreflight(null);
+        setValidatedKey(null);
+        return;
+      }
       const result = await validatePreflight({
         source_path: inputs.sourcePath,
         target_output_path: inputs.targetOutputPath,
@@ -136,6 +149,14 @@ export function MigrationSetupForm() {
             </button>
           </div>
         </form>
+        {pathValidation ? (
+          <section className={styles.result} aria-label="Path validation result">
+            <div><strong>{pathValidation.snapshot.status}</strong><span>{pathValidation.snapshot.checksum}</span></div>
+            {pathValidation.snapshot.blockers.length > 0 ? <p>Blockers: {pathValidation.snapshot.blockers.join(", ")}</p> : null}
+            {pathValidation.snapshot.warnings.length > 0 ? <p>Warnings: {pathValidation.snapshot.warnings.join(", ")}</p> : null}
+            {pathValidation.snapshot.source_fingerprint ? <p>Source fingerprint: {pathValidation.snapshot.source_fingerprint}</p> : null}
+          </section>
+        ) : null}
         {preflight ? (
           <section className={styles.result} aria-label="Preflight result">
             <div><strong>{preflight.status}</strong><span>{preflight.checksum}</span></div>

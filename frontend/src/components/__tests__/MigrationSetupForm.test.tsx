@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MigrationSetupForm } from "@/components/MigrationSetupForm";
-import { createMockMigration, validatePreflight } from "@/api/migrations";
+import { createMockMigration, validatePaths, validatePreflight } from "@/api/migrations";
 
 const push = vi.fn();
 
@@ -9,12 +9,17 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/api/migrations", () => ({
+  validatePaths: vi.fn(),
   validatePreflight: vi.fn(),
   createMockMigration: vi.fn()
 }));
 
 describe("MigrationSetupForm", () => {
   beforeEach(() => {
+    vi.mocked(validatePaths).mockReset();
+    vi.mocked(validatePaths).mockResolvedValue({
+      snapshot: { validation_id: "path-1", captured_at: new Date().toISOString(), policy_version: "path-validation-v1", status: "passed", source_path: "source", target_output_path: "target", source_fingerprint: "sha256:source", rules: [], blockers: [], warnings: [], target_reservation_eligible: true, checksum: "sha256:path" }
+    });
     vi.mocked(validatePreflight).mockReset();
     vi.mocked(createMockMigration).mockReset();
     push.mockReset();
@@ -47,8 +52,11 @@ describe("MigrationSetupForm", () => {
     fireEvent.change(screen.getByLabelText("Target output path"), { target: { value: "target" } });
     fireEvent.click(screen.getByRole("button", { name: "Validate" }));
 
-    await screen.findByText("passed");
+    await screen.findAllByText("passed");
     expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
+
+    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
+
     expect(start).toBeEnabled();
 
     fireEvent.change(screen.getByLabelText("Target output path"), { target: { value: "changed-target" } });

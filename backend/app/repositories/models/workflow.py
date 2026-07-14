@@ -244,3 +244,26 @@ class SourceAnalysisModel(Base):
     checksum: Mapped[str] = mapped_column(String(128), nullable=False)
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+class PathValidationModel(Base):
+    __tablename__ = "path_validations"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_path_validation_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TargetReservationModel(Base):
+    __tablename__ = "target_reservations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    validation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_path: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

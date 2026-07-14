@@ -95,3 +95,20 @@ export type EnvironmentCapabilityResult = {
   artifact: Record<string, string> | null;
 };
 export type RefreshEnvironmentRequest = { idempotency_key: string; actor?: string | null };
+export type PathRuleResult = { code: string; status: "passed" | "warning" | "blocked"; message: string };
+export type PathValidationSnapshot = {
+  validation_id: string;
+  captured_at: string;
+  policy_version: string;
+  status: "passed" | "passed_with_warnings" | "blocked";
+  source_path: string;
+  target_output_path: string;
+  source_fingerprint: string | null;
+  rules: PathRuleResult[];
+  blockers: string[];
+  warnings: string[];
+  target_reservation_eligible: boolean;
+  checksum: string;
+};
+export type PathValidationResult = { snapshot: PathValidationSnapshot };
+export type PathValidationRequest = { source_path: string; target_output_path: string; idempotency_key: string; actor?: string | null };
