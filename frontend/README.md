@@ -65,6 +65,19 @@ npm run build
 
 The backend contract vocabulary is documented in
 [`shared/api-contracts.md`](../shared/api-contracts.md).
+## Source and target path validation
+
+On the setup page, Validate first canonicalizes the source and target through the
+backend path authority. A blocked result must be resolved before preflight or
+Start can proceed. Review the normalized paths, blocker codes, warnings, source
+fingerprint, and reservation eligibility. The client never decides whether a
+path is safe and never creates a target reservation locally.
+
+Security-sensitive cases are fail-closed: network locations, source/target
+overlap, internal-root access, disallowed roots, non-writable targets, and
+uncertain symlink/reparse-point escapes are reported as blockers. Reservation
+metadata expires and is persisted by the backend.
+
 ## Environment diagnostics manual check
 
 1. Start the backend and frontend.
