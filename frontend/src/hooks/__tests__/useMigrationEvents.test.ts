@@ -151,6 +151,22 @@ describe("useMigrationEvents", () => {
     expect(result.current.status).toBe("closed");
   });
 
+  it("receives snapshot lifecycle events through SSE", async () => {
+    const { result, source } = renderWithSource();
+    await act(async () => {});
+
+    const snapshotStarted = makeEvent("SNAPSHOT_STARTED", "evt-snapshot-1", 1);
+    const snapshotCreated = makeEvent("SNAPSHOT_CREATED", "evt-snapshot-2", 2);
+
+    act(() => {
+      source!.emit("SNAPSHOT_STARTED", snapshotStarted);
+      source!.emit("SNAPSHOT_CREATED", snapshotCreated);
+    });
+
+    expect(result.current.events).toEqual([snapshotStarted, snapshotCreated]);
+    expect(result.current.lastSequence).toBe(2);
+  });
+
   it("closes the EventSource on unmount", async () => {
     const { unmount, source } = renderWithSource();
     await act(async () => {});

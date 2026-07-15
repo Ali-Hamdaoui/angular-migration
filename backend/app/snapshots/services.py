@@ -182,8 +182,11 @@ class SnapshotService:
     ) -> None:
         self._snapshot_root = snapshot_root.resolve(strict=False)
         self._manifest_builder = manifest_builder or SourceManifestBuilder()
-        if platform_repository_root and _is_relative_to(
-            self._snapshot_root, platform_repository_root.resolve(strict=False)
+        self._platform_repository_root = (
+            platform_repository_root.resolve(strict=False) if platform_repository_root else None
+        )
+        if self._platform_repository_root and _is_relative_to(
+            self._snapshot_root, self._platform_repository_root
         ):
             raise WorkspacePathError("snapshot root must not be inside the platform repository")
 
@@ -193,6 +196,10 @@ class SnapshotService:
 
     def create_snapshot(self, source_root: Path, snapshot_id: str) -> SnapshotRecord:
         source_root = source_root.resolve(strict=True)
+        if self._platform_repository_root and _is_relative_to(
+            source_root, self._platform_repository_root
+        ):
+            raise WorkspacePathError("source root must not be inside the platform repository")
         if not snapshot_id or Path(snapshot_id).name != snapshot_id or snapshot_id in {".", ".."}:
             raise ValueError("snapshot ID is not a safe path component")
 
@@ -266,6 +273,18 @@ class SnapshotService:
         )
         if payload.get("checksum") != manifest.checksum:
             raise SnapshotIntegrityError("snapshot manifest checksum does not match its contents")
+        fingerprint_path = snapshot_path / "snapshot-fingerprint.json"
+        if not fingerprint_path.is_file():
+            raise FileNotFoundError(str(fingerprint_path))
+        fingerprint_payload = json.loads(fingerprint_path.read_text(encoding="utf-8"))
+        if fingerprint_payload.get("manifest_checksum") != manifest.checksum:
+            raise SnapshotIntegrityError("snapshot fingerprint does not match its manifest")
+        for entry in manifest.entries:
+            file_path = snapshot_path / Path(entry.relative_path)
+            if not file_path.is_file() or _checksum_file(file_path) != entry.checksum:
+                raise SnapshotIntegrityError(
+                    f"snapshot file checksum does not match its manifest: {entry.relative_path}"
+                )
         return SnapshotRecord(
             snapshot_id=snapshot_id,
             snapshot_root=snapshot_path,
