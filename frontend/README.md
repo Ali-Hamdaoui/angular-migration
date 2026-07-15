@@ -14,9 +14,9 @@ The Sprint 0 shell provides:
   report components.
 - A static fixture shaped like the backend's `MigrationRunDto` response.
 
-The fixture is deliberately the only frontend data source in this issue. It has
-no timers, status transitions, approval actions, or command behavior. AMF-S0-07
-will replace it with a typed backend API client, and AMF-S0-08 will add SSE.
+The fixture remains available only for explicit `mock-*` demo runs. Real run IDs
+use the typed authoritative-run API and backend SSE stream; the browser never
+owns workflow transitions or migration execution.
 
 ## API client
 
@@ -31,12 +31,13 @@ The client exposes typed calls for `/health`, `/version`, `/environment/diagnost
 `/environment/refresh`, and the migration endpoints. No component calls `fetch()` directly. The run
 dashboard (`/migrations/[runId]`) fetches backend-owned state through this
 client and is rendered dynamically, so the backend must be running for live
-data; the static fixture remains available for tests.
+data. `G01ReviewPanel` creates and starts a real run only after an approved
+decision, then routes to its returned `run-*` ID.
 
 ## Server-Sent Events
 
-The run dashboard subscribes to `GET /migrations/{runId}/events` through the
-`useMigrationEvents` hook (`src/hooks/useMigrationEvents.ts`). The hook opens
+Real run dashboards subscribe to `GET /api/v1/runs/{runId}/events` through the
+`useAuthoritativeRun` hook (`src/hooks/useAuthoritativeRun.ts`). The hook opens
 an `EventSource`, tracks connection status (`connecting`, `open`,
 `reconnecting`, `closed`), and collects typed `MigrationEventDto` payloads.
 The `applyEventToRun` reducer maps each event to the corresponding DTO fields
