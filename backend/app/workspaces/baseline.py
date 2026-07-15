@@ -8,8 +8,13 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 
 from app.workspaces.services import BaselineBoundaryError
+
+
+class BaselineCopyCancelled(RuntimeError):
+    """Raised when a baseline copy is cancelled before atomic publication."""
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,7 @@ class BaselineSandboxService:
         baseline_path: Path,
         approved_snapshot_fingerprint: str,
         registered_run_root: Path | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> BaselineSandboxRecord:
         snapshot_root = snapshot_root.resolve(strict=True)
         baseline_path = baseline_path.resolve(strict=False)
@@ -65,6 +71,8 @@ class BaselineSandboxService:
         try:
             temporary.mkdir(parents=True, exist_ok=False)
             for source in snapshot_root.rglob("*"):
+                if cancel_check is not None and cancel_check():
+                    raise BaselineCopyCancelled("baseline sandbox copy cancelled before publication")
                 relative = source.relative_to(snapshot_root)
                 if relative.parts and relative.parts[0] in {"node_modules", ".angular", "dist", "coverage"}:
                     excluded.append(relative.as_posix())
@@ -93,6 +101,14 @@ class BaselineSandboxService:
             fingerprint=_tree_fingerprint(baseline_path),
             excluded_paths=tuple(sorted(set(excluded))),
         )
+
+    def reconstruct(self, **kwargs) -> BaselineSandboxRecord:
+        """Retry a cancelled or failed copy from the immutable snapshot."""
+        baseline_path = Path(kwargs["baseline_path"])
+        temporary = baseline_path.with_name(f".{baseline_path.name}.copying-{os.getpid()}")
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+        return self.create(**kwargs)
 
 
 def _tree_fingerprint(root: Path) -> str:

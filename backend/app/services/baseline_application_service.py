@@ -62,6 +62,7 @@ class BaselineApplicationService:
                 self._profiles.validate_for_baseline(run_id, expected_state_version=request.expected_state_version, idempotency_key=request.idempotency_key + ":profile", actor=request.actor)
             except Exception as error:
                 raise BaselineApplicationError(getattr(error, "code", "EXECUTION_PROFILE_REQUIRED"), str(error), 409) from error
+            self._transition(session, run, request, WorkflowEventType.BASELINE_WORKSPACE_STARTED, "baseline sandbox creation started", {"snapshot_id": package.snapshot_id})
             aliases = run.workspace_aliases or {}
             snapshot_root = Path(aliases.get("SOURCE_SNAPSHOT", ""))
             baseline_path = Path(aliases.get("BASELINE_SANDBOX", ""))
@@ -96,6 +97,8 @@ class BaselineApplicationService:
             for name, payload in payloads.items():
                 artifact_ids.append(self._write_artifact(session, run, name, payload, request.idempotency_key, now)[0])
             transition = self._transition(session, run, request, WorkflowEventType.LOCKFILE_PREQUALIFICATION_COMPLETED, "baseline package prequalification completed", {"status": result.status, "checksum": result.checksum})
+            if result.authorization_required:
+                transition = self._transition(session, run, request, WorkflowEventType.LIFECYCLE_SCRIPT_REVIEW_REQUIRED, "lifecycle script review is required before install", {"script_count": len(result.scripts)})
             record.idempotency_key = request.idempotency_key
             record.status = result.status
             record.package = _jsonable(result.package)
@@ -178,7 +181,7 @@ class BaselineApplicationService:
     @staticmethod
     def _transition(session, run, request, event_type, reason, payload):
         try:
-            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key, event_type=event_type, actor=request.actor, reason=reason, occurred_at=datetime.now(UTC), payload=payload))
+            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + (":started" if event_type is WorkflowEventType.BASELINE_WORKSPACE_STARTED else ":lifecycle-review" if event_type is WorkflowEventType.LIFECYCLE_SCRIPT_REVIEW_REQUIRED else ""), event_type=event_type, actor=request.actor, reason=reason, occurred_at=datetime.now(UTC), payload=payload))
         except StaleStateVersionError as error:
             raise BaselineApplicationError("STALE_STATE_VERSION", str(error), 409) from error
 

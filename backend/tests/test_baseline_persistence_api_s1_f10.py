@@ -62,6 +62,6 @@ def test_workspace_and_prequalification_persist_artifacts_events_and_replay(tmp_
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
         assert record is not None
         assert len(record.artifact_ids) == 6
-        assert [event.event_type for event in events] == ["BASELINE_WORKSPACE_READY", "LOCKFILE_PREQUALIFICATION_COMPLETED"]
+        assert [event.event_type for event in events] == ["BASELINE_WORKSPACE_STARTED", "BASELINE_WORKSPACE_READY", "LOCKFILE_PREQUALIFICATION_COMPLETED"]
     assert len(list((tmp_path / "output").rglob("*.json"))) >= 6
     engine.dispose()

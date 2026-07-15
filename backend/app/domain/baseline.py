@@ -63,6 +63,7 @@ class PackageMetadata:
     dependencies: dict[str, str]
     scripts: dict[str, str]
     package_json_checksum: str
+    private_registry_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,13 @@ class PackageMetadataInspector:
             if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in values.items()):
                 raise BaselineQualificationError("PACKAGE_DEPENDENCIES_INVALID")
             dependencies.update(values)
+        private_scopes: list[str] = []
+        npmrc = sandbox / ".npmrc"
+        if npmrc.is_file():
+            for line in npmrc.read_text(encoding="utf-8").splitlines():
+                match = re.match(r"\s*@([^:]+):registry\s*=\s*(\S+)", line)
+                if match and "registry.npmjs.org" not in match.group(2).lower():
+                    private_scopes.append(match.group(1))
         scripts = payload.get("scripts", {})
         if not isinstance(scripts, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in scripts.items()):
             raise BaselineQualificationError("PACKAGE_SCRIPTS_INVALID")
@@ -122,6 +130,7 @@ class PackageMetadataInspector:
             dependencies=dependencies,
             scripts=scripts,
             package_json_checksum=_checksum_file(sandbox / "package.json"),
+            private_registry_scopes=tuple(sorted(set(private_scopes))),
         )
 
 
@@ -170,12 +179,14 @@ class PackageSourceInventory:
             # recovered from the original package by this inspector's helper.
             del section
         for name, requested in sorted(package.dependencies.items()):
-            entries.append(DependencySourceEntry(name, _redact_source(requested), self.classify(requested), "dependencies"))
+            entries.append(DependencySourceEntry(name, _redact_source(requested), self.classify(requested, name=name, private_scopes=package.private_registry_scopes), "dependencies"))
         return tuple(entries)
 
     @staticmethod
-    def classify(value: str) -> DependencySource:
+    def classify(value: str, *, name: str | None = None, private_scopes: tuple[str, ...] = ()) -> DependencySource:
         lowered = value.lower().strip()
+        if name and name.startswith("@") and any(name.startswith(f"@{scope}/") for scope in private_scopes):
+            return DependencySource.PRIVATE_REGISTRY
         if lowered.startswith("workspace:"):
             return DependencySource.WORKSPACE
         if lowered.startswith(("git:", "git+", "github:", "gitlab:", "bitbucket:")) or lowered.endswith(".git"):
@@ -197,14 +208,19 @@ class LifecycleScriptAuditor:
     _hooks = frozenset({"preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"})
     _blocked = re.compile(r"(?i)(powershell|pwsh|cmd(?:\.exe)?\s|\\windows\\|curl\s|invoke-webrequest|wget\s|npm\s+install|rm\s+-rf|del\s+/[sq])")
     _restricted = re.compile(r"(?i)(git\s|python\s|node\s|\.\./|\.\\|write|delete|chmod|setx|registry|token|secret|password)")
+    _allowed = re.compile(r"(?i)^(echo(?:\s|$)|true$|:?(?:\s|$))")
 
     def inspect(self, package: PackageMetadata) -> tuple[LifecycleScriptEntry, ...]:
         result = []
         for name, command in sorted(package.scripts.items()):
             if name not in self._hooks:
                 continue
-            if self._blocked.search(command):
+            if not command.strip():
+                classification, reasons = LifecycleClassification.UNKNOWN, ("LIFECYCLE_SCRIPT_EMPTY",)
+            elif self._blocked.search(command):
                 classification, reasons = LifecycleClassification.BLOCKED, ("SCRIPT_USES_BLOCKED_OPERATION",)
+            elif self._allowed.search(command.strip()):
+                classification, reasons = LifecycleClassification.ALLOWED, ()
             elif self._restricted.search(command):
                 classification, reasons = LifecycleClassification.RESTRICTED, ("SCRIPT_REQUIRES_SANDBOX_REVIEW",)
             else:
@@ -242,7 +258,9 @@ class BaselinePrequalificationService:
             sources = self._sources.inspect(package)
             scripts = self._scripts.inspect(package)
         for item in sources:
-            if item.source in {DependencySource.GIT, DependencySource.TARBALL, DependencySource.LOCAL_FILE, DependencySource.WORKSPACE, DependencySource.UNKNOWN}:
+            if item.source is DependencySource.PRIVATE_REGISTRY and not private_auth_configured:
+                blockers.append(f"PRIVATE_REGISTRY_AUTH_MISSING:{item.name}")
+            elif item.source in {DependencySource.GIT, DependencySource.TARBALL, DependencySource.LOCAL_FILE, DependencySource.WORKSPACE, DependencySource.UNKNOWN}:
                 blockers.append(f"UNAPPROVED_DEPENDENCY_SOURCE:{item.name}")
         for item in scripts:
             if item.classification is LifecycleClassification.BLOCKED:

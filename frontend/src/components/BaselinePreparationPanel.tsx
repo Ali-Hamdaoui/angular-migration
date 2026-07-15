@@ -27,7 +27,7 @@ export function BaselinePreparationPanel({ runId, initialState }: { runId: strin
         else setError("Baseline evidence could not be loaded.");
       })
       .finally(() => setLoading(false));
-  }, [runId]);
+  }, [runId, initialState.state_version]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -74,6 +74,12 @@ export function BaselinePreparationPanel({ runId, initialState }: { runId: strin
           <div className={styles.card}><strong>Artifacts</strong><p>{baseline.artifact_ids.length} immutable evidence artifacts</p></div>
         </div>
         <p className={styles.note}>Evidence checksum: <code>{baseline.checksum}</code></p>
+        {baseline.lockfile ? <div className={styles.previewPanel}><h3>Lockfile qualification</h3><p>Status: <strong>{String(baseline.lockfile.status ?? "unknown")}</strong>; lockfile version: {String(baseline.lockfile.lockfile_version ?? "unknown")}</p>{Array.isArray(baseline.lockfile.blockers) && baseline.lockfile.blockers.length ? <ul>{baseline.lockfile.blockers.map((item) => <li key={String(item)}><code>{String(item)}</code></li>)}</ul> : null}</div> : null}
+        <div className={styles.twoColumns}>
+          <div className={styles.previewPanel}><h3>Dependency sources</h3>{baseline.sources.length === 0 ? <p className={styles.note}>No dependency sources detected.</p> : <ul className={styles.list}>{baseline.sources.map((item, index) => <li key={`${String(item.name)}-${index}`}><code>{String(item.name)}</code><span>{String(item.source)}</span><code>{String(item.requested)}</code></li>)}</ul>}</div>
+          <div className={styles.previewPanel}><h3>Lifecycle scripts</h3>{baseline.scripts.length === 0 ? <p className={styles.note}>No root lifecycle scripts detected.</p> : <ul className={styles.list}>{baseline.scripts.map((item, index) => <li key={`${String(item.name)}-${index}`}><code>{String(item.name)}</code><span>{String(item.classification)}</span><code>{String(item.command)}</code></li>)}</ul>}</div>
+        </div>
+        {baseline.registry ? <div className={styles.previewPanel}><h3>Registry readiness</h3><p>Status: <strong>{String(baseline.registry.status ?? "unknown")}</strong>; private auth: {String(baseline.registry.private_auth_configured ?? "unknown")}; proxy: {String(baseline.registry.proxy_configured ?? "unknown")}; certificate: {String(baseline.registry.certificate_valid ?? "unknown")}</p></div> : null}
       </> : null}
       <div className={styles.row}>
         <span>State version {initialState.state_version}</span>
