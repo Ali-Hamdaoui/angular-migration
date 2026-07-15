@@ -27,7 +27,7 @@ A successful creation records six immutable JSON artifacts under the run
 artifact root: `source_manifest.json`, `source_git_metadata.json`,
 `snapshot_manifest.json`, `exclusion_policy_snapshot.json`,
 `snapshot_copy_report.json`, and `snapshot_fingerprint.json`. Creation
-emits ordered `SNAPSHOT_STARTED` and `SNAPSHOT_CREATED` events, advances the
+emits ordered `SNAPSHOT_STARTED`, `SNAPSHOT_PROGRESS_UPDATED`, and `SNAPSHOT_CREATED` events, advances the
 authoritative run state to `SOURCE_VALIDATED`, and replays duplicate
 idempotency requests without copying again.
 
@@ -51,3 +51,12 @@ Manual acceptance scenario:
 5. Refresh or reconnect the dashboard and confirm the same immutable evidence
    is restored through the GET endpoint.
 6. Approve the run only after the snapshot evidence is inspected.
+Completed snapshot files and directories are marked read-only after atomic
+finalization. Inspection recomputes all manifest checksums, so a privileged
+mutation is detected rather than treated as valid evidence. Source traversal
+fails closed for symbolic links and Windows reparse points, uses case-stable
+ordering, supports long nested paths, and retries transient stat/read/copy
+sharing errors.
+
+Failed acquisition emits `SNAPSHOT_FAILED` followed by
+`SNAPSHOT_QUARANTINED` after incomplete product-owned data is safely removed.

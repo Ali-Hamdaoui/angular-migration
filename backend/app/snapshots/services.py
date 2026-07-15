@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -128,7 +129,7 @@ class SourceManifestBuilder:
             size, checksum = _file_evidence(file_path, self.retries)
             entries.append(SourceManifestEntry(relative.as_posix(), size, checksum))
 
-        entries.sort(key=lambda item: item.relative_path)
+        entries.sort(key=lambda item: (item.relative_path.casefold(), item.relative_path))
         exclusions.sort(key=lambda item: item.relative_path)
         generated_at = generated_at or datetime.now(UTC)
         identity = json.dumps(
@@ -196,6 +197,8 @@ class SnapshotService:
 
     def create_snapshot(self, source_root: Path, snapshot_id: str) -> SnapshotRecord:
         source_root = source_root.resolve(strict=True)
+        if _is_reparse_point(source_root):
+            raise SnapshotLinkError("source root is a reparse point")
         if self._platform_repository_root and _is_relative_to(
             source_root, self._platform_repository_root
         ):
@@ -235,6 +238,7 @@ class SnapshotService:
                 ),
                 encoding="utf-8",
             )
+            _make_read_only(temporary_path)
             temporary_path.replace(snapshot_path)
         except Exception:
             if temporary_path.exists() and _is_relative_to(
@@ -302,10 +306,10 @@ def _walk_source(
     for root, directories, files in os.walk(source_root, topdown=True, followlinks=False):
         root_path = Path(root)
         kept: list[str] = []
-        for name in sorted(directories):
+        for name in sorted(directories, key=lambda value: (value.casefold(), value)):
             candidate = root_path / name
             relative = candidate.relative_to(source_root)
-            if candidate.is_symlink():
+            if _is_reparse_point(candidate):
                 raise SnapshotLinkError(f"source link is not allowed: {relative.as_posix()}")
             if policy.excludes(relative):
                 exclusions.append(
@@ -314,7 +318,7 @@ def _walk_source(
             else:
                 kept.append(name)
         directories[:] = kept
-        for name in sorted(files):
+        for name in sorted(files, key=lambda value: (value.casefold(), value)):
             yield root_path / name
 
 
@@ -339,9 +343,15 @@ def _copy_filtered_tree(
 
 def _file_evidence(path: Path, retries: int) -> tuple[int, str]:
     for attempt in range(retries + 1):
-        before = path.stat()
-        checksum = _checksum_file(path)
-        after = path.stat()
+        try:
+            before = path.stat()
+            checksum = _checksum_file(path)
+            after = path.stat()
+        except OSError:
+            if attempt >= retries:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+            continue
         if before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns:
             return after.st_size, checksum
         if attempt < retries:
@@ -378,6 +388,15 @@ def _read_git_metadata(source_root: Path) -> GitMetadata:
     branch = value.removeprefix("ref: refs/heads/") if value.startswith("ref: ") else None
     return GitMetadata(True, value, branch)
 
+
+def _is_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = path.stat(follow_symlinks=False).st_file_attributes
+    except (AttributeError, OSError):
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 def _make_read_only(root: Path) -> None:
     for path in root.rglob("*"):

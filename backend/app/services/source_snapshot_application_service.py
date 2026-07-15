@@ -88,6 +88,7 @@ class SourceSnapshotApplicationService:
                     occurred_at=self._now(),
                 )
             )
+            snapshot_id = f"snapshot-{uuid4().hex[:12]}"
             source_path = run.source_path
             snapshot_path = (run.workspace_aliases or {}).get("SOURCE_SNAPSHOT")
             if not source_path or not snapshot_path:
@@ -95,19 +96,29 @@ class SourceSnapshotApplicationService:
                     "SNAPSHOT_LAYOUT_MISSING",
                     "The run does not contain registered source and snapshot paths.",
                 )
-            snapshot_id = f"snapshot-{uuid4().hex[:12]}"
-
+            progress = StateTransitionService(session).apply_transition(
+                TransitionRequest(
+                    run_id=run_id,
+                    expected_state_version=started.next_state_version,
+                    idempotency_key=f"{request.idempotency_key}:progress",
+                    event_type=WorkflowEventType.SNAPSHOT_PROGRESS_UPDATED,
+                    actor=request.actor,
+                    reason="source snapshot acquisition is copying files",
+                    occurred_at=self._now(),
+                    payload={"snapshot_id": snapshot_id, "phase": "copying"},
+                )
+            )
         try:
             record = self._snapshot_factory(Path(snapshot_path)).create_snapshot(
                 Path(source_path), snapshot_id
             )
         except SnapshotIntegrityError as error:
             return self._persist_failure(
-                run_id, request, snapshot_id, str(error), "SOURCE_CHANGED_DURING_COPY", started.next_state_version
+                run_id, request, snapshot_id, str(error), "SOURCE_CHANGED_DURING_COPY", progress.next_state_version
             )
         except (OSError, ValueError) as error:
             return self._persist_failure(
-                run_id, request, snapshot_id, str(error), "SNAPSHOT_CREATION_FAILED", started.next_state_version
+                run_id, request, snapshot_id, str(error), "SNAPSHOT_CREATION_FAILED", progress.next_state_version
             )
 
         now = self._now()
@@ -189,6 +200,18 @@ class SourceSnapshotApplicationService:
                     payload={"snapshot_id": snapshot_id, "error_code": code},
                 )
             )
+            quarantined = StateTransitionService(session).apply_transition(
+                TransitionRequest(
+                    run_id=run_id,
+                    expected_state_version=result.next_state_version,
+                    idempotency_key=f"{request.idempotency_key}:quarantined",
+                    event_type=WorkflowEventType.SNAPSHOT_QUARANTINED,
+                    actor=request.actor,
+                    reason="incomplete source snapshot copy was safely removed",
+                    occurred_at=now,
+                    payload={"snapshot_id": snapshot_id, "cleanup": "removed"},
+                )
+            )
             model = SourceSnapshotModel(
                 id=snapshot_id,
                 run_id=run_id,
@@ -201,8 +224,8 @@ class SourceSnapshotApplicationService:
                 exclusions=[],
                 git_metadata={},
                 artifact_ids=[],
-                state_version=result.next_state_version,
-                event_sequence=result.event_sequence,
+                state_version=quarantined.next_state_version,
+                event_sequence=quarantined.event_sequence,
                 error_code=code,
                 error_message=message,
                 created_at=now,

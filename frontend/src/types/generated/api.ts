@@ -18,7 +18,7 @@ export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_requ
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED" | "SNAPSHOT_PROGRESS_UPDATED" | "SNAPSHOT_QUARANTINED";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };

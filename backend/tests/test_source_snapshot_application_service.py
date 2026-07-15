@@ -13,7 +13,7 @@ from app.services.source_snapshot_application_service import (
     SnapshotApplicationError,
     SourceSnapshotApplicationService,
 )
-from app.snapshots import SnapshotService
+from app.snapshots import SnapshotIntegrityError, SnapshotService
 
 
 def _service(tmp_path: Path, source: Path):
@@ -82,8 +82,8 @@ def test_create_snapshot_persists_artifacts_events_and_replays_idempotently(tmp_
     assert len(result.artifacts) == 6
     assert replay.idempotent_replay is True
     assert replay.snapshot_id == result.snapshot_id
-    assert result.state_version == 3
-    assert result.event_sequence == 2
+    assert result.state_version == 4
+    assert result.event_sequence == 3
 
     with sessions() as session:
         snapshot = session.get(SourceSnapshotModel, result.snapshot_id)
@@ -97,7 +97,7 @@ def test_create_snapshot_persists_artifacts_events_and_replays_idempotently(tmp_
         )
         assert snapshot is not None
         assert run.status == "SOURCE_VALIDATED"
-        assert [event.event_type for event in events] == ["SNAPSHOT_STARTED", "SNAPSHOT_CREATED"]
+        assert [event.event_type for event in events] == ["SNAPSHOT_STARTED", "SNAPSHOT_PROGRESS_UPDATED", "SNAPSHOT_CREATED"]
         assert {Path(ref.relative_path).name for ref in result.artifacts} == {
             "source_manifest.json",
             "source_git_metadata.json",
@@ -174,3 +174,43 @@ def test_snapshot_routes_expose_typed_post_and_get() -> None:
             assert client.get("/api/v1/runs/run-1/snapshots/missing").status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_failed_snapshot_emits_quarantine_event_after_cleanup(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.ts").write_text("source changed", encoding="utf-8")
+    service, sessions, engine = _service(tmp_path, source)
+
+    class FailingSnapshotService:
+        def create_snapshot(self, source_root: Path, snapshot_id: str):
+            raise SnapshotIntegrityError("source changed while copying")
+
+    service._snapshot_factory = lambda root: FailingSnapshotService()
+    result = service.create(
+        "run-1",
+        CreateSourceSnapshotRequest(
+            expected_state_version=1,
+            idempotency_key="snapshot-failure-1",
+            actor="operator",
+        ),
+    )
+
+    assert result.status is SnapshotStatus.FAILED
+    assert result.state_version == 5
+    assert result.event_sequence == 4
+    with sessions() as session:
+        events = list(
+            session.scalars(
+                select(WorkflowEventModel)
+                .where(WorkflowEventModel.run_id == "run-1")
+                .order_by(WorkflowEventModel.sequence)
+            )
+        )
+    assert [event.event_type for event in events] == [
+        "SNAPSHOT_STARTED",
+        "SNAPSHOT_PROGRESS_UPDATED",
+        "SNAPSHOT_FAILED",
+        "SNAPSHOT_QUARANTINED",
+    ]
+    engine.dispose()
