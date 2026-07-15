@@ -2,16 +2,26 @@
 ## Complete Four-Sprint MVP Development Backlog — Sprint 0 and LLM Governance Integrated
 
 **Project:** AI Frontend Migration Factory — Angular Compatibility Migration  
-**Backlog status:** Implementation-ready, authoritative-scope aligned, Sprint 0-integrated, LLM-governance corrected  
-**Backlog version:** 2.0 — Final consolidated edition  
-**Prepared:** 2026-07-14  
+**Backlog status:** Implementation-ready, authoritative-scope aligned, Sprint 0-integrated, LLM-governance corrected, external-source/output-boundary aligned  
+**Backlog version:** 2.1 — External source and generated output edition  
+**Prepared:** 2026-07-15  
 **Approved MVP route:** Angular 18.x → Angular 19.x → Angular 20.x → Angular 21.x  
 **Migration mode:** Strict technical compatibility with functional-parity controls  
 **Backlog structure:** Exactly four logical delivery sprints → 50 vertical features → 200 bounded implementation issues  
 **Completed prerequisite:** Sprint 0 platform skeleton and mock proof  
 **Authority model:** LangGraph coordination; Transition Service legal movement; SQLite state; CommandExecutor execution; Artifact Store evidence; explicit human G01–G15 decisions
 
-> Angular 21.x is the **approved MVP target**, not the latest Angular release. Sprint 0 is treated as completed work and is not rebuilt. This document replaces the previous four-sprint backlog, the standalone revised Sprint 1, and the separate LLM-amendment document.
+> Angular 21.x is the **approved MVP target**, not the latest Angular release. Sprint 0 is treated as completed work and is not rebuilt. This document replaces the previous four-sprint backlog, the standalone revised Sprint 1, the separate LLM-amendment document, and every architecture variant that stored a real legacy application under the migration-platform repository.
+
+
+## Version 2.1 architecture correction
+
+- Real legacy applications are selected by external absolute filesystem path and are never stored inside this repository.
+- The user selects an independent external target-parent path; the backend generates, previews, validates, and reserves the output root.
+- `SnapshotService` performs controlled read-only acquisition into a run-scoped immutable snapshot.
+- Baseline, stage, repair, assurance, artifact, and delivery-candidate workspaces are product-owned and run-scoped.
+- The final `migrated-app/` folder appears only after G13 and G14.
+- `demo-apps/` is removed from the production design; test workspaces are generated under external temporary roots.
 
 # A. Backlog interpretation
 
@@ -19,8 +29,8 @@
 
 This backlog is generated from the authoritative product specification, the completed Sprint 0 backlog, the revised Sprint 1, and the verified Azure OpenAI usage audit.
 
-- Sprint 1 reuses the FastAPI/Next.js shells, SQLite/Alembic, Transition Service foundation, durable SSE, Artifact Store, command-worker shell, mock LangGraph workflow, viewers, cancellation/resume, LLM mock contracts, observability, and Angular fixture completed in Sprint 0.
-- Sprint 1 advances through a real immutable source, exact source runtime, real baseline commands, known-failure/parity anchors, and G03.
+- Sprint 1 reuses the FastAPI/Next.js shells, SQLite/Alembic, Transition Service foundation, durable SSE, Artifact Store, command-worker shell, mock LangGraph workflow, viewers, cancellation/resume, LLM mock contracts, observability, and the Sprint 0 external test-fixture generation capability. No real legacy Angular application is stored in the platform repository.
+- Sprint 1 accepts an external absolute source path and a separate output-parent path, advances through a real immutable source snapshot, exact source runtime, real baseline commands, known-failure/parity anchors, and G03, while keeping the original source read-only.
 - Sprint 2 starts from G03, implements the real Azure OpenAI boundary before its consumers, and changes Analysis and Planning into checksum-bound Proposer/Reviewer phase-review chains.
 - Sprint 3 remains the deterministic stage-execution increment.
 - Sprint 4 reuses the Sprint 2 gateway, removes the duplicate gateway feature, strengthens repair lineage, and separates deterministic report truth from optional AI narrative.
@@ -67,21 +77,171 @@ PatchApplyService     → exact persisted, checksum-bound, approved diff only
 
 The four sprints are logical integration increments, not calendar promises. The scope includes a migration engine, Windows execution runtime, fifteen gates, real Azure integration, phase and repair review chains, recovery, final assurance, atomic publication, and runtime proof. Team capacity and corporate environment constraints must be assessed before assigning dates; scope must not be hidden inside XL issues.
 
+## A.5 External source, generated output, and repository isolation
+
+### A.5.1 Non-negotiable repository boundary
+
+The Angular Migration Control Tower repository contains only the migration platform, documentation, tests, and fixture-generation definitions. It must never contain the real customer or user-selected legacy Angular application.
+
+```text
+angular-migration/
+├── backend/
+├── frontend/
+├── shared/
+├── scripts/
+├── docs/
+└── tests/
+    └── fixture-generators/
+```
+
+The production repository must not contain `demo-apps/`, `legacy-app/`, a copied customer application, or any other full Angular workspace used as the real migration source. A `.gitignore` and repository-policy test must reject accidental additions under those names and reject nested Angular workspaces outside approved test-generator definitions.
+
+### A.5.2 User-selected paths
+
+The user supplies two independent external filesystem inputs:
+
+```text
+source_path         → existing legacy Angular workspace selected from local folders
+target_parent_path  → external parent folder where the generated migrated solution will be published
+```
+
+The backend deterministically generates and displays the reserved output name before G01:
+
+```text
+<sanitized-source-folder-name>-angular-<target-major>
+```
+
+Example:
+
+```text
+Migration platform repository:
+C:\projects\angular-migration\
+
+External legacy source:
+C:\client-projects\customer-portal\
+
+Selected target parent:
+C:\migration-results\
+
+Resolved output root:
+C:\migration-results\customer-portal-angular-21\
+```
+
+The user reviews the resolved output root during preflight. The source path, target-parent path, resolved output name, resolved output root, and applicable policy versions are persisted and checksum-bound to G01.
+
+### A.5.3 Source acquisition and execution boundary
+
+“Fetch the project” means a controlled local-filesystem acquisition performed by `SnapshotService`; it does not mean moving the original source into the platform repository and does not require Git cloning for the local-path MVP.
+
+```text
+external source path
+→ deterministic path and Angular eligibility checks
+→ source metadata/content fingerprint
+→ G01
+→ authoritative run
+→ controlled immutable snapshot copy
+→ source-integrity verification
+→ G02
+→ baseline and stage workspaces created from approved product-owned inputs
+```
+
+No `npm`, `npx`, Angular CLI, Git mutation, formatter, build, test, lint, patch, repair, or cleanup command may use the external source path as its working directory. The original source is read-only for the entire run.
+
+### A.5.4 Product-owned run and output layout
+
+For the MVP, the reserved output root has a user-facing final folder and a hidden product-owned run area:
+
+```text
+<resolved-output-root>/
+├── migrated-app/                    # created only by approved G14 publication
+└── .migration-factory/
+    └── runs/
+        └── <run-id>/
+            ├── source-snapshot/     # immutable after G02
+            ├── baseline-workspace/  # mutable baseline validation copy
+            ├── stages/
+            │   ├── angular-18-to-19/
+            │   ├── angular-19-to-20/
+            │   └── angular-20-to-21/
+            ├── delivery-candidate/
+            ├── artifacts/
+            ├── logs/
+            ├── approvals/
+            ├── validation/
+            ├── repairs/
+            └── final-report/
+```
+
+All internal folders are product-owned and run-scoped. The final `migrated-app/` folder is absent until G13 succeeds, G14 approves the exact delivery candidate, destination safety is revalidated, and publication completes atomically or through a fail-closed two-phase fallback. Internal evidence and temporary workspaces are never mistaken for the delivered Angular application.
+
+### A.5.5 Path and containment rules
+
+PathPolicy must block at minimum:
+
+```text
+SOURCE_PATH_NOT_FOUND
+SOURCE_NOT_READABLE
+SOURCE_NOT_ANGULAR
+SOURCE_PATH_INSIDE_PLATFORM_REPOSITORY
+TARGET_PARENT_INSIDE_PLATFORM_REPOSITORY
+TARGET_EQUALS_SOURCE
+TARGET_INSIDE_SOURCE
+SOURCE_INSIDE_TARGET
+OUTPUT_ROOT_ALREADY_EXISTS_UNMANAGED
+TARGET_ALREADY_RESERVED
+TARGET_NOT_WRITABLE
+UNSAFE_REPARSE_POINT
+UNSUPPORTED_NETWORK_LOCATION
+INSUFFICIENT_DISK_SPACE
+PATH_LENGTH_RISK_BLOCKED
+```
+
+Containment checks use canonical paths plus Windows reparse-point inspection. Source, target parent, resolved output root, run root, snapshot, baseline workspace, stage workspaces, artifact roots, and delivery destination must be represented by typed workspace aliases; APIs and commands do not accept arbitrary internal filesystem paths after intake.
+
+### A.5.6 Production intake contract
+
+```json
+{
+  "source_path": "C:\\client-projects\\customer-portal",
+  "target_parent_path": "C:\\migration-results",
+  "requested_output_name": null,
+  "target_angular_family": "21.x",
+  "migration_mode": "strict_compatibility",
+  "preserve_ui": true,
+  "preserve_behavior": true,
+  "preserve_business_logic": true,
+  "preserve_api_contracts": true,
+  "allow_optional_modernization": false
+}
+```
+
+The backend returns the sanitized generated output name and resolved output root. A user-supplied output-name override may be allowed only after the same sanitization, collision, containment, reservation, and checksum-binding rules.
+
+### A.5.7 Test-fixture policy
+
+Every reference to a fixture in this backlog means a synthetic test workspace generated or copied into a temporary external test root such as:
+
+```text
+%TEMP%\angular-migration-tests\<test-id>\source-app\
+```
+
+The repository may contain fixture generators, compact declarative manifests, expected results, and intentionally malformed individual files. It must not contain a full production-like Angular application under `demo-apps/`. Test fixtures exercise the same external-source-path API and the same generated-output flow as real applications.
+
 # B. Dependency overview
 
 ```text
-Completed Sprint 0 mock platform
-→ production contract and LLM vocabulary reconciliation
+Completed Sprint 0 mock platform and external fixture generator
+→ production contract, repository-isolation, and LLM vocabulary reconciliation
 → Windows/environment readiness
-→ path and Angular eligibility
-→ G01 → real run → immutable snapshot → G02
+→ external source path + target-parent validation, generated output reservation, and Angular eligibility
+→ G01 → real run under the reserved external output root → immutable snapshot copied from the read-only external source → G02
 → exact source runtime → baseline sandbox and commands → G03
 → deterministic discovery
 → production Azure gateway and append-only ledger
 → Analysis Proposer/Reviewer → G04
 → compatibility route and exact Stage 1 profile → G05
 → deterministic plan → Planning Proposer/Reviewer → G06
-→ command policy/execution and stage sandbox → G07
+→ command policy/execution and run-scoped stage sandbox → G07
 → exact Angular update → G08
 → validation/parity → G09
 → cleanup/fingerprint/copy-forward → G12
@@ -90,7 +250,7 @@ Completed Sprint 0 mock platform
 → exact patch apply → normal validation → G11
 → recovery and Assistant
 → final assurance → G13
-→ delivery → G14
+→ delivery candidate → source/destination revalidation → atomic publication to generated `migrated-app/` → G14
 → deterministic report + optional narrative → G15
 → full Angular 18.x→21.x runtime proof
 ```
@@ -111,9 +271,9 @@ Completed Sprint 0 mock platform
 
 ### 1. Alignment decision
 
-Sprint 0 already built the platform skeleton and mock proof: FastAPI and Next.js shells, configuration, SQLAlchemy/Alembic/SQLite, state and event contracts, Transition Service foundations, ordered SSE replay, Artifact Store, structured-command shell, mock LangGraph workflow, viewers, worker leases, cancellation/resume, LLM usage mock, observability, and the Angular fixture.
+Sprint 0 already built the platform skeleton and mock proof: FastAPI and Next.js shells, configuration, SQLAlchemy/Alembic/SQLite, state and event contracts, Transition Service foundations, ordered SSE replay, Artifact Store, structured-command shell, mock LangGraph workflow, viewers, worker leases, cancellation/resume, LLM usage mock, observability, and an external synthetic-fixture generation capability. A real legacy application is never stored inside the platform repository.
 
-Sprint 1 must therefore **productionize and exercise** those foundations with a real source application. It must not rebuild them as new standalone features.
+Sprint 1 must therefore **productionize and exercise** those foundations with a real application selected through an external absolute source path and a separate external output-parent path. It must not rebuild completed foundations or copy the original application into the platform repository.
 
 The revised Sprint 1 also corrects two Sprint 0 assumptions before real execution:
 
@@ -146,7 +306,7 @@ Because Sprint 0 explicitly deferred real source intake, arbitrary-project snaps
 
 Convert the completed Sprint 0 skeleton into the first real, safe, reproducible product increment.
 
-The sprint accepts a real Angular 18.x source, validates it, obtains G01, creates a real run, creates and approves an immutable source snapshot through G02, resolves an exact source-compatible ExecutionProfile, creates a separate baseline sandbox, audits package and lifecycle behavior, runs a frozen clean installation plus configured build/test/lint commands, captures baseline parity anchors and known failure fingerprints, and obtains G03.
+The sprint accepts an external Angular 18.x source path and external output-parent path, generates and reserves a separate output root, validates both boundaries, obtains G01, creates a real run, copies the read-only source into an immutable product-owned snapshot through G02, resolves an exact source-compatible ExecutionProfile, creates a separate baseline sandbox, audits package and lifecycle behavior, runs a frozen clean installation plus configured build/test/lint commands, captures baseline parity anchors and known failure fingerprints, and obtains G03.
 
 At sprint completion, the run is ready for Sprint 2 discovery and analysis. It is **not migrated**.
 
@@ -190,11 +350,11 @@ The revised backlog uses these current official constraints:
 - Reconcile Sprint 0 contracts with the authoritative specification.
 - Remove production auto-approval.
 - Real Windows/corporate environment readiness.
-- Real source/target validation and target reservation.
+- Real external source-path and target-parent validation, generated output-root naming, platform-repository exclusion, and target reservation.
 - Real Angular eligibility and topology analysis.
 - Checksum-bound real preflight and G01.
 - Real run creation and LangGraph handoff.
-- Real arbitrary-project immutable snapshot and G02.
+- Real arbitrary external-project immutable snapshot and G02, copied only into the run-scoped product-owned snapshot root.
 - Exact source-compatible ExecutionProfile selection.
 - Baseline sandbox and package/lifecycle prequalification.
 - Real `npm ci`, build, tests, and lint through CommandExecutor.
@@ -221,7 +381,7 @@ The revised backlog uses these current official constraints:
 |---:|---|---|---|
 | 1 | S1-F01 — Reconcile Sprint 0 contracts with the authoritative workflow | An operator can open the Control Tower and see the authoritative run, phase, stage, step, approval, repair, and assurance dimensions without the old six-phase compression or production auto-approval behavior. | — |
 | 2 | S1-F02 — Productionize Windows and corporate-environment readiness | An operator can see the real local execution readiness needed for source intake and baseline work: paired Node/npm/npx installations, Git, local data roots, disk, registry, proxy, and certificate status. | — |
-| 3 | S1-F03 — Validate real source and target paths and reserve the output safely | A user can enter arbitrary local source and target paths and receive precise pass, warning, or blocker results before any run or copy is created. | — |
+| 3 | S1-F03 — Validate external source and output-parent paths and reserve the generated output safely | A user can select an external legacy Angular source folder and an independent target-parent folder, preview the generated output root, and receive precise pass, warning, or blocker results before any run, snapshot, or output directory is created. | — |
 | 4 | S1-F04 — Detect Angular eligibility, exact versions, lockfile, and workspace topology | A user can analyze the validated source and see deterministic Angular facts, exact and family versions, package manager, lockfile, projects, builders, and MVP support classification. | — |
 | 5 | S1-F05 — Create a checksum-bound production preflight and decide G01 | A reviewer can inspect a complete real source/path/environment eligibility package and approve, request modification, or reject G01; stale decisions cannot advance the workflow. | G01 |
 | 6 | S1-F06 — Create the real authoritative run and hand off to LangGraph safely | After G01 approval, a user can create one real migration run, see it become the single active mutating run, and observe LangGraph coordinate real source-intake services without owning state or execution. | — |
@@ -667,7 +827,7 @@ Open Environment Diagnostics, refresh capabilities, inspect paired runtime candi
 
 ---
 
-### S1-F03 — Validate real source and target paths and reserve the output safely
+### S1-F03 — Validate external source and output-parent paths and reserve the generated output safely
 
 **Feature type:** Product capability  
 **Priority:** Must  
@@ -676,21 +836,25 @@ Open Environment Diagnostics, refresh capabilities, inspect paired runtime candi
 
 #### User-observable outcome
 
-A user can enter arbitrary local source and target paths and receive precise pass, warning, or blocker results before any run or copy is created.
+A user can select an external legacy Angular source folder and an independent target-parent folder, preview the generated output root, and receive precise pass, warning, or blocker results before any run, snapshot, or output directory is created.
 
 #### Context
 
-Sprint 0 validated controlled fixture paths only. Sprint 1 must productionize the PathPolicy for real Windows projects and establish a reservation boundary so two active runs cannot claim the same output.
+Sprint 0 validated controlled external test-fixture paths only. Sprint 1 must productionize PathPolicy for arbitrary Windows projects, reject any real source or target inside the migration-platform repository, generate a deterministic output folder under the selected target parent, and establish a reservation boundary so two active runs cannot claim the same output root.
 
 #### Scope
 
+- Accept `source_path`, `target_parent_path`, optional sanitized output-name override, target Angular family, and migration constraints.
 - Canonicalize absolute paths, separators, drive-letter case, `.` and `..` components.
-- Detect source/target equality, unsafe nesting, overlap with internal roots, protected paths, and unsupported network locations.
+- Resolve the migration-platform repository root and reject source, target parent, or generated output roots that overlap it.
+- Generate the default output name `<sanitized-source-folder-name>-angular-<target-major>` and resolve the complete output root.
+- Detect source/output equality, unsafe nesting, overlap with internal roots, protected paths, existing unmanaged output folders, and unsupported network locations.
 - Inspect symlinks, junctions, and other reparse-point risks; fail closed on uncertain escapes.
-- Validate source readability, target creatability/writability, path-length risk, free disk, and transient file-lock behavior.
-- Create a short-lived target reservation record bound to the validation result.
+- Validate source readability, target-parent creatability/writability, output-root creatability, path-length risk, estimated disk capacity for snapshot/stages/delivery, and transient file-lock behavior.
+- Create a short-lived reservation for the exact generated output root, not merely the target parent.
 - Generate a source metadata fingerprint from safe lightweight metadata so path validation becomes stale when the selected source materially changes.
-- Display sanitized paths and detailed rule results in the existing setup page.
+- Persist sanitized source path, target parent, generated output name, resolved output root, platform-root comparison, reservation expiry, and policy version.
+- Display the read-only source notice, generated output preview, sanitized paths, and detailed rule results in the setup page.
 
 #### Out of scope
 
@@ -705,11 +869,11 @@ Real PathPolicy, TargetReservationService, WindowsPathInspector, and DiskCapacit
 
 #### Persistence
 
-Persist path-validation requests/results, target reservations, expiry, policy version, source metadata fingerprint, and idempotency keys.
+Persist path-validation requests/results, sanitized external source path, target-parent path, generated output name, resolved output root, target reservations, expiry, platform-root fingerprint, policy version, source metadata fingerprint, and idempotency keys.
 
 #### API contract
 
-`POST /api/v1/sources/validate-paths`, `GET /api/v1/sources/path-validations/{id}`.
+`POST /api/v1/sources/validate-paths`, `GET /api/v1/sources/path-validations/{id}`. The response includes `generated_output_name`, `resolved_output_root`, reservation ID/expiry, and stable path-policy results.
 
 #### Durable events
 
@@ -717,11 +881,11 @@ PATH_VALIDATION_STARTED, PATH_VALIDATION_COMPLETED, PATH_VALIDATION_BLOCKED, TAR
 
 #### Artifact evidence
 
-`path_safety_report.json` and `target_reservation.json` after the run is created; pre-run evidence is retained as checksum-bound metadata.
+`path_safety_report.json`, `output_name_resolution.json`, `repository_isolation_report.json`, and `target_reservation.json` after the run is created; pre-run evidence is retained as checksum-bound metadata.
 
 #### Frontend slice
 
-Production setup form with path results, warnings, blocked reasons, expiry, retry, and a source-immutability notice.
+Production setup form with external source picker/input, target-parent picker/input, generated output-name preview, resolved output-root preview, path results, warnings, blocked reasons, reservation expiry, retry, and a prominent source-immutability notice.
 
 #### End-to-end flow
 
@@ -740,7 +904,7 @@ User action
 #### Sub-issues
 
 
-#### S1-F03-I01 — Backend / Domain: Validate real source and target paths and reserve the output safely
+#### S1-F03-I01 — Backend / Domain: Validate external source and output-parent paths and reserve the generated output safely
 
 - **Issue type:** Backend / Domain
 - **Technical story:** Implement the bounded application service and deterministic domain rules. Keep routers and LangGraph nodes thin; use the Transition Service for state movement.
@@ -756,7 +920,7 @@ User action
 - **Risk:** High
 
 
-#### S1-F03-I02 — Database / API / Event / Artifact: Validate real source and target paths and reserve the output safely
+#### S1-F03-I02 — Database / API / Event / Artifact: Validate external source and output-parent paths and reserve the generated output safely
 
 - **Issue type:** Database / API / Event / Artifact
 - **Technical story:** Add or extend Alembic models, repositories, typed API contracts, durable events, idempotency, and checksum-bound artifacts. Preserve short transactions.
@@ -772,7 +936,7 @@ User action
 - **Risk:** High
 
 
-#### S1-F03-I03 — Frontend: Validate real source and target paths and reserve the output safely
+#### S1-F03-I03 — Frontend: Validate external source and output-parent paths and reserve the generated output safely
 
 - **Issue type:** Frontend
 - **Technical story:** Implement the Control Tower projection and user actions using generated API types, authoritative snapshots, and ordered SSE events. Cover loading, empty, running, success, blocked, stale, reconnecting, and failure states.
@@ -788,7 +952,7 @@ User action
 - **Risk:** Low
 
 
-#### S1-F03-I04 — Testing / Security / Documentation: Validate real source and target paths and reserve the output safely
+#### S1-F03-I04 — Testing / Security / Documentation: Validate external source and output-parent paths and reserve the generated output safely
 
 - **Issue type:** Testing / Security / Documentation
 - **Technical story:** Add unit, API integration, frontend component, SSE/restart, source-safety, and security tests plus the exact UI manual scenario and documentation updates.
@@ -805,15 +969,17 @@ User action
 
 #### Feature acceptance criteria
 
-- Given safe separate local paths, when validation completes, then the target is temporarily reserved and the UI displays passed rules.
-- Given the target is nested inside the source, when validation runs, then it is blocked and no directory is created.
+- Given a safe external source and separate external target parent, when validation completes, then the backend generates the output root, temporarily reserves that exact root, and the UI displays the generated name and passed rules.
+- Given the generated output root is nested inside the source, when validation runs, then it is blocked and no output directory is created.
 - Given a junction escapes the approved root, when validation runs, then the result is blocked.
-- Given another active reservation claims the target, when validation runs, then the result is `TARGET_ALREADY_RESERVED`.
+- Given another active reservation claims the generated output root, when validation runs, then the result is `TARGET_ALREADY_RESERVED`.
 - Given the source changes after validation, when the result is reused, then it is stale and cannot support G01 or run creation.
+- Given the source, target parent, or generated output root resolves inside the platform repository, when validation runs, then it is blocked with the corresponding repository-isolation error.
+- Given the default output name collides with an unmanaged existing folder, when validation runs, then it fails closed and requires a safe new name or explicit managed-run recovery.
 
 #### Manual end-to-end test
 
-Validate a real Angular fixture and safe target, then repeat with target-inside-source, a junction escape, a long-path warning, and a target already reserved by another test run.
+Generate a synthetic Angular fixture in an external temporary source directory and choose an external target parent. Validate the generated output preview, then repeat with output-inside-source, source or target inside the platform repository, a junction escape, a long-path warning, an unmanaged output collision, and an output root already reserved by another test run.
 
 #### Dependencies
 
@@ -826,6 +992,8 @@ Validate a real Angular fixture and safe target, then repeat with target-inside-
 - Long paths
 - Source changing during validation
 - Race between reservations
+- Generated output-name collision or sanitization error
+- Accidental platform-repository overlap
 - Sensitive path disclosure
 
 #### Feature Definition of Done
@@ -856,7 +1024,7 @@ A user can analyze the validated source and see deterministic Angular facts, exa
 
 #### Context
 
-Sprint 0 supplied contracts and an Angular 18 fixture. Real eligibility is deterministic factual parsing and must not be delegated to an LLM.
+Sprint 0 supplied contracts and a generator for external Angular 18 test workspaces. Real eligibility is deterministic factual parsing of the user-selected external source and must not be delegated to an LLM.
 
 #### Scope
 
@@ -928,7 +1096,7 @@ User action
 - **Security:** Enforce authorization hooks, secret redaction, path/workspace confinement, artifact-by-ID access, no raw shell, no direct graph/LLM mutation, and fail-closed integrity checks.
 - **Automated tests:** Happy path, invalid input, stale state, duplicate idempotency, missing prerequisite/approval, backend failure, and one authority-bypass/security negative appropriate to the feature.
 - **Manual contribution:** Supports the parent feature's UI-driven manual scenario and exposes inspectable state, event, database/API, and artifact evidence.
-- **Dependencies:** S1-F03, Sprint 0 Angular fixture and deterministic component contracts
+- **Dependencies:** S1-F03, Sprint 0 external test-fixture generator and deterministic component contracts
 - **Estimate:** M
 - **Risk:** High
 
@@ -944,7 +1112,7 @@ User action
 - **Security:** Enforce authorization hooks, secret redaction, path/workspace confinement, artifact-by-ID access, no raw shell, no direct graph/LLM mutation, and fail-closed integrity checks.
 - **Automated tests:** Happy path, invalid input, stale state, duplicate idempotency, missing prerequisite/approval, backend failure, and one authority-bypass/security negative appropriate to the feature.
 - **Manual contribution:** Supports the parent feature's UI-driven manual scenario and exposes inspectable state, event, database/API, and artifact evidence.
-- **Dependencies:** S1-F03, Sprint 0 Angular fixture and deterministic component contracts
+- **Dependencies:** S1-F03, Sprint 0 external test-fixture generator and deterministic component contracts
 - **Estimate:** M
 - **Risk:** High
 
@@ -960,7 +1128,7 @@ User action
 - **Security:** Enforce authorization hooks, secret redaction, path/workspace confinement, artifact-by-ID access, no raw shell, no direct graph/LLM mutation, and fail-closed integrity checks.
 - **Automated tests:** Happy path, invalid input, stale state, duplicate idempotency, missing prerequisite/approval, backend failure, and one authority-bypass/security negative appropriate to the feature.
 - **Manual contribution:** Supports the parent feature's UI-driven manual scenario and exposes inspectable state, event, database/API, and artifact evidence.
-- **Dependencies:** S1-F03, Sprint 0 Angular fixture and deterministic component contracts
+- **Dependencies:** S1-F03, Sprint 0 external test-fixture generator and deterministic component contracts
 - **Estimate:** M
 - **Risk:** Low
 
@@ -976,7 +1144,7 @@ User action
 - **Security:** Enforce authorization hooks, secret redaction, path/workspace confinement, artifact-by-ID access, no raw shell, no direct graph/LLM mutation, and fail-closed integrity checks.
 - **Automated tests:** Happy path, invalid input, stale state, duplicate idempotency, missing prerequisite/approval, backend failure, and one authority-bypass/security negative appropriate to the feature.
 - **Manual contribution:** Supports the parent feature's UI-driven manual scenario and exposes inspectable state, event, database/API, and artifact evidence.
-- **Dependencies:** S1-F03, Sprint 0 Angular fixture and deterministic component contracts
+- **Dependencies:** S1-F03, Sprint 0 external test-fixture generator and deterministic component contracts
 - **Estimate:** S
 - **Risk:** Medium
 
@@ -990,12 +1158,12 @@ User action
 
 #### Manual end-to-end test
 
-Analyze clean Angular 18.0.x and 18.2.x fixtures, then AngularJS, Angular 10, multi-app, custom-builder, malformed JSON, and version-conflict fixtures; inspect all evidence in the UI.
+Generate clean Angular 18.0.x and 18.2.x workspaces in external temporary directories and analyze them through the real source-path API; then generate AngularJS, Angular 10, multi-app, custom-builder, malformed JSON, and version-conflict variants and inspect all evidence in the UI.
 
 #### Dependencies
 
 - S1-F03
-- Sprint 0 Angular fixture and deterministic component contracts
+- Sprint 0 external test-fixture generator and deterministic component contracts
 
 #### Risks and edge cases
 
@@ -1038,10 +1206,10 @@ Sprint 0 implemented mock preflight and approval infrastructure. Sprint 1 must c
 
 #### Scope
 
-- Combine path validation, target reservation, environment capability, source eligibility, selected target family, migration mode, and policy versions into one immutable preflight artifact set.
+- Combine external-source validation, target-parent validation, generated output-name/root resolution, exact output-root reservation, repository-isolation evidence, environment capability, source eligibility, selected target family, migration mode, and policy versions into one immutable preflight artifact set.
 - Calculate an artifact-set checksum and expiry.
 - Create G01 with allowed decisions: approved, approved_with_comment, modification_requested, and rejected.
-- Bind the decision to gate version, state version, input checksum, artifact-set checksum, actor, and target reservation.
+- Bind the decision to gate version, state version, input checksum, artifact-set checksum, actor, sanitized external source path, generated output root, and exact target reservation.
 - Mark G01 stale when any bound input or artifact changes.
 - Implement append-only decision history and explicit rejection/modification consequences.
 - Allow approval only when no mandatory preflight blocker exists.
@@ -1071,7 +1239,7 @@ PREFLIGHT_CREATED, APPROVAL_GATE_CREATED, G01_APPROVED, G01_REJECTED, G01_MODIFI
 
 #### Artifact evidence
 
-`preflight_request.json`, `preflight_result.json`, `environment_capability_summary.json`, `path_safety_report.json`, `eligibility_result.json`, and `g01_evidence_index.json`.
+`preflight_request.json`, `preflight_result.json`, `environment_capability_summary.json`, `path_safety_report.json`, `output_name_resolution.json`, `repository_isolation_report.json`, `target_reservation.json`, `eligibility_result.json`, and `g01_evidence_index.json`.
 
 #### Frontend slice
 
@@ -1217,9 +1385,9 @@ Sprint 0 created a mock run and six-phase mock graph. Sprint 1 replaces the prod
 #### Scope
 
 - Create a real run only from a current approved G01 decision.
-- Persist strict-parity constraints, target Angular 21.x as the approved MVP target, policy versions, pricing snapshot, source/target references, and actor identity.
+- Persist strict-parity constraints, target Angular 21.x as the approved MVP target, policy versions, pricing snapshot, external source reference, target-parent reference, generated output name, resolved output root, exact reservation, and actor identity.
 - Enforce one active mutating run and target ownership using the existing lease foundation.
-- Create the run artifact namespace transactionally or compensate safely.
+- Create the run-scoped `.migration-factory/runs/<run-id>` namespace under the reserved output root transactionally or compensate safely; do not create `migrated-app/`.
 - Update JobSupervisor to start the production LangGraph thread.
 - Replace mock preflight and run-creation nodes with thin adapters that call real application services.
 - Reconstruct graph routing from SQLite after restart; keep LangGraph checkpoints as resume hints only.
@@ -1239,7 +1407,7 @@ MigrationRunService, JobSupervisor production start path, one-active-run policy,
 
 #### Persistence
 
-Persist migration_runs, active-run claim/lease, policy snapshots, graph thread reference, state version, and initial transition/event.
+Persist migration_runs, sanitized external source and target-parent references, generated output name/root, exact output reservation/ownership, run-root workspace aliases, active-run claim/lease, policy snapshots, graph thread reference, state version, and initial transition/event.
 
 #### API contract
 
@@ -1251,7 +1419,7 @@ RUN_CREATED, RUN_START_ACCEPTED, RUN_STARTED, RUN_START_REJECTED, RUN_RECONSTRUC
 
 #### Artifact evidence
 
-`create_run_request.json`, `client_constraints.json`, `target_policy.json`, `run_policy_snapshot.json`, and `run_initial_state.json`.
+`create_run_request.json`, `external_source_reference.json`, `output_layout.json`, `client_constraints.json`, `target_policy.json`, `run_policy_snapshot.json`, and `run_initial_state.json`.
 
 #### Frontend slice
 
@@ -1341,6 +1509,8 @@ User action
 
 - Given current G01 approval, when run creation is submitted, then exactly one run and initial event are created.
 - Given stale or rejected G01, when run creation is submitted, then it is rejected and no partial run directory remains.
+- Given the output reservation is current, when the run is created, then only the run-scoped hidden product area is created and `migrated-app/` remains absent.
+- Given the source or resolved output root now overlaps the platform repository, when run creation is submitted, then repository isolation is revalidated and creation is rejected.
 - Given an active mutating run exists, when another start is attempted, then it is blocked by the one-active-run policy.
 - Given a graph checkpoint is stale, when the backend restarts, then the graph reconstructs from SQLite and does not repeat completed side effects.
 - Given the browser disconnects after start acceptance, when it reconnects, then the authoritative state is recovered from snapshot and SSE replay.
@@ -1390,14 +1560,14 @@ A user can create a real product-owned source snapshot, inspect its complete man
 
 #### Context
 
-Sprint 0 provided snapshot/workspace interfaces and fixture-bound copy tests. Sprint 1 must implement safe arbitrary-project snapshotting for the approved real run.
+Sprint 0 provided snapshot/workspace interfaces and external temporary-fixture copy tests. Sprint 1 must implement safe arbitrary-project acquisition from the approved external source path into the run-scoped immutable snapshot; the copy must never enter the platform repository.
 
 #### Scope
 
 - Freeze the source metadata fingerprint at snapshot start and detect source changes during copy.
 - Apply a versioned inclusion/exclusion policy; exclude generated directories such as `node_modules`, `.angular/cache`, `dist`, and `coverage` only when explicitly recorded.
 - Handle symlinks, junctions, file locks, long paths, case behavior, and transient copy retries.
-- Create snapshot files only under the product-owned snapshot root.
+- Create snapshot files only under `<resolved-output-root>/.migration-factory/runs/<run-id>/source-snapshot`; reject any resolved destination outside the registered snapshot workspace alias or inside the platform repository.
 - Generate deterministic file manifest, sizes, content hashes, exclusions, Git metadata where available, and snapshot fingerprint.
 - Finalize all snapshot artifacts before requesting a passed transition.
 - Quarantine or delete incomplete product-owned copies safely after interruption.
@@ -1407,7 +1577,7 @@ Sprint 0 provided snapshot/workspace interfaces and fixture-bound copy tests. Sp
 - Mutable baseline workspace
 - G02 decision
 - Dependency installation
-- Stage sandboxes
+- Run-scoped stage sandboxes
 - Final delivery
 
 #### Backend and authority slice
@@ -1416,7 +1586,7 @@ SnapshotService, SourceManifestBuilder, FingerprintService, LinkPolicyInspector,
 
 #### Persistence
 
-Persist source_snapshots, manifest/fingerprint metadata, copy status, policy version, artifact IDs, and idempotency.
+Persist source_snapshots, external-source reference, registered snapshot workspace alias, manifest/fingerprint metadata, copy status, policy version, artifact IDs, and idempotency.
 
 #### API contract
 
@@ -1517,6 +1687,7 @@ User action
 #### Feature acceptance criteria
 
 - Given an approved run and stable source, when snapshotting completes, then every included file is represented in the manifest and the snapshot fingerprint is stored.
+- Given snapshot creation starts, when the copy destination is resolved, then it is the registered run-scoped snapshot root outside the platform repository and outside the original source.
 - Given the source changes during copy, when verification runs, then snapshot completion is rejected and the partial copy is quarantined or safely removed.
 - Given a link escapes the source root, when encountered, then snapshotting fails closed.
 - Given snapshotting is cancelled, when cleanup completes, then no incomplete snapshot is marked valid.
@@ -1524,7 +1695,7 @@ User action
 
 #### Manual end-to-end test
 
-Create a snapshot of the real Angular fixture, inspect manifest/exclusions/fingerprint, then modify a source file during a controlled slow copy and confirm the snapshot is not accepted.
+Generate a synthetic Angular workspace in an external temporary source directory, create its snapshot under the reserved run root, inspect manifest/exclusions/fingerprint, then modify the external source during a controlled slow copy and confirm the snapshot is not accepted and nothing is written to the original source.
 
 #### Dependencies
 
@@ -1924,7 +2095,7 @@ The original source and immutable snapshot must never be command working directo
 
 #### Scope
 
-- Create a physical baseline sandbox from the G02-approved snapshot.
+- Create a physical baseline sandbox from the G02-approved snapshot under the registered run-scoped `baseline-workspace` alias; never create it inside the source or platform repository.
 - Exclude `node_modules` and generated caches from copy; verify the baseline input fingerprint matches the approved snapshot policy.
 - Validate `package.json` and `package-lock.json` parseability and consistency without rewriting either file.
 - Inventory public/private registry, Git, tarball, local-file, workspace, and unknown dependency sources.
@@ -2225,6 +2396,7 @@ User action
 #### Feature acceptance criteria
 
 - Given all prerequisites, when baseline install starts, then the exact registered command runs once inside the baseline sandbox.
+- Given any command attempts to use the external source, immutable snapshot, platform repository, target parent, or unregistered directory as its working directory, when authorization runs, then it is rejected before process creation.
 - Given raw shell text or forbidden flags, when requested, then Command Policy rejects the request before process creation.
 - Given a lockfile mismatch, when install is requested, then no command starts.
 - Given cancellation, when the process tree is terminated, then partial logs are finalized and the workspace is classified for reconstruction.
@@ -2797,17 +2969,18 @@ Qualify and approve the clean fixture, qualify a controlled known-test-failure f
 ### 9. Sprint integration tests
 
 1. **Sprint 0 upgrade test:** Apply the authoritative contract migration to a Sprint 0 database and prove state/event history remains readable.
-2. **No-auto-approval test:** Attempt all production auto-approval routes and prove no gate advances.
-3. **Real source-intake API test:** FastAPI + temporary SQLite/WAL + temporary Artifact Store from path validation through G03.
-4. **Source safety matrix:** Windows drive/case, nesting, long path, symlink, junction, source-change-during-copy, locked file, and target-reservation conflicts.
-5. **Eligibility matrix:** Angular 18.0.x, 18.1.x, 18.2.x, AngularJS, Angular 10, Angular 11–17 policy classification, multi-app, custom builder, Nx, malformed JSON, and version conflicts.
-6. **Approval integrity:** G01, G02, and G03 stale state, stale checksum, duplicate decision, rejection, modification request, restart, and non-bypassable core failures.
-7. **Runtime profile:** Compatible candidate, mixed executable pair, missing candidate, changed executable, policy version change, and secret redaction.
-8. **Baseline package safety:** Valid lockfile, mismatch, missing lockfile, unapproved package source, sensitive lifecycle script, registry unavailable, and private-auth missing.
-9. **Real subprocess suite:** `npm ci`, build, tests, lint, timeout, cancellation, process-tree termination, large logs, and browser refresh.
-10. **Known failure stability:** The same controlled baseline failure yields the same fingerprint under the same parser version.
-11. **Recovery:** Backend restart at G01/G02/G03 waits, interrupted snapshot reconstruction, interrupted install reconstruction, and graph checkpoint reconciliation with SQLite.
-12. **Authority regression:** LangGraph, UI, LLM mock, and agents cannot write authoritative state, execute raw commands, apply approvals, or mutate source.
+2. **Repository-isolation test:** Prove a real or generated Angular workspace cannot be selected from inside the platform repository, `demo-apps/` is absent, and fixture generators create workspaces only under an external temporary test root.
+3. **No-auto-approval test:** Attempt all production auto-approval routes and prove no gate advances.
+4. **Real source-intake API test:** FastAPI + temporary SQLite/WAL + temporary Artifact Store from path validation through G03.
+5. **Source safety matrix:** Windows drive/case, nesting, long path, symlink, junction, source-change-during-copy, locked file, and target-reservation conflicts.
+6. **Eligibility matrix:** Angular 18.0.x, 18.1.x, 18.2.x, AngularJS, Angular 10, Angular 11–17 policy classification, multi-app, custom builder, Nx, malformed JSON, and version conflicts.
+7. **Approval integrity:** G01, G02, and G03 stale state, stale checksum, duplicate decision, rejection, modification request, restart, and non-bypassable core failures.
+8. **Runtime profile:** Compatible candidate, mixed executable pair, missing candidate, changed executable, policy version change, and secret redaction.
+9. **Baseline package safety:** Valid lockfile, mismatch, missing lockfile, unapproved package source, sensitive lifecycle script, registry unavailable, and private-auth missing.
+10. **Real subprocess suite:** `npm ci`, build, tests, lint, timeout, cancellation, process-tree termination, large logs, and browser refresh.
+11. **Known failure stability:** The same controlled baseline failure yields the same fingerprint under the same parser version.
+12. **Recovery:** Backend restart at G01/G02/G03 waits, interrupted snapshot reconstruction, interrupted install reconstruction, and graph checkpoint reconciliation with SQLite.
+13. **Authority regression:** LangGraph, UI, LLM mock, and agents cannot write authoritative state, execute raw commands, apply approvals, or mutate source.
 
 ---
 
@@ -2816,12 +2989,12 @@ Qualify and approve the clean fixture, qualify a controlled known-test-failure f
 ```text
 1. Start the already-built Sprint 0 backend and frontend after applying the Sprint 1 contract migration.
 2. Open the health/environment view and inspect real paired Node/npm/npx, Git, SQLite/WAL, Artifact Store, proxy, and certificate readiness.
-3. Select a real Angular 18.x source and a safe target.
-4. Validate safe paths; demonstrate a target-inside-source blocker and a Windows junction blocker.
+3. Select a real external Angular 18.x source folder and an independent external target-parent folder; inspect the generated output name and resolved output root.
+4. Validate safe paths; demonstrate generated-output-inside-source, source/target-inside-platform-repository, unmanaged-output-collision, and Windows junction blockers.
 5. Analyze the source and display exact Angular/CLI versions, Angular family, npm lockfile, projects, and topology.
 6. Review the real preflight package and approve G01.
 7. Create the real run; prove a second active mutating run is blocked.
-8. Create the immutable snapshot, inspect manifest/exclusions/fingerprint, and approve G02.
+8. Fetch the external project through SnapshotService into the run-scoped immutable snapshot, inspect manifest/exclusions/fingerprint, prove the original source is unchanged, and approve G02.
 9. Resolve and select the exact source ExecutionProfile.
 10. Create the baseline sandbox and inspect lockfile, package-source, registry, and lifecycle-script evidence.
 11. Run real npm ci through CommandExecutor and watch logs through SSE.
@@ -2843,11 +3016,11 @@ Sprint 1 is complete only when:
 - Sprint 0 infrastructure has been reused rather than reimplemented.
 - Authoritative phase/status contracts are active and old combined macro phases are presentation-only or historical.
 - Production auto-approval is removed or unreachable.
-- Real arbitrary Windows path safety and target reservation work.
+- Real arbitrary Windows external-source and target-parent safety, deterministic output naming, platform-repository isolation, and exact output-root reservation work.
 - Angular 18.x exact version/family and topology detection work deterministically.
 - G01, G02, and G03 block progression, are checksum/state/fingerprint bound, and survive restart.
-- One real authoritative run is created from the approved preflight.
-- One immutable arbitrary-project source snapshot is created and approved.
+- One real authoritative run is created from the approved preflight under the exact reserved external output root; only the hidden run area exists before delivery.
+- One immutable arbitrary-project source snapshot is copied from the read-only external source into the registered run-scoped snapshot root and approved.
 - The source-compatible ExecutionProfile is exact, persisted, and used by every baseline command.
 - Baseline commands run only in the product-owned baseline sandbox through CommandExecutor.
 - `npm ci` does not silently rewrite package metadata or lockfiles.
@@ -2884,7 +3057,7 @@ This preserves the overall architecture while taking advantage of the foundation
 1. Do not rebuild completed Sprint 0 foundations as new features.
 2. Do not let the old mock state vocabulary remain production business truth.
 3. Do not allow production auto-approval.
-4. Do not mutate the original source or use it as a command working directory.
+4. Do not store the real legacy application inside the platform repository, mutate the original external source, or use it as a command working directory.
 5. Do not use the immutable snapshot as a mutable baseline workspace.
 6. Do not run commands outside CommandExecutor.
 7. Do not accept arbitrary shell strings or forbidden npm flags.
@@ -2893,6 +3066,6 @@ This preserves the overall architecture while taking advantage of the foundation
 10. Do not treat a missing test/lint/security/browser tool as passed.
 11. Do not let a human approval rewrite failed mandatory technical evidence into passed evidence.
 12. Do not run `ng update` or any Angular transformation in Sprint 1.
-13. Do not publish `migrated-app`.
+13. Do not create or publish `<resolved-output-root>/migrated-app` before G13 and G14; Sprint 1 creates only the hidden run-scoped product area.
 14. Do not call Angular 21 the latest release; it is the approved MVP target.
 15. End at the G03-approved baseline boundary, ready for Sprint 2 discovery and planning.

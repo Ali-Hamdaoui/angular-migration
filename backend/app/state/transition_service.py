@@ -44,6 +44,7 @@ class TransitionRequest:
     reason: str = "state transition"
     worker_id: str | None = None
     occurred_at: datetime | None = None
+    payload: dict[str, str | int | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,8 @@ class StateTransitionService:
             "actor": request.actor,
             "reason": request.reason,
         }
+        if request.payload:
+            payload.update(request.payload)
         if request.next_run_status is not None:
             payload["previous_run_status"] = run.status
             payload["next_run_status"] = request.next_run_status.value

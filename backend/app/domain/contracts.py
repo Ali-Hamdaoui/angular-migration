@@ -255,6 +255,11 @@ class WorkflowEventType(str, Enum):
     ARTIFACT_CREATED = "artifact_created"
     APPROVAL_REQUIRED = "approval_required"
     WORKFLOW_COMPLETED = "workflow_completed"
+    RUN_CREATED = "RUN_CREATED"
+    RUN_START_ACCEPTED = "RUN_START_ACCEPTED"
+    RUN_STARTED = "RUN_STARTED"
+    RUN_START_REJECTED = "RUN_START_REJECTED"
+    RUN_RECONSTRUCTED = "RUN_RECONSTRUCTED"
 
 
 class ErrorEnvelope(ContractModel):
@@ -629,6 +634,50 @@ class MigrationRunDto(ContractModel):
             if any(stage.status in active for stage in self.stages):
                 raise ValueError("terminal runs cannot contain active stages")
         return self
+
+
+class CreateAuthoritativeRunRequestDto(ContractModel):
+    preflight_id: str = Field(min_length=1)
+    input_checksum: str = Field(min_length=1)
+    artifact_set_checksum: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+    client_constraints: dict[str, bool] = Field(default_factory=dict)
+    pricing_snapshot: dict[str, str | float | int] = Field(default_factory=dict)
+
+
+class StartAuthoritativeRunRequestDto(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+
+
+class AuthoritativeRunStateDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    run_phase: RunPhase
+    phase_status: str
+    approval_status: ApprovalStatus
+    repair_status: RepairStatus
+    state_version: int = Field(ge=1)
+    preflight_id: str
+    source_path: str
+    target_output_path: str
+    graph_thread_id: str
+    created_at: datetime
+    updated_at: datetime
+    artifacts: list[ArtifactRefDto] = Field(default_factory=list)
+    workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
+
+
+class AuthoritativeRunMutationResultDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    state_version: int = Field(ge=1)
+    event_sequence: int = Field(ge=1)
+    graph_thread_id: str
+    idempotent_replay: bool = False
+    artifacts: list[ArtifactRefDto] = Field(default_factory=list)
 
 
 # Deterministic component and AI-agent contracts (AMF-S0-10)
