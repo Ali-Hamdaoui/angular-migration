@@ -18,7 +18,7 @@ export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_requ
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
@@ -123,3 +123,31 @@ export type G01Decision = "approved" | "approved_with_comment" | "modification_r
 export type G01DecisionResponse = { decision_id: string; preflight_id: string; gate_id: string; decision: G01Decision; actor: string; comment: string | null; decided_at: string; input_checksum: string; artifact_set_checksum: string; state_version: number; idempotent_replay: boolean };
 export type PreflightArtifactDto = { artifact_id: string; checksum: string; relative_path: string };
 export type ProductionPreflightDto = { snapshot: { preflight_id: string; gate_id: string; gate_version: string; state_version: number; status: string; approval_status: string; created_at: string; expires_at: string; input_checksum: string; artifact_set_checksum: string; target_angular_family: string; migration_mode: string; source_path: string; target_output_path: string; target_reservation_id: string | null; blockers: string[]; warnings: string[]; artifacts: Record<string, PreflightArtifactDto>; decision_history: G01DecisionResponse[] } };
+
+export type SnapshotStatus = "started" | "created" | "failed";
+export type CreateSourceSnapshotRequest = {
+  expected_state_version: number;
+  idempotency_key: string;
+  actor: string;
+};
+export type SourceSnapshotDto = {
+  snapshot_id: string;
+  run_id: string;
+  status: SnapshotStatus;
+  source_path: string;
+  snapshot_path: string;
+  manifest_id: string | null;
+  fingerprint: string | null;
+  policy_version: string;
+  file_count: number;
+  total_size_bytes: number;
+  exclusions: Array<{ relative_path: string; reason: string; policy_version: string }>;
+  git_metadata: Record<string, unknown>;
+  artifacts: ArtifactRefDto[];
+  state_version: number;
+  event_sequence: number;
+  idempotent_replay: boolean;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+};
