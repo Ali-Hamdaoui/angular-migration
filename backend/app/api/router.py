@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.preflights import draft_approval_router, router as preflights_router
 from app.api.routes.environment import router as environment_router
+from app.api.routes.execution_profiles import router as execution_profiles_router
 from app.api.routes.health import router as health_router
 from app.api.routes.g02 import router as g02_router
 from app.api.routes.sources import router as sources_router
@@ -25,6 +26,7 @@ api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
 api_router.include_router(artifacts_router)
 api_router.include_router(environment_router)
+api_router.include_router(execution_profiles_router)
 api_router.include_router(preflights_router)
 api_router.include_router(draft_approval_router)
 
@@ -39,6 +41,7 @@ api_v1_router.include_router(migrations_router)
 api_v1_router.include_router(assistant_router)
 api_v1_router.include_router(artifacts_router)
 api_v1_router.include_router(environment_router)
+api_v1_router.include_router(execution_profiles_router)
 api_v1_router.include_router(preflights_router)
 api_v1_router.include_router(draft_approval_router)
 api_router.include_router(api_v1_router)
