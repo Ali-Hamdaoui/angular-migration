@@ -24,6 +24,11 @@ const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
   "artifact_created",
   "approval_required",
   "workflow_completed",
+  "SNAPSHOT_STARTED",
+  "SNAPSHOT_CREATED",
+  "SNAPSHOT_FAILED",
+  "SNAPSHOT_PROGRESS_UPDATED",
+  "SNAPSHOT_QUARANTINED",
 ];
 
 const MAX_LIVE_EVENTS = 200;
