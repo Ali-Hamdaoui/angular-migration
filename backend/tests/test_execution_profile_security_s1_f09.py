@@ -1,7 +1,9 @@
 ﻿from datetime import UTC, datetime
 from pathlib import Path
+import shutil
 import pytest
 from app.artifact_store import LocalFilesystemArtifactStore
+from app.domain.contracts import ArtifactType
 from app.domain.execution_profile import RuntimeCandidate, RuntimeResolutionRequest, SourceRuntimeResolver
 
 NOW=datetime(2026,7,15,tzinfo=UTC)
@@ -24,11 +26,16 @@ def test_policy_change_invalidates_selected_profile():
     assert profile is not None
     assert resolver.is_stale(profile,candidate(),"angular-source-runtime-v2") is True
 
-def test_resolution_artifacts_are_read_only_by_id_and_checksum_bound(tmp_path: Path):
-    store=LocalFilesystemArtifactStore(tmp_path); stored=store.write_text_artifact("run-1","global/execution-profile/execution_profile.json",'{"checksum":"sha256:profile"}',"json",created_by="test",input_hashes={"request":"sha256:req"},policy_version="angular-source-runtime-v1")
-    loaded=store.read_artifact_by_id(stored.ref.artifact_id)
-    assert loaded.ref.checksum == stored.ref.checksum
-    with pytest.raises(ValueError): store.read_artifact_by_id("artifact-../../secret")
+def test_resolution_artifacts_are_read_only_by_id_and_checksum_bound():
+    root = Path(__file__).resolve().parents[2] / ".s1f09-artifact-test"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        store=LocalFilesystemArtifactStore(root); stored=store.write_text_artifact("run-1","global/execution-profile/execution_profile.json",'{"checksum":"sha256:profile"}',ArtifactType.JSON,created_by="test",input_hashes={"request":"sha256:req"},policy_version="angular-source-runtime-v1")
+        loaded=store.read_artifact_by_id(stored.ref.artifact_id)
+        assert loaded.ref.checksum == stored.ref.checksum
+        with pytest.raises(ValueError): store.read_artifact_by_id("artifact-../../secret")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 def test_runtime_profile_does_not_authorize_shell_or_arbitrary_execution():
     profile=SourceRuntimeResolver().resolve(request(candidate())).selected_profile

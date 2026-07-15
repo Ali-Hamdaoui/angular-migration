@@ -40,8 +40,19 @@ class WorkspaceService:
         shutil.copytree(snapshot_root, repository_path, ignore=shutil.ignore_patterns("source-manifest.json"))
         return WorkspaceRecord(run_id=run_id, workspace_root=workspace_root, repository_path=repository_path)
 
-    def create_baseline_workspace_from_snapshot(self, *, run_id: str, snapshot_root: Path, source_root: Path, g02_service) -> WorkspaceRecord:
-        """Create a baseline only after the persisted G02 service authorizes it."""
+    def create_baseline_workspace_from_snapshot(
+        self,
+        *,
+        run_id: str,
+        snapshot_root: Path,
+        source_root: Path,
+        g02_service,
+        execution_profile_service=None,
+        expected_state_version: int | None = None,
+        profile_idempotency_key: str | None = None,
+        actor: str = "system",
+    ) -> WorkspaceRecord:
+        """Create a baseline only after G02 and the runtime profile authorize it."""
         if g02_service is None or not hasattr(g02_service, "authorize_baseline"):
             raise BaselineBoundaryError("An authoritative G02 service is required")
         try:
@@ -52,5 +63,20 @@ class WorkspaceService:
             raise
         if package.snapshot_id is None:
             raise BaselineBoundaryError("G02 package must identify the immutable snapshot boundary")
+        if execution_profile_service is None or not hasattr(execution_profile_service, "validate_for_baseline"):
+            raise BaselineBoundaryError("An authoritative ExecutionProfile service is required")
+        if expected_state_version is None or not profile_idempotency_key:
+            raise BaselineBoundaryError("Baseline start requires the current run state version and an idempotency key")
+        try:
+            execution_profile_service.validate_for_baseline(
+                run_id,
+                expected_state_version=expected_state_version,
+                idempotency_key=profile_idempotency_key,
+                actor=actor,
+            )
+        except Exception as error:
+            if error.__class__.__name__ == "ExecutionProfileApplicationError":
+                raise BaselineBoundaryError(str(error)) from error
+            raise
         return self.create_workspace_from_snapshot(run_id=run_id, snapshot_root=snapshot_root, source_root=source_root)
 

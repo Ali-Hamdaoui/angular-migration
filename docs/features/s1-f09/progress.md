@@ -25,7 +25,13 @@ Runtime evidence is written under the run-scoped artifact root, registered by ar
 8. Repeat with no compatible candidate and confirm actionable preparation guidance appears; confirm no runtime download, repair proposal, or source mutation occurs.
 9. Refresh/reconnect the browser and confirm the same persisted resolution, selection, checksum, and ordered events are restored from the backend.
 
+## Completion follow-up
+
+- The dashboard now enables resolution without caller-supplied candidates; the backend derives the candidate from the latest persisted S1-F02 environment inventory and binds the request to its inventory checksum.
+- Baseline workspace creation now requires the authoritative ExecutionProfile service and invokes `validate_for_baseline` immediately before workspace creation. Executable, inventory, policy, or checksum drift transitions the run to stale/blocked and fails closed.
+- The artifact immutability test uses a repository-local test root, avoiding the workspace pytest temporary-directory ACL failure.
+
 ## Validation
 
-- Backend focused S1-F09 domain, persistence, API, and security tests pass where the Windows pytest temporary-root ACL permits setup.
-- Frontend full suite, typecheck, and production build pass.
+- Backend persistence/inventory/baseline coverage: 5 passed; S1-F09 security coverage: 5 passed.
+- Frontend full suite: 40 passed; TypeScript typecheck passed.

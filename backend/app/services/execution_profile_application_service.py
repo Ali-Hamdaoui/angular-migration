@@ -1,4 +1,4 @@
-﻿"""Durable application service for S1-F09 execution-profile resolution."""
+"""Durable application service for S1-F09 execution-profile resolution."""
 from __future__ import annotations
 import hashlib, json
 from datetime import UTC, datetime
@@ -8,8 +8,8 @@ from sqlalchemy import select
 from app.api.execution_profile_contracts import ExecutionProfileResponse
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, WorkflowEventType
-from app.domain.execution_profile import RuntimeResolutionRequest, SourceRuntimeResolver
-from app.repositories.models import ArtifactMetadataModel, ExecutionProfileModel, G02ApprovalModel, MigrationRunModel, WorkflowEventModel
+from app.domain.execution_profile import RuntimeCandidate, RuntimeResolutionRequest, SourceRuntimeResolver
+from app.repositories.models import ArtifactMetadataModel, EnvironmentCapabilityModel, ExecutionProfileModel, G02ApprovalModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest, StaleStateVersionError
 
@@ -28,16 +28,21 @@ class ExecutionProfileApplicationService:
             return self._response(record) if record else None
 
     def resolve(self, run_id: str, request) -> ExecutionProfileResponse:
-        now=self._now(); request_checksum=self._checksum(request.model_dump(mode="json"))
+        now=self._now()
         with self._scope() as session:
             run=self._run(session,run_id)
+            inventory_candidates, inventory_checksum = self._inventory_candidates(session)
+            candidates = tuple(request.candidates) or inventory_candidates
+            request_payload = request.model_dump(mode="json")
+            request_payload["inventory_checksum"] = inventory_checksum
+            request_checksum=self._checksum(request_payload)
             existing=session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id==run_id,ExecutionProfileModel.idempotency_key==request.idempotency_key))
             if existing:
                 if existing.request_checksum != request_checksum: raise ExecutionProfileApplicationError("IDEMPOTENCY_PAYLOAD_MISMATCH","The idempotency key was already used with a different payload.",409)
                 return self._response(existing, replay=True)
             self._require_g02(session,run_id)
             if run.state_version != request.expected_state_version: raise ExecutionProfileApplicationError("STALE_STATE_VERSION","The run state version is stale.",409)
-            resolution=self._resolver.resolve(RuntimeResolutionRequest(source_angular_exact=request.source_angular_exact,source_typescript_exact=request.source_typescript_exact,source_rxjs_exact=request.source_rxjs_exact,candidates=request.candidates,validated_at=request.validated_at))
+            resolution=self._resolver.resolve(RuntimeResolutionRequest(source_angular_exact=request.source_angular_exact,source_typescript_exact=request.source_typescript_exact,source_rxjs_exact=request.source_rxjs_exact,candidates=candidates,validated_at=request.validated_at))
             artifact_ids=self._write_artifacts(session,run,resolution,request_checksum,now)
             started=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=run.state_version,idempotency_key=request.idempotency_key+":started",event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLUTION_STARTED,actor=request.actor,reason="execution profile resolution started",occurred_at=now,payload={"source_angular_exact":request.source_angular_exact}))
             event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLVED if resolution.status != "blocked" else WorkflowEventType.EXECUTION_PROFILE_BLOCKED
@@ -59,6 +64,46 @@ class ExecutionProfileApplicationService:
             if profile is None: raise ExecutionProfileApplicationError("PROFILE_CHECKSUM_MISMATCH","The selected profile is not an eligible checksum-bound candidate.",409)
             transition=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=run.state_version,idempotency_key=request.idempotency_key,event_type=WorkflowEventType.EXECUTION_PROFILE_SELECTED,actor=request.actor,reason="source runtime profile selected",occurred_at=now,payload={"profile_id":request.profile_id,"checksum":request.checksum}))
             record.status="selected"; record.selected_profile_id=request.profile_id; record.selected_checksum=request.checksum; record.state_version=transition.next_state_version; record.event_sequence=transition.event_sequence; record.updated_at=now; session.flush(); return self._response(record)
+
+    def validate_for_baseline(self, run_id: str, *, expected_state_version: int, idempotency_key: str, actor: str):
+        """Fail closed immediately before a baseline command or sandbox starts."""
+        now = self._now()
+        with self._scope() as session:
+            run = self._run(session, run_id)
+            record = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.created_at.desc()))
+            if record is None or record.status not in {"resolved", "selected"} or not record.selected_profile_id:
+                raise ExecutionProfileApplicationError("EXECUTION_PROFILE_REQUIRED", "A selected execution profile is required before baseline start.", 409)
+            if run.state_version != expected_state_version:
+                raise ExecutionProfileApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
+            candidates, _ = self._inventory_candidates(session)
+            selected = next((profile for profile in record.profiles if profile.get("profile_id") == record.selected_profile_id and profile.get("checksum") == record.selected_checksum), None)
+            if selected is None or record.policy_version != self.POLICY_VERSION or not any(self._candidate_matches_profile(candidate, selected) for candidate in candidates):
+                transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=idempotency_key, event_type=WorkflowEventType.EXECUTION_PROFILE_BLOCKED, actor=actor, reason="selected execution profile is stale at baseline boundary", occurred_at=now, payload={"profile_id": record.selected_profile_id, "checksum": record.selected_checksum}))
+                record.status = "stale"; record.blockers = list(dict.fromkeys([*(record.blockers or []), "EXECUTION_PROFILE_STALE"])); record.state_version = transition.next_state_version; record.event_sequence = transition.event_sequence; record.updated_at = now; session.flush(); session.commit()
+                raise ExecutionProfileApplicationError("STALE_EXECUTION_PROFILE", "The selected executable or compatibility policy changed; resolve the execution profile again.", 409)
+            from app.domain.execution_profile import ExecutionProfile
+            return ExecutionProfile.model_validate(selected)
+
+    @staticmethod
+    def _candidate_matches_profile(candidate, profile: dict) -> bool:
+        return all(candidate_value == profile_value for candidate_value, profile_value in ((candidate.node_executable, profile.get("node_executable")), (candidate.node_exact, profile.get("node_exact")), (candidate.npm_executable, profile.get("package_manager_executable")), (candidate.npm_exact, profile.get("package_manager_exact")), (candidate.npx_executable, profile.get("npx_executable")), (candidate.npx_exact, profile.get("npx_exact"))))
+
+    @staticmethod
+    def _inventory_candidates(session) -> tuple[tuple[RuntimeCandidate, ...], str | None]:
+        environment = session.scalar(select(EnvironmentCapabilityModel).order_by(EnvironmentCapabilityModel.created_at.desc()))
+        if environment is None:
+            return (), None
+        snapshot = environment.snapshot
+        runtimes = {item["name"]: item for item in snapshot.get("runtimes", [])}
+        required = [runtimes.get(name) for name in ("node", "npm", "npx")]
+        if snapshot.get("status") == "blocked" or any(not item or item.get("status") != "available" or not item.get("executable") or not item.get("version") for item in required):
+            return (), environment.checksum
+        roots = {str(item.get("installation_root", "")).lower() for item in required}
+        if len(roots) != 1:
+            return (), environment.checksum
+        network = snapshot.get("network", {})
+        candidate = RuntimeCandidate(profile_id=f"environment-{environment.id}", operating_system="windows", architecture="amd64", node_executable=required[0]["executable"], node_exact=required[0]["version"], npm_executable=required[1]["executable"], npm_exact=required[1]["version"], npx_executable=required[2]["executable"], npx_exact=required[2]["version"], registry_configured=bool(network.get("registry_configured")), proxy_configured=bool(network.get("proxy_configured")), certificate_valid=bool(network.get("strict_ssl")), environment_allowlist_valid=bool(network.get("credentials_redacted", True)), cache_policy_valid=True, network_policy="approved-registries-only", available=True)
+        return (candidate,), environment.checksum
 
     def _require_g02(self,session,run_id):
         g02=session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id==run_id).order_by(G02ApprovalModel.created_at.desc()))
