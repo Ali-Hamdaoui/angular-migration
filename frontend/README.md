@@ -18,6 +18,9 @@ The fixture remains available only for explicit `mock-*` demo runs. Real run IDs
 use the typed authoritative-run API and backend SSE stream; the browser never
 owns workflow transitions or migration execution.
 
+## ExecutionProfile review
+
+The authoritative run dashboard includes the S1-F09 runtime review panel. It loads the persisted source-compatible Node/npm/npx resolution, displays exact versions and sanitized executable paths, requires backend-confirmed selection when multiple candidates exist, and renders blocked, stale, reconnecting, and failure states. The browser never executes commands or advances workflow state locally.
 ## API client
 
 All frontend HTTP calls go through `src/api/client.ts`; endpoint-specific calls
