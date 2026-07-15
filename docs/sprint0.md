@@ -1,8 +1,8 @@
-# AI Frontend Migration Factory — Complete Sprint 0 Backlog
+# AI Frontend Migration Factory Ã¢â‚¬â€ Complete Sprint 0 Backlog
 
-**Sprint:** Sprint 0 — Platform Skeleton, Contracts, Mock Workflow, Execution Boundaries, and Developer Foundation  
-**Project:** AI Frontend Migration Factory — Angular 11+  
-**Reference POC:** Angular 18.x → Angular 21.x  
+**Sprint:** Sprint 0 Ã¢â‚¬â€ Platform Skeleton, Contracts, Mock Workflow, Execution Boundaries, and Developer Foundation  
+**Project:** AI Frontend Migration Factory Ã¢â‚¬â€ Angular 11+  
+**Reference POC:** Angular 18.x Ã¢â€ â€™ Angular 21.x  
 **Migration mode:** Strict compatibility with strict functional-parity constraints  
 **Backend application:** Unchanged  
 **Mutation policy:** Internal sandbox workspace only  
@@ -90,7 +90,7 @@ At the end of Sprint 0, the team must be able to:
 14. Workflow pauses at Plan Approval.
 15. User enables Auto Approval.
 16. Backend persists the policy and reevaluates the current waiting gate immediately.
-17. Mock stages run: Angular 18→19, Angular 19→20, Angular 20→21.
+17. Mock stages run: Angular 18Ã¢â€ â€™19, Angular 19Ã¢â€ â€™20, Angular 20Ã¢â€ â€™21.
 18. Each stage displays deterministic steps separately from AI-assisted agents.
 19. Ordered SSE events update the UI.
 20. A simulated disconnect reconnects from the last event ID.
@@ -224,7 +224,7 @@ backend/
     policies/
 frontend/
 shared/
-demo-apps/
+bundled Angular workspace/
 scripts/
 docs/
   adr/
@@ -263,7 +263,7 @@ tests/
 
 # 9. Detailed Issues
 
-## AMF-S0-01 — Repository and Platform Boundary Skeleton
+## AMF-S0-01 Ã¢â‚¬â€ Repository and Platform Boundary Skeleton
 
 **Type:** Architecture / DevOps  
 **Priority:** Must  
@@ -281,7 +281,7 @@ The factory is a platform composed of multiple trusted and untrusted layers. Wit
 ### Scope
 
 - Create the complete top-level repository structure defined in Section 7.
-- Create README files for `backend/`, `frontend/`, `shared/`, `demo-apps/`, `scripts/`, `docs/`, and `tests/`.
+- Create README files for `backend/`, `frontend/`, `shared/`, `bundled Angular workspace/`, `scripts/`, `docs/`, and `tests/`.
 - Separate deterministic workflow components under `backend/app/components/` from AI-assisted workers under `backend/app/agents/`.
 - Create explicit modules for state, events, command execution, artifacts, snapshots, workspaces, checkpoints, delivery, policies, and observability.
 - Add package/module placeholders and dependency direction notes.
@@ -326,7 +326,7 @@ The factory is a platform composed of multiple trusted and untrusted layers. Wit
 
 ---
 
-## AMF-S0-02 — FastAPI Backend and API Surface Skeleton
+## AMF-S0-02 Ã¢â‚¬â€ FastAPI Backend and API Surface Skeleton
 
 **Type:** Backend  
 **Priority:** Must  
@@ -389,7 +389,7 @@ The backend is the trusted execution authority and source of truth. Sprint 0 mus
 
 ---
 
-## AMF-S0-03 — Configuration, Policy, and Environment Foundation
+## AMF-S0-03 Ã¢â‚¬â€ Configuration, Policy, and Environment Foundation
 
 **Type:** Backend / Platform  
 **Priority:** Must  
@@ -454,7 +454,7 @@ The factory interacts with local paths, processes, artifacts, databases, and Azu
 
 ---
 
-## AMF-S0-04 — SQLAlchemy, Alembic, and SQLite State Schema
+## AMF-S0-04 Ã¢â‚¬â€ SQLAlchemy, Alembic, and SQLite State Schema
 
 **Type:** Backend / Persistence  
 **Priority:** Must  
@@ -517,7 +517,7 @@ Backend-owned state cannot remain in memory. The optimized workflow also require
 
 ---
 
-## AMF-S0-05 — Canonical Contracts and State Vocabulary
+## AMF-S0-05 Ã¢â‚¬â€ Canonical Contracts and State Vocabulary
 
 **Type:** Backend / Shared Contracts  
 **Priority:** Must  
@@ -580,7 +580,7 @@ The previous state model mixed run-level activity, stage activity, validation ac
 
 ---
 
-## AMF-S0-06 — Next.js Control Tower Skeleton Aligned to Macro Phases
+## AMF-S0-06 Ã¢â‚¬â€ Next.js Control Tower Skeleton Aligned to Macro Phases
 
 **Type:** Frontend  
 **Priority:** Must  
@@ -646,7 +646,7 @@ The UI is the primary product experience, but it must not become a second workfl
 
 ---
 
-## AMF-S0-07 — Generated Typed Frontend API Client
+## AMF-S0-07 Ã¢â‚¬â€ Generated Typed Frontend API Client
 
 **Type:** Frontend / Contracts  
 **Priority:** Must  
@@ -704,7 +704,7 @@ The workflow contains many state and event types. Manual duplicate interfaces wi
 
 ---
 
-## AMF-S0-08 — Ordered SSE, Replay, and State Recovery Skeleton
+## AMF-S0-08 Ã¢â‚¬â€ Ordered SSE, Replay, and State Recovery Skeleton
 
 **Type:** Backend / Frontend  
 **Priority:** Must  
@@ -770,7 +770,7 @@ Simple SSE streaming is insufficient for long-running migrations. Network interr
 
 ---
 
-## AMF-S0-09 — Optimized LangGraph Mock Orchestrator
+## AMF-S0-09 Ã¢â‚¬â€ Optimized LangGraph Mock Orchestrator
 
 **Type:** Orchestration  
 **Priority:** Must  
@@ -836,7 +836,7 @@ A simple linear list of agents does not reflect the real platform. The workflow 
 
 ---
 
-## AMF-S0-10 — Deterministic Component and AI-Agent Contracts
+## AMF-S0-10 Ã¢â‚¬â€ Deterministic Component and AI-Agent Contracts
 
 **Type:** Architecture / Agent Platform  
 **Priority:** Must  
@@ -897,7 +897,7 @@ Eligibility, version parsing, snapshots, compatibility data, command policy, sta
 
 ---
 
-## AMF-S0-11 — Immutable Stage-Scoped Artifact Store
+## AMF-S0-11 Ã¢â‚¬â€ Immutable Stage-Scoped Artifact Store
 
 **Type:** Backend / Evidence  
 **Priority:** Must  
@@ -960,7 +960,7 @@ A flat artifact structure would overwrite reports across Angular stages and repa
 
 ---
 
-## AMF-S0-12 — Structured Command Worker and Supervisor Shell
+## AMF-S0-12 Ã¢â‚¬â€ Structured Command Worker and Supervisor Shell
 
 **Type:** Backend / Security  
 **Priority:** Must  
@@ -1026,7 +1026,7 @@ Accepting raw shell strings creates command-injection and quoting risks. Long-ru
 
 ---
 
-## AMF-S0-13 — Preflight and Runtime Capability Foundation
+## AMF-S0-13 Ã¢â‚¬â€ Preflight and Runtime Capability Foundation
 
 **Type:** Platform / DevOps  
 **Priority:** Must  
@@ -1091,7 +1091,7 @@ The optimized workflow begins with fast-fail checks. Runtime discovery must happ
 
 ---
 
-## AMF-S0-14 — LLM Gateway Mock, Redaction, Usage, and Cost
+## AMF-S0-14 Ã¢â‚¬â€ LLM Gateway Mock, Redaction, Usage, and Cost
 
 **Type:** Backend / AI Platform  
 **Priority:** Should  
@@ -1159,7 +1159,7 @@ The gateway is the only approved model-access path. Sprint 0 should establish re
 
 ---
 
-## AMF-S0-15 — Log, Diff, Markdown, and Artifact Viewer Skeletons
+## AMF-S0-15 Ã¢â‚¬â€ Log, Diff, Markdown, and Artifact Viewer Skeletons
 
 **Type:** Frontend  
 **Priority:** Should  
@@ -1223,7 +1223,7 @@ Migration evidence can be large and untrusted. The UI must avoid injecting Markd
 
 ---
 
-## AMF-S0-16 — Angular 18 Fixture and Evaluation Foundation
+## AMF-S0-16 Ã¢â‚¬â€ Angular 18 Fixture and Evaluation Foundation
 
 **Type:** Test Infrastructure  
 **Priority:** Must  
@@ -1240,7 +1240,7 @@ A trivial fixture cannot validate the platform. The reference app should remain 
 
 ### Scope
 
-- Create or document `demo-apps/angular-18-basic/`.
+- Create or document `external synthetic Angular fixture/`.
 - Include routes, a lazy-route signal where practical, HTTP service, API base URL, representative interceptor/backend integration signal, form validation, component styling/theme signal, environments, and proxy example.
 - Include test/lint metadata where practical.
 - Create expected discovery, baseline, route, backend-contract, changed-file-risk, and parity manifests.
@@ -1286,7 +1286,7 @@ A trivial fixture cannot validate the platform. The reference app should remain 
 
 ---
 
-## AMF-S0-17 — Developer Scripts and Quality Gates
+## AMF-S0-17 Ã¢â‚¬â€ Developer Scripts and Quality Gates
 
 **Type:** DevOps / Developer Experience  
 **Priority:** Must  
@@ -1347,7 +1347,7 @@ The project combines Python, Node.js, database migrations, OpenAPI generation, f
 
 ---
 
-## AMF-S0-18 — Architecture Boundaries, Threats, and ADRs
+## AMF-S0-18 Ã¢â‚¬â€ Architecture Boundaries, Threats, and ADRs
 
 **Type:** Architecture / Security  
 **Priority:** Must  
@@ -1407,7 +1407,7 @@ The factory handles source code, commands, LLMs, filesystem paths, approvals, an
 
 ---
 
-## AMF-S0-19 — Internal Workspace, Snapshot, and Atomic Delivery Skeleton
+## AMF-S0-19 Ã¢â‚¬â€ Internal Workspace, Snapshot, and Atomic Delivery Skeleton
 
 **Type:** Backend / Platform  
 **Priority:** Must  
@@ -1441,7 +1441,7 @@ Writing directly to `<target>/migrated-app` during migration makes partial resul
 
 ### Implementation Notes
 
-- Canonical layout: `<target>/.migration-factory/snapshots/{snapshotId}`, `<target>/.migration-factory/workspaces/{runId}/repository`, run artifacts, and `<target>/migrated-app`.
+- Canonical layout: `<resolved-output-root>/.migration-factory/runs/{runId}/source-snapshot`, `<resolved-output-root>/.migration-factory/runs/{runId}/baseline-sandbox`, run artifacts under `<resolved-output-root>/.migration-factory/runs/{runId}/artifacts`, and `<resolved-output-root>/migrated-app`.
 - Source, workspace, artifact, and delivery paths must not overlap.
 - Use content hashes to verify the fixture source remains unchanged.
 - Failed or cancelled runs must retain internal evidence but not publish final output.
@@ -1473,7 +1473,7 @@ Writing directly to `<target>/migrated-app` during migration makes partial resul
 
 ---
 
-## AMF-S0-20 — State Transition, Idempotency, Lease, Cancel, and Resume Service
+## AMF-S0-20 Ã¢â‚¬â€ State Transition, Idempotency, Lease, Cancel, and Resume Service
 
 **Type:** Backend / Orchestration  
 **Priority:** Must  
@@ -1539,7 +1539,7 @@ Distributed-looking workflow behavior can occur even on one host: browser retrie
 
 ---
 
-## AMF-S0-21 — Observability and Run Metrics Foundation
+## AMF-S0-21 Ã¢â‚¬â€ Observability and Run Metrics Foundation
 
 **Type:** Backend / Platform  
 **Priority:** Should  
@@ -1777,27 +1777,27 @@ The backend rejects:
 
 The team may parallelize work, but contracts must stabilize before dependent implementation expands.
 
-1. AMF-S0-01 — Repository and Platform Boundary Skeleton
-2. AMF-S0-18 — Architecture Boundaries, Threats, and ADRs
-3. AMF-S0-02 — FastAPI Backend and API Surface Skeleton
-4. AMF-S0-03 — Configuration, Policy, and Environment Foundation
-5. AMF-S0-05 — Canonical Contracts and State Vocabulary
-6. AMF-S0-04 — SQLAlchemy, Alembic, and SQLite State Schema
-7. AMF-S0-19 — Internal Workspace, Snapshot, and Atomic Delivery
-8. AMF-S0-20 — State Transition, Idempotency, Lease, Cancel, and Resume
-9. AMF-S0-11 — Immutable Stage-Scoped Artifact Store
-10. AMF-S0-12 — Structured Command Worker and Supervisor
-11. AMF-S0-13 — Preflight and Runtime Capability
-12. AMF-S0-08 — Ordered SSE, Replay, and State Recovery
-13. AMF-S0-09 — Optimized LangGraph Mock Orchestrator
-14. AMF-S0-10 — Deterministic Component and AI-Agent Contracts
-15. AMF-S0-06 — Next.js Control Tower Skeleton
-16. AMF-S0-07 — Generated Typed Frontend API Client
-17. AMF-S0-14 — LLM Gateway Mock, Redaction, Usage, and Cost
-18. AMF-S0-15 — Log, Diff, Markdown, and Artifact Viewers
-19. AMF-S0-16 — Angular 18 Fixture and Evaluation Foundation
-20. AMF-S0-21 — Observability and Run Metrics Foundation
-21. AMF-S0-17 — Developer Scripts and Quality Gates
+1. AMF-S0-01 Ã¢â‚¬â€ Repository and Platform Boundary Skeleton
+2. AMF-S0-18 Ã¢â‚¬â€ Architecture Boundaries, Threats, and ADRs
+3. AMF-S0-02 Ã¢â‚¬â€ FastAPI Backend and API Surface Skeleton
+4. AMF-S0-03 Ã¢â‚¬â€ Configuration, Policy, and Environment Foundation
+5. AMF-S0-05 Ã¢â‚¬â€ Canonical Contracts and State Vocabulary
+6. AMF-S0-04 Ã¢â‚¬â€ SQLAlchemy, Alembic, and SQLite State Schema
+7. AMF-S0-19 Ã¢â‚¬â€ Internal Workspace, Snapshot, and Atomic Delivery
+8. AMF-S0-20 Ã¢â‚¬â€ State Transition, Idempotency, Lease, Cancel, and Resume
+9. AMF-S0-11 Ã¢â‚¬â€ Immutable Stage-Scoped Artifact Store
+10. AMF-S0-12 Ã¢â‚¬â€ Structured Command Worker and Supervisor
+11. AMF-S0-13 Ã¢â‚¬â€ Preflight and Runtime Capability
+12. AMF-S0-08 Ã¢â‚¬â€ Ordered SSE, Replay, and State Recovery
+13. AMF-S0-09 Ã¢â‚¬â€ Optimized LangGraph Mock Orchestrator
+14. AMF-S0-10 Ã¢â‚¬â€ Deterministic Component and AI-Agent Contracts
+15. AMF-S0-06 Ã¢â‚¬â€ Next.js Control Tower Skeleton
+16. AMF-S0-07 Ã¢â‚¬â€ Generated Typed Frontend API Client
+17. AMF-S0-14 Ã¢â‚¬â€ LLM Gateway Mock, Redaction, Usage, and Cost
+18. AMF-S0-15 Ã¢â‚¬â€ Log, Diff, Markdown, and Artifact Viewers
+19. AMF-S0-16 Ã¢â‚¬â€ Angular 18 Fixture and Evaluation Foundation
+20. AMF-S0-21 Ã¢â‚¬â€ Observability and Run Metrics Foundation
+21. AMF-S0-17 Ã¢â‚¬â€ Developer Scripts and Quality Gates
 
 ### Parallel Work After Contract Stabilization
 

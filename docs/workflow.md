@@ -1,7 +1,7 @@
-# Angular Migration Control Tower — Optimized MVP Workflow Specification
+# Angular Migration Control Tower â€” Optimized MVP Workflow Specification
 
-**Project:** AI Frontend Migration Factory — Angular 11+  
-**Reference POC:** Angular 18.x → Angular 21.x  
+**Project:** AI Frontend Migration Factory â€” Angular 11+  
+**Reference POC:** Angular 18.x â†’ Angular 21.x  
 **Migration objective:** Technical compatibility upgrade with strict functional-parity constraints  
 **Backend scope:** Unchanged  
 **Execution authority:** FastAPI backend and controlled sandbox worker  
@@ -20,22 +20,22 @@ The workflow must remain simple for the user while being deterministic, resumabl
 User-visible flow:
 
 ```text
-Select source → Select output → Select target → Validate → Start → Monitor → Review → Open migrated app
+Select source â†’ Select output â†’ Select target â†’ Validate â†’ Start â†’ Monitor â†’ Review â†’ Open migrated app
 ```
 
 Optimized backend flow:
 
 ```text
 Preflight and immutable snapshot
-→ Source-runtime resolution
-→ Parallel discovery
-→ Baseline qualification
-→ Feasibility decision and approval
-→ Migration planning and approval
-→ Major-by-major stage execution
-→ Final assurance
-→ Atomic delivery
-→ Evidence report
+â†’ Source-runtime resolution
+â†’ Parallel discovery
+â†’ Baseline qualification
+â†’ Feasibility decision and approval
+â†’ Migration planning and approval
+â†’ Major-by-major stage execution
+â†’ Final assurance
+â†’ Atomic delivery
+â†’ Evidence report
 ```
 
 The workflow intentionally separates:
@@ -58,7 +58,7 @@ The product architecture targets Angular 11 and later.
 The MVP reference case is:
 
 ```text
-Angular 18.x → Angular 19.x → Angular 20.x → Angular 21.x
+Angular 18.x â†’ Angular 19.x â†’ Angular 20.x â†’ Angular 21.x
 ```
 
 The target Angular version is selected from a company-approved target policy. Angular 21.x remains the approved target for this POC even when a newer Angular version exists.
@@ -85,7 +85,7 @@ Other topologies can be detected and classified without being silently accepted.
 The MVP does not perform:
 
 - AngularJS migration;
-- Angular 2–10 migration;
+- Angular 2â€“10 migration;
 - backend migration;
 - UI redesign;
 - business-logic refactoring;
@@ -134,11 +134,11 @@ Every resolved migration path must receive a support level:
 | Support level | Meaning |
 |---|---|
 | `officially_supported` | The stage is covered by the current Angular support window and normal official update policy. |
-| `historical_validated` | The stage uses an unsupported historical Angular version but has passed the factory’s fixture and regression suite. |
-| `historical_experimental` | The stage is technically possible but has not yet reached the factory’s required validation threshold. |
+| `historical_validated` | The stage uses an unsupported historical Angular version but has passed the factoryâ€™s fixture and regression suite. |
+| `historical_experimental` | The stage is technically possible but has not yet reached the factoryâ€™s required validation threshold. |
 | `blocked` | No approved, safe, or reproducible path exists. |
 
-Because Angular 18 and 19 are historical versions, the Angular 18 → 21 POC must not automatically claim official support. Until the internal fixture suite passes, the default path classification should be:
+Because Angular 18 and 19 are historical versions, the Angular 18 â†’ 21 POC must not automatically claim official support. Until the internal fixture suite passes, the default path classification should be:
 
 ```yaml
 migration_support_level: historical_experimental
@@ -247,7 +247,7 @@ The backend must validate:
 - target is writable;
 - source and target are not equal;
 - target is not nested inside source;
-- source is not nested inside the target’s internal workspace;
+- source is not nested inside the targetâ€™s internal workspace;
 - canonical paths remain inside approved roots;
 - symlinks, Windows junctions, and `..` segments cannot escape approved roots;
 - the target is not a protected operating-system directory;
@@ -329,36 +329,36 @@ An incomplete or failed run must never appear to the user as a finished migrated
 
 ```text
 <target-output-path>/
-├── migrated-app/                         # Published only after delivery gate
-└── .migration-factory/
-    ├── workspaces/
-    │   └── <run-id>/
-    │       └── repository/               # Mutable internal Git workspace
-    ├── snapshots/
-    │   └── <source-snapshot-id>/
-    └── runs/
-        └── <run-id>/
-            ├── global/
-            │   ├── 00_setup/
-            │   ├── 01_discovery/
-            │   ├── 02_baseline/
-            │   ├── 03_analysis/
-            │   ├── 04_planning/
-            │   └── 05_state/
-            ├── stages/
-            │   ├── angular-18-to-19/
-            │   │   ├── 00_checkpoint/
-            │   │   ├── 01_transform/
-            │   │   ├── 02_validation/
-            │   │   └── 03_repair/
-            │   │       ├── attempt-001/
-            │   │       ├── attempt-002/
-            │   │       └── attempt-003/
-            │   ├── angular-19-to-20/
-            │   └── angular-20-to-21/
-            ├── final_assurance/
-            ├── delivery/
-            └── final_report/
+â”œâ”€â”€ migrated-app/                         # Published only after delivery gate
+â””â”€â”€ .migration-factory/
+    â”œâ”€â”€ workspaces/
+    â”‚   â””â”€â”€ <run-id>/
+    â”‚       â””â”€â”€ repository/               # Mutable internal Git workspace
+    â”œâ”€â”€ snapshots/
+    â”‚   â””â”€â”€ <source-snapshot-id>/
+    â””â”€â”€ runs/
+        â””â”€â”€ <run-id>/
+            â”œâ”€â”€ global/
+            â”‚   â”œâ”€â”€ 00_setup/
+            â”‚   â”œâ”€â”€ 01_discovery/
+            â”‚   â”œâ”€â”€ 02_baseline/
+            â”‚   â”œâ”€â”€ 03_analysis/
+            â”‚   â”œâ”€â”€ 04_planning/
+            â”‚   â””â”€â”€ 05_state/
+            â”œâ”€â”€ stages/
+            â”‚   â”œâ”€â”€ angular-18-to-19/
+            â”‚   â”‚   â”œâ”€â”€ 00_checkpoint/
+            â”‚   â”‚   â”œâ”€â”€ 01_transform/
+            â”‚   â”‚   â”œâ”€â”€ 02_validation/
+            â”‚   â”‚   â””â”€â”€ 03_repair/
+            â”‚   â”‚       â”œâ”€â”€ attempt-001/
+            â”‚   â”‚       â”œâ”€â”€ attempt-002/
+            â”‚   â”‚       â””â”€â”€ attempt-003/
+            â”‚   â”œâ”€â”€ angular-19-to-20/
+            â”‚   â””â”€â”€ angular-20-to-21/
+            â”œâ”€â”€ final_assurance/
+            â”œâ”€â”€ delivery/
+            â””â”€â”€ final_report/
 ```
 
 ### 7.3 Immutable Source Snapshot
@@ -389,10 +389,10 @@ The final app is published only when the delivery gate passes:
 
 ```text
 internal workspace
-→ clean delivery copy
-→ delivery validation
-→ temporary publish directory
-→ atomic rename to migrated-app
+â†’ clean delivery copy
+â†’ delivery validation
+â†’ temporary publish directory
+â†’ atomic rename to migrated-app
 ```
 
 If `migrated-app` already exists, the backend must use an explicit replace/versioning policy. It must never silently overwrite an existing delivery.
@@ -404,42 +404,42 @@ If `migrated-app` already exists, the backend must use an explicit replace/versi
 The UI displays six macro phases. Detailed steps remain visible within each phase.
 
 ```text
-Phase 1 — Preflight and Snapshot
-Phase 2 — Discovery and Baseline
-Phase 3 — Feasibility and Planning
-Phase 4 — Staged Migration
-Phase 5 — Final Assurance
-Phase 6 — Delivery and Reporting
+Phase 1 â€” Preflight and Snapshot
+Phase 2 â€” Discovery and Baseline
+Phase 3 â€” Feasibility and Planning
+Phase 4 â€” Staged Migration
+Phase 5 â€” Final Assurance
+Phase 6 â€” Delivery and Reporting
 ```
 
 ### 8.1 Full Workflow
 
 ```text
 Create run
-→ bind validated setup checksum
-→ create immutable source snapshot
-→ classify workspace topology
-→ resolve exact source-compatible runtime
-→ run parallel deterministic discovery
-→ verify registry/private-package access
-→ audit lifecycle scripts
-→ run baseline qualification
-→ resolve historical/official migration support
-→ produce analysis and feasibility package
-→ Analysis/Feasibility Approval
-→ resolve exact stage versions and runtime images
-→ generate migration plan and structured command registry
-→ Plan Approval
-→ execute each major-version stage
-→ perform final assurance and manual parity gate
-→ run delivery gate
-→ publish migrated-app atomically
-→ generate final evidence and usage report
+â†’ bind validated setup checksum
+â†’ create immutable source snapshot
+â†’ classify workspace topology
+â†’ resolve exact source-compatible runtime
+â†’ run parallel deterministic discovery
+â†’ verify registry/private-package access
+â†’ audit lifecycle scripts
+â†’ run baseline qualification
+â†’ resolve historical/official migration support
+â†’ produce analysis and feasibility package
+â†’ Analysis/Feasibility Approval
+â†’ resolve exact stage versions and runtime images
+â†’ generate migration plan and structured command registry
+â†’ Plan Approval
+â†’ execute each major-version stage
+â†’ perform final assurance and manual parity gate
+â†’ run delivery gate
+â†’ publish migrated-app atomically
+â†’ generate final evidence and usage report
 ```
 
 ---
 
-## 9. Phase 1 — Run Creation, Snapshot, and Topology
+## 9. Phase 1 â€” Run Creation, Snapshot, and Topology
 
 ### 9.1 Create Migration Run
 
@@ -523,7 +523,7 @@ Example:
 
 ---
 
-## 10. Phase 2 — Parallel Discovery
+## 10. Phase 2 â€” Parallel Discovery
 
 ### 10.1 Optimization Rule
 
@@ -626,15 +626,15 @@ It must execute inside the source-compatible runtime profile, never the host run
 
 ```text
 Validate package metadata and lockfile
-→ apply lifecycle-script policy
-→ perform clean reproducible install
-→ verify resolved dependency tree
-→ run configured baseline builds
-→ run existing tests if configured
-→ run existing lint if configured
-→ capture bundle and output metadata
-→ capture failure fingerprints
-→ assign baseline qualification status
+â†’ apply lifecycle-script policy
+â†’ perform clean reproducible install
+â†’ verify resolved dependency tree
+â†’ run configured baseline builds
+â†’ run existing tests if configured
+â†’ run existing lint if configured
+â†’ capture bundle and output metadata
+â†’ capture failure fingerprints
+â†’ assign baseline qualification status
 ```
 
 ### 11.3 Reproducible Install Policy
@@ -820,7 +820,7 @@ A blocked feasibility decision cannot be auto-approved.
 
 ---
 
-## 13. Phase 3 — Migration Planning
+## 13. Phase 3 â€” Migration Planning
 
 ### 13.1 Planning Inputs
 
@@ -1061,7 +1061,7 @@ Every command stores:
 
 ---
 
-## 16. Phase 4 — Optimized Stage Lifecycle
+## 16. Phase 4 â€” Optimized Stage Lifecycle
 
 Each major-version transition uses the same deterministic lifecycle.
 
@@ -1097,12 +1097,12 @@ The workflow runs inexpensive blockers before expensive builds:
 
 ```text
 Diff policy
-→ lockfile policy
-→ exact version check
-→ risk classification
-→ static checks
-→ targeted validation
-→ full build/test validation
+â†’ lockfile policy
+â†’ exact version check
+â†’ risk classification
+â†’ static checks
+â†’ targeted validation
+â†’ full build/test validation
 ```
 
 A forbidden dependency or unexpected auth-file change can stop the stage before a costly full test run.
@@ -1370,16 +1370,16 @@ Repair is allowed only when the failure is:
 
 ```text
 Normalize and fingerprint failure
-→ compare with baseline and previous attempts
-→ gather minimal relevant context
-→ deterministic fix lookup
-→ LLM diagnosis only when needed
-→ validate structured patch proposal
-→ apply minimal patch
-→ static checks
-→ targeted validation
-→ compare error delta
-→ full stage validation only after targeted success
+â†’ compare with baseline and previous attempts
+â†’ gather minimal relevant context
+â†’ deterministic fix lookup
+â†’ LLM diagnosis only when needed
+â†’ validate structured patch proposal
+â†’ apply minimal patch
+â†’ static checks
+â†’ targeted validation
+â†’ compare error delta
+â†’ full stage validation only after targeted success
 ```
 
 ### 20.3 Attempt and Progress Rules
@@ -1410,15 +1410,15 @@ It does not receive the whole repository by default.
 
 ```text
 stages/<stage-id>/03_repair/attempt-001/
-├── failure_fingerprint.json
-├── diagnosis.json
-├── llm_patch_proposal.json
-├── backend_patch_validation.json
-├── patch.diff
-├── static_check.json
-├── targeted_validation.json
-├── error_delta.json
-└── decision.json
+â”œâ”€â”€ failure_fingerprint.json
+â”œâ”€â”€ diagnosis.json
+â”œâ”€â”€ llm_patch_proposal.json
+â”œâ”€â”€ backend_patch_validation.json
+â”œâ”€â”€ patch.diff
+â”œâ”€â”€ static_check.json
+â”œâ”€â”€ targeted_validation.json
+â”œâ”€â”€ error_delta.json
+â””â”€â”€ decision.json
 ```
 
 ---
@@ -1587,16 +1587,16 @@ cancelled
 
 ```text
 User requests cancellation
-→ persist cancel_requested event
-→ stop scheduling new steps
-→ signal current command
-→ wait command-specific grace period
-→ terminate complete process tree if required
-→ capture partial logs and exit reason
-→ restore stage-start checkpoint when workspace is unsafe
-→ verify workspace integrity
-→ generate partial report
-→ mark cancelled
+â†’ persist cancel_requested event
+â†’ stop scheduling new steps
+â†’ signal current command
+â†’ wait command-specific grace period
+â†’ terminate complete process tree if required
+â†’ capture partial logs and exit reason
+â†’ restore stage-start checkpoint when workspace is unsafe
+â†’ verify workspace integrity
+â†’ generate partial report
+â†’ mark cancelled
 ```
 
 ### 23.3 Command Cancellation Policy
@@ -1692,9 +1692,9 @@ Security: Deferred company tool required
 Delivery readiness: Not ready
 -------------------------------------------------------------------
 Stages
-[Running] Angular 18 → 19
-[Pending] Angular 19 → 20
-[Pending] Angular 20 → 21
+[Running] Angular 18 â†’ 19
+[Pending] Angular 19 â†’ 20
+[Pending] Angular 20 â†’ 21
 -------------------------------------------------------------------
 Current stage steps
 [Passed] Runtime and checkpoint
@@ -2205,7 +2205,7 @@ The optimized MVP is successful when:
 - feasibility and support level are visible before approval;
 - exact stage toolchains are resolved and checksum-bound;
 - commands use structured backend authorization, not raw shell strings;
-- Angular 18 → 19 → 20 → 21 executes one major at a time;
+- Angular 18 â†’ 19 â†’ 20 â†’ 21 executes one major at a time;
 - every stage performs clean installation and required validation;
 - build-system migration cannot happen silently;
 - repair is bounded and progress-aware;
@@ -2223,7 +2223,7 @@ The optimized MVP is successful when:
 
 ## 35. Recommended Implementation Priority
 
-### P0 — Core POC Reliability
+### P0 â€” Core POC Reliability
 
 1. Preflight and safe path validation.
 2. Immutable source snapshot and internal workspace.
@@ -2238,7 +2238,7 @@ The optimized MVP is successful when:
 11. Cancellation and process-tree handling.
 12. Atomic final publication.
 
-### P1 — Internal Demonstration Quality
+### P1 â€” Internal Demonstration Quality
 
 1. Parallel discovery.
 2. Workspace topology policy.
@@ -2251,7 +2251,7 @@ The optimized MVP is successful when:
 9. Stage/attempt immutable artifact model.
 10. Final clean assurance run.
 
-### P2 — Enterprise Extension
+### P2 â€” Enterprise Extension
 
 1. Company-approved browser automation.
 2. Company-approved security and quality tooling.
@@ -2269,24 +2269,24 @@ The optimized MVP is successful when:
 The user sees a simple flow:
 
 ```text
-Source → Output → Target → Validate → Start → Monitor → Review → Open migrated app
+Source â†’ Output â†’ Target â†’ Validate â†’ Start â†’ Monitor â†’ Review â†’ Open migrated app
 ```
 
 The platform enforces:
 
 ```text
 Safe intake
-→ immutable snapshot
-→ exact source runtime
-→ parallel discovery
-→ qualified baseline
-→ feasibility approval
-→ exact approved plan
-→ controlled stage loop
-→ bounded repair
-→ independent assurance
-→ atomic delivery
-→ complete evidence
+â†’ immutable snapshot
+â†’ exact source runtime
+â†’ parallel discovery
+â†’ qualified baseline
+â†’ feasibility approval
+â†’ exact approved plan
+â†’ controlled stage loop
+â†’ bounded repair
+â†’ independent assurance
+â†’ atomic delivery
+â†’ complete evidence
 ```
 
 This workflow reduces unnecessary LLM usage, catches blockers earlier, avoids repeated manual work, prevents incomplete output from being mistaken for a finished migration, and makes cancellation, recovery, audit, and delivery behavior explicit.
@@ -2507,8 +2507,8 @@ Output: $2.00 per 1,000,000 output tokens
 Formulas:
 
 ```text
-input_cost  = total_input_tokens  / 1,000,000 × input_price_per_million
-output_cost = total_output_tokens / 1,000,000 × output_price_per_million
+input_cost  = total_input_tokens  / 1,000,000 Ã— input_price_per_million
+output_cost = total_output_tokens / 1,000,000 Ã— output_price_per_million
 total_cost  = input_cost + output_cost
 ```
 
@@ -2554,7 +2554,7 @@ Budget exhaustion must never authorize an unvalidated patch. The workflow either
 ### 41.2 Final Evidence Directory
 
 ```text
-<target-output-path>/.migration-factory/runs/<run-id>/final_report/
+<resolved-output-root>/.migration-factory/runs/<run-id>/reports/
 ```
 
 ### 41.3 Required Final Artifacts
@@ -2614,4 +2614,4 @@ Start a new run from the same source snapshot
 - Angular CLI `ng update` command behavior and options.
 - Angular application build-system migration guidance.
 - npm clean-install behavior for lockfile-based projects.
-- Internal AI Migration — Angular architecture study and MVP security constraints.
+- Internal AI Migration â€” Angular architecture study and MVP security constraints.

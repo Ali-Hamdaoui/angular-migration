@@ -9,14 +9,14 @@ import styles from "./MigrationSetupForm.module.css";
 
 type SetupInputs = {
   sourcePath: string;
-  targetOutputPath: string;
+  targetParentPath: string;
   targetAngularFamily: string;
   migrationMode: string;
 };
 
 const initialInputs: SetupInputs = {
   sourcePath: "",
-  targetOutputPath: "",
+  targetParentPath: "",
   targetAngularFamily: "21.x",
   migrationMode: "strict-functional-parity",
 };
@@ -49,7 +49,7 @@ export function MigrationSetupForm() {
     try {
       const pathResult = await validatePaths({
         source_path: inputs.sourcePath,
-        target_output_path: inputs.targetOutputPath,
+        target_parent_path: inputs.targetParentPath,
         idempotency_key: "path-ui-" + Date.now(),
         actor: "control-tower",
       });
@@ -61,7 +61,7 @@ export function MigrationSetupForm() {
       }
       const result = await validatePreflight({
         source_path: inputs.sourcePath,
-        target_output_path: inputs.targetOutputPath,
+        target_output_path: pathResult.snapshot.resolved_output_root,
         target_angular_family: inputs.targetAngularFamily,
         migration_mode: inputs.migrationMode,
         auto_approval_enabled: false
@@ -98,7 +98,7 @@ export function MigrationSetupForm() {
     <main className={styles.page}>
       <section className={styles.panel}>
         <p className={styles.kicker}>Control Tower</p>
-        <h1>Start mock migration</h1>
+        <h1>Prepare external migration</h1><p>The original application remains unchanged. All snapshots, sandboxes, artifacts, logs, reports, and migrated output are created inside the generated external migration folder.</p>
         <form onSubmit={startMigration}>
           <label>
             Source path
@@ -111,13 +111,13 @@ export function MigrationSetupForm() {
             />
           </label>
           <label>
-            Target output path
+            External target-parent path
             <input
-              name="targetOutputPath"
+              name="targetParentPath"
               required
-              placeholder="C:\\migration-output"
-              value={inputs.targetOutputPath}
-              onChange={(event) => setInputs({ ...inputs, targetOutputPath: event.target.value })}
+              placeholder="C:\\migration-results"
+              value={inputs.targetParentPath}
+              onChange={(event) => setInputs({ ...inputs, targetParentPath: event.target.value })}
             />
           </label>
           <label>
@@ -141,7 +141,7 @@ export function MigrationSetupForm() {
             </select>
           </label>
           <div className={styles.actions}>
-            <button type="button" onClick={runPreflight} disabled={isValidating || !inputs.sourcePath || !inputs.targetOutputPath}>
+            <button type="button" onClick={runPreflight} disabled={isValidating || !inputs.sourcePath || !inputs.targetParentPath}>
               {isValidating ? "Validating" : "Validate"}
             </button>
             <button type="submit" disabled={!startEnabled || isStarting}>
@@ -154,6 +154,9 @@ export function MigrationSetupForm() {
             <div><strong>{pathValidation.snapshot.status}</strong><span>{pathValidation.snapshot.checksum}</span></div>
             {pathValidation.snapshot.blockers.length > 0 ? <p>Blockers: {pathValidation.snapshot.blockers.join(", ")}</p> : null}
             {pathValidation.snapshot.warnings.length > 0 ? <p>Warnings: {pathValidation.snapshot.warnings.join(", ")}</p> : null}
+            <p>Generated output: {pathValidation.snapshot.resolved_output_root}</p>
+            <p>Future migrated app: {pathValidation.snapshot.resolved_output_root}\\migrated-app</p>
+            <p>Migration workspace: {pathValidation.snapshot.resolved_output_root}\\.migration-factory</p>
             {pathValidation.snapshot.source_fingerprint ? <p>Source fingerprint: {pathValidation.snapshot.source_fingerprint}</p> : null}
           </section>
         ) : null}

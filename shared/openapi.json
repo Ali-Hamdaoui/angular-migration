@@ -600,6 +600,140 @@
         "title": "AssuranceStatusDto",
         "type": "object"
       },
+      "AuthoritativeRunMutationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRefDto"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "event_sequence": {
+            "minimum": 1.0,
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "graph_thread_id": {
+            "title": "Graph Thread Id",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state_version": {
+            "minimum": 1.0,
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "state_version",
+          "event_sequence",
+          "graph_thread_id"
+        ],
+        "title": "AuthoritativeRunMutationResultDto",
+        "type": "object"
+      },
+      "AuthoritativeRunStateDto": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_status": {
+            "$ref": "#/components/schemas/ApprovalStatus"
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRefDto"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "graph_thread_id": {
+            "title": "Graph Thread Id",
+            "type": "string"
+          },
+          "phase_status": {
+            "title": "Phase Status",
+            "type": "string"
+          },
+          "preflight_id": {
+            "title": "Preflight Id",
+            "type": "string"
+          },
+          "repair_status": {
+            "$ref": "#/components/schemas/RepairStatus"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_phase": {
+            "$ref": "#/components/schemas/RunPhase"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "state_version": {
+            "minimum": 1.0,
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "target_output_path": {
+            "title": "Target Output Path",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "workflow_events": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEventDto"
+            },
+            "title": "Workflow Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "run_phase",
+          "phase_status",
+          "approval_status",
+          "repair_status",
+          "state_version",
+          "preflight_id",
+          "source_path",
+          "target_output_path",
+          "graph_thread_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AuthoritativeRunStateDto",
+        "type": "object"
+      },
       "CancellationPolicy": {
         "enum": [
           "terminate_process_tree",
@@ -952,6 +1086,71 @@
           "custom_ca_configured"
         ],
         "title": "CorporateNetworkReadiness",
+        "type": "object"
+      },
+      "CreateAuthoritativeRunRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "artifact_set_checksum": {
+            "minLength": 1,
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "client_constraints": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Client Constraints",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "input_checksum": {
+            "minLength": 1,
+            "title": "Input Checksum",
+            "type": "string"
+          },
+          "preflight_id": {
+            "minLength": 1,
+            "title": "Preflight Id",
+            "type": "string"
+          },
+          "pricing_snapshot": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Pricing Snapshot",
+            "type": "object"
+          }
+        },
+        "required": [
+          "preflight_id",
+          "input_checksum",
+          "artifact_set_checksum",
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "CreateAuthoritativeRunRequestDto",
         "type": "object"
       },
       "CreateMockMigrationRequestDto": {
@@ -2020,15 +2219,36 @@
             "title": "Source Path",
             "type": "string"
           },
-          "target_output_path": {
-            "minLength": 1,
-            "title": "Target Output Path",
+          "target_angular_family": {
+            "default": "21.x",
+            "title": "Target Angular Family",
             "type": "string"
+          },
+          "target_output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Output Path"
+          },
+          "target_parent_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Parent Path"
           }
         },
         "required": [
           "source_path",
-          "target_output_path",
           "idempotency_key"
         ],
         "title": "PathValidationRequest",
@@ -2064,8 +2284,46 @@
             "title": "Checksum",
             "type": "string"
           },
+          "generated_output_name": {
+            "default": "",
+            "title": "Generated Output Name",
+            "type": "string"
+          },
+          "platform_repository_root": {
+            "default": "",
+            "title": "Platform Repository Root",
+            "type": "string"
+          },
           "policy_version": {
             "title": "Policy Version",
+            "type": "string"
+          },
+          "reservation_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Expires At"
+          },
+          "reservation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Id"
+          },
+          "resolved_output_root": {
+            "default": "",
+            "title": "Resolved Output Root",
             "type": "string"
           },
           "rules": {
@@ -2101,6 +2359,11 @@
           },
           "target_output_path": {
             "title": "Target Output Path",
+            "type": "string"
+          },
+          "target_parent_path": {
+            "default": "",
+            "title": "Target Parent Path",
             "type": "string"
           },
           "target_reservation_eligible": {
@@ -2406,6 +2669,11 @@
             "title": "Gate Version",
             "type": "string"
           },
+          "generated_output_name": {
+            "default": "",
+            "title": "Generated Output Name",
+            "type": "string"
+          },
           "input_checksum": {
             "title": "Input Checksum",
             "type": "string"
@@ -2414,8 +2682,18 @@
             "title": "Migration Mode",
             "type": "string"
           },
+          "platform_repository_root": {
+            "default": "",
+            "title": "Platform Repository Root",
+            "type": "string"
+          },
           "preflight_id": {
             "title": "Preflight Id",
+            "type": "string"
+          },
+          "resolved_output_root": {
+            "default": "",
+            "title": "Resolved Output Root",
             "type": "string"
           },
           "source_path": {
@@ -2444,6 +2722,11 @@
           },
           "target_output_path": {
             "title": "Target Output Path",
+            "type": "string"
+          },
+          "target_parent_path": {
+            "default": "",
+            "title": "Target Parent Path",
             "type": "string"
           },
           "target_reservation_id": {
@@ -2843,6 +3126,35 @@
           "component_type"
         ],
         "title": "StageStepDto",
+        "type": "object"
+      },
+      "StartAuthoritativeRunRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "StartAuthoritativeRunRequestDto",
         "type": "object"
       },
       "StepStatus": {
@@ -4000,6 +4312,47 @@
         ]
       }
     },
+    "/api/v1/runs": {
+      "post": {
+        "operationId": "create_run_api_v1_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/v1/runs/drafts/{draft_id}/approvals/{gate_id}/decisions": {
       "post": {
         "operationId": "decide_g01_draft_api_v1_runs_drafts__draft_id__approvals__gate_id__decisions_post",
@@ -4058,6 +4411,140 @@
         "summary": "Decide G01 Draft",
         "tags": [
           "preflights"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/events": {
+      "get": {
+        "operationId": "stream_run_events_api_v1_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Run Events",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/start": {
+      "post": {
+        "operationId": "start_run_api_v1_runs__run_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/state": {
+      "get": {
+        "operationId": "read_run_state_api_v1_runs__run_id__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunStateDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Run State",
+        "tags": [
+          "runs"
         ]
       }
     },
@@ -5034,6 +5521,47 @@
         ]
       }
     },
+    "/runs": {
+      "post": {
+        "operationId": "create_run_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/runs/drafts/{draft_id}/approvals/{gate_id}/decisions": {
       "post": {
         "operationId": "decide_g01_draft_runs_drafts__draft_id__approvals__gate_id__decisions_post",
@@ -5092,6 +5620,140 @@
         "summary": "Decide G01 Draft",
         "tags": [
           "preflights"
+        ]
+      }
+    },
+    "/runs/{run_id}/events": {
+      "get": {
+        "operationId": "stream_run_events_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Run Events",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/runs/{run_id}/start": {
+      "post": {
+        "operationId": "start_run_runs__run_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/runs/{run_id}/state": {
+      "get": {
+        "operationId": "read_run_state_runs__run_id__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunStateDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Run State",
+        "tags": [
+          "runs"
         ]
       }
     },

@@ -1,18 +1,7 @@
-# Snapshots
+# Snapshot Service
 
-Owns immutable source snapshot creation, source manifests, checksums, and source
-integrity verification.
-
-Snapshots must never mutate the original source. They must not publish
-`migrated-app`, execute commands, or replace workspace lifecycle management.
-
-Canonical Sprint 0 snapshot path:
+S1-F07 owns snapshot creation. When implemented, it may write only to the registered alias:
 
 ```text
-{target}/.migration-factory/snapshots/{snapshotId}/
+<resolved-output-root>/.migration-factory/runs/<run-id>/source-snapshot/
 ```
-
-`SourceManifestBuilder` records deterministic file metadata and SHA-256 content
-checksums. `SnapshotService` writes `source-manifest.json` beside the copied
-source. `SourceIntegrityVerifier` compares the live source back to that manifest
-before delivery.

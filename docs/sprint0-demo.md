@@ -11,7 +11,7 @@ The Sprint 0 demo should call out these architecture boundaries before showing t
 
 ## Angular 18 Fixture
 
-Use `demo-apps/angular-18-basic/` as the controlled source application for the Sprint 0 demo. The fixture includes route, lazy-route, API, interceptor, form-validation, style, environment, proxy, known-failure, and prompt-injection signals. Its expectation manifests live under `demo-apps/angular-18-basic/expectations/`.
+Use `external synthetic Angular fixture/` as the controlled source application for the Sprint 0 demo. The fixture includes route, lazy-route, API, interceptor, form-validation, style, environment, proxy, known-failure, and prompt-injection signals. Its expectation manifests live under `external synthetic Angular fixture/expectations/`.
 
 Sprint 0 regression tests copy the fixture into a temporary internal workspace and verify source integrity. Do not run migration mutations directly against the fixture directory.
 

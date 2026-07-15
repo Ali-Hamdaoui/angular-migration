@@ -1,4 +1,4 @@
-﻿# AI Frontend Migration Factory
+# AI Frontend Migration Factory
 
 The AI Frontend Migration Factory is a platform for controlled Angular frontend
 migrations. Its MVP reference path is Angular 18.x to Angular 21.x, using strict
@@ -34,7 +34,7 @@ FastAPI Backend / Execution Authority
 backend/   FastAPI execution authority, orchestration, persistence, artifacts.
 frontend/  Next.js Control Tower UI.
 shared/    Shared contracts and generated API references.
-demo-apps/ Controlled fixture Angular applications.
+bundled Angular workspace/ Controlled fixture Angular applications.
 scripts/   Developer automation and reproducible local workflows.
 docs/      Product, architecture, ADR, setup, and sprint documentation.
 tests/     Cross-workspace and end-to-end test suites.
@@ -72,7 +72,7 @@ tests/     Cross-workspace and end-to-end test suites.
   actions but cannot bypass backend validation or execution authority.
 - Deterministic components and AI-assisted agents are separated in code,
   execution history, and UI labels.
-- Fixture Angular applications belong in `demo-apps/`, never in production
+- Fixture Angular applications belong in `bundled Angular workspace/`, never in production
   backend or frontend source trees.
 - Reusable contract references belong in `shared/`; avoid duplicating status
   vocabularies across applications.

@@ -1,9 +1,0 @@
-:root {
-  color-scheme: light;
-  --fixture-primary: #2457a6;
-  --fixture-accent: #0f8b8d;
-  font-family: Arial, sans-serif;
-}
-body { margin: 0; background: #f7f9fc; color: #172033; }
-a { color: var(--fixture-primary); }
-button { background: var(--fixture-primary); border: 0; border-radius: 4px; color: white; padding: 0.55rem 0.8rem; }
