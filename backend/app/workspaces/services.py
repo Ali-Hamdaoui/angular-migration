@@ -16,6 +16,10 @@ class WorkspaceRecord:
     repository_path: Path
 
 
+class BaselineBoundaryError(ValueError):
+    """Raised when baseline creation is attempted without an approved G02 boundary."""
+
+
 class WorkspaceService:
     """Create backend-owned mutable workspaces from immutable snapshots."""
 
@@ -35,3 +39,18 @@ class WorkspaceService:
         workspace_root.mkdir(parents=True, exist_ok=True)
         shutil.copytree(snapshot_root, repository_path, ignore=shutil.ignore_patterns("source-manifest.json"))
         return WorkspaceRecord(run_id=run_id, workspace_root=workspace_root, repository_path=repository_path)
+
+    def create_baseline_workspace_from_snapshot(self, *, run_id: str, snapshot_root: Path, source_root: Path, g02_service) -> WorkspaceRecord:
+        """Create a baseline only after the persisted G02 service authorizes it."""
+        if g02_service is None or not hasattr(g02_service, "authorize_baseline"):
+            raise BaselineBoundaryError("An authoritative G02 service is required")
+        try:
+            package = g02_service.authorize_baseline(run_id)
+        except Exception as error:
+            if error.__class__.__name__ == "G02ApplicationError":
+                raise BaselineBoundaryError(str(error)) from error
+            raise
+        if package.snapshot_id is None:
+            raise BaselineBoundaryError("G02 package must identify the immutable snapshot boundary")
+        return self.create_workspace_from_snapshot(run_id=run_id, snapshot_root=snapshot_root, source_root=source_root)
+

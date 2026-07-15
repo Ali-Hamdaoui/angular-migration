@@ -18,7 +18,7 @@ export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_requ
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED" | "SNAPSHOT_PROGRESS_UPDATED" | "SNAPSHOT_QUARANTINED";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED" | "SNAPSHOT_PROGRESS_UPDATED" | "SNAPSHOT_QUARANTINED" | "SOURCE_INTEGRITY_VERIFIED" | "SOURCE_INTEGRITY_FAILED" | "G02_CREATED" | "G02_APPROVED" | "G02_REJECTED" | "G02_STALE";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
@@ -151,3 +151,11 @@ export type SourceSnapshotDto = {
   error_message: string | null;
   created_at: string;
 };
+
+export type G02Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";
+export type G02PackageInitializationRequest = { expected_state_version: number; idempotency_key: string; actor: string; gate_id?: string };
+export type G02DecisionRequest = { expected_state_version: number; idempotency_key: string; actor: string; decision: G02Decision; comment?: string | null; gate_id?: string };
+export type G02ArtifactRef = { artifact_id: string; run_id: string; stage_id: string | null; artifact_type: string; relative_path: string; created_at: string; checksum: string };
+export type G02IntegrityEvidence = { before_fingerprint: string; after_snapshot_fingerprint: string; snapshot_fingerprint: string; manifest_checksum: string; policy_version: string; source_read_only_verified: boolean; status: "verified" | "failed" };
+export type G02ApprovalPackage = { run_id: string; gate_id: string; gate_version: string; state_version: number; actor: string; policy_version: string; snapshot_id: string; source_fingerprint: string; snapshot_fingerprint: string; artifact_set_checksum: string; artifacts: G02ArtifactRef[]; integrity: G02IntegrityEvidence; package_checksum: string };
+export type G02ReviewResponse = { run_id: string; gate_id: string; gate_version: string; status: string; decision: G02Decision | null; package: G02ApprovalPackage; baseline_input_boundary: string | null; state_version: number; event_sequence: number; idempotent_replay: boolean; stale_reason: string | null; comment: string | null };

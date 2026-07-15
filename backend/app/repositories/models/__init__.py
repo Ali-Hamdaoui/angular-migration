@@ -1,6 +1,7 @@
 """Persistence model package."""
 
 from app.repositories.models.base import Base
+from app.repositories.g02_models import G02ApprovalModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     ActiveRunClaimModel,
@@ -31,6 +32,7 @@ __all__ = [
     "ApprovalPolicyEventModel",
     "ArtifactMetadataModel",
     "Base",
+    "G02ApprovalModel",
     "CommandExecutionModel",
     "EnvironmentCapabilityModel",
     "EnvironmentDiagnosticEventModel",
