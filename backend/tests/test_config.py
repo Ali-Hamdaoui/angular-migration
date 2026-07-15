@@ -71,8 +71,8 @@ def test_settings_load_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         "APP_ENV=test\n"
         "COMMAND_TIMEOUT_SECONDS=45\n"
         "BACKEND_CORS_ORIGINS=http://localhost:3000,https://control.example\n"
-        "WORKSPACE_ROOT=.migration-factory/workspaces-from-env\n"
-        "ALLOWED_SOURCE_ROOTS=demo-apps,C:/projects/approved\n",
+        "WORKSPACE_ROOT=C:/external/workspaces-from-env\n"
+        "ALLOWED_SOURCE_ROOTS=bundled Angular workspace,C:/projects/approved\n",
         encoding="utf-8",
     )
 
@@ -81,8 +81,8 @@ def test_settings_load_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert settings.app_env == "test"
     assert settings.command_timeout_seconds == 45
     assert settings.backend_cors_origins == ["http://localhost:3000", "https://control.example"]
-    assert settings.workspace_root == Path(".migration-factory/workspaces-from-env")
-    assert settings.allowed_source_roots == [Path("demo-apps"), Path("C:/projects/approved")]
+    assert settings.workspace_root == Path("C:/external/workspaces-from-env").resolve()
+    assert settings.allowed_source_roots == [Path("bundled Angular workspace"), Path("C:/projects/approved")]
 
 
 @pytest.mark.parametrize(
@@ -148,9 +148,8 @@ def test_env_example_contains_safe_placeholders() -> None:
 
     assert "not-a-real-api-key" not in env_example
     assert "AZURE_OPENAI_API_KEY=" in env_example
-    assert "WORKSPACE_ROOT=.migration-factory/workspaces" in env_example
-    assert "C:\\tmp\\migration-output" in env_example
-    assert "/tmp/migration-output" in env_example
+    assert "APPLICATION_DATA_ROOT=" in env_example
+    assert ".migration-factory/workspaces" not in env_example
 
 
 def test_policy_defaults_are_injectable() -> None:

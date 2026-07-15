@@ -34,7 +34,7 @@ class PathValidationApplicationService:
             existing = self._repository.get_by_idempotency(session, request.idempotency_key)
             if existing:
                 return self._repository.to_result(existing)
-            self._repository.save(
+            record = self._repository.save(
                 session,
                 result,
                 key=request.idempotency_key,

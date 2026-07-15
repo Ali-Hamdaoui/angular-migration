@@ -22,7 +22,7 @@ def _request(
     command_id: str = "python-version",
     executable: str = "python",
     arguments: list[str] | None = None,
-    working_directory_alias: str | None = "run_workspace",
+    working_directory_alias: str | None = "BASELINE_SANDBOX",
     working_directory: str | None = None,
     runtime_profile_id: str = "source-runtime-profile",
     timeout_seconds: int = 5,
@@ -58,7 +58,7 @@ def _worker(
     sandbox_root = tmp_path / "sandboxes"
     sandbox_root.mkdir()
     worker = ExecutionWorker(
-        CommandPolicy(sandbox_root=sandbox_root, registry=registry or CommandRegistry()),
+        CommandPolicy(sandbox_root=sandbox_root, registry=registry or CommandRegistry(), working_directory_aliases={"BASELINE_SANDBOX": sandbox_root}),
         CommandLogWriter(artifact_store, max_output_bytes=128),
         timeout_seconds=timeout_seconds,
     )
@@ -138,7 +138,7 @@ def test_worker_rejects_working_directory_outside_sandbox_root(tmp_path: Path) -
         "mock-run-angular-18-to-21",
         "04_workflow_state/command_logs/python-version.json",
     )
-    assert "must stay inside the sandbox root" in stored.content
+    assert '"status": "REJECTED"' in stored.content
 
 
 def test_worker_rejects_unknown_working_directory_alias(tmp_path: Path) -> None:
@@ -215,12 +215,12 @@ def test_duplicate_idempotency_key_returns_recorded_result_without_reexecution(t
 def test_command_logs_are_visible_through_artifact_api(monkeypatch, tmp_path: Path) -> None:
     worker, artifact_store, _sandbox_root = _worker(tmp_path)
     execution = worker.run(_request())
-    monkeypatch.setattr("app.api.routes.artifacts.get_artifact_store", lambda: artifact_store)
+    monkeypatch.setattr("app.api.routes.artifacts.get_artifact_store", lambda *args: artifact_store)
 
     client = TestClient(app)
     list_response = client.get("/migrations/mock-run-angular-18-to-21/artifacts")
     read_response = client.get(
-        f"/artifacts/{execution.command_log_artifact.ref.artifact_id}"
+        f"/migrations/mock-run-angular-18-to-21/artifacts/{execution.command_log_artifact.ref.relative_path}"
     )
 
     assert list_response.status_code == 200

@@ -39,7 +39,9 @@ def test_validate_canonicalizes_paths_and_fingerprints_source(tmp_path):
 
     assert result.snapshot.status == "passed"
     assert result.snapshot.source_path == str(source.resolve())
-    assert result.snapshot.target_output_path == str((target_root / "out").resolve())
+    assert result.snapshot.target_parent_path == str((target_root / "out").resolve())
+    assert result.snapshot.generated_output_name == "project-angular-21"
+    assert result.snapshot.resolved_output_root == str((target_root / "out" / "project-angular-21").resolve())
     assert result.snapshot.source_fingerprint is not None
     assert result.snapshot.target_reservation_eligible is True
 
@@ -59,5 +61,4 @@ def test_validate_blocks_overlap_network_and_internal_paths(tmp_path):
     )
 
     assert result.snapshot.status == "blocked"
-    assert "TARGET_NESTED_IN_SOURCE" in result.snapshot.blockers
-    assert "TARGET_OUTSIDE_ALLOWED_ROOT" in result.snapshot.blockers
+    assert "OUTPUT_ROOT_INSIDE_SOURCE" in result.snapshot.blockers

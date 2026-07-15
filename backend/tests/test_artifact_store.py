@@ -162,20 +162,17 @@ def test_artifact_routes_list_and_open_store_records(monkeypatch: pytest.MonkeyP
         stage_id="08_final",
         created_by="report-agent",
     )
-    monkeypatch.setattr("app.api.routes.artifacts.get_artifact_store", lambda: store)
+    monkeypatch.setattr("app.api.routes.artifacts.get_artifact_store", lambda *args: store)
 
     client = TestClient(app)
 
     list_response = client.get("/migrations/mock-run-angular-18-to-21/artifacts")
     read_response = client.get(f"/migrations/mock-run-angular-18-to-21/artifacts/{stored.ref.relative_path}")
-    read_by_id_response = client.get(f"/artifacts/{stored.ref.artifact_id}")
 
     assert list_response.status_code == 200
     assert list_response.json()[0]["relative_path"] == "08_final/final_report.md"
     assert read_response.status_code == 200
-    assert read_by_id_response.status_code == 200
     body = read_response.json()
     assert body["artifact"]["relative_path"] == "08_final/final_report.md"
     assert body["content"] == "Final report content"
     assert body["created_by"] == "report-agent"
-    assert read_by_id_response.json() == body

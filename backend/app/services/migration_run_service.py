@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -18,6 +19,7 @@ from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, 
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest
+from app.services.migration_workspace_layout_service import MigrationWorkspaceLayoutService, WorkspaceLayoutError
 
 
 class MigrationRunError(ValueError):
@@ -66,7 +68,8 @@ class MigrationRunService:
         self._graph = graph or UnconfiguredSourceIntakeGraph()
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._lease_seconds = settings.worker_lease_seconds
-        self._artifacts = LocalFilesystemArtifactStore(settings.artifact_root)
+        self._settings = settings
+        self._layout = MigrationWorkspaceLayoutService(platform_repository_root=settings.platform_repository_root)
 
     def create(self, request: CreateRunRequest) -> RunResult:
         with self._scope() as session:
@@ -80,12 +83,21 @@ class MigrationRunService:
             run_id = f"run-{uuid4().hex[:12]}"
             thread_id = f"source-intake-{run_id}"
             now = self._now()
+            try:
+                layout = self._layout.for_run(snapshot.get("resolved_output_root") or snapshot.get("target_output_path") or self._settings.artifact_root, run_id)
+            except WorkspaceLayoutError as error:
+                raise MigrationRunError("UNSAFE_WORKSPACE_LAYOUT", str(error)) from error
+            artifacts = LocalFilesystemArtifactStore(layout.artifact_root, fixed_run_root=layout.artifact_root)
             run = MigrationRunModel(
                 id=run_id, status=RunStatus.CREATED.value, run_phase=RunPhase.PREFLIGHT_SNAPSHOT.value,
                 phase_status="running", approval_status="approved", repair_status="not_required", state_version=1,
                 source_version_family=snapshot.get("source_version_family"), target_version_family=snapshot.get("target_angular_family"),
                 source_angular_version=snapshot.get("source_angular_version"), target_angular_version=snapshot.get("target_angular_family"),
-                preflight_id=request.preflight_id, source_path=snapshot.get("source_path"), target_output_path=snapshot.get("target_output_path"),
+                preflight_id=request.preflight_id, source_path=snapshot.get("source_path"), target_output_path=str(layout.output_root),
+                target_parent_path=snapshot.get("target_parent_path"), generated_output_name=snapshot.get("generated_output_name"),
+                resolved_output_root=str(layout.output_root), run_root=str(layout.run_root), artifact_root=str(layout.artifact_root),
+                log_root=str(layout.log_root), report_root=str(layout.report_root), temporary_root=str(layout.temporary_root),
+                migrated_app_path=str(layout.migrated_app), workspace_aliases=layout.aliases(), output_layout_version=self._layout.layout_version,
                 graph_thread_id=thread_id, client_constraints=request.client_constraints,
                 target_policy_snapshot={"target_angular_family": snapshot.get("target_angular_family"), "migration_mode": snapshot.get("migration_mode")},
                 run_policy_snapshot={"input_checksum": request.input_checksum, "artifact_set_checksum": request.artifact_set_checksum, "gate_version": gate.gate_version},
@@ -94,8 +106,11 @@ class MigrationRunService:
             )
             session.add(run)
             session.flush()
-            self._artifacts.ensure_run_layout(run_id)
-            target_path = str(snapshot.get("target_output_path") or "")
+            layout.metadata_root.mkdir(parents=True, exist_ok=True)
+            for path in (layout.artifact_root, layout.log_root, layout.report_root, layout.temporary_root):
+                path.mkdir(parents=True, exist_ok=True)
+            artifacts.ensure_run_layout(run_id)
+            target_path = str(layout.output_root)
             previous_claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.target_output_path == target_path))
             if previous_claim is not None:
                 previous_run = session.get(MigrationRunModel, previous_claim.run_id)
@@ -106,11 +121,14 @@ class MigrationRunService:
             evidence = {
                 "create_run_request.json": {"preflight_id": request.preflight_id, "input_checksum": request.input_checksum, "artifact_set_checksum": request.artifact_set_checksum, "idempotency_key": request.idempotency_key, "actor": request.actor},
                 "client_constraints.json": request.client_constraints,
+                "external_source_reference.json": {"source_path": run.source_path, "target_parent_path": run.target_parent_path},
+                "output_layout.json": layout.aliases(),
+                "workspace_alias_registry.json": layout.aliases(),
                 "target_policy.json": run.target_policy_snapshot,
                 "run_policy_snapshot.json": run.run_policy_snapshot,
                 "run_initial_state.json": {"run_id": run_id, "status": run.status, "run_phase": run.run_phase, "state_version": run.state_version, "graph_thread_id": thread_id},
             }
-            artifact_refs = tuple(self._write_evidence(session, run_id, evidence, now, request.input_checksum))
+            artifact_refs = tuple(self._write_evidence(artifacts, session, run_id, evidence, now, request.input_checksum))
             transition = StateTransitionService(session).apply_transition(TransitionRequest(
                 run_id=run_id, expected_state_version=1, idempotency_key=request.idempotency_key,
                 event_type=WorkflowEventType.RUN_CREATED, actor=request.actor,
@@ -118,7 +136,7 @@ class MigrationRunService:
                     "preflight_id": request.preflight_id, "input_checksum": request.input_checksum,
                     "artifact_set_checksum": request.artifact_set_checksum, "gate_id": gate.gate_id,
                     "graph_thread_id": thread_id, "source_path": snapshot.get("source_path"),
-                    "target_output_path": snapshot.get("target_output_path"),
+                    "target_parent_path": snapshot.get("target_parent_path"), "resolved_output_root": str(layout.output_root), "run_root": str(layout.run_root),
                     "client_constraints": json.dumps(request.client_constraints, sort_keys=True),
                     "policy_snapshot_checksum": self._checksum({"preflight": snapshot, "pricing": request.pricing_snapshot or {}}),
                 }, occurred_at=now,
@@ -158,7 +176,7 @@ class MigrationRunService:
             return {
                 "run_id": run.id, "status": run.status, "run_phase": run.run_phase, "phase_status": run.phase_status,
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,
-                "preflight_id": run.preflight_id, "source_path": run.source_path, "target_output_path": run.target_output_path,
+                "preflight_id": run.preflight_id, "source_path": run.source_path, "target_parent_path": run.target_parent_path, "generated_output_name": run.generated_output_name, "resolved_output_root": run.resolved_output_root, "run_root": run.run_root, "migrated_app_path": run.migrated_app_path, "target_output_path": run.target_output_path,
                 "graph_thread_id": run.graph_thread_id, "created_at": run.created_at, "updated_at": run.updated_at,
                 "artifacts": self._artifacts_for_run(session, run_id), "workflow_events": self._events_for_run(session, run_id),
             }
@@ -191,10 +209,10 @@ class MigrationRunService:
         payload = event.payload
         return RunResult(event.run_id, run.status if run else str(payload.get("next_run_status", RunStatus.CREATED.value)), run.state_version if run else int(payload.get("next_state_version", 1)), event.sequence, str(payload.get("graph_thread_id") or f"source-intake-{event.run_id}"), replay, tuple(MigrationRunService._artifacts_for_run(session, event.run_id)))
 
-    def _write_evidence(self, session, run_id: str, evidence: dict[str, object], now: datetime, input_checksum: str) -> list[ArtifactRefDto]:
+    def _write_evidence(self, artifacts: LocalFilesystemArtifactStore, session, run_id: str, evidence: dict[str, object], now: datetime, input_checksum: str) -> list[ArtifactRefDto]:
         refs: list[ArtifactRefDto] = []
         for name, payload in evidence.items():
-            stored = self._artifacts.write_text_artifact(run_id, f"00_job_setup/{name}", json.dumps(payload, sort_keys=True, indent=2), ArtifactType.JSON, created_by="migration-run-service", created_at=now, input_hashes={"preflight": input_checksum}, policy_version="s1-f06-v1")
+            stored = artifacts.write_text_artifact(run_id, f"00_job_setup/{name}", json.dumps(payload, sort_keys=True, indent=2), ArtifactType.JSON, created_by="migration-run-service", created_at=now, input_hashes={"preflight": input_checksum}, policy_version="s1-f06-v1")
             refs.append(stored.ref)
             session.add(ArtifactMetadataModel(id=f"metadata-{stored.ref.artifact_id}", run_id=run_id, stage_id=None, artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, created_at=now))
         return refs

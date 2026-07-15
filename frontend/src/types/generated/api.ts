@@ -22,8 +22,8 @@ export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DIS
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
-export type PreflightRequestDto = { source_path: string; target_output_path: string; target_angular_family: string; migration_mode: string; auto_approval_enabled: boolean };
-export type PreflightResultDto = { preflight_id: string; checksum: string; expires_at: string; source_path: string; target_output_path: string; status: "passed" | "passed_with_warnings" | "blocked" | "expired" | string; message: string; blockers: string[]; warnings: string[]; capabilities: Record<string, string>; runtime_profile_available: boolean; registry_access: string; topology_status: string; angular_eligibility: string; artifact: ArtifactRefDto | null };
+export type PreflightRequestDto = { source_path: string; target_output_path: string; target_parent_path?: string; generated_output_name?: string; resolved_output_root?: string; target_angular_family: string; migration_mode: string; auto_approval_enabled: boolean };
+export type PreflightResultDto = { preflight_id: string; checksum: string; expires_at: string; source_path: string; target_parent_path?: string; generated_output_name?: string; resolved_output_root?: string; target_output_path: string; status: "passed" | "passed_with_warnings" | "blocked" | "expired" | string; message: string; blockers: string[]; warnings: string[]; capabilities: Record<string, string>; runtime_profile_available: boolean; registry_access: string; topology_status: string; angular_eligibility: string; artifact: ArtifactRefDto | null };
 export type CreateMockMigrationRequestDto = { preflight_checksum: string; idempotency_key?: string | null };
 export type MigrationStageDto = { stage_id: string; run_id: string; stage_order: number; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; status: StageStatus; current_agent: string | null; created_at: string; started_at: string | null; completed_at: string | null };
 export type StageStepDto = { step_id: string; run_id: string; stage_id: string | null; name: string; status: StepStatus; component_type: string; started_at: string | null; completed_at: string | null };
@@ -102,6 +102,9 @@ export type PathValidationSnapshot = {
   policy_version: string;
   status: "passed" | "passed_with_warnings" | "blocked";
   source_path: string;
+  target_parent_path: string;
+  generated_output_name: string;
+  resolved_output_root: string;
   target_output_path: string;
   source_fingerprint: string | null;
   rules: PathRuleResult[];
@@ -115,7 +118,7 @@ export type CreateAuthoritativeRunRequestDto = { preflight_id: string; input_che
 export type StartAuthoritativeRunRequestDto = { expected_state_version: number; idempotency_key: string; actor: string };
 export type AuthoritativeRunMutationResultDto = { run_id: string; status: RunStatus; state_version: number; event_sequence: number; graph_thread_id: string; idempotent_replay: boolean; artifacts: ArtifactRefDto[] };
 export type AuthoritativeRunStateDto = { run_id: string; status: RunStatus; run_phase: RunPhase; phase_status: string; approval_status: ApprovalStatus; repair_status: RepairStatus; state_version: number; preflight_id: string; source_path: string; target_output_path: string; graph_thread_id: string; created_at: string; updated_at: string; artifacts: ArtifactRefDto[]; workflow_events: WorkflowEventDto[] };
-export type PathValidationRequest = { source_path: string; target_output_path: string; idempotency_key: string; actor?: string | null };
+export type PathValidationRequest = { source_path: string; target_parent_path?: string | null; target_output_path?: string | null; target_angular_family?: string; idempotency_key: string; actor?: string | null };
 export type G01Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";
 export type G01DecisionResponse = { decision_id: string; preflight_id: string; gate_id: string; decision: G01Decision; actor: string; comment: string | null; decided_at: string; input_checksum: string; artifact_set_checksum: string; state_version: number; idempotent_replay: boolean };
 export type PreflightArtifactDto = { artifact_id: string; checksum: string; relative_path: string };

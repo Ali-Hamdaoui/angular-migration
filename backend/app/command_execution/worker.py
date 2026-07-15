@@ -30,7 +30,7 @@ CommandRequest = CommandRequestDto
 
 _DEFAULT_RUNTIME_PROFILE: Final = "source-runtime-profile"
 _DEFAULT_NETWORK_PROFILE: Final = "none"
-_DEFAULT_WORKING_DIRECTORY_ALIAS: Final = "run_workspace"
+_MUTABLE_WORKSPACE_ALIASES: Final = frozenset({"BASELINE_SANDBOX", "STAGE_SANDBOX", "REPAIR_SANDBOX", "FINAL_ASSURANCE_SANDBOX", "DELIVERY_CANDIDATE"})
 
 
 class CommandPolicyViolation(ValueError):
@@ -109,8 +109,9 @@ class CommandPolicy:
     network_profiles: frozenset[str] = frozenset({_DEFAULT_NETWORK_PROFILE})
 
     def __post_init__(self) -> None:
-        aliases = dict(self.working_directory_aliases)
-        aliases.setdefault(_DEFAULT_WORKING_DIRECTORY_ALIAS, self.sandbox_root)
+        aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
+        if not set(aliases).issubset(_MUTABLE_WORKSPACE_ALIASES):
+            raise CommandPolicyViolation("Only registered mutable workspace aliases may execute commands")
         object.__setattr__(self, "working_directory_aliases", aliases)
 
     def validate(self, request: CommandRequestDto) -> StructuredCommandRequest:

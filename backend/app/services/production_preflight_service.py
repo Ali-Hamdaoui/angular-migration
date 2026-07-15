@@ -21,6 +21,7 @@ from app.repositories.session import session_scope
 from app.state.preflight_transition_service import PreflightTransitionService
 from app.services.preflight_events import append_preflight_event
 from app.domain.contracts import ArtifactType
+from app.services.migration_workspace_layout_service import MigrationWorkspaceLayoutService, WorkspaceLayoutError
 
 GATE_ID = "G01"
 GATE_VERSION = "s1-g01-v1"
@@ -38,7 +39,8 @@ class ProductionPreflightService:
         self._settings = settings
         self._scope = session_scope_factory
         self._now = now_provider or (lambda: datetime.now(UTC))
-        self._artifacts = LocalFilesystemArtifactStore(settings.artifact_root)
+        self._layout = MigrationWorkspaceLayoutService(platform_repository_root=settings.platform_repository_root)
+        self._fallback_artifact_root = settings.artifact_root
 
     def create(self, request: PreflightRequest) -> PreflightResult:
         with self._scope() as session:
@@ -53,6 +55,14 @@ class ProductionPreflightService:
             path_snapshot = PathValidationSnapshot.model_validate(path.snapshot)
             env_snapshot = EnvironmentCapabilitySnapshot.model_validate(environment.snapshot)
             analysis_snapshot = SourceAnalysisSnapshot.model_validate(analysis.snapshot)
+            preflight_id = f"preflight-{uuid4().hex[:12]}"
+            try:
+                output_root = path_snapshot.resolved_output_root or path_snapshot.target_output_path
+                # Preflight evidence has no run yet, so it lives in registered output metadata.
+                metadata_root = self._layout.for_run(output_root, preflight_id).metadata_root / "preflights"
+                artifacts = LocalFilesystemArtifactStore(metadata_root / preflight_id, fixed_run_root=metadata_root / preflight_id)
+            except WorkspaceLayoutError as error:
+                raise PreflightError("UNSAFE_WORKSPACE_LAYOUT", str(error), status_code=422) from error
             reservation = session.scalar(select(TargetReservationModel).where(TargetReservationModel.validation_id == path.id).order_by(TargetReservationModel.created_at.desc()))
             blockers = sorted(set(path_snapshot.blockers + env_snapshot.blockers + analysis_snapshot.blockers))
             warnings = sorted(set(path_snapshot.warnings + env_snapshot.warnings + analysis_snapshot.warnings))
@@ -66,7 +76,6 @@ class ProductionPreflightService:
                 "policy_versions": {"gate": GATE_VERSION, "path": path_snapshot.policy_version, "environment": env_snapshot.policy_version, "analysis": analysis_snapshot.policy_version},
             }
             input_checksum = self._checksum(binding)
-            preflight_id = f"preflight-{uuid4().hex[:12]}"
             now, expires = self._now(), self._now() + EXPIRY
             prereq = {
                 "preflight_request.json": {"request": request.model_dump(mode="json"), "binding": binding},
@@ -76,14 +85,14 @@ class ProductionPreflightService:
             }
             refs: dict[str, dict] = {}
             for name, payload in prereq.items():
-                stored = self._artifacts.write_text_artifact(preflight_id, f"00_job_setup/{name}", json.dumps(payload, sort_keys=True, indent=2), ArtifactType.JSON, created_by="production-preflight-service", created_at=now, input_hashes={"input": input_checksum}, policy_version=GATE_VERSION)
+                stored = artifacts.write_text_artifact(preflight_id, f"00_job_setup/{name}", json.dumps(payload, sort_keys=True, indent=2), ArtifactType.JSON, created_by="production-preflight-service", created_at=now, input_hashes={"input": input_checksum}, policy_version=GATE_VERSION)
                 refs[name] = stored.ref.model_dump(mode="json")
             artifact_set_checksum = self._checksum({name: ref["checksum"] for name, ref in sorted(refs.items())})
             status = "blocked" if blockers else ("passed_with_warnings" if warnings else "passed")
-            snapshot = PreflightSnapshot(preflight_id=preflight_id, gate_id=GATE_ID, gate_version=GATE_VERSION, state_version=1, status=status, created_at=now, expires_at=expires, input_checksum=input_checksum, artifact_set_checksum=artifact_set_checksum, target_angular_family=request.target_angular_family.strip(), migration_mode=request.migration_mode.strip(), source_path=path_snapshot.source_path, target_output_path=path_snapshot.target_output_path, target_reservation_id=reservation.id if reservation else None, approval_status="pending", blockers=blockers, warnings=warnings, artifacts=refs)
-            result_ref = self._artifacts.write_text_artifact(preflight_id, "00_job_setup/preflight_result.json", snapshot.model_dump_json(indent=2), ArtifactType.JSON, created_by="production-preflight-service", created_at=now, input_hashes={"artifact_set": artifact_set_checksum}, policy_version=GATE_VERSION)
+            snapshot = PreflightSnapshot(preflight_id=preflight_id, gate_id=GATE_ID, gate_version=GATE_VERSION, state_version=1, status=status, created_at=now, expires_at=expires, input_checksum=input_checksum, artifact_set_checksum=artifact_set_checksum, target_angular_family=request.target_angular_family.strip(), migration_mode=request.migration_mode.strip(), source_path=path_snapshot.source_path, target_parent_path=path_snapshot.target_parent_path, generated_output_name=path_snapshot.generated_output_name, resolved_output_root=path_snapshot.resolved_output_root, platform_repository_root=path_snapshot.platform_repository_root, target_output_path=path_snapshot.target_output_path, target_reservation_id=reservation.id if reservation else None, approval_status="pending", blockers=blockers, warnings=warnings, artifacts=refs)
+            result_ref = artifacts.write_text_artifact(preflight_id, "00_job_setup/preflight_result.json", snapshot.model_dump_json(indent=2), ArtifactType.JSON, created_by="production-preflight-service", created_at=now, input_hashes={"artifact_set": artifact_set_checksum}, policy_version=GATE_VERSION)
             refs["preflight_result.json"] = result_ref.ref.model_dump(mode="json")
-            index_ref = self._artifacts.write_text_artifact(preflight_id, "00_job_setup/g01_evidence_index.json", json.dumps({"gate_id": GATE_ID, "gate_version": GATE_VERSION, "input_checksum": input_checksum, "artifact_set_checksum": artifact_set_checksum, "artifacts": refs}, indent=2, sort_keys=True), ArtifactType.JSON, created_by="production-preflight-service", created_at=now, input_hashes={"artifact_set": artifact_set_checksum}, policy_version=GATE_VERSION)
+            index_ref = artifacts.write_text_artifact(preflight_id, "00_job_setup/g01_evidence_index.json", json.dumps({"gate_id": GATE_ID, "gate_version": GATE_VERSION, "input_checksum": input_checksum, "artifact_set_checksum": artifact_set_checksum, "artifacts": refs}, indent=2, sort_keys=True), ArtifactType.JSON, created_by="production-preflight-service", created_at=now, input_hashes={"artifact_set": artifact_set_checksum}, policy_version=GATE_VERSION)
             refs["g01_evidence_index.json"] = index_ref.ref.model_dump(mode="json")
             snapshot = snapshot.model_copy(update={"artifacts": refs})
             for ref in refs.values():
@@ -126,12 +135,14 @@ class ProductionPreflightService:
                 append_preflight_event(session, preflight_id=preflight_id, event_type="APPROVAL_MARKED_STALE", actor=request.actor, idempotency_key=request.idempotency_key, payload={}, occurred_at=self._now())
                 raise PreflightError("APPROVAL_MARKED_STALE", "A bound preflight input changed; create a new preflight.")
             required_artifacts = ("preflight_request.json", "environment_capability_summary.json", "path_safety_report.json", "eligibility_result.json")
+            snapshot = PreflightSnapshot.model_validate(row.snapshot)
+            artifacts = self._artifact_store(snapshot)
             artifact_refs = row.snapshot.get("artifacts", {})
             artifact_checksums = {}
             try:
                 for artifact_name in required_artifacts:
                     ref = artifact_refs[artifact_name]
-                    stored = self._artifacts.read_artifact_by_id(ref["artifact_id"])
+                    stored = artifacts.read_artifact_by_id(ref["artifact_id"])
                     actual_checksum = "sha256:" + hashlib.sha256(stored.content.encode("utf-8")).hexdigest()
                     if actual_checksum != ref["checksum"]:
                         raise ValueError("artifact content checksum changed")
@@ -162,6 +173,11 @@ class ProductionPreflightService:
             event_type = {"approved": "G01_APPROVED", "approved_with_comment": "G01_APPROVED", "modification_requested": "G01_MODIFICATION_REQUESTED", "rejected": "G01_REJECTED"}[request.decision]
             append_preflight_event(session, preflight_id=preflight_id, event_type=event_type, actor=request.actor, idempotency_key=request.idempotency_key, payload={"decision": request.decision, "state_version": gate.state_version}, occurred_at=now)
             return self._decision(decision)
+
+    def _artifact_store(self, snapshot: PreflightSnapshot) -> LocalFilesystemArtifactStore:
+        output_root = snapshot.resolved_output_root or snapshot.target_output_path
+        metadata_root = self._layout.for_run(output_root, "preflight-" + snapshot.preflight_id).metadata_root / "preflights" / snapshot.preflight_id
+        return LocalFilesystemArtifactStore(metadata_root, fixed_run_root=metadata_root)
 
     @staticmethod
     def _checksum(value: object) -> str:

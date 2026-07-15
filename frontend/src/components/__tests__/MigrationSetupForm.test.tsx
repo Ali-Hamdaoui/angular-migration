@@ -18,7 +18,7 @@ describe("MigrationSetupForm", () => {
   beforeEach(() => {
     vi.mocked(validatePaths).mockReset();
     vi.mocked(validatePaths).mockResolvedValue({
-      snapshot: { validation_id: "path-1", captured_at: new Date().toISOString(), policy_version: "path-validation-v1", status: "passed", source_path: "source", target_output_path: "target", source_fingerprint: "sha256:source", rules: [], blockers: [], warnings: [], target_reservation_eligible: true, checksum: "sha256:path" }
+      snapshot: { validation_id: "path-1", captured_at: new Date().toISOString(), policy_version: "path-validation-v1", status: "passed", source_path: "source", target_parent_path: "target", generated_output_name: "source-angular-21", resolved_output_root: "target/source-angular-21", target_output_path: "target/source-angular-21", source_fingerprint: "sha256:source", rules: [], blockers: [], warnings: [], target_reservation_eligible: true, checksum: "sha256:path" }
     });
     vi.mocked(validatePreflight).mockReset();
     vi.mocked(createMockMigration).mockReset();
@@ -31,7 +31,7 @@ describe("MigrationSetupForm", () => {
       checksum: "sha256:preflight",
       expires_at: new Date(Date.now() + 60000).toISOString(),
       source_path: "source",
-      target_output_path: "target",
+      target_output_path: "target/source-angular-21",
       status: "passed",
       message: "passed",
       blockers: [],
@@ -49,7 +49,7 @@ describe("MigrationSetupForm", () => {
     const start = screen.getByRole("button", { name: "Start" });
     expect(start).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Source path"), { target: { value: "source" } });
-    fireEvent.change(screen.getByLabelText("Target output path"), { target: { value: "target" } });
+    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "target" } });
     fireEvent.click(screen.getByRole("button", { name: "Validate" }));
 
     await screen.findAllByText("passed");
@@ -59,7 +59,7 @@ describe("MigrationSetupForm", () => {
 
     expect(start).toBeEnabled();
 
-    fireEvent.change(screen.getByLabelText("Target output path"), { target: { value: "changed-target" } });
+    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "changed-target" } });
     expect(start).toBeDisabled();
   });
 
@@ -69,7 +69,7 @@ describe("MigrationSetupForm", () => {
       checksum: "sha256:preflight",
       expires_at: new Date(Date.now() + 60000).toISOString(),
       source_path: "source",
-      target_output_path: "target",
+      target_output_path: "target/source-angular-21",
       status: "passed_with_warnings",
       message: "passed",
       blockers: [],
@@ -85,7 +85,7 @@ describe("MigrationSetupForm", () => {
     render(<MigrationSetupForm />);
 
     fireEvent.change(screen.getByLabelText("Source path"), { target: { value: "source" } });
-    fireEvent.change(screen.getByLabelText("Target output path"), { target: { value: "target" } });
+    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "target" } });
     fireEvent.click(screen.getByRole("button", { name: "Validate" }));
     await screen.findByText("passed_with_warnings");
     fireEvent.click(screen.getByRole("button", { name: "Start" }));

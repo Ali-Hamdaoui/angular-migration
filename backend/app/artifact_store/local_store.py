@@ -76,8 +76,9 @@ class StoredArtifact:
 class LocalFilesystemArtifactStore:
     """Write, list, and read immutable artifacts within the configured artifact root."""
 
-    def __init__(self, artifact_root: Path) -> None:
+    def __init__(self, artifact_root: Path, *, fixed_run_root: Path | None = None) -> None:
         self._artifact_root = artifact_root
+        self._fixed_run_root = fixed_run_root.resolve() if fixed_run_root else None
 
     @property
     def artifact_root(self) -> Path:
@@ -180,7 +181,7 @@ class LocalFilesystemArtifactStore:
 
     def _resolve_run_root(self, run_id: str) -> Path:
         self._validate_run_id(run_id)
-        return (self._artifact_root / run_id).resolve()
+        return self._fixed_run_root if self._fixed_run_root is not None else (self._artifact_root / run_id).resolve()
 
     def _resolve_available_artifact_path(self, run_id: str, relative_path: str) -> Path:
         run_root = self.ensure_run_layout(run_id)
