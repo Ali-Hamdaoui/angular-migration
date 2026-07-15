@@ -12,6 +12,7 @@ from app.api.routes.sources import router as sources_router
 from app.api.routes.snapshots import router as snapshots_router
 from app.api.routes.migrations import assistant_router, router as migrations_router
 from app.api.routes.version import router as version_router
+from app.api.routes.baseline import router as baseline_router
 from app.api.routes.runs import router as runs_router
 
 api_router = APIRouter()
@@ -28,6 +29,7 @@ api_router.include_router(artifacts_router)
 api_router.include_router(environment_router)
 api_router.include_router(execution_profiles_router)
 api_router.include_router(preflights_router)
+api_router.include_router(baseline_router)
 api_router.include_router(draft_approval_router)
 
 # Versioned production surface; legacy unversioned paths remain compatibility aliases.
@@ -44,4 +46,5 @@ api_v1_router.include_router(environment_router)
 api_v1_router.include_router(execution_profiles_router)
 api_v1_router.include_router(preflights_router)
 api_v1_router.include_router(draft_approval_router)
+api_v1_router.include_router(baseline_router)
 api_router.include_router(api_v1_router)
