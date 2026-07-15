@@ -7,7 +7,7 @@ Build the trusted execution path and prove complete controlled Angular major-ver
 
 ### D.3.2 Sprint boundaries
 
-Includes command registry/policy/executor/process control, live logs, leases/cancellation, stage sandboxes, G07/G08/G09/G12, update/validation steps, copy-forward, and a parameterized 18→19→20→21 passing path. Full LLM repair is deferred to Sprint 4.
+Includes command registry/policy/executor/process control, live logs, leases/cancellation, run-scoped stage sandboxes, G07/G08/G09/G12, update/validation steps, copy-forward, and a parameterized 18→19→20→21 passing path. Full LLM repair is deferred to Sprint 4.
 
 ### D.3.3 Features in implementation order
 
@@ -20,7 +20,7 @@ Includes command registry/policy/executor/process control, live logs, leases/can
 
 4. **S3-F04 — Own commands with JobSupervisor, leases, timeout, and explicit cancellation** (Operational capability, Must)
 
-5. **S3-F05 — Prepare a dedicated stage sandbox and decide G07 stage start** (Approval capability, Must)
+5. **S3-F05 — Prepare a dedicated run-scoped stage sandbox and decide G07 stage start** (Approval capability, Must)
 
 6. **S3-F06 — Run the stage bootstrap clean install** (Execution capability, Must)
 
@@ -128,7 +128,7 @@ User/reviewer/operator action
 
 **Preconditions:** S2-F07; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -277,8 +277,8 @@ S2-F07
   - **Context:** All execution must pass through a structured registry and policy engine; plans authorize command references, not arbitrary shell text.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Starting processes, live logs, user-defined commands, PowerShell wrappers, and LLM command generation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -387,7 +387,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F01; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -537,8 +537,8 @@ S3-F01
   - **Context:** CommandExecutor is the sole authoritative external-process path and must be proven before Angular mutation.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Live log streaming, cancellation, interactive prompts, stage mutation, and arbitrary command selection.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -647,7 +647,7 @@ User/reviewer/operator action
 
 **Preconditions:** S1-F05, S3-F02; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -797,8 +797,8 @@ S1-F05, S3-F02
   - **Context:** Long installs and builds need transparent progress, but live chunks are not the authoritative log evidence.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Terminal input, interactive command response, log editing, and cross-run aggregation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -907,7 +907,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F02, S3-F03; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1057,8 +1057,8 @@ S3-F02, S3-F03
   - **Context:** Browser disconnect must not cancel work, but explicit user cancellation must stop scheduling and terminate the complete process tree safely.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Full startup reconciliation, resume after crash, multi-worker scheduling, and repair rollback.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1082,7 +1082,7 @@ S3-F02, S3-F03
 
 ---
 
-### S3-F05 — Prepare a dedicated stage sandbox and decide G07 stage start
+### S3-F05 — Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
 #### Feature identity
 
@@ -1094,7 +1094,7 @@ S3-F02, S3-F03
 
 #### User-observable outcome
 
-A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, dedicated destination, and risks, approve G07, and then create the isolated stage sandbox.
+A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, dedicated destination, and risks, approve G07, and then create the isolated run-scoped stage sandbox.
 
 #### Context
 
@@ -1154,7 +1154,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Prepare a dedicated stage sandbox and decide G07 stage start**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Prepare a dedicated run-scoped stage sandbox and decide G07 stage start**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY.**-family durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **migration_stages, active stage plan, workspace/fingerprint records, gate decisions.** exist with state version, timestamps, and idempotency lineage.
@@ -1170,18 +1170,18 @@ User/reviewer/operator action
 
 **Preconditions:** S2-F07, S3-F04; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
     2. Navigate to the surface described by **Stage-start review page with plan/profile/input tabs, workspace alias, risk notices, G07 controls, copy progress, and ready/blocked states.**.
-    3. Trigger the primary action for **Prepare a dedicated stage sandbox and decide G07 stage start** using valid fixture data.
+    3. Trigger the primary action for **Prepare a dedicated run-scoped stage sandbox and decide G07 stage start** using valid fixture data.
     4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
     5. Open the resulting detail, event, and artifact views.
 6. Open the **G07** review package, enter a review comment, and choose an allowed decision.
 7. Repeat with a stale state version or changed bound artifact to verify rejection.
 
-    **Expected UI result:** A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, dedicated destination, and risks, approve G07, and then create the isolated stage sandbox. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+    **Expected UI result:** A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, dedicated destination, and risks, approve G07, and then create the isolated run-scoped stage sandbox. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
     **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
@@ -1225,11 +1225,11 @@ S2-F07, S3-F04
 
 #### Detailed sub-issues
 
-#### S3-F05-I01 — Implement backend application contract for Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I01 — Implement backend application contract for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** Backend
-  - **Technical story:** Implement the bounded backend/application behavior for Prepare a dedicated stage sandbox and decide G07 stage start so the feature has one authoritative service path.
+  - **Technical story:** Implement the bounded backend/application behavior for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start so the feature has one authoritative service path.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** StagePreparationService, current-version re-detection, later-stage exact resolution hook, StageExecutionPlan lock, G07 package, WorkspaceManager stage-copy operation, fingerprint validation, and lease checks.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
@@ -1256,11 +1256,11 @@ S2-F07, S3-F04
   - **Estimate:** M
   - **Risk level:** Medium
 
-#### S3-F05-I02 — Persist and expose evidence contracts for Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I02 — Persist and expose evidence contracts for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** API
-  - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Prepare a dedicated stage sandbox and decide G07 stage start observable and auditable.
+  - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Prepare a dedicated run-scoped stage sandbox and decide G07 stage start observable and auditable.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** Persistence: migration_stages, active stage plan, workspace/fingerprint records, gate decisions.. API: POST /api/v1/runs/{id}/stages/{stageId}/prepare; POST /api/v1/runs/{id}/approvals/G07/decisions; POST /api/v1/runs/{id}/stages/{stageId}/sandbox. Events: STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY.. Artifacts: Stage-start package, exact plan/profile, copy report, input manifest, input fingerprint, and sandbox verification.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
@@ -1287,11 +1287,11 @@ S2-F07, S3-F04
   - **Estimate:** M
   - **Risk level:** Medium
 
-#### S3-F05-I03 — Build frontend experience for Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I03 — Build frontend experience for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** Frontend
-  - **Technical story:** Create the React/Next.js projection and user interaction for Prepare a dedicated stage sandbox and decide G07 stage start, using backend snapshots and durable events only.
+  - **Technical story:** Create the React/Next.js projection and user interaction for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start, using backend snapshots and durable events only.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** Stage-start review page with plan/profile/input tabs, workspace alias, risk notices, G07 controls, copy progress, and ready/blocked states.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
@@ -1318,16 +1318,16 @@ S2-F07, S3-F04
   - **Estimate:** M
   - **Risk level:** Low
 
-#### S3-F05-I04 — Verify and document Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I04 — Verify and document Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** Testing
-  - **Technical story:** Prove Prepare a dedicated stage sandbox and decide G07 stage start through automated seams, security negatives, and the documented UI manual scenario.
+  - **Technical story:** Prove Prepare a dedicated run-scoped stage sandbox and decide G07 stage start through automated seams, security negatives, and the documented UI manual scenario.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1364,7 +1364,7 @@ S2-F07, S3-F04
 
 #### User-observable outcome
 
-A user can run the exact approved bootstrap install in the stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result.
+A user can run the exact approved bootstrap install in the run-scoped stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result.
 
 #### Context
 
@@ -1437,7 +1437,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F05; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1446,7 +1446,7 @@ User/reviewer/operator action
 4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
 5. Open the resulting detail, event, and artifact views.
 
-**Expected UI result:** A user can run the exact approved bootstrap install in the stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+**Expected UI result:** A user can run the exact approved bootstrap install in the run-scoped stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
 **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
@@ -1586,8 +1586,8 @@ S3-F05
   - **Context:** The update command must start from a reproducible dependency state and cannot silently use old node_modules.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Dependency repair, Angular update, final clean install, and generic retry of unsafe interrupted mutation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1696,7 +1696,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F06; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1846,8 +1846,8 @@ S3-F06
   - **Context:** Official Angular tooling is the first migration mechanism; success requires exact target proof, not only command exit zero.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** LLM repair, optional Angular modernization migrations, and transformation approval.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1955,7 +1955,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F07; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2105,8 +2105,8 @@ S3-F07
   - **Context:** Official tooling can produce behavior-sensitive or optional changes; the transformation must be reviewable before acceptance.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Approving G08, editing diff, applying repair patches, and runtime parity proof.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2217,7 +2217,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F08; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2371,8 +2371,8 @@ S3-F08
   - **Context:** Human review is required before the stage crosses the transformation boundary, especially for high-risk files and builder behavior.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Changing the diff in UI, technical validation, repair, and stage completion.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2482,7 +2482,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F09; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2631,8 +2631,8 @@ S3-F09
   - **Context:** Transformation acceptance does not prove reproducibility or source validity; validation must begin from a clean dependency boundary.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Builds, tests/lint, route/backend comparison, LLM repair, and G09.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2741,7 +2741,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F10; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2890,8 +2890,8 @@ S3-F10
   - **Context:** Build is a mandatory core gate and cannot be changed to passed by human approval.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Repair, unsupported custom-builder implementation, browser runtime tests, and G09.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2999,7 +2999,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F11; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3149,8 +3149,8 @@ S3-F11
   - **Context:** Full tests are required after each stage; lint is conditional but must be represented honestly.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Disabling tests, assertion weakening, test-framework replacement, browser E2E, and repair.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3261,7 +3261,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F10, S3-F11, S3-F12; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3416,8 +3416,8 @@ S3-F10, S3-F11, S3-F12
   - **Context:** Stage validation combines machine gates and honest parity evidence; technical success remains separate from functional, security, and quality assurance.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Automated browser/visual proof, repair flow, stage sealing, and external security/quality scans.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3529,7 +3529,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F13; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3685,8 +3685,8 @@ S3-F13
   - **Context:** Stage completion and copy-forward are separate trusted boundaries. The engine must use actual prior-stage output and finalize exact versions before each new stage.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** LLM repair, final clean assurance, delivery, and startup crash recovery.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3718,7 +3718,7 @@ S3-F13
 
 - Real harmless subprocess, timeout, live log, process-tree cancellation, and partial-evidence tests.
 
-- Stage sandbox isolation and no-node_modules copy-forward tests.
+- Run-scoped stage sandbox isolation and no-node_modules copy-forward tests.
 
 - Complete stage validation matrix and core-gate non-bypass tests.
 
