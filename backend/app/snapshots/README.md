@@ -15,3 +15,18 @@ during acquisition, and publishes the completed copy atomically. Completed
 snapshots include `source-manifest.json` and
 `snapshot-fingerprint.json`; `inspect_snapshot` validates the manifest before
 returning its immutable domain record.
+
+I02 persists each run snapshot in the `source_snapshots` table and exposes:
+
+```text
+POST /api/v1/runs/{runId}/snapshots
+GET  /api/v1/runs/{runId}/snapshots/{snapshotId}
+```
+
+A successful creation records six immutable JSON artifacts under the run
+artifact root: `source_manifest.json`, `source_git_metadata.json`,
+`snapshot_manifest.json`, `exclusion_policy_snapshot.json`,
+`snapshot_copy_report.json`, and `snapshot_fingerprint.json`. Creation
+emits ordered `SNAPSHOT_STARTED` and `SNAPSHOT_CREATED` events, advances the
+authoritative run state to `SOURCE_VALIDATED`, and replays duplicate
+idempotency requests without copying again.
