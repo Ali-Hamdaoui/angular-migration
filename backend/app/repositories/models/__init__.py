@@ -2,6 +2,7 @@
 
 from app.repositories.models.base import Base
 from app.repositories.g02_models import G02ApprovalModel
+from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     ActiveRunClaimModel,
@@ -33,6 +34,7 @@ __all__ = [
     "ArtifactMetadataModel",
     "Base",
     "G02ApprovalModel",
+    "ExecutionProfileModel",
     "CommandExecutionModel",
     "EnvironmentCapabilityModel",
     "EnvironmentDiagnosticEventModel",
