@@ -31,11 +31,21 @@ class BaselineSandboxService:
         snapshot_root: Path,
         baseline_path: Path,
         approved_snapshot_fingerprint: str,
+        registered_run_root: Path | None = None,
     ) -> BaselineSandboxRecord:
         snapshot_root = snapshot_root.resolve(strict=True)
         baseline_path = baseline_path.resolve(strict=False)
+        if registered_run_root is not None:
+            run_root = registered_run_root.resolve(strict=True)
+            for alias_name, alias_path in (("SOURCE_SNAPSHOT", snapshot_root), ("BASELINE_SANDBOX", baseline_path)):
+                try:
+                    alias_path.relative_to(run_root)
+                except ValueError as error:
+                    raise BaselineBoundaryError(f"{alias_name} must remain inside the registered run root") from error
         if not approved_snapshot_fingerprint:
             raise BaselineBoundaryError("An approved snapshot fingerprint is required")
+        if baseline_path == snapshot_root or baseline_path.is_relative_to(snapshot_root) or snapshot_root.is_relative_to(baseline_path):
+            raise BaselineBoundaryError("Baseline sandbox and source snapshot must not overlap")
         if baseline_path.exists():
             raise FileExistsError(f"baseline sandbox already exists: {baseline_path}")
 

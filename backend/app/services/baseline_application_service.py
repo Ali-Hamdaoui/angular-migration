@@ -68,7 +68,7 @@ class BaselineApplicationService:
             if not snapshot_root or not baseline_path:
                 raise BaselineApplicationError("BASELINE_LAYOUT_REQUIRED", "Registered source-snapshot and baseline aliases are required.", 409)
             try:
-                workspace = self._sandbox.create(run_id=run_id, snapshot_root=snapshot_root, baseline_path=baseline_path, approved_snapshot_fingerprint=package.snapshot_fingerprint)
+                workspace = self._sandbox.create(run_id=run_id, snapshot_root=snapshot_root, baseline_path=baseline_path, approved_snapshot_fingerprint=package.snapshot_fingerprint, registered_run_root=Path(run.run_root) if run.run_root else None)
             except (OSError, ValueError) as error:
                 raise BaselineApplicationError("BASELINE_WORKSPACE_FAILED", str(error), 422) from error
             artifacts = self._write_artifact(session, run, "baseline_workspace_manifest.json", {"run_id": run_id, "snapshot_id": package.snapshot_id, "input_fingerprint": workspace.input_fingerprint, "sandbox_fingerprint": workspace.fingerprint, "sandbox_path": str(workspace.sandbox_path), "excluded_paths": list(workspace.excluded_paths)}, request.idempotency_key, now)

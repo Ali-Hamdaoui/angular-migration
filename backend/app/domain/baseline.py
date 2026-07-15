@@ -170,7 +170,7 @@ class PackageSourceInventory:
             # recovered from the original package by this inspector's helper.
             del section
         for name, requested in sorted(package.dependencies.items()):
-            entries.append(DependencySourceEntry(name, requested, self.classify(requested), "dependencies"))
+            entries.append(DependencySourceEntry(name, _redact_source(requested), self.classify(requested), "dependencies"))
         return tuple(entries)
 
     @staticmethod
@@ -209,7 +209,7 @@ class LifecycleScriptAuditor:
                 classification, reasons = LifecycleClassification.RESTRICTED, ("SCRIPT_REQUIRES_SANDBOX_REVIEW",)
             else:
                 classification, reasons = LifecycleClassification.REQUIRES_REVIEW, ("LIFECYCLE_SCRIPT_PRESENT",)
-            result.append(LifecycleScriptEntry(name, command, classification, reasons))
+            result.append(LifecycleScriptEntry(name, _redact_text(command), classification, reasons))
         return tuple(result)
 
 
@@ -293,3 +293,12 @@ def _checksum(value: Any) -> str:
 
 def _is_exact_version(value: str) -> bool:
     return bool(re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", value.strip()))
+
+
+def _redact_source(value: str) -> str:
+    return re.sub(r"(?i)(://)([^/@\s]+)@", r"\1[redacted]@", value)
+
+
+def _redact_text(value: str) -> str:
+    value = re.sub(r"(?i)(token|password|secret|authorization)(\s*[=:]\s*)([^\s]+)", r"\1\2[redacted]", value)
+    return re.sub(r"(?i)(://)([^/@\s]+)@", r"\1[redacted]@", value)
