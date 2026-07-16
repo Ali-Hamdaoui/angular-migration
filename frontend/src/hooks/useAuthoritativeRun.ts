@@ -7,7 +7,7 @@ import type { AuthoritativeRunStateDto, WorkflowEventDto } from "@/types/generat
 
 export type AuthoritativeConnectionStatus = "loading" | "connecting" | "open" | "reconnecting" | "recovering" | "failed";
 
-const EVENT_TYPES = ["RUN_CREATED", "RUN_START_ACCEPTED", "RUN_STARTED", "RUN_START_REJECTED", "RUN_RECONSTRUCTED", "SNAPSHOT_STARTED", "SNAPSHOT_CREATED", "SNAPSHOT_FAILED", "SNAPSHOT_PROGRESS_UPDATED", "SNAPSHOT_QUARANTINED", "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED", "G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE"] as const;
+const EVENT_TYPES = ["RUN_CREATED", "RUN_START_ACCEPTED", "RUN_STARTED", "RUN_START_REJECTED", "RUN_RECONSTRUCTED", "SNAPSHOT_STARTED", "SNAPSHOT_CREATED", "SNAPSHOT_FAILED", "SNAPSHOT_PROGRESS_UPDATED", "SNAPSHOT_QUARANTINED", "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED", "G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE", "COMMAND_QUEUED", "COMMAND_STARTED", "COMMAND_OUTPUT_AVAILABLE", "COMMAND_OUTPUT_CHUNK", "BASELINE_INSTALL_SUCCEEDED", "BASELINE_INSTALL_FAILED", "COMMAND_CANCELLED", "COMMAND_INTERRUPTED"] as const;
 
 export function useAuthoritativeRun(runId: string, initialState: AuthoritativeRunStateDto) {
   const [state, setState] = useState(initialState);
@@ -18,10 +18,10 @@ export function useAuthoritativeRun(runId: string, initialState: AuthoritativeRu
     setStatus("recovering");
     return getAuthoritativeRunState(runId)
       .then((next) => {
-        setState((current) => ({
+        setState({
           ...next,
           workflow_events: [...next.workflow_events].sort((a, b) => a.sequence - b.sequence),
-        }));
+        });
         setError(null);
         setStatus("open");
       })

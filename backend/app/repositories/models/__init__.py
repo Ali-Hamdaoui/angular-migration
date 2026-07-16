@@ -1,6 +1,7 @@
 """Persistence model package."""
 
 from app.repositories.models.base import Base
+from app.repositories.preflight_models import ApprovalGateModel, PreflightArtifactMetadataModel, PreflightEventModel, PreflightModel, UserDecisionModel
 from app.repositories.g02_models import G02ApprovalModel
 from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.execution_profiles import ExecutionProfileModel
@@ -52,4 +53,9 @@ __all__ = [
     "SourceSnapshotModel",
     "WorkflowEventModel",
     "WorkerLeaseModel",
+    "ApprovalGateModel",
+    "PreflightArtifactMetadataModel",
+    "PreflightEventModel",
+    "PreflightModel",
+    "UserDecisionModel",
 ]

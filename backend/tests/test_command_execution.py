@@ -1,7 +1,11 @@
 """Tests for the Sprint 0 sandbox command execution worker."""
 
 from datetime import UTC, datetime
+import threading
+import time
 from pathlib import Path
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +16,7 @@ from app.command_execution import (
     CommandPolicy,
     CommandRegistry,
     ExecutionWorker,
+    WorkerSupervisor,
 )
 from app.domain.contracts import ArtifactType, CancellationPolicy, CommandRequestDto, CommandStatus
 from app.main import app
@@ -64,6 +69,30 @@ def _worker(
     )
     return worker, artifact_store, sandbox_root
 
+
+
+def test_worker_does_not_retry_supervisor_after_type_error(tmp_path: Path) -> None:
+    class TypeErrorSupervisor(WorkerSupervisor):
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, request, *, cancel_event=None, output_callback=None):
+            self.calls += 1
+            raise TypeError("supervisor failure")
+
+    supervisor = TypeErrorSupervisor()
+    artifact_store = LocalFilesystemArtifactStore(tmp_path / "runs")
+    sandbox_root = tmp_path / "sandboxes"
+    sandbox_root.mkdir()
+    worker = ExecutionWorker(
+        CommandPolicy(sandbox_root=sandbox_root, registry=CommandRegistry(), working_directory_aliases={"BASELINE_SANDBOX": sandbox_root}),
+        CommandLogWriter(artifact_store),
+        supervisor=supervisor,
+    )
+
+    with pytest.raises(TypeError, match="supervisor failure"):
+        worker.run(_request())
+    assert supervisor.calls == 1
 
 def test_worker_runs_safe_python_version_command_and_writes_command_artifacts(tmp_path: Path) -> None:
     worker, artifact_store, _sandbox_root = _worker(tmp_path)
@@ -227,3 +256,22 @@ def test_command_logs_are_visible_through_artifact_api(monkeypatch, tmp_path: Pa
     assert execution.command_log_artifact.ref.relative_path in [item["relative_path"] for item in list_response.json()]
     assert read_response.status_code == 200
     assert read_response.json()["artifact"]["artifact_type"] == "command_log"
+
+
+def test_worker_cancellation_event_terminates_running_process_tree(tmp_path: Path) -> None:
+    registry = CommandRegistry(definitions=(CommandDefinition("python-sleep", "python", ("-c", "import time; print('started', flush=True); time.sleep(10)")),))
+    worker, _artifact_store, _sandbox_root = _worker(tmp_path, registry=registry, timeout_seconds=30)
+    cancel_event = threading.Event()
+    result_holder = {}
+
+    def run_command() -> None:
+        result_holder["result"] = worker.run(_request(command_id="python-sleep", executable="python", arguments=["-c", "import time; print('started', flush=True); time.sleep(10)"], idempotency_key="cancel-process-key", timeout_seconds=30), cancel_event=cancel_event)
+
+    thread = threading.Thread(target=run_command)
+    thread.start()
+    time.sleep(0.25)
+    cancel_event.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result_holder["result"].cancelled is True
+    assert result_holder["result"].result.status is CommandStatus.CANCELLED

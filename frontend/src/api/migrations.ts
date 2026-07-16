@@ -38,6 +38,10 @@ export function getMockMigrationState(client: ApiClient = apiClient): Promise<Mi
   return client.get<MigrationRunDto>("/api/v1/migrations/mock-state");
 }
 
+export function cancelMigration(runId: string, client: ApiClient = apiClient): Promise<unknown> {
+  return client.post<unknown>(`/api/v1/migrations/${encodeURIComponent(runId)}/cancel`, {});
+}
+
 export function getMigrationState(runId: string, client: ApiClient = apiClient): Promise<MigrationRunDto> {
   return client.get<MigrationRunDto>("/api/v1/migrations/" + runId + "/state");
 }

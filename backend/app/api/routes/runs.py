@@ -1,5 +1,6 @@
 """Versioned authoritative migration-run API."""
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Request
@@ -74,12 +75,16 @@ def read_run_state(run_id: str, http_request: Request, service: MigrationRunServ
 def stream_run_events(run_id: str, request: Request):
     raw_last_event_id = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
     last_sequence = int(raw_last_event_id) if raw_last_event_id and raw_last_event_id.isdigit() else 0
-    with session_scope() as session:
-        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).where(WorkflowEventModel.sequence > last_sequence).order_by(WorkflowEventModel.sequence)))
 
     async def event_stream():
-        for event in events:
-            payload = {"event_id": event.id, "run_id": event.run_id, "stage_id": event.stage_id, "event_type": event.event_type, "occurred_at": event.occurred_at.isoformat(), "sequence": event.sequence, "payload": event.payload}
-            yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, sort_keys=True)}\n\n"
+        nonlocal last_sequence
+        while not await request.is_disconnected():
+            with session_scope() as session:
+                events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).where(WorkflowEventModel.sequence > last_sequence).order_by(WorkflowEventModel.sequence)))
+            for event in events:
+                last_sequence = event.sequence
+                payload = {"event_id": event.id, "run_id": event.run_id, "stage_id": event.stage_id, "event_type": event.event_type, "occurred_at": event.occurred_at.isoformat(), "sequence": event.sequence, "payload": event.payload}
+                yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, sort_keys=True)}\n\n"
+            await asyncio.sleep(0.25)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -11,6 +11,7 @@ from app.repositories.models.base import Base
 
 class MigrationRunModel(Base):
     __tablename__ = "migration_runs"
+    __table_args__ = (Index("uq_migration_runs_graph_thread", "graph_thread_id", unique=True),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -30,7 +31,7 @@ class MigrationRunModel(Base):
     target_output_path: Mapped[str | None] = mapped_column(Text)  # legacy compatibility projection
     target_parent_path: Mapped[str | None] = mapped_column(Text)
     generated_output_name: Mapped[str | None] = mapped_column(String(255))
-    resolved_output_root: Mapped[str | None] = mapped_column(Text)
+    resolved_output_root: Mapped[str | None] = mapped_column(Text, index=True)
     run_root: Mapped[str | None] = mapped_column(Text)
     artifact_root: Mapped[str | None] = mapped_column(Text)
     log_root: Mapped[str | None] = mapped_column(Text)
@@ -39,7 +40,7 @@ class MigrationRunModel(Base):
     migrated_app_path: Mapped[str | None] = mapped_column(Text)
     workspace_aliases: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     output_layout_version: Mapped[str | None] = mapped_column(String(64))
-    graph_thread_id: Mapped[str | None] = mapped_column(String(128), unique=True)
+    graph_thread_id: Mapped[str | None] = mapped_column(String(128))
     client_constraints: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     target_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     run_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -172,6 +173,32 @@ class CommandExecutionModel(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     exit_code: Mapped[int | None] = mapped_column(Integer)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=True, index=True)
+    requester: Mapped[str | None] = mapped_column(String(128))
+    shell: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=True)
+    network_profile: Mapped[str] = mapped_column(String(128), nullable=True)
+    cancellation_policy: Mapped[str] = mapped_column(String(64), nullable=True)
+    runtime_checksum: Mapped[str | None] = mapped_column(String(128))
+    baseline_checksum: Mapped[str | None] = mapped_column(String(128))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    timed_out: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    cancelled: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(128))
+    cancel_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    reconstruction_required: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    stdout_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    stderr_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    command_log_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    start_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    end_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    blockers: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    environment_blocker: Mapped[str | None] = mapped_column(String(128))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
 
 
 class WorkerLeaseModel(Base):
@@ -180,9 +207,12 @@ class WorkerLeaseModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
     lease_owner: Mapped[str] = mapped_column(String(128), nullable=False)
+    backend_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
@@ -308,9 +338,12 @@ class SourceSnapshotModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    backend_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_path: Mapped[str] = mapped_column(Text, nullable=False)
     snapshot_path: Mapped[str] = mapped_column(Text, nullable=False)
     manifest_id: Mapped[str | None] = mapped_column(String(128))

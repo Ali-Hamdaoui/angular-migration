@@ -281,6 +281,14 @@ class WorkflowEventType(str, Enum):
     LIFECYCLE_SCRIPT_REVIEW_REQUIRED = "LIFECYCLE_SCRIPT_REVIEW_REQUIRED"
     BASELINE_INSTALL_AUTHORIZED = "BASELINE_INSTALL_AUTHORIZED"
     BASELINE_INSTALL_BLOCKED = "BASELINE_INSTALL_BLOCKED"
+    COMMAND_QUEUED = "COMMAND_QUEUED"
+    COMMAND_STARTED = "COMMAND_STARTED"
+    COMMAND_OUTPUT_AVAILABLE = "COMMAND_OUTPUT_AVAILABLE"
+    COMMAND_OUTPUT_CHUNK = "COMMAND_OUTPUT_CHUNK"
+    BASELINE_INSTALL_SUCCEEDED = "BASELINE_INSTALL_SUCCEEDED"
+    BASELINE_INSTALL_FAILED = "BASELINE_INSTALL_FAILED"
+    COMMAND_CANCELLED = "COMMAND_CANCELLED"
+    COMMAND_INTERRUPTED = "COMMAND_INTERRUPTED"
 
 
 class ErrorEnvelope(ContractModel):
@@ -487,8 +495,11 @@ class CommandResultDto(ContractModel):
 class WorkerLeaseDto(ContractModel):
     lease_id: str
     run_id: str
+    execution_id: str | None = None
     worker_id: str
+    backend_instance_id: str | None = None
     acquired_at: datetime
+    heartbeat_at: datetime | None = None
     expires_at: datetime
 
 

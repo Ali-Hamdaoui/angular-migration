@@ -108,6 +108,12 @@ class BaselineSandboxService:
         temporary = baseline_path.with_name(f".{baseline_path.name}.copying-{os.getpid()}")
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
+        if baseline_path.is_symlink():
+            raise BaselineBoundaryError("Baseline sandbox reconstruction cannot replace a symbolic link")
+        if baseline_path.is_dir():
+            shutil.rmtree(baseline_path)
+        elif baseline_path.exists():
+            baseline_path.unlink()
         return self.create(**kwargs)
 
 
