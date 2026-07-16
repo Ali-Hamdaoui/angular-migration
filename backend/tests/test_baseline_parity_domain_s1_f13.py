@@ -40,3 +40,38 @@ def test_backend_snapshot_exposes_indicators_without_file_contents(tmp_path):
     assert result["value"]["api_roots"] == ["https://example.test/api"]
     assert "AuthInterceptor" not in json.dumps(result["value"])
 
+
+
+def test_failure_fingerprint_accepts_one_shot_diagnostics_and_tracks_parser_drift():
+    service = BaselineFailureFingerprintService()
+    diagnostics = (item for item in [{"kind": "build", "message": "ERROR C:/work/app.ts:7 failed"}])
+    grouped = service.from_diagnostics(diagnostics)
+
+    assert grouped[0].count == 1
+    assert service.fingerprint(kind="build", message="failed", parser_version="baseline-parsers-v1").fingerprint != service.fingerprint(kind="build", message="failed", parser_version="baseline-parsers-v2").fingerprint
+
+
+def test_backend_snapshot_redacts_credentials_and_marks_empty_evidence_unknown(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "config.ts").write_text("const apiUrl = 'https://user:super-secret@example.test/api?token=secret';", encoding="utf-8")
+
+    result = anchor_to_dict(BackendContractSnapshotBuilder().build(tmp_path))
+
+    serialized = json.dumps(result["value"])
+    assert result["value"]["api_roots"] == ["https://example.test/api"]
+    assert "super-secret" not in serialized
+    assert "token=secret" not in serialized
+
+    empty = anchor_to_dict(BackendContractSnapshotBuilder().build(tmp_path / "empty"))
+    assert empty["confidence"] == "unknown"
+
+
+def test_empty_route_inventory_is_not_presented_as_machine_proven(tmp_path):
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"sourceRoot": "src"}}}), encoding="utf-8")
+    (tmp_path / "src").mkdir()
+
+    result = anchor_to_dict(RouteInventoryBuilder().build(tmp_path))
+
+    assert result["value"] == []
+    assert result["confidence"] == "unknown"

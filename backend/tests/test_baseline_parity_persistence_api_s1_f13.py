@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -6,6 +7,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.baseline_parity_contracts import BaselineParityCaptureRequest
+from app.api.routes import baseline_parity as baseline_parity_routes
+from app.api.routes.runs import stream_run_events
+from app.api.routes import runs as runs_routes
+from app.main import app
+from fastapi.testclient import TestClient
 from app.repositories.models import Base, BaselineParityEvidenceModel, BaselineQualificationModel, BaselineValidationModel, MigrationRunModel, WorkflowEventModel
 from app.services.baseline_parity_application_service import BaselineParityApplicationService
 
@@ -74,3 +80,39 @@ def test_capture_replays_idempotently_and_rejects_stale_state(tmp_path):
         raise AssertionError("stale capture was accepted")
     engine.dispose()
 
+
+
+def test_capture_is_available_through_versioned_api(monkeypatch, tmp_path):
+    scope, _sessions, engine = fixture(tmp_path)
+    service = BaselineParityApplicationService(scope=scope, now_provider=lambda: NOW)
+    app.dependency_overrides[baseline_parity_routes.get_service] = lambda: service
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/runs/run-1/baseline/parity", json={"expected_state_version": 1, "idempotency_key": "api-1", "actor": "operator"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "captured"
+    engine.dispose()
+
+
+def test_capture_events_are_replayable_through_sse_after_reopen(monkeypatch, tmp_path):
+    scope, _sessions, engine = fixture(tmp_path)
+    service = BaselineParityApplicationService(scope=scope, now_provider=lambda: NOW)
+    result = service.capture("run-1", BaselineParityCaptureRequest(expected_state_version=1, idempotency_key="sse-1", actor="operator"))
+
+    class Request:
+        headers = {"last-event-id": "0"}
+        query_params = {}
+        calls = 0
+
+        async def is_disconnected(self):
+            self.calls += 1
+            return self.calls > 1
+
+    monkeypatch.setattr(runs_routes, "session_scope", scope)
+    response = stream_run_events("run-1", Request())
+    first = asyncio.run(response.body_iterator.__anext__())
+
+    assert f"id: {result.event_sequence - 2}" in first
+    assert "event: BASELINE_FAILURES_FINGERPRINTED" in first
+    engine.dispose()

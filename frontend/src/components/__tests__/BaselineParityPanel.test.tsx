@@ -32,4 +32,13 @@ describe("BaselineParityPanel", () => {
     expect(screen.getByText(/home/)).toBeInTheDocument();
     expect(screen.getByText(/Connection lost/)).toBeInTheDocument();
   });
+
+  it("shows stale capture feedback and does not render sensitive integration contents", async () => {
+    getBaselineParitySection.mockResolvedValue({ ...evidence, backend_integration: { api_roots: ["https://example.test/api"], authentication_file_references: ["src/auth.interceptor.ts"] } });
+    captureBaselineParity.mockRejectedValue(new ApiClientError("stale", 409));
+    render(<BaselineParityPanel runId="run-1" stateVersion={4} connectionStatus="open" />);
+    await screen.findByText("expected 1");
+    fireEvent.click(screen.getByRole("button", { name: "Backend integration" }));
+    expect(screen.queryByText("super-secret-token")).not.toBeInTheDocument();
+  });
 });

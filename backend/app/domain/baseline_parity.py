@@ -89,6 +89,7 @@ class BaselineFailureFingerprintService:
         )
 
     def from_diagnostics(self, diagnostics: Iterable[Mapping[str, Any]]) -> list[FailureFingerprint]:
+        diagnostics = list(diagnostics)
         grouped: dict[str, FailureFingerprint] = {}
         for diagnostic in diagnostics:
             item = self.fingerprint(
@@ -139,7 +140,8 @@ class RouteInventoryBuilder:
                     if lazy:
                         entry["lazy_loader_indicator"] = lazy.group(1).strip()
                     routes.append(entry)
-        return BaselineAnchor("routes", routes, EvidenceConfidence.MACHINE_PROVEN, source="angular.json/typescript")
+        confidence = EvidenceConfidence.MACHINE_PROVEN if routes else EvidenceConfidence.UNKNOWN
+        return BaselineAnchor("routes", routes, confidence, source="angular.json/typescript")
 
     @staticmethod
     def _json(path: Path) -> dict[str, Any] | None:
@@ -195,7 +197,9 @@ class BackendContractSnapshotBuilder:
                 endpoint_indicators.append({"file": relative, "kind": "endpoint_or_interceptor_reference"})
             files.append(relative)
         snapshot = {"api_roots": sorted(api_roots), "proxy_files": sorted(set(proxy_files)), "endpoint_indicators": endpoint_indicators, "authentication_file_references": sorted(set(auth_files)), "inspected_files": files}
-        return BaselineAnchor("backend_integration", snapshot, EvidenceConfidence.MACHINE_PROVEN, source="source scan")
+        has_evidence = bool(api_roots or proxy_files or endpoint_indicators or auth_files)
+        confidence = EvidenceConfidence.MACHINE_PROVEN if has_evidence else EvidenceConfidence.UNKNOWN
+        return BaselineAnchor("backend_integration", snapshot, confidence, source="source scan")
 
 
 def _safe_endpoint(value: str) -> str:
