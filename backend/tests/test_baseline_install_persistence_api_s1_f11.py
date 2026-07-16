@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -14,7 +15,7 @@ from app.command_execution import CommandLogWriter, CommandPolicy, CommandRegist
 from app.command_execution.worker import SupervisedProcessResult
 from app.domain.contracts import CommandStatus
 from app.repositories.models import Base, BaselineQualificationModel, CommandExecutionModel, ExecutionProfileModel, MigrationRunModel, WorkflowEventModel
-from app.services.baseline_install_application_service import BaselineInstallApplicationService
+from app.services.baseline_install_application_service import BaselineInstallApplicationError, BaselineInstallApplicationService
 
 
 NOW = datetime(2026, 7, 16, tzinfo=UTC)
@@ -80,4 +81,37 @@ def test_install_persists_execution_events_artifacts_and_idempotent_replay(tmp_p
         metadata = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1")))
         assert len(metadata) == 4
     assert service.get("run-1", first.execution_id).artifact_ids == first.artifact_ids
+    engine.dispose()
+
+
+def test_install_rejects_stale_state_before_execution(tmp_path):
+    scope, sessions, engine, service = _fixture(tmp_path)
+    with pytest.raises(BaselineInstallApplicationError) as error:
+        service.install("run-1", _request(state=2))
+    assert error.value.code == "STALE_STATE_VERSION"
+    with sessions() as session:
+        assert session.scalar(select(CommandExecutionModel).where(CommandExecutionModel.run_id == "run-1")) is None
+    engine.dispose()
+
+
+def test_install_rejects_runtime_checksum_authority_bypass(tmp_path):
+    scope, sessions, engine, service = _fixture(tmp_path)
+    with pytest.raises(BaselineInstallApplicationError) as error:
+        service.install("run-1", BaselineInstallRequest(expected_state_version=1, idempotency_key="install-bad-runtime", actor="operator", runtime_profile_id="profile-1", runtime_checksum="sha256:not-selected", timeout_seconds=60))
+    assert error.value.code == "EXECUTION_PROFILE_REQUIRED"
+    with sessions() as session:
+        assert session.scalar(select(CommandExecutionModel).where(CommandExecutionModel.run_id == "run-1")) is None
+    engine.dispose()
+
+
+def test_install_fails_closed_when_authorization_is_removed(tmp_path):
+    scope, sessions, engine, service = _fixture(tmp_path)
+    with sessions() as session:
+        baseline = session.get(BaselineQualificationModel, "baseline-1")
+        assert baseline is not None
+        baseline.authorization_status = "not_authorized"
+        session.commit()
+    with pytest.raises(BaselineInstallApplicationError) as error:
+        service.install("run-1", _request())
+    assert error.value.code == "BASELINE_INSTALL_AUTHORIZATION_REQUIRED"
     engine.dispose()
