@@ -175,7 +175,7 @@ class CommandPolicy:
 class CommandLogWriter:
     """Persist command execution records and bounded output artifacts."""
 
-    def __init__(self, artifact_store: LocalFilesystemArtifactStore, *, max_output_bytes: int = 1_000_000) -> None:
+    def __init__(self, artifact_store: LocalFilesystemArtifactStore, *, max_output_bytes: int | None = 1_000_000) -> None:
         self._artifact_store = artifact_store
         self._max_output_bytes = max_output_bytes
 
@@ -276,7 +276,7 @@ class CommandLogWriter:
             return "", False
         text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
         payload = text.encode("utf-8")
-        if len(payload) <= self._max_output_bytes:
+        if self._max_output_bytes is None or len(payload) <= self._max_output_bytes:
             return text, False
         bounded = payload[: self._max_output_bytes].decode("utf-8", errors="replace")
         return bounded + "\n[command output truncated]", True
@@ -399,10 +399,11 @@ class ExecutionWorker:
             self._remember_idempotent_result(normalized_request, execution)
             return execution
 
-        try:
-            supervised = self._supervisor.run(structured_request, cancel_event=cancel_event, output_callback=output_callback)
-        except TypeError:
-            supervised = self._supervisor.run(structured_request)
+        supervised = self._supervisor.run(
+            structured_request,
+            cancel_event=cancel_event,
+            output_callback=output_callback,
+        )
         execution = self._record(
             normalized_request,
             supervised.status,

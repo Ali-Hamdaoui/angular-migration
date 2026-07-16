@@ -11,6 +11,7 @@ from app.repositories.models.base import Base
 
 class MigrationRunModel(Base):
     __tablename__ = "migration_runs"
+    __table_args__ = (Index("uq_migration_runs_graph_thread", "graph_thread_id", unique=True),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -30,7 +31,7 @@ class MigrationRunModel(Base):
     target_output_path: Mapped[str | None] = mapped_column(Text)  # legacy compatibility projection
     target_parent_path: Mapped[str | None] = mapped_column(Text)
     generated_output_name: Mapped[str | None] = mapped_column(String(255))
-    resolved_output_root: Mapped[str | None] = mapped_column(Text)
+    resolved_output_root: Mapped[str | None] = mapped_column(Text, index=True)
     run_root: Mapped[str | None] = mapped_column(Text)
     artifact_root: Mapped[str | None] = mapped_column(Text)
     log_root: Mapped[str | None] = mapped_column(Text)
@@ -39,7 +40,7 @@ class MigrationRunModel(Base):
     migrated_app_path: Mapped[str | None] = mapped_column(Text)
     workspace_aliases: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     output_layout_version: Mapped[str | None] = mapped_column(String(64))
-    graph_thread_id: Mapped[str | None] = mapped_column(String(128), unique=True)
+    graph_thread_id: Mapped[str | None] = mapped_column(String(128))
     client_constraints: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     target_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     run_policy_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)

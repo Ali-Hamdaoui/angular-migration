@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.artifact_store import LocalFilesystemArtifactStore
@@ -14,6 +16,7 @@ from app.command_execution import (
     CommandPolicy,
     CommandRegistry,
     ExecutionWorker,
+    WorkerSupervisor,
 )
 from app.domain.contracts import ArtifactType, CancellationPolicy, CommandRequestDto, CommandStatus
 from app.main import app
@@ -66,6 +69,30 @@ def _worker(
     )
     return worker, artifact_store, sandbox_root
 
+
+
+def test_worker_does_not_retry_supervisor_after_type_error(tmp_path: Path) -> None:
+    class TypeErrorSupervisor(WorkerSupervisor):
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, request, *, cancel_event=None, output_callback=None):
+            self.calls += 1
+            raise TypeError("supervisor failure")
+
+    supervisor = TypeErrorSupervisor()
+    artifact_store = LocalFilesystemArtifactStore(tmp_path / "runs")
+    sandbox_root = tmp_path / "sandboxes"
+    sandbox_root.mkdir()
+    worker = ExecutionWorker(
+        CommandPolicy(sandbox_root=sandbox_root, registry=CommandRegistry(), working_directory_aliases={"BASELINE_SANDBOX": sandbox_root}),
+        CommandLogWriter(artifact_store),
+        supervisor=supervisor,
+    )
+
+    with pytest.raises(TypeError, match="supervisor failure"):
+        worker.run(_request())
+    assert supervisor.calls == 1
 
 def test_worker_runs_safe_python_version_command_and_writes_command_artifacts(tmp_path: Path) -> None:
     worker, artifact_store, _sandbox_root = _worker(tmp_path)

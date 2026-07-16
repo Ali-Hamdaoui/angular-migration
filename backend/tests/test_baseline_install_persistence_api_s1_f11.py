@@ -18,7 +18,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.command_execution import CommandLogWriter, CommandPolicy, CommandRegistry, ExecutionWorker, WorkerSupervisor
 from app.command_execution.worker import SupervisedProcessResult
 from app.domain.contracts import CommandStatus
-from app.repositories.models import Base, BaselineQualificationModel, CommandExecutionModel, ExecutionProfileModel, MigrationRunModel, WorkerLeaseModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, BaselineQualificationModel, CommandExecutionModel, ExecutionProfileModel, MigrationRunModel, WorkerLeaseModel, WorkflowEventModel
 from app.repositories.g02_models import G02ApprovalModel
 from app.services.baseline_install_application_service import BaselineInstallApplicationError, BaselineInstallApplicationService
 from app.api.routes.baseline import get_baseline_install_service
@@ -31,23 +31,42 @@ NOW = datetime(2026, 7, 16, tzinfo=UTC)
 
 
 class SuccessfulNpmSupervisor(WorkerSupervisor):
-    def run(self, request):
+    def run(self, request, *, cancel_event=None, output_callback=None):
         return SupervisedProcessResult(CommandStatus.SUCCEEDED, 0, "npm ci completed", "")
 
 
-def _fixture(tmp_path: Path):
+class CancelledNpmSupervisor(WorkerSupervisor):
+    def run(self, request, *, cancel_event=None, output_callback=None):
+        if output_callback:
+            output_callback("stdout", "partial npm output\n")
+        return SupervisedProcessResult(CommandStatus.CANCELLED, None, "partial npm output\n", "cancelled\n")
+
+
+class VerboseNpmSupervisor(WorkerSupervisor):
+    def run(self, request, *, cancel_event=None, output_callback=None):
+        output = "x" * 70_000
+        if output_callback:
+            output_callback("stdout", output)
+        return SupervisedProcessResult(CommandStatus.SUCCEEDED, 0, output, "")
+
+def _fixture(tmp_path: Path, supervisor=None):
     sandbox = tmp_path / "baseline"
     (sandbox / "node_modules").mkdir(parents=True)
     (sandbox / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
     lockfile_content = '{"lockfileVersion":3}'
     (sandbox / "package-lock.json").write_text(lockfile_content, encoding="utf-8")
     (sandbox / "node_modules" / ".package-lock.json").write_text(json.dumps({"packages": {"": {}}}), encoding="utf-8")
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "snapshot-fingerprint.json").write_text(json.dumps({"fingerprint": "sha256:input"}), encoding="utf-8")
+    (snapshot / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
+    (snapshot / "package-lock.json").write_text(lockfile_content, encoding="utf-8")
     artifact_root = tmp_path / "artifacts"
     engine = create_engine(f"sqlite:///{tmp_path / 'state.db'}")
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     with sessions() as session:
-        session.add(MigrationRunModel(id="run-1", status="CREATED", run_phase="BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(artifact_root), workspace_aliases={"BASELINE_SANDBOX": str(sandbox)}, created_at=NOW, updated_at=NOW))
+        session.add(MigrationRunModel(id="run-1", run_root=str(tmp_path), status="CREATED", run_phase="BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(artifact_root), workspace_aliases={"BASELINE_SANDBOX": str(sandbox), "SOURCE_SNAPSHOT": str(snapshot)}, created_at=NOW, updated_at=NOW))
         session.add(BaselineQualificationModel(id="baseline-1", run_id="run-1", idempotency_key="baseline", actor="operator", status="qualified", snapshot_id="snapshot-1", sandbox_path=str(sandbox), input_fingerprint="sha256:input", sandbox_fingerprint="sha256:sandbox", package={}, lockfile={"status": "valid", "lockfile_checksum": "sha256:" + hashlib.sha256(lockfile_content.encode()).hexdigest()}, sources=[], scripts=[], registry={}, blockers=[], warnings=[], authorization_status="authorized", checksum="sha256:baseline", artifact_ids=[], state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
         session.add(ExecutionProfileModel(id="profile-1", run_id="run-1", idempotency_key="profile", request_checksum="sha256:req", policy_version="execution-profile-v1", status="selected", source_angular_exact="18.2.3", selected_profile_id="profile-1", selected_checksum="sha256:runtime", profiles=[], blockers=[], guidance=[], artifact_ids=[], state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
         session.add(G02ApprovalModel(id="g02-1", run_id="run-1", gate_id="G02", gate_version="g02-v1", idempotency_key="g02", actor="operator", status="approved", decision="approved", package_checksum="sha256:g02", artifact_set_checksum="sha256:artifacts", snapshot_id="snapshot-1", state_version=1, event_sequence=1, baseline_input_boundary="snapshot-1", package={}, artifact_ids=[], stale_reason=None, comment=None, created_at=NOW, updated_at=NOW))
@@ -63,7 +82,7 @@ def _fixture(tmp_path: Path):
         root = Path(run.artifact_root)
         store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
         policy = CommandPolicy(sandbox_root=sandbox, registry=CommandRegistry(), working_directory_aliases={"BASELINE_SANDBOX": sandbox}, runtime_profiles=frozenset({"profile-1"}), network_profiles=frozenset({"approved-registries-only"}))
-        return ExecutionWorker(policy, CommandLogWriter(store), supervisor=SuccessfulNpmSupervisor())
+        return ExecutionWorker(policy, CommandLogWriter(store), supervisor=supervisor or SuccessfulNpmSupervisor())
 
     return scope, sessions, engine, BaselineInstallApplicationService(session_scope_factory=scope, worker_factory=worker_factory, now_provider=lambda: NOW)
 
@@ -231,4 +250,37 @@ def test_restart_recovery_reruns_when_start_fingerprints_are_unchanged(tmp_path)
             break
         time.sleep(0.05)
     assert service.get("run-1", first.execution_id).status == CommandStatus.SUCCEEDED.value
+    engine.dispose()
+
+def test_cancelled_install_reconstructs_the_baseline_sandbox_and_persists_evidence(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=CancelledNpmSupervisor())
+
+    result = service.install("run-1", _request(key="cancelled-install"))
+
+    assert result.status == CommandStatus.CANCELLED.value
+    assert result.reconstruction_required is True
+    assert (tmp_path / "baseline" / "package.json").is_file()
+    assert not (tmp_path / "baseline" / "node_modules").exists()
+    with sessions() as session:
+        command = session.get(CommandExecutionModel, result.execution_id)
+        assert command is not None
+        assert "BASELINE_RECONSTRUCTION_FAILED" not in (command.blockers or [])
+        artifacts = list(session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == "run-1")))
+        assert any(item.relative_path.endswith("baseline_install_summary.json") for item in artifacts)
+    engine.dispose()
+
+
+def test_persisted_logs_are_complete_while_sse_chunks_are_bounded(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=VerboseNpmSupervisor())
+
+    result = service.install("run-1", _request(key="verbose-install"))
+
+    store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
+    stdout = next(item for item in store.list_artifacts("run-1") if item.relative_path.endswith("npm-ci-bootstrap.stdout.log"))
+    assert len(store.read_artifact("run-1", stdout.relative_path).content) == 70_000
+    with sessions() as session:
+        output_event = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.event_type == "COMMAND_OUTPUT_CHUNK"))
+        assert output_event is not None
+        assert len(output_event.payload["chunk"].encode("utf-8")) <= 64_000
+    assert result.status == CommandStatus.SUCCEEDED.value
     engine.dispose()
