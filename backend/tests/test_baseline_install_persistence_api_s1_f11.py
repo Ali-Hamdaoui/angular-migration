@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -34,6 +35,14 @@ class SuccessfulNpmSupervisor(WorkerSupervisor):
     def run(self, request, *, cancel_event=None, output_callback=None):
         return SupervisedProcessResult(CommandStatus.SUCCEEDED, 0, "npm ci completed", "")
 
+
+class CountingNpmSupervisor(WorkerSupervisor):
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, request, *, cancel_event=None, output_callback=None):
+        self.calls += 1
+        return SupervisedProcessResult(CommandStatus.SUCCEEDED, 0, "npm ci completed", "")
 
 class CancelledNpmSupervisor(WorkerSupervisor):
     def run(self, request, *, cancel_event=None, output_callback=None):
@@ -232,9 +241,11 @@ def test_install_rejects_registered_workspace_alias_outside_qualified_sandbox(tm
     engine.dispose()
 
 
-def test_restart_recovery_reruns_when_start_fingerprints_are_unchanged(tmp_path):
-    scope, sessions, engine, service = _fixture(tmp_path)
+def test_restart_recovery_reconstructs_and_does_not_create_a_second_process(tmp_path):
+    supervisor = CountingNpmSupervisor()
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=supervisor)
     first = service.install("run-1", _request(key="restart-recovery"))
+    assert supervisor.calls == 1
     with sessions() as session:
         command = session.get(CommandExecutionModel, first.execution_id)
         assert command is not None
@@ -243,15 +254,13 @@ def test_restart_recovery_reruns_when_start_fingerprints_are_unchanged(tmp_path)
         command.finished_at = None
         session.commit()
     assert service.reconcile_orphans() == 1
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        current = service.get("run-1", first.execution_id)
-        if current is not None and current.status == CommandStatus.SUCCEEDED.value:
-            break
-        time.sleep(0.05)
-    assert service.get("run-1", first.execution_id).status == CommandStatus.SUCCEEDED.value
+    recovered = service.get("run-1", first.execution_id)
+    assert recovered is not None
+    assert recovered.status == CommandStatus.FAILED.value
+    assert recovered.reconstruction_required is True
+    assert "BASELINE_RECONSTRUCTED" in recovered.blockers
+    assert supervisor.calls == 1
     engine.dispose()
-
 def test_cancelled_install_reconstructs_the_baseline_sandbox_and_persists_evidence(tmp_path):
     _scope, sessions, engine, service = _fixture(tmp_path, supervisor=CancelledNpmSupervisor())
 
@@ -283,4 +292,128 @@ def test_persisted_logs_are_complete_while_sse_chunks_are_bounded(tmp_path):
         assert output_event is not None
         assert len(output_event.payload["chunk"].encode("utf-8")) <= 64_000
     assert result.status == CommandStatus.SUCCEEDED.value
+    engine.dispose()
+pytestmark_real_npm = pytest.mark.skipif(shutil.which("npm") is None, reason="npm is required for real application E2E coverage")
+
+
+def _make_slow_install(sandbox: Path, seconds: int = 20) -> None:
+    package = json.loads((sandbox / "package.json").read_text(encoding="utf-8"))
+    package["scripts"] = {"preinstall": f"node -e \\\"setTimeout(() => {{}}, {seconds * 1000})\\\""}
+    (sandbox / "package.json").write_text(json.dumps(package), encoding="utf-8")
+
+
+@pytestmark_real_npm
+def test_real_npm_application_success_persists_artifacts_and_preserves_source(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=WorkerSupervisor())
+    source_files = {path.relative_to(tmp_path / "snapshot"): path.read_bytes() for path in (tmp_path / "snapshot").rglob("*") if path.is_file()}
+
+    result = service.install("run-1", _request(key="real-npm-success"))
+
+    assert result.status == CommandStatus.SUCCEEDED.value
+    store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
+    paths = {item.relative_path for item in store.list_artifacts("run-1")}
+    assert "01_baseline/npm-ci-command.json" in paths
+    assert "01_baseline/dependency_tree_verification.json" in paths
+    assert "01_baseline/lockfile_post_install_verification.json" in paths
+    assert "01_baseline/baseline_install_summary.json" in paths
+    assert source_files == {path.relative_to(tmp_path / "snapshot"): path.read_bytes() for path in (tmp_path / "snapshot").rglob("*") if path.is_file()}
+    with sessions() as session:
+        command = session.get(CommandExecutionModel, result.execution_id)
+        assert command is not None
+        assert command.command_log_artifact_id
+        assert command.stdout_artifact_id or command.stderr_artifact_id
+    engine.dispose()
+
+
+@pytestmark_real_npm
+def test_real_npm_application_timeout_reconstructs_and_reaches_terminal_state(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=WorkerSupervisor())
+    _make_slow_install(tmp_path / "baseline")
+
+    result = service.install("run-1", _request(key="real-npm-timeout", state=1).model_copy(update={"timeout_seconds": 1}))
+
+    assert result.status in {CommandStatus.CANCELLED.value, CommandStatus.FAILED.value}
+    assert result.reconstruction_required is True
+    assert (tmp_path / "baseline" / "package.json").read_text(encoding="utf-8") == (tmp_path / "snapshot" / "package.json").read_text(encoding="utf-8")
+    with sessions() as session:
+        command = session.get(CommandExecutionModel, result.execution_id)
+        assert command is not None
+        assert command.finished_at is not None
+        assert command.artifact_ids
+    engine.dispose()
+
+
+@pytestmark_real_npm
+def test_real_npm_application_cancellation_terminates_and_finalizes_evidence(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=WorkerSupervisor())
+    _make_slow_install(tmp_path / "baseline", seconds=30)
+    accepted = service.accept("run-1", _request(key="real-npm-cancel"))
+    deadline = time.time() + 10
+    current = service.get("run-1", accepted.execution_id)
+    while time.time() < deadline and current is not None and current.status not in {CommandStatus.RUNNING.value, CommandStatus.CANCELLED.value, CommandStatus.FAILED.value}:
+        time.sleep(0.1)
+        current = service.get("run-1", accepted.execution_id)
+    with sessions() as session:
+        run = session.get(MigrationRunModel, "run-1")
+        assert run is not None
+        expected_state_version = run.state_version
+    service.cancel("run-1", accepted.execution_id, BaselineInstallCancelRequest(expected_state_version=expected_state_version, idempotency_key="real-npm-cancel-request", actor="operator"))
+    deadline = time.time() + 15
+    result = service.get("run-1", accepted.execution_id)
+    while time.time() < deadline and result is not None and result.status not in {CommandStatus.CANCELLED.value, CommandStatus.FAILED.value}:
+        time.sleep(0.1)
+        result = service.get("run-1", accepted.execution_id)
+    assert result is not None
+    assert result.status in {CommandStatus.CANCELLED.value, CommandStatus.FAILED.value}
+    assert result.reconstruction_required is True
+    assert result.artifact_ids
+    engine.dispose()
+
+def test_real_npm_application_refresh_reads_authoritative_terminal_state(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=WorkerSupervisor())
+    result = service.install("run-1", _request(key="real-npm-refresh"))
+    reloaded = BaselineInstallApplicationService(session_scope_factory=_scope, worker_factory=service._worker_factory, now_provider=lambda: NOW)
+
+    refreshed = reloaded.get("run-1", result.execution_id)
+
+    assert refreshed is not None
+    assert refreshed.status == CommandStatus.SUCCEEDED.value
+    assert refreshed.execution_id == result.execution_id
+    assert refreshed.artifact_ids == result.artifact_ids
+    engine.dispose()
+
+
+def test_npm_debug_logs_follow_project_configured_cache(tmp_path):
+    cache = tmp_path / "configured-cache"
+    logs = cache / "_logs"
+    logs.mkdir(parents=True)
+    debug_log = logs / "debug-1.log"
+    debug_log.write_text("npm debug evidence", encoding="utf-8")
+    sandbox = tmp_path / "baseline"
+    sandbox.mkdir()
+    (sandbox / ".npmrc").write_text(f"cache={cache}", encoding="utf-8")
+    now = datetime.now(UTC)
+    result = SimpleNamespace(command=SimpleNamespace(result=SimpleNamespace(started_at=now, finished_at=now)))
+    run = SimpleNamespace(workspace_aliases={"BASELINE_SANDBOX": str(sandbox)})
+
+    paths = BaselineInstallApplicationService._npm_debug_log_paths(run, result)
+
+    assert debug_log.resolve() in paths
+
+
+def test_real_process_start_failure_persists_failure_foreign_keys_and_blocker(tmp_path, monkeypatch):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=WorkerSupervisor())
+    monkeypatch.setenv("PATH", str(tmp_path / "no-such-bin"))
+
+    result = service.install("run-1", _request(key="real-process-start-failure"))
+
+    assert result.status == CommandStatus.FAILED.value
+    assert "BASELINE_INSTALL_ENVIRONMENT_BLOCKED" in result.blockers
+    with sessions() as session:
+        command = session.get(CommandExecutionModel, result.execution_id)
+        assert command is not None
+        assert command.environment_blocker == "PROCESS_START_FAILED"
+        assert command.command_log_artifact_id == result.artifact_ids[0]
+        assert command.stdout_artifact_id == result.artifact_ids[1]
+        assert command.stderr_artifact_id == result.artifact_ids[2]
     engine.dispose()

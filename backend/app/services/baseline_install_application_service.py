@@ -152,41 +152,28 @@ class BaselineInstallApplicationService:
                 session.flush()
     def reconcile_orphans(self) -> int:
         """Recover orphaned executions using persisted fingerprints and leases."""
-        jobs = []
         recovered = 0
         with self._scope() as session:
             records = session.scalars(select(CommandExecutionModel).where(CommandExecutionModel.status.in_([CommandStatus.PENDING.value, CommandStatus.RUNNING.value]))).all()
             for record in records:
                 run = self._run(session, record.run_id)
-                aliases = run.workspace_aliases or {}
-                sandbox = Path(aliases.get("BASELINE_SANDBOX", ""))
-                current = FrozenBaselineInspectionService().inspect_before(sandbox) if sandbox.is_dir() else None
-                fingerprints = record.start_fingerprint or {}
-                safe_to_rerun = bool(current and current[0].checksum == (fingerprints.get("package_json") or {}).get("checksum") and current[1].checksum == (fingerprints.get("lockfile") or {}).get("checksum"))
                 request = BaselineInstallRequest(expected_state_version=record.state_version, idempotency_key=record.idempotency_key or f"supervisor-recovery:{record.id}", actor="baseline-supervisor", runtime_profile_id=record.runtime_profile_id or "unknown", runtime_checksum=record.runtime_checksum or "unknown", timeout_seconds=record.timeout_seconds or 3600)
-                action = "rerun" if safe_to_rerun else "reconstruct"
-                reconstruction = self._reconstruct_baseline(session, run, record.id) if not safe_to_rerun else {"status": "not_required"}
+                action = "reconstruct"
+                reconstruction = self._reconstruct_baseline(session, run, record.id)
                 try:
-                    completed = self._transition(session, run, request, WorkflowEventType.COMMAND_INTERRUPTED, "worker lease was lost during restart recovery", {"execution_id": record.id, "worker_id": record.worker_id, "recovery_action": action, "reconstruction_required": not safe_to_rerun}, expected_state_version=run.state_version)
+                    completed = self._transition(session, run, request, WorkflowEventType.COMMAND_INTERRUPTED, "worker lease was lost during restart recovery", {"execution_id": record.id, "worker_id": record.worker_id, "recovery_action": action, "reconstruction_required": True}, expected_state_version=run.state_version)
                 except BaselineInstallApplicationError:
                     continue
-                record.status = CommandStatus.PENDING.value if safe_to_rerun else CommandStatus.FAILED.value
-                record.finished_at = None if safe_to_rerun else self._now()
+                record.status = CommandStatus.FAILED.value
+                record.finished_at = self._now()
                 record.cancelled = False
-                record.reconstruction_required = not safe_to_rerun
-                record.blockers = ["WORKER_LOST_SAFE_TO_RERUN"] if safe_to_rerun else (["BASELINE_RECONSTRUCTED"] if reconstruction.get("status") == "reconstructed" else [reconstruction.get("blocker", "BASELINE_RECONSTRUCTION_FAILED")])
+                record.reconstruction_required = True
+                record.blockers = ["BASELINE_RECONSTRUCTED"] if reconstruction.get("status") == "reconstructed" else [reconstruction.get("blocker", "BASELINE_RECONSTRUCTION_FAILED")]
                 record.state_version = completed.next_state_version
                 record.event_sequence = completed.event_sequence
                 for lease in session.scalars(select(WorkerLeaseModel).where(WorkerLeaseModel.execution_id == record.id)).all(): session.delete(lease)
-                if safe_to_rerun and current is not None: jobs.append((record.run_id, record.id, request, sandbox, current, FrozenBaselineCommandPolicy().create()))
                 recovered += 1
             session.flush()
-        for run_id, execution_id, request, sandbox, before, command in jobs:
-            cancel_event = threading.Event()
-            with self._lock:
-                self._cancel_events[execution_id] = cancel_event
-                self._output_buffers[execution_id] = {"stdout": [], "stderr": []}
-            self._executor.submit(self._execute, run_id, execution_id, request, sandbox, before, command, cancel_event)
         return recovered
     def _output_chunk(self, run_id, execution_id, request, stream, chunk):
         redacted = self._redact(chunk)
@@ -269,6 +256,9 @@ class BaselineInstallApplicationService:
             record.end_fingerprint = {"package_json": asdict(after[0]), "lockfile": asdict(after[1])}
             record.blockers = [blocker] + ([reconstruction.get("blocker")] if reconstruction.get("status") == "failed" else [])
             record.artifact_ids = artifacts
+            record.command_log_artifact_id = artifacts[0] if len(artifacts) > 0 else None
+            record.stdout_artifact_id = artifacts[1] if len(artifacts) > 1 else None
+            record.stderr_artifact_id = artifacts[2] if len(artifacts) > 2 else None
             completed = self._transition(session, run, request, WorkflowEventType.BASELINE_INSTALL_FAILED, "baseline npm ci command failed before completion", {"execution_id": execution_id, "blocker": blocker, "reconstruction_status": reconstruction.get("status")}, expected_state_version=record.state_version)
             record.state_version = completed.next_state_version
             record.event_sequence = completed.event_sequence
@@ -287,10 +277,35 @@ class BaselineInstallApplicationService:
             self._write_artifact(store, run, "04_workflow_state/command_logs/npm-ci-bootstrap-failure.stdout.log", "".join(buffers.get("stdout", [])), ArtifactType.TEXT_LOG, request),
             self._write_artifact(store, run, "04_workflow_state/command_logs/npm-ci-bootstrap-failure.stderr.log", "".join(buffers.get("stderr", [])), ArtifactType.TEXT_LOG, request),
             self._write_artifact(store, run, "01_baseline/lockfile_post_install_verification.json", json.dumps({"package_json": asdict(after[0]), "lockfile": asdict(after[1]), "unchanged": after == before}, indent=2, default=str), ArtifactType.JSON, request),
-            self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": "failed", "blockers": [blocker], "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": "failed", "blockers": [blocker], "environment_blocker": environment_blocker, "fingerprints": {"start": {"package_json": asdict(before[0]), "lockfile": asdict(before[1])}, "end": {"package_json": asdict(after[0]), "lockfile": asdict(after[1])}}, "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
         ]
         self._register_artifacts(session, run, artifacts)
         return [a.ref.artifact_id for a in artifacts]
+
+    @staticmethod
+    def _npm_cache_paths(run):
+        aliases = run.workspace_aliases or {}
+        sandbox = Path(aliases.get("BASELINE_SANDBOX", ""))
+        config_files = []
+        if sandbox.is_dir(): config_files.append(sandbox / ".npmrc")
+        for variable in ("NPM_CONFIG_USERCONFIG", "npm_config_userconfig", "NPM_CONFIG_GLOBALCONFIG", "npm_config_globalconfig"):
+            value = os.environ.get(variable)
+            if value: config_files.append(Path(value).expanduser())
+        config_files.extend([Path.home() / ".npmrc", Path.home() / "AppData" / "Roaming" / "npm" / "etc" / "npmrc"])
+        caches = {Path(value).expanduser() for value in (os.environ.get("npm_config_cache"), os.environ.get("NPM_CONFIG_CACHE")) if value}
+        for config_file in config_files:
+            try:
+                for raw_line in config_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or line.startswith(";") or "=" not in line: continue
+                    key, value = line.split("=", 1)
+                    if key.strip().lower() != "cache": continue
+                    candidate = Path(os.path.expandvars(value.strip())).expanduser()
+                    caches.add(candidate if candidate.is_absolute() else (config_file.parent / candidate).resolve())
+            except OSError:
+                continue
+        caches.update({Path.home() / "AppData" / "Local" / "npm-cache", Path.home() / "AppData" / "Roaming" / "npm-cache"})
+        return tuple(caches)
 
     @staticmethod
     def _npm_debug_log_paths(run, result):
@@ -298,17 +313,18 @@ class BaselineInstallApplicationService:
         candidates = []
         sandbox = Path(aliases.get("BASELINE_SANDBOX", ""))
         if sandbox.is_dir(): candidates.extend(sandbox.glob("npm-debug.log*"))
-        configured = {os.environ.get("npm_config_cache"), os.environ.get("NPM_CONFIG_CACHE"), str(Path.home() / "AppData" / "Local" / "npm-cache"), str(Path.home() / "AppData" / "Roaming" / "npm-cache")}
-        for value in configured:
-            if value: candidates.extend(Path(value).expanduser().glob("_logs/*.log"))
-        started = result.command.result.started_at.timestamp(); finished = (result.command.result.finished_at or datetime.now(UTC)).timestamp(); unique = {}
+        for cache in BaselineInstallApplicationService._npm_cache_paths(run):
+            candidates.extend(cache.glob("_logs/*.log"))
+        started = result.command.result.started_at.timestamp()
+        finished = (result.command.result.finished_at or datetime.now(UTC)).timestamp()
+        unique = {}
         for candidate in candidates:
             try:
                 resolved = candidate.resolve()
                 if resolved.is_file() and started - 1 <= resolved.stat().st_mtime <= finished + 1: unique[str(resolved)] = resolved
-            except OSError: continue
+            except OSError:
+                continue
         return tuple(unique.values())
-
     @staticmethod
     def _register_artifacts(session, run, artifacts):
         for artifact in artifacts:

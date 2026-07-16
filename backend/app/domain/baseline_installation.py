@@ -152,7 +152,7 @@ class FrozenBaselineInspectionService:
         if command_status is CommandStatus.SUCCEEDED and not blockers:
             dependency_tree = self._dependency_tree(sandbox)
             blockers.extend(dependency_tree.blockers)
-        interrupted = command_status in {CommandStatus.CANCELLED, CommandStatus.TIMED_OUT}
+        interrupted = command_status is not CommandStatus.SUCCEEDED
         return BaselineInstallationInspection(
             status="succeeded" if command_status is CommandStatus.SUCCEEDED and not blockers else "blocked" if blockers else command_status.value.lower(),
             package_json=package_json, lockfile=lockfile, dependency_tree=dependency_tree,

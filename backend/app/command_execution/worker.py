@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import subprocess
+import shutil
 import threading
 import queue
 from dataclasses import dataclass, field
@@ -292,7 +293,11 @@ class WorkerSupervisor:
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["start_new_session"] = True
-        process = subprocess.Popen(list(request.command), cwd=request.working_directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False, creationflags=creationflags, **popen_kwargs)
+        command = list(request.command)
+        if os.name == "nt":
+            resolved_executable = shutil.which(command[0])
+            if resolved_executable: command[0] = resolved_executable
+        process = subprocess.Popen(command, cwd=request.working_directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False, creationflags=creationflags, **popen_kwargs)
         chunks: list[tuple[str, str]] = []
         output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         def read_stream(name: str, stream) -> None:
