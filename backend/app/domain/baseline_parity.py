@@ -14,6 +14,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 
 SCHEMA_VERSION = "baseline-parity-v1"
@@ -189,12 +190,26 @@ class BackendContractSnapshotBuilder:
             except (OSError, UnicodeDecodeError):
                 continue
             for match in self._URL.finditer(content):
-                api_roots.add(match.group(1))
+                api_roots.add(_safe_endpoint(match.group(1)))
             if re.search(r"interceptor|HttpClient|fetch\s*\(|axios|/api/", content, re.IGNORECASE):
                 endpoint_indicators.append({"file": relative, "kind": "endpoint_or_interceptor_reference"})
             files.append(relative)
         snapshot = {"api_roots": sorted(api_roots), "proxy_files": sorted(set(proxy_files)), "endpoint_indicators": endpoint_indicators, "authentication_file_references": sorted(set(auth_files)), "inspected_files": files}
         return BaselineAnchor("backend_integration", snapshot, EvidenceConfidence.MACHINE_PROVEN, source="source scan")
+
+
+def _safe_endpoint(value: str) -> str:
+    """Keep endpoint shape while removing credentials and query secrets."""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "<redacted-endpoint>"
+    if not parsed.scheme or not parsed.netloc:
+        return "<redacted-endpoint>"
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 def anchor_to_dict(anchor: BaselineAnchor) -> dict[str, Any]:

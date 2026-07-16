@@ -94,3 +94,13 @@ The backend exposes the baseline target inventory and validation operations unde
 - `POST /baseline/{kind}/cancel`
 
 Mutation requests carry `expected_state_version`, `idempotency_key`, `actor`, and optional prerequisite artifact IDs. Results include target inventory, normalized status, exit code, duration, parser summaries, failed tests, warnings, output locations, artifact IDs and SHA-256 checksums, baseline checksum, state version, and event sequence. Missing lint is represented as `skipped_not_configured`; unsupported builders are `blocked`.
+## S1-F13 baseline parity evidence
+
+The backend captures checksum-bound baseline parity evidence through `POST /api/v1/runs/{runId}/baseline/parity` with `expected_state_version`, `idempotency_key`, `actor`, and optional prerequisite artifact IDs. The resulting immutable evidence is read through:
+
+- `GET /api/v1/runs/{runId}/baseline/failures`
+- `GET /api/v1/runs/{runId}/baseline/routes`
+- `GET /api/v1/runs/{runId}/baseline/backend-integration`
+- `GET /api/v1/runs/{runId}/baseline/anchors`
+
+Responses include parser/schema versions, confidence labels, source and evidence artifact references, SHA-256 checksums, state version, and event sequence. Capture emits `BASELINE_FAILURES_FINGERPRINTED`, `BASELINE_ROUTE_ANCHOR_CREATED`, and `BASELINE_BACKEND_ANCHOR_CREATED` through the authoritative Transition Service.
