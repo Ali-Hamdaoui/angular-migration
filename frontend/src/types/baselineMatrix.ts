@@ -23,6 +23,7 @@ export type BaselineMatrixResult = {
   test_count: number | null;
   failed_tests: string[];
   output_location: string | null;
+  artifact_ids: string[];
   blocker: string | null;
 };
 
@@ -44,6 +45,7 @@ export type BaselineValidationResponse = {
   results: BaselineMatrixResult[];
   parser_summary: Record<string, unknown> | null;
   artifact_ids: string[];
+  artifact_checksums: Record<string, string>;
   baseline_checksum: string | null;
   state_version: number;
   event_sequence: number;

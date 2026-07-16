@@ -23,6 +23,7 @@ class BaselineValidationModel(Base):
     results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     parser_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     prerequisite_artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     baseline_checksum: Mapped[str | None] = mapped_column(String(128))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)

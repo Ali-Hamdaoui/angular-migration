@@ -22,6 +22,7 @@ def upgrade() -> None:
         sa.Column("results", sa.JSON(), nullable=False),
         sa.Column("parser_summary", sa.JSON()),
         sa.Column("artifact_ids", sa.JSON(), nullable=False),
+        sa.Column("artifact_checksums", sa.JSON(), nullable=False),
         sa.Column("prerequisite_artifact_ids", sa.JSON(), nullable=False),
         sa.Column("baseline_checksum", sa.String(length=128)),
         sa.Column("state_version", sa.Integer(), nullable=False),

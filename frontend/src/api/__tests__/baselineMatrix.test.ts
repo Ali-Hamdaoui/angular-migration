@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { getBaselineTargets, getBaselineValidation, startBaselineValidation } from "@/api/baselineMatrix";
+import type { createApiClient } from "@/api/client";
 
 function client() {
-  return { get: vi.fn().mockResolvedValue({}), post: vi.fn().mockResolvedValue({}) } as never;
+  return { get: vi.fn().mockResolvedValue({}), post: vi.fn().mockResolvedValue({}) } as unknown as ReturnType<typeof createApiClient>;
 }
 
 describe("baseline matrix API", () => {

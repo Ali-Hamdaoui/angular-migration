@@ -19,6 +19,12 @@ import type {
  * DTO fields using the backend-owned vocabulary only.
  */
 export function applyEventToRun(run: MigrationRunDto, event: MigrationEventDto): MigrationRunDto {
+  const projected = applyEventToRunProjection(run, event);
+  const workflow_events = [...projected.workflow_events.filter((item) => item.event_id !== event.event_id), event];
+  return { ...projected, workflow_events };
+}
+
+function applyEventToRunProjection(run: MigrationRunDto, event: MigrationEventDto): MigrationRunDto {
   switch (event.event_type) {
     case "run_state_changed":
       return { ...run, status: event.payload.status as RunStatus, phase_status: (event.payload.phase_status as MigrationRunDto["phase_status"]) ?? run.phase_status, approval_status: (event.payload.approval_status as MigrationRunDto["approval_status"]) ?? run.approval_status, repair_status: (event.payload.repair_status as MigrationRunDto["repair_status"]) ?? run.repair_status, updated_at: event.occurred_at };

@@ -1,4 +1,4 @@
-import { apiClient, type createApiClient } from "./client";
+﻿import { apiClient, type createApiClient } from "./client";
 import type { BaselineMatrixKind, BaselineTargetInventoryResponse, BaselineValidationRequest, BaselineValidationResponse } from "@/types/baselineMatrix";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -15,4 +15,8 @@ export function getBaselineValidation(runId: string, kind: BaselineMatrixKind, c
 
 export function startBaselineValidation(runId: string, kind: BaselineMatrixKind, request: BaselineValidationRequest, client: ApiClient = apiClient): Promise<BaselineValidationResponse> {
   return client.post<BaselineValidationResponse>(`/api/v1/runs/${runPath(runId)}/${kind === "build" ? "baseline/builds" : kind === "test" ? "baseline/tests" : "baseline/lint"}`, request);
+}
+
+export function cancelBaselineValidation(runId: string, kind: BaselineMatrixKind, client: ApiClient = apiClient): Promise<BaselineValidationResponse> {
+  return client.post<BaselineValidationResponse>(`/api/v1/runs/${runPath(runId)}/baseline/${kind}/cancel`, {});
 }

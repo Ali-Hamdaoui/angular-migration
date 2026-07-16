@@ -35,7 +35,7 @@ export function RunDashboard({ runId, initialRun }: { runId: string; initialRun:
   return (
     <>
       <ConnectionStatusBar status={status} />
-      <ControlTowerShell run={run} />
+      <ControlTowerShell run={run} runId={runId} connectionStatus={status} />
       <EventStreamPanel events={events} />
     </>
   );

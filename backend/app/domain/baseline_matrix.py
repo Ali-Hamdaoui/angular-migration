@@ -67,6 +67,7 @@ class BaselineTargetResult:
     test_count: int | None = None
     failed_tests: tuple[str, ...] = ()
     output_location: str | None = None
+    artifact_ids: tuple[str, ...] = ()
     blocker: str | None = None
 
 
@@ -111,7 +112,7 @@ class BaselineTargetDiscoveryService:
             if isinstance(script, str) and script.strip():
                 target_id = f"script:{script_name}"
                 if not any(item.target_id == target_id for item in targets):
-                    targets.append(BaselineTarget(target_id, kind, None, None, target_id, "npm", ("run", script_name)))
+                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", ("run", script_name)))
 
         # Keep the matrix honest: absent test/lint configuration is represented
         # explicitly and never interpreted as a successful command.
@@ -132,12 +133,12 @@ class BaselineTargetDiscoveryService:
             suffix = f":{configuration}" if configuration else ""
             target_id = f"angular:{project}:{kind.value}{suffix}"
             if not isinstance(builder, str) or not self._supported_builder(kind, builder):
-                yield BaselineTarget(target_id, kind, project, configuration, target_id, "", (), supported=False, blocker="UNSUPPORTED_CUSTOM_TARGET")
+                yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "", (), supported=False, blocker="UNSUPPORTED_CUSTOM_TARGET")
                 continue
             arguments = ["ng", kind.value, project]
             if configuration:
                 arguments.extend(("--configuration", configuration))
-            yield BaselineTarget(target_id, kind, project, configuration, target_id, "npx", tuple(arguments))
+            yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments))
 
     @staticmethod
     def _supported_builder(kind: BaselineTargetKind, builder: str) -> bool:
