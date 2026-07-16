@@ -5,6 +5,7 @@ from app.repositories.preflight_models import ApprovalGateModel, PreflightArtifa
 from app.repositories.g02_models import G02ApprovalModel
 from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.baseline_matrix_models import BaselineValidationModel
+from app.repositories.baseline_parity_models import BaselineParityEvidenceModel
 from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
@@ -39,6 +40,7 @@ __all__ = [
     "G02ApprovalModel",
     "BaselineQualificationModel",
     "BaselineValidationModel",
+    "BaselineParityEvidenceModel",
     "ExecutionProfileModel",
     "CommandExecutionModel",
     "EnvironmentCapabilityModel",
