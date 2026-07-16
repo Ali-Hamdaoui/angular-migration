@@ -74,3 +74,7 @@ class BaselineInstallResponse(ContractModel):
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False
+class BaselineInstallCancelRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)

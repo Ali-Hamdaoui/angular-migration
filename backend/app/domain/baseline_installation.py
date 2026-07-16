@@ -117,7 +117,7 @@ class BaselineInstallationService:
         self._command_policy = command_policy or FrozenBaselineCommandPolicy()
         self._inspection = inspection or FrozenBaselineInspectionService()
 
-    def execute(self, request: CommandRequestDto, *, sandbox: Path, prerequisites: BaselineInstallPrerequisites) -> BaselineInstallationExecution:
+    def execute(self, request: CommandRequestDto, *, sandbox: Path, prerequisites: BaselineInstallPrerequisites, cancel_event=None, output_callback=None) -> BaselineInstallationExecution:
         prerequisites.validate()
         command = self._command_policy.create()
         if (
@@ -130,7 +130,7 @@ class BaselineInstallationService:
         ):
             raise BaselineInstallationError("BASELINE_COMMAND_NOT_FROZEN", "Only the exact npm ci baseline command is permitted.")
         before_package_json, before_lockfile = self._inspection.inspect_before(sandbox)
-        execution = self._worker.run(request)
+        execution = self._worker.run(request, cancel_event=cancel_event, output_callback=output_callback)
         inspection = self._inspection.inspect_after(sandbox, before_package_json=before_package_json, before_lockfile=before_lockfile, command_status=execution.result.status)
         return BaselineInstallationExecution(execution, inspection)
 

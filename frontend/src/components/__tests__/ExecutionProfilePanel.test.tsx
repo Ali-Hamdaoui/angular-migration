@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionProfilePanel } from "@/components/ExecutionProfilePanel";
 import type { ExecutionProfileResponse } from "@/types/generated/api";
-import { getExecutionProfiles, resolveExecutionProfiles, selectExecutionProfile } from "@/api/executionProfiles";
+import { getExecutionProfiles, selectExecutionProfile } from "@/api/executionProfiles";
 vi.mock("@/api/executionProfiles",()=>({getExecutionProfiles:vi.fn(),resolveExecutionProfiles:vi.fn(),selectExecutionProfile:vi.fn()}));
 const state={run_id:"run-1",status:"SOURCE_VALIDATED",run_phase:"DISCOVERY_BASELINE",phase_status:"running",approval_status:"approved",state_version:4,source_angular_version:"18.2.3",preflight_id:"p1",source_path:"C:/source",target_output_path:"C:/target",graph_thread_id:"thread",created_at:"2026-01-01",updated_at:"2026-01-01",artifacts:[],workflow_events:[]} as never;
 const candidate={profile_id:"node-20",operating_system:"windows",architecture:"amd64",node_executable:"C:/Tools/node/node.exe",node_exact:"20.11.1",npm_executable:"C:/Tools/node/npm.cmd",npm_exact:"10.2.4",npx_executable:"C:/Tools/node/npx.cmd",npx_exact:"10.2.4",angular_cli_exact:"18.2.3",registry_configured:true,proxy_configured:true,certificate_valid:true,environment_allowlist_valid:true,cache_policy_valid:true,network_policy:"approved-registries-only",available:true};

@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiClientError } from "@/api/client";
-import { cancelMigration } from "@/api/migrations";
-import { getBaseline, getBaselineCommand, installBaseline } from "@/api/baseline";
+import { cancelBaseline, getBaseline, getBaselineCommand, installBaseline } from "@/api/baseline";
 import { getExecutionProfiles } from "@/api/executionProfiles";
 import type { AuthoritativeRunStateDto, BaselineInstallResponse, BaselineResponse, ExecutionProfileResponse } from "@/types/generated/api";
 import type { AuthoritativeConnectionStatus } from "@/hooks/useAuthoritativeRun";
@@ -26,6 +25,8 @@ export function BaselineInstallationPanel({ runId, initialState, connectionStatu
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [output, setOutput] = useState<string[]>([]);
   const [executionId, setExecutionId] = useState<string | null>(() => eventExecutionId(initialState));
 
   const refresh = useCallback(async () => {
@@ -45,10 +46,23 @@ export function BaselineInstallationPanel({ runId, initialState, connectionStatu
     if (discovered) setExecutionId(discovered);
   }, [initialState]);
   useEffect(() => {
+    const chunks = initialState.workflow_events
+      .filter((event) => event.event_type === "COMMAND_OUTPUT_CHUNK")
+      .map((event) => event.payload)
+      .filter((payload): payload is Record<string, unknown> => typeof payload === "object" && payload !== null && typeof payload.chunk === "string")
+      .map((payload) => payload.chunk as string);
+    if (chunks.length) setOutput(chunks);
+  }, [initialState]);
+  useEffect(() => {
     if (!executionId || (installation && TERMINAL.has(installation.status))) return;
     const timer = window.setInterval(() => { void getBaselineCommand(runId, executionId).then(setInstallation).catch(() => undefined); }, 3000);
     return () => window.clearInterval(timer);
   }, [executionId, installation, runId]);
+  useEffect(() => {
+    if (!installation || TERMINAL.has(installation.status) || !installation.started_at) return;
+    const timer = window.setInterval(() => setElapsed(Math.max(0, Date.now() - Date.parse(installation.started_at!))), 250);
+    return () => window.clearInterval(timer);
+  }, [installation]);
 
   async function start() {
     const selected = profile?.selected_profile;
@@ -65,7 +79,7 @@ export function BaselineInstallationPanel({ runId, initialState, connectionStatu
 
   async function cancel() {
     setWorking(true); setError(null);
-    try { await cancelMigration(runId); if (executionId) setInstallation(await getBaselineCommand(runId, executionId)); }
+    try { if (executionId) setInstallation(await cancelBaseline(runId, executionId, { expected_state_version: initialState.state_version, idempotency_key: `baseline-cancel-${runId}-${executionId}`, actor: "control-tower" })); }
     catch { setError("The installation cancellation request could not be completed."); }
     finally { setWorking(false); }
   }
@@ -83,7 +97,7 @@ export function BaselineInstallationPanel({ runId, initialState, connectionStatu
     {!loading && !baseline ? <p className={styles.note}>No baseline qualification exists yet.</p> : null}
     {baseline?.blockers.length ? <div role="alert"><h3>Blocked</h3><ul>{baseline.blockers.map((item) => <li key={item}><code>{item}</code></li>)}</ul></div> : null}
     {profile?.status === "blocked" ? <p role="alert">No compatible approved runtime profile is available.</p> : null}
-    {installation ? <><dl className={styles.metadataGrid}><div><dt>Command</dt><dd><code>npm ci</code></dd></div><div><dt>Execution</dt><dd><code>{installation.execution_id}</code></dd></div><div><dt>Exit code</dt><dd>{installation.exit_code ?? "pending"}</dd></div><div><dt>Duration</dt><dd>{installation.duration_ms == null ? "pending" : `${installation.duration_ms} ms`}</dd></div></dl>{installation.blockers.length ? <ul>{installation.blockers.map((item) => <li key={item}><code>{item}</code></li>)}</ul> : null}<p className={styles.note}>Event sequence {installation.event_sequence}; state version {installation.state_version}. Artifacts: {installation.artifact_ids.length}.</p>{installation.reconstruction_required ? <p role="alert">The workspace requires reconstruction before it can be reused.</p> : null}</> : <p className={styles.note}>No installation has been requested.</p>}
+    {installation ? <><dl className={styles.metadataGrid}><div><dt>Command</dt><dd><code>npm ci</code></dd></div><div><dt>Execution</dt><dd><code>{installation.execution_id}</code></dd></div><div><dt>Exit code</dt><dd>{installation.exit_code ?? "pending"}</dd></div><div><dt>Duration</dt><dd>{installation.duration_ms == null ? "pending" : `${installation.duration_ms} ms`}</dd></div></dl>{installation.blockers.length ? <><p role="alert">Failure class: {installation.blockers.some((item) => item.includes("ENVIRONMENT") || item.includes("PROCESS")) ? "environment" : "project or workspace"}</p><ul>{installation.blockers.map((item) => <li key={item}><code>{item}</code></li>)}</ul></> : null}<p className={styles.note}>Event sequence {installation.event_sequence}; state version {installation.state_version}. Elapsed: {Math.round((elapsed || installation.duration_ms || 0) / 1000)}s.</p><pre className={styles.logViewer} aria-label="Baseline installation live logs">{output.length ? output.join("") : "Waiting for command output..."}</pre><ul className={styles.list}>{installation.artifact_ids.map((id) => <li key={id}><a className={styles.actionLink} href={`${process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000"}/api/v1/artifacts/${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">Artifact {id}</a></li>)}</ul>{installation.reconstruction_required ? <p role="alert">The workspace requires reconstruction before it can be reused.</p> : null}</> : <p className={styles.note}>No installation has been requested.</p>}
     <div className={styles.row}><span>Runtime {selected ? `${selected.profile_id} (${selected.checksum})` : "selection required"}</span><span>{installation && !TERMINAL.has(installation.status) ? <button type="button" disabled={working} onClick={cancel}>Cancel installation</button> : <button type="button" disabled={working || blocked} onClick={start}>{working ? "Starting..." : "Install frozen baseline"}</button>}</span></div>
   </section>;
 }

@@ -1,6 +1,7 @@
 import { apiClient, type createApiClient } from "./client";
 import type {
   BaselineInstallAuthorizationRequest,
+  BaselineInstallCancelRequest,
   BaselineInstallRequest,
   BaselineInstallResponse,
   BaselinePrequalifyRequest,
@@ -32,4 +33,7 @@ export function installBaseline(runId: string, request: BaselineInstallRequest, 
 
 export function getBaselineCommand(runId: string, executionId: string, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
   return client.get<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}`);
+}
+export function cancelBaseline(runId: string, executionId: string, request: BaselineInstallCancelRequest, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
+  return client.post<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/cancel`, request);
 }

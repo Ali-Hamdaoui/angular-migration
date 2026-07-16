@@ -1,6 +1,8 @@
 """Tests for the Sprint 0 sandbox command execution worker."""
 
 from datetime import UTC, datetime
+import threading
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -227,3 +229,22 @@ def test_command_logs_are_visible_through_artifact_api(monkeypatch, tmp_path: Pa
     assert execution.command_log_artifact.ref.relative_path in [item["relative_path"] for item in list_response.json()]
     assert read_response.status_code == 200
     assert read_response.json()["artifact"]["artifact_type"] == "command_log"
+
+
+def test_worker_cancellation_event_terminates_running_process_tree(tmp_path: Path) -> None:
+    registry = CommandRegistry(definitions=(CommandDefinition("python-sleep", "python", ("-c", "import time; print('started', flush=True); time.sleep(10)")),))
+    worker, _artifact_store, _sandbox_root = _worker(tmp_path, registry=registry, timeout_seconds=30)
+    cancel_event = threading.Event()
+    result_holder = {}
+
+    def run_command() -> None:
+        result_holder["result"] = worker.run(_request(command_id="python-sleep", executable="python", arguments=["-c", "import time; print('started', flush=True); time.sleep(10)"], idempotency_key="cancel-process-key", timeout_seconds=30), cancel_event=cancel_event)
+
+    thread = threading.Thread(target=run_command)
+    thread.start()
+    time.sleep(0.25)
+    cancel_event.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result_holder["result"].cancelled is True
+    assert result_holder["result"].result.status is CommandStatus.CANCELLED

@@ -183,6 +183,9 @@ class CommandExecutionModel(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     timed_out: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     cancelled: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(128))
+    cancel_idempotency_key: Mapped[str | None] = mapped_column(String(128))
     reconstruction_required: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     worker_id: Mapped[str | None] = mapped_column(String(128))
     stdout_artifact_id: Mapped[str | None] = mapped_column(String(128))
@@ -203,9 +206,12 @@ class WorkerLeaseModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
     lease_owner: Mapped[str] = mapped_column(String(128), nullable=False)
+    backend_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
@@ -331,9 +337,12 @@ class SourceSnapshotModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    backend_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_path: Mapped[str] = mapped_column(Text, nullable=False)
     snapshot_path: Mapped[str] = mapped_column(Text, nullable=False)
     manifest_id: Mapped[str | None] = mapped_column(String(128))

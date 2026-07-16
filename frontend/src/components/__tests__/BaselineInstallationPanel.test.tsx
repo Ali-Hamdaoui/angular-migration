@@ -1,13 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { BaselineInstallationPanel } from "@/components/BaselineInstallationPanel";
-import { getBaseline, getBaselineCommand, installBaseline } from "@/api/baseline";
+import { cancelBaseline, getBaseline, getBaselineCommand, installBaseline } from "@/api/baseline";
 import { getExecutionProfiles } from "@/api/executionProfiles";
-import { cancelMigration } from "@/api/migrations";
 
-vi.mock("@/api/baseline", () => ({ getBaseline: vi.fn(), getBaselineCommand: vi.fn(), installBaseline: vi.fn() }));
+vi.mock("@/api/baseline", () => ({ cancelBaseline: vi.fn(), getBaseline: vi.fn(), getBaselineCommand: vi.fn(), installBaseline: vi.fn() }));
 vi.mock("@/api/executionProfiles", () => ({ getExecutionProfiles: vi.fn() }));
-vi.mock("@/api/migrations", () => ({ cancelMigration: vi.fn() }));
 
 const state = { run_id: "run-1", status: "BASELINE_RUNNING", run_phase: "BASELINE", phase_status: "running", approval_status: "approved", repair_status: "not_required", state_version: 4, preflight_id: "p1", source_path: "C:/source", target_output_path: "C:/target", graph_thread_id: "thread", created_at: "2026-01-01", updated_at: "2026-01-01", artifacts: [], workflow_events: [] } as never;
 const baseline = { run_id: "run-1", status: "qualified", blockers: [], authorization_status: "authorized" } as never;
@@ -39,12 +37,21 @@ describe("BaselineInstallationPanel", () => {
     vi.mocked(getBaseline).mockResolvedValue(baseline);
     vi.mocked(getExecutionProfiles).mockResolvedValue(profile);
     vi.mocked(installBaseline).mockResolvedValue(result);
-    vi.mocked(cancelMigration).mockResolvedValue({});
+    vi.mocked(cancelBaseline).mockResolvedValue({ ...(result as Record<string, unknown>), status: "CANCELLED", cancelled: true } as never);
     vi.mocked(getBaselineCommand).mockResolvedValue({ ...(result as Record<string, unknown>), status: "CANCELLED", cancelled: true } as never);
     render(<BaselineInstallationPanel runId="run-1" initialState={state} connectionStatus="open" />);
     fireEvent.click(await screen.findByRole("button", { name: "Install frozen baseline" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel installation" }));
-    await waitFor(() => expect(cancelMigration).toHaveBeenCalledWith("run-1"));
+    await waitFor(() => expect(cancelBaseline).toHaveBeenCalledWith("run-1", "execution-1", expect.objectContaining({ actor: "control-tower" })));
     expect(await screen.findByText("cancelled")).toBeInTheDocument();
+  });
+  it("projects authoritative output chunks into the live log viewer", async () => {
+    vi.mocked(getBaseline).mockResolvedValue(baseline);
+    vi.mocked(getExecutionProfiles).mockResolvedValue(profile);
+    vi.mocked(installBaseline).mockResolvedValue(result);
+    const outputState = { ...(state as Record<string, unknown>), workflow_events: [{ event_id: "event-output", run_id: "run-1", stage_id: null, event_type: "COMMAND_OUTPUT_CHUNK", occurred_at: "2026-01-01T00:00:00Z", sequence: 5, payload: { execution_id: "execution-1", stream: "stdout", chunk: "npm ci started\\n" } }] } as never;
+    render(<BaselineInstallationPanel runId="run-1" initialState={outputState} connectionStatus="open" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Install frozen baseline" }));
+    expect(await screen.findByLabelText("Baseline installation live logs")).toHaveTextContent("npm ci started");
   });
 });

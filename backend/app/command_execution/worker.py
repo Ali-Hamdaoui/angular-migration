@@ -11,6 +11,8 @@ import json
 import os
 import signal
 import subprocess
+import threading
+import queue
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +81,7 @@ class SupervisedProcessResult:
     stderr: str
     timed_out: bool = False
     cancelled: bool = False
+    output_chunks: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,46 +285,39 @@ class CommandLogWriter:
 class WorkerSupervisor:
     """Run approved processes with shell disabled and process-tree termination."""
 
-    def run(self, request: StructuredCommandRequest) -> SupervisedProcessResult:
+    def run(self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None) -> SupervisedProcessResult:
         creationflags = 0
         popen_kwargs: dict[str, object] = {}
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["start_new_session"] = True
-
-        process = subprocess.Popen(
-            list(request.command),
-            cwd=request.working_directory,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            shell=False,
-            creationflags=creationflags,
-            **popen_kwargs,
-        )
-        try:
-            stdout, stderr = process.communicate(timeout=request.dto.timeout_seconds)
-        except subprocess.TimeoutExpired:
-            self.terminate_process_tree(process)
-            stdout, stderr = process.communicate()
-            return SupervisedProcessResult(
-                status=CommandStatus.CANCELLED,
-                exit_code=None,
-                stdout=stdout or "",
-                stderr=stderr or f"Command timed out after {request.dto.timeout_seconds} seconds",
-                timed_out=True,
-                cancelled=True,
-            )
-
-        status = CommandStatus.SUCCEEDED if process.returncode == 0 else CommandStatus.FAILED
-        return SupervisedProcessResult(
-            status=status,
-            exit_code=process.returncode,
-            stdout=stdout or "",
-            stderr=stderr or "",
-        )
-
+        process = subprocess.Popen(list(request.command), cwd=request.working_directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False, creationflags=creationflags, **popen_kwargs)
+        chunks: list[tuple[str, str]] = []
+        output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
+        def read_stream(name: str, stream) -> None:
+            for line in iter(stream.readline, ""):
+                item = (name, line); chunks.append(item); output_queue.put(item)
+            output_queue.put(None)
+        threads = [threading.Thread(target=read_stream, args=(name, stream), daemon=True) for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
+        for thread in threads: thread.start()
+        deadline = monotonic() + request.dto.timeout_seconds
+        completed_streams = 0; timed_out = False; cancelled = False
+        while completed_streams < 2:
+            if cancel_event is not None and cancel_event.is_set() and process.poll() is None:
+                cancelled = True; self.terminate_process_tree(process)
+            if monotonic() >= deadline and process.poll() is None:
+                timed_out = True; cancelled = True; self.terminate_process_tree(process)
+            try: item = output_queue.get(timeout=0.05)
+            except queue.Empty: continue
+            if item is None: completed_streams += 1
+            elif output_callback is not None: output_callback(item[0], item[1])
+        process.wait()
+        for thread in threads: thread.join(timeout=1)
+        stdout = "".join(value for name, value in chunks if name == "stdout")
+        stderr = "".join(value for name, value in chunks if name == "stderr")
+        status = CommandStatus.CANCELLED if cancelled else CommandStatus.SUCCEEDED if process.returncode == 0 else CommandStatus.FAILED
+        return SupervisedProcessResult(status=status, exit_code=process.returncode, stdout=stdout, stderr=stderr, timed_out=timed_out, cancelled=cancelled, output_chunks=tuple(chunks))
     def terminate_process_tree(self, process: subprocess.Popen[str]) -> None:
         if process.poll() is not None:
             return
@@ -366,7 +362,7 @@ class ExecutionWorker:
         self._supervisor = supervisor or WorkerSupervisor()
         self._idempotency_records: dict[tuple[str, str], CommandExecutionResult] = {}
 
-    def run(self, request: CommandRequestDto) -> CommandExecutionResult:
+    def run(self, request: CommandRequestDto, *, cancel_event: threading.Event | None = None, output_callback=None) -> CommandExecutionResult:
         replay = self._find_idempotent_result(request)
         if replay is not None:
             return CommandExecutionResult(
@@ -403,7 +399,10 @@ class ExecutionWorker:
             self._remember_idempotent_result(normalized_request, execution)
             return execution
 
-        supervised = self._supervisor.run(structured_request)
+        try:
+            supervised = self._supervisor.run(structured_request, cancel_event=cancel_event, output_callback=output_callback)
+        except TypeError:
+            supervised = self._supervisor.run(structured_request)
         execution = self._record(
             normalized_request,
             supervised.status,
