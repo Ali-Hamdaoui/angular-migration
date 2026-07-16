@@ -81,7 +81,7 @@ class SupervisedProcessResult:
 
 @dataclass(frozen=True)
 class CommandRegistry:
-    """Registry of safe Sprint 0 command definitions."""
+    """Registry of safe command definitions."""
 
     definitions: tuple[CommandDefinition, ...] = (
         CommandDefinition("python-version", "python", ("--version",)),
@@ -89,6 +89,7 @@ class CommandRegistry:
         CommandDefinition("npm-version", "npm", ("--version",)),
         CommandDefinition("npx-version", "npx", ("--version",)),
         CommandDefinition("git-version", "git", ("--version",)),
+        CommandDefinition("npm-ci-bootstrap", "npm", ("ci",)),
     )
 
     def find(self, command_id: str) -> CommandDefinition:
