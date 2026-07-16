@@ -2,8 +2,9 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, BaselinePrequalifyRequest, BaselineResponse, BaselineWorkspaceRequest
+from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, BaselineInstallRequest, BaselineInstallResponse, BaselinePrequalifyRequest, BaselineResponse, BaselineWorkspaceRequest
 from app.services.baseline_application_service import BaselineApplicationError, BaselineApplicationService
+from app.services.baseline_install_application_service import BaselineInstallApplicationError, BaselineInstallApplicationService
 
 router = APIRouter(prefix="/runs", tags=["baseline"])
 
@@ -46,3 +47,26 @@ def authorize_baseline_install(run_id: str, request: BaselineInstallAuthorizatio
         return service.authorize_install(run_id, request)
     except BaselineApplicationError as error:
         _raise(error)
+
+def get_baseline_install_service() -> BaselineInstallApplicationService:
+    return BaselineInstallApplicationService()
+
+
+def _raise_install(error: BaselineInstallApplicationError):
+    raise HTTPException(status_code=error.status_code, detail={"error_code": error.code, "message": error.message})
+
+
+@router.post("/{run_id}/baseline/install", response_model=BaselineInstallResponse)
+def install_baseline(run_id: str, request: BaselineInstallRequest, service: BaselineInstallApplicationService = Depends(get_baseline_install_service)):
+    try:
+        return service.install(run_id, request)
+    except BaselineInstallApplicationError as error:
+        _raise_install(error)
+
+
+@router.get("/{run_id}/commands/{execution_id}", response_model=BaselineInstallResponse)
+def get_baseline_command(run_id: str, execution_id: str, service: BaselineInstallApplicationService = Depends(get_baseline_install_service)):
+    result = service.get(run_id, execution_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail={"error_code": "COMMAND_EXECUTION_NOT_FOUND", "message": "Command execution was not found."})
+    return result

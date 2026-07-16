@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -172,6 +172,29 @@ class CommandExecutionModel(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     exit_code: Mapped[int | None] = mapped_column(Integer)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=True, index=True)
+    requester: Mapped[str | None] = mapped_column(String(128))
+    shell: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=True)
+    network_profile: Mapped[str] = mapped_column(String(128), nullable=True)
+    cancellation_policy: Mapped[str] = mapped_column(String(64), nullable=True)
+    runtime_checksum: Mapped[str | None] = mapped_column(String(128))
+    baseline_checksum: Mapped[str | None] = mapped_column(String(128))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    timed_out: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    cancelled: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    reconstruction_required: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    stdout_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    stderr_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    command_log_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    start_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    end_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    blockers: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    environment_blocker: Mapped[str | None] = mapped_column(String(128))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
 
 
 class WorkerLeaseModel(Base):

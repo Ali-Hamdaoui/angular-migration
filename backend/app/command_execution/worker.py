@@ -65,6 +65,8 @@ class CommandExecutionResult:
     stdout_artifact: StoredArtifact | None = None
     stderr_artifact: StoredArtifact | None = None
     idempotent_replay: bool = False
+    timed_out: bool = False
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -242,6 +244,8 @@ class CommandLogWriter:
             command_log_artifact=command_log_artifact,
             stdout_artifact=stdout_artifact,
             stderr_artifact=stderr_artifact,
+            timed_out=timed_out,
+            cancelled=cancelled,
         )
 
     def _write_output_artifact(
@@ -371,6 +375,8 @@ class ExecutionWorker:
                 stdout_artifact=replay.stdout_artifact,
                 stderr_artifact=replay.stderr_artifact,
                 idempotent_replay=True,
+                timed_out=replay.timed_out,
+                cancelled=replay.cancelled,
             )
 
         started_at = datetime.now(UTC)
