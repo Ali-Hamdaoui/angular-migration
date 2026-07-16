@@ -75,3 +75,18 @@ def test_empty_route_inventory_is_not_presented_as_machine_proven(tmp_path):
 
     assert result["value"] == []
     assert result["confidence"] == "unknown"
+
+
+def test_partial_route_inventory_is_unknown(tmp_path):
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"sourceRoot": "missing"}}}), encoding="utf-8")
+    result = anchor_to_dict(RouteInventoryBuilder().build(tmp_path))
+    assert result["confidence"] == "unknown"
+
+
+def test_partial_backend_scan_is_unknown(tmp_path):
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"sourceRoot": "missing"}}}), encoding="utf-8")
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "api.service.ts").write_text("const apiUrl = 'https://api.example.test';", encoding="utf-8")
+    result = anchor_to_dict(BackendContractSnapshotBuilder().build(tmp_path))
+    assert result["confidence"] == "unknown"

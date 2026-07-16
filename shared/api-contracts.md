@@ -104,3 +104,5 @@ The backend captures checksum-bound baseline parity evidence through `POST /api/
 - `GET /api/v1/runs/{runId}/baseline/anchors`
 
 Responses include parser/schema versions, confidence labels, source and evidence artifact references, SHA-256 checksums, state version, and event sequence. Capture emits `BASELINE_FAILURES_FINGERPRINTED`, `BASELINE_ROUTE_ANCHOR_CREATED`, and `BASELINE_BACKEND_ANCHOR_CREATED` through the authoritative Transition Service.
+
+Feature 13 capture requests may include prerequisite_artifact_checksums, an artifact-ID-to-SHA-256 map. When prerequisite IDs are supplied, every ID must have an expected checksum and the registered checksum must match before capture proceeds.

@@ -126,13 +126,20 @@ class RouteInventoryBuilder:
         routes: list[dict[str, Any]] = []
         angular = self._json(workspace / "angular.json")
         source_roots = self._source_roots(workspace, angular)
+        incomplete = not workspace.is_dir() or angular is None
+        if angular is not None and not source_roots:
+            incomplete = True
         for source_root in source_roots:
+            if not source_root.is_dir():
+                incomplete = True
+                continue
             for path in sorted(source_root.rglob("*.ts")):
                 if any(part in {"node_modules", "dist", ".angular", "coverage"} for part in path.parts):
                     continue
                 try:
                     content = path.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
+                    incomplete = True
                     continue
                 for match in self._ROUTE.finditer(content):
                     entry: dict[str, Any] = {"path": match.group(2), "file": path.relative_to(workspace).as_posix()}
@@ -140,7 +147,7 @@ class RouteInventoryBuilder:
                     if lazy:
                         entry["lazy_loader_indicator"] = lazy.group(1).strip()
                     routes.append(entry)
-        confidence = EvidenceConfidence.MACHINE_PROVEN if routes else EvidenceConfidence.UNKNOWN
+        confidence = EvidenceConfidence.MACHINE_PROVEN if routes and not incomplete else EvidenceConfidence.UNKNOWN
         return BaselineAnchor("routes", routes, confidence, source="angular.json/typescript")
 
     @staticmethod
@@ -176,6 +183,9 @@ class BackendContractSnapshotBuilder:
         proxy_files: list[str] = []
         endpoint_indicators: list[dict[str, str]] = []
         auth_files: list[str] = []
+        angular = RouteInventoryBuilder._json(workspace / "angular.json")
+        configured_roots = RouteInventoryBuilder._source_roots(workspace, angular)
+        incomplete = not workspace.is_dir() or any(not root.is_dir() for root in configured_roots)
         for path in sorted(workspace.rglob("*")):
             if not path.is_file() or any(part in {"node_modules", "dist", ".angular", "coverage", ".git"} for part in path.parts):
                 continue
@@ -190,6 +200,7 @@ class BackendContractSnapshotBuilder:
             try:
                 content = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
+                incomplete = True
                 continue
             for match in self._URL.finditer(content):
                 api_roots.add(_safe_endpoint(match.group(1)))
@@ -198,7 +209,7 @@ class BackendContractSnapshotBuilder:
             files.append(relative)
         snapshot = {"api_roots": sorted(api_roots), "proxy_files": sorted(set(proxy_files)), "endpoint_indicators": endpoint_indicators, "authentication_file_references": sorted(set(auth_files)), "inspected_files": files}
         has_evidence = bool(api_roots or proxy_files or endpoint_indicators or auth_files)
-        confidence = EvidenceConfidence.MACHINE_PROVEN if has_evidence else EvidenceConfidence.UNKNOWN
+        confidence = EvidenceConfidence.MACHINE_PROVEN if has_evidence and not incomplete else EvidenceConfidence.UNKNOWN
         return BaselineAnchor("backend_integration", snapshot, confidence, source="source scan")
 
 

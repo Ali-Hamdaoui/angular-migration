@@ -12,7 +12,7 @@ from app.api.routes.runs import stream_run_events
 from app.api.routes import runs as runs_routes
 from app.main import app
 from fastapi.testclient import TestClient
-from app.repositories.models import Base, BaselineParityEvidenceModel, BaselineQualificationModel, BaselineValidationModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, BaselineParityEvidenceModel, BaselineQualificationModel, BaselineValidationModel, MigrationRunModel, WorkflowEventModel
 from app.services.baseline_parity_application_service import BaselineParityApplicationService
 
 NOW = datetime(2026, 7, 16, tzinfo=UTC)
@@ -116,3 +116,35 @@ def test_capture_events_are_replayable_through_sse_after_reopen(monkeypatch, tmp
     assert f"id: {result.event_sequence - 2}" in first
     assert "event: BASELINE_FAILURES_FINGERPRINTED" in first
     engine.dispose()
+
+
+def test_capture_rejects_missing_and_mismatched_prerequisite_checksums(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    with sessions() as session:
+        session.add(ArtifactMetadataModel(id="metadata-prereq", run_id="run-1", stage_id=None, artifact_type="json", relative_path="01_baseline/prereq.json", checksum="sha256:actual", created_at=NOW))
+        session.commit()
+    service = BaselineParityApplicationService(scope=scope, now_provider=lambda: NOW)
+    missing = BaselineParityCaptureRequest(expected_state_version=1, idempotency_key="prereq-missing", actor="operator", prerequisite_artifact_ids=["prereq"])
+    try:
+        service.capture("run-1", missing)
+    except Exception as error:
+        assert getattr(error, "code") == "PREREQUISITE_ARTIFACT_CHECKSUM_REQUIRED"
+    else:
+        raise AssertionError("missing prerequisite checksum was accepted")
+    mismatch = BaselineParityCaptureRequest(expected_state_version=1, idempotency_key="prereq-mismatch", actor="operator", prerequisite_artifact_ids=["prereq"], prerequisite_artifact_checksums={"prereq": "sha256:wrong"})
+    try:
+        service.capture("run-1", mismatch)
+    except Exception as error:
+        assert getattr(error, "code") == "PREREQUISITE_ARTIFACT_CHECKSUM_MISMATCH"
+    else:
+        raise AssertionError("mismatched prerequisite checksum was accepted")
+    engine.dispose()
+
+
+def test_installation_failure_diagnostics_are_fingerprinted():
+    service = BaselineParityApplicationService()
+    installation = type("Installation", (), {"status": "FAILED", "blockers": ["BASELINE_INSTALL_FAILED"], "artifact_ids": ["stderr-1"]})()
+    store = type("Store", (), {"read_artifact_by_id": lambda self, artifact_id: type("Artifact", (), {"content": "npm ERR! E401 unauthorized"})()})()
+    failures, diagnostics = service._failures([], [installation], store)
+    assert any(item["kind"] == "install" for item in diagnostics)
+    assert any(item["kind"] == "install" for item in failures)

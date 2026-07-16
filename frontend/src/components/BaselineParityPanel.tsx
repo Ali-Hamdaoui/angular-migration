@@ -17,6 +17,7 @@ const sections: Array<{ id: Section; label: string }> = [
 
 function operationKey(runId: string) { return `baseline-parity-${runId}-${Date.now()}`; }
 function label(value: string) { return value.replaceAll("_", " "); }
+function confidenceKey(section: Section): string { return section === "backend-integration" ? "backend_integration" : section; }
 
 export function BaselineParityPanel({ runId, stateVersion, connectionStatus }: { runId: string; stateVersion: number; connectionStatus: ConnectionStatus }) {
   const [evidence, setEvidence] = useState<Partial<Record<Section, BaselineParityResponse>>>({});
@@ -57,7 +58,7 @@ export function BaselineParityPanel({ runId, stateVersion, connectionStatus }: {
     {Object.keys(evidence).length ? <>
       <nav aria-label="Baseline parity evidence tabs">{sections.map((section) => <button type="button" key={section.id} aria-selected={active === section.id} onClick={() => setActive(section.id)}>{section.label}</button>)}</nav>
       {current ? <div className={styles.previewPanel}>
-        <p className={styles.note}>Confidence: <strong>{label(current.confidence[active] ?? "unknown")}</strong> · parser {current.parser_version} · schema {current.schema_version}</p>
+        <p className={styles.note}>Confidence: <strong>{label(current.confidence[confidenceKey(active)] ?? "unknown")}</strong> · parser {current.parser_version} · schema {current.schema_version}</p>
         {active === "failures" ? <ul className={styles.list}>{current.failures.length ? current.failures.map((failure) => <li key={failure.fingerprint}><code>{failure.fingerprint}</code><span>{failure.message}</span><strong>{failure.origin}</strong><small>{failure.count} occurrence(s) · {label(failure.severity)}</small></li>) : <li>No pre-existing baseline failures were fingerprinted.</li>}</ul> : null}
         {active === "routes" ? <pre className={styles.logViewer}>{JSON.stringify(current.routes, null, 2)}</pre> : null}
         {active === "backend-integration" ? <pre className={styles.logViewer}>{JSON.stringify(current.backend_integration, null, 2)}</pre> : null}

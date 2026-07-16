@@ -5,6 +5,7 @@ export type BaselineParityCaptureRequest = {
   idempotency_key: string;
   actor: string;
   prerequisite_artifact_ids?: string[];
+  prerequisite_artifact_checksums?: Record<string, string>;
 };
 
 export type BaselineFailureFingerprint = {

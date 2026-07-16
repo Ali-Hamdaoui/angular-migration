@@ -26,6 +26,7 @@ from app.repositories.models import (
     BaselineParityEvidenceModel,
     BaselineQualificationModel,
     BaselineValidationModel,
+    CommandExecutionModel,
     ExecutionProfileModel,
     MigrationRunModel,
 )
@@ -55,7 +56,7 @@ class BaselineParityApplicationService:
             if replay:
                 return self._response(replay, replay=True)
             self._require_state(run, request.expected_state_version)
-            self._require_prerequisites(session, run, baseline, request.prerequisite_artifact_ids)
+            self._require_prerequisites(session, run, baseline, request.prerequisite_artifact_ids, request.prerequisite_artifact_checksums)
             validations = session.scalars(select(BaselineValidationModel).where(
                 BaselineValidationModel.run_id == run_id,
             )).all()
@@ -67,8 +68,11 @@ class BaselineParityApplicationService:
             baseline_checksum = baseline.checksum
             runtime_profile_id = profile.selected_profile_id if profile else None
             runtime_checksum = profile.selected_checksum if profile else None
+            installations = session.scalars(select(CommandExecutionModel).where(CommandExecutionModel.run_id == run_id)).all()
+            source_artifact_ids.extend(artifact for row in installations for artifact in (row.artifact_ids or []))
 
-        failures, diagnostics = self._failures(validations)
+        store = LocalFilesystemArtifactStore(run_root, fixed_run_root=run_root)
+        failures, diagnostics = self._failures(validations, installations, store)
         route_anchor = RouteInventoryBuilder().build(sandbox)
         backend_anchor = BackendContractSnapshotBuilder().build(sandbox)
         confidence = {
@@ -76,6 +80,7 @@ class BaselineParityApplicationService:
             "routes": route_anchor.confidence.value if route_anchor.value else EvidenceConfidence.UNKNOWN.value,
             "backend_integration": backend_anchor.confidence.value if backend_anchor.value else EvidenceConfidence.UNKNOWN.value,
             "package_runtime": EvidenceConfidence.MACHINE_PROVEN.value if profile else EvidenceConfidence.UNKNOWN.value,
+            "anchors": EvidenceConfidence.MACHINE_PROVEN.value if profile or validations else EvidenceConfidence.UNKNOWN.value,
         }
         routes = route_anchor.value if isinstance(route_anchor.value, list) else []
         backend_integration = backend_anchor.value if isinstance(backend_anchor.value, dict) else {}
@@ -117,7 +122,7 @@ class BaselineParityApplicationService:
                 return None
             return self._response(record, section=section)
 
-    def _failures(self, validations):
+    def _failures(self, validations, installations, store):
         diagnostics = []
         for validation in validations:
             for result in validation.results or []:
@@ -125,6 +130,19 @@ class BaselineParityApplicationService:
                     continue
                 for message in result.get("failed_tests", []) or result.get("warnings", []) or [result.get("blocker") or "baseline command failed"]:
                     diagnostics.append({"kind": result.get("kind", validation.kind), "message": message, "group": result.get("target_id")})
+        for installation in installations:
+            if installation.status not in {"FAILED", "TIMED_OUT", "CANCELLED"}:
+                continue
+            for blocker in installation.blockers or []:
+                diagnostics.append({"kind": "install", "message": blocker})
+            for artifact_id in installation.artifact_ids or []:
+                try:
+                    content = store.read_artifact_by_id(artifact_id).content
+                except (OSError, ValueError):
+                    continue
+                for line in content.splitlines():
+                    if line.strip():
+                        diagnostics.append({"kind": "install", "message": line})
         failures = [self._jsonable(item) for item in self._fingerprints.from_diagnostics(diagnostics)]
         return failures, diagnostics
 
@@ -150,11 +168,17 @@ class BaselineParityApplicationService:
             raise BaselineParityApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
 
     @staticmethod
-    def _require_prerequisites(session, run, baseline, artifact_ids):
-        found = {row.id.removeprefix("metadata-") for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run.id)).all()}
-        missing = [item for item in artifact_ids if item not in found]
+    def _require_prerequisites(session, run, baseline, artifact_ids, expected_checksums):
+        metadata = {row.id.removeprefix("metadata-"): row for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run.id)).all()}
+        missing = [item for item in artifact_ids if item not in metadata]
         if missing:
             raise BaselineParityApplicationError("PREREQUISITE_ARTIFACT_NOT_FOUND", "A prerequisite artifact is not registered.", 409)
+        missing_checksums = [item for item in artifact_ids if not expected_checksums.get(item)]
+        if missing_checksums:
+            raise BaselineParityApplicationError("PREREQUISITE_ARTIFACT_CHECKSUM_REQUIRED", "Every prerequisite artifact requires an expected checksum.", 409)
+        mismatched = [item for item in artifact_ids if metadata[item].checksum != expected_checksums[item]]
+        if mismatched:
+            raise BaselineParityApplicationError("PREREQUISITE_ARTIFACT_CHECKSUM_MISMATCH", "A prerequisite artifact checksum does not match the registered evidence.", 409)
 
     def _transition(self, session, run, request, event_type, reason, payload, *, expected_state_version):
         try:
