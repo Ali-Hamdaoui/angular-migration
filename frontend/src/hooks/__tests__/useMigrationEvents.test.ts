@@ -177,3 +177,9 @@ describe("useMigrationEvents", () => {
     expect(source!.readyState).toBe(MockEventSource.CLOSED);
   });
 });
+
+it("connects to the authoritative run SSE endpoint", async () => {
+  const { source } = renderWithSource();
+  await act(async () => {});
+  expect(source!.url).toContain("/api/v1/runs/mock-run-angular-18-to-21/events");
+});

@@ -84,3 +84,13 @@ Sprint 1 extends the read model with independent `phase_status`, `approval_statu
 Stage outcomes include `preparing`, `passed_with_known_baseline_failures`, and `passed_with_manual_items`. Approval and repair statuses are separate from run and stage status.
 
 Production auto-approval is disabled. Requests that attempt to enable it return `AUTO_APPROVAL_NOT_ALLOWED`; automatic approval remains available only to isolated mock fixtures used by tests.
+## S1-F12 baseline validation matrix
+
+The backend exposes the baseline target inventory and validation operations under `/api/v1/runs/{runId}`:
+
+- `GET /baseline/targets`
+- `GET /baseline/{kind}` where kind is `build`, `test`, or `lint`
+- `POST /baseline/builds`, `/baseline/tests`, or `/baseline/lint`
+- `POST /baseline/{kind}/cancel`
+
+Mutation requests carry `expected_state_version`, `idempotency_key`, `actor`, and optional prerequisite artifact IDs. Results include target inventory, normalized status, exit code, duration, parser summaries, failed tests, warnings, output locations, artifact IDs and SHA-256 checksums, baseline checksum, state version, and event sequence. Missing lint is represented as `skipped_not_configured`; unsupported builders are `blocked`.
