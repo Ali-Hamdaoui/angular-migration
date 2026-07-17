@@ -1,0 +1,1 @@
+import {apiClient,type createApiClient} from "./client";import type {DiscoveryEvidence} from "@/types/discovery";type Client=ReturnType<typeof createApiClient>;export function getDiscovery(runId:string,client:Client=apiClient){return client.get<DiscoveryEvidence>(`/api/v1/runs/${encodeURIComponent(runId)}/discovery`)}

@@ -8,6 +8,7 @@ import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
 import { BaselinePreparationPanel } from "./BaselinePreparationPanel";
 import { BaselineInstallationPanel } from "./BaselineInstallationPanel";
 import { BaselineParityPanel } from "./BaselineParityPanel";
+import { DiscoveryFindingsPanel } from "./DiscoveryFindingsPanel";
 import styles from "./ControlTowerShell.module.css";
 
 const pipelineSteps = [
@@ -46,6 +47,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
         })}</ol>
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
+      <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
       <div className={styles.dashboardGrid}>
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />
