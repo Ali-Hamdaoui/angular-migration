@@ -74,6 +74,8 @@ export function EnvironmentDiagnosticsPanel() {
               <div className={styles.card} key={runtime.name}>
                 <span>{runtimeLabel(runtime)}</span>
                 <small>{runtime.status + (runtime.installation_root ? " · " + runtime.installation_root : "")}</small>
+                {runtime.reason ? <small className={styles.error}>{runtime.reason}</small> : null}
+                {runtime.remediation ? <small>{runtime.remediation}</small> : null}
               </div>
             ))}
           </div>

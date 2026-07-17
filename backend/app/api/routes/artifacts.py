@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from app.artifact_store.local_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.repositories.models import ArtifactMetadataModel, MigrationRunModel
+from app.repositories.preflight_models import PreflightArtifactMetadataModel, PreflightModel
+from app.core.config import get_settings
 from app.repositories.session import session_scope
 from app.domain.contracts import ArtifactRefDto
 
@@ -60,12 +62,16 @@ def read_artifact_by_id(artifact_id: str) -> ArtifactContentResponse:
     try:
         with session_scope() as session:
             metadata = session.get(ArtifactMetadataModel, f"metadata-{artifact_id}")
-            if metadata is None:
-                raise ArtifactNotFoundError(artifact_id)
-            run = session.get(MigrationRunModel, metadata.run_id)
-            if run is None or not run.artifact_root:
-                raise ArtifactNotFoundError(artifact_id)
-            root = Path(run.artifact_root).resolve()
+            if metadata is not None:
+                run = session.get(MigrationRunModel, metadata.run_id)
+                if run is None or not run.artifact_root:
+                    raise ArtifactNotFoundError(artifact_id)
+                root = Path(run.artifact_root).resolve()
+            else:
+                preflight_metadata = session.get(PreflightArtifactMetadataModel, f"metadata-{artifact_id}")
+                if preflight_metadata is None or session.get(PreflightModel, preflight_metadata.preflight_id) is None:
+                    raise ArtifactNotFoundError(artifact_id)
+                root = (get_settings().artifact_root / "preflights" / preflight_metadata.preflight_id).resolve()
         stored_artifact = LocalFilesystemArtifactStore(root, fixed_run_root=root).read_artifact_by_id(artifact_id)
     except ArtifactStoreError as exc:
         raise HTTPException(status_code=400, detail="Invalid artifact identifier") from exc

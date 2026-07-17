@@ -3,7 +3,13 @@
 export type FetchImplementation = typeof fetch;
 
 export class ApiClientError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly method = "unknown",
+    public readonly path = "unknown",
+    public readonly responseBody: string | null = null,
+  ) {
     super(message);
     this.name = "ApiClientError";
   }
@@ -19,17 +25,34 @@ export function createApiClient(baseUrl = getBackendBaseUrl(), fetchImplementati
       method,
       headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
       cache: "no-store",
-      body: body ? JSON.stringify(body) : undefined
+      body: body ? JSON.stringify(body) : undefined,
     });
+    const responseBody = await response.text();
     if (!response.ok) {
-      throw new ApiClientError(`Backend request failed: ${method} ${path}`, response.status);
+      throw new ApiClientError(
+        `Backend request failed: ${method} ${path} (${response.status})`,
+        response.status,
+        method,
+        path,
+        responseBody || null,
+      );
     }
-    return response.json() as Promise<T>;
+    try {
+      return JSON.parse(responseBody) as T;
+    } catch {
+      throw new ApiClientError(
+        `Backend returned invalid JSON: ${method} ${path}`,
+        response.status,
+        method,
+        path,
+        responseBody || null,
+      );
+    }
   }
 
   return {
     get: <T>(path: string) => request<T>("GET", path),
-    post: <T>(path: string, body: unknown) => request<T>("POST", path, body)
+    post: <T>(path: string, body: unknown) => request<T>("POST", path, body),
   };
 }
 

@@ -27,8 +27,13 @@ class EnvironmentDiagnosticsApplicationService:
         self._repository = repository or EnvironmentCapabilityRepository()
         if capability_service is None:
             store = LocalFilesystemArtifactStore(settings.artifact_root)
+            sandbox_root = settings.sandbox_root.resolve()
+            sandbox_root.mkdir(parents=True, exist_ok=True)
             worker = ExecutionWorker(
-                CommandPolicy(sandbox_root=settings.sandbox_root.resolve()),
+                CommandPolicy(
+                    sandbox_root=sandbox_root,
+                    working_directory_aliases={"run_workspace": sandbox_root},
+                ),
                 CommandLogWriter(store, max_output_bytes=settings.command_max_output_bytes),
                 timeout_seconds=min(settings.command_timeout_seconds, 10),
             )

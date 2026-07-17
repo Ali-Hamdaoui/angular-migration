@@ -33,7 +33,16 @@ CommandRequest = CommandRequestDto
 
 _DEFAULT_RUNTIME_PROFILE: Final = "source-runtime-profile"
 _DEFAULT_NETWORK_PROFILE: Final = "none"
-_MUTABLE_WORKSPACE_ALIASES: Final = frozenset({"BASELINE_SANDBOX", "STAGE_SANDBOX", "REPAIR_SANDBOX", "FINAL_ASSURANCE_SANDBOX", "DELIVERY_CANDIDATE"})
+_MUTABLE_WORKSPACE_ALIASES: Final = frozenset(
+    {
+        "run_workspace",
+        "BASELINE_SANDBOX",
+        "STAGE_SANDBOX",
+        "REPAIR_SANDBOX",
+        "FINAL_ASSURANCE_SANDBOX",
+        "DELIVERY_CANDIDATE",
+    }
+)
 
 
 class CommandPolicyViolation(ValueError):
@@ -47,6 +56,12 @@ class CommandDefinition:
     command_id: str
     executable: str
     arguments: tuple[str, ...]
+    executable_aliases: tuple[str, ...] = ()
+
+    @property
+    def allowed_executables(self) -> frozenset[str]:
+        """Executable names permitted for this fixed command shape."""
+        return frozenset((self.executable, *self.executable_aliases))
 
 
 @dataclass(frozen=True)
@@ -90,12 +105,12 @@ class CommandRegistry:
     """Registry of safe command definitions."""
 
     definitions: tuple[CommandDefinition, ...] = (
-        CommandDefinition("python-version", "python", ("--version",)),
-        CommandDefinition("node-version", "node", ("--version",)),
-        CommandDefinition("npm-version", "npm", ("--version",)),
-        CommandDefinition("npx-version", "npx", ("--version",)),
-        CommandDefinition("git-version", "git", ("--version",)),
-        CommandDefinition("npm-ci-bootstrap", "npm", ("ci",)),
+        CommandDefinition("python-version", "python", ("--version",), ("python.exe", "py", "py.exe")),
+        CommandDefinition("node-version", "node", ("--version",), ("node.exe",)),
+        CommandDefinition("npm-version", "npm", ("--version",), ("npm.cmd",)),
+        CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
+        CommandDefinition("git-version", "git", ("--version",), ("git.exe",)),
+        CommandDefinition("npm-ci-bootstrap", "npm", ("ci",), ("npm.cmd",)),
     )
 
     def find(self, command_id: str) -> CommandDefinition:
@@ -137,7 +152,7 @@ class CommandPolicy:
             raise CommandPolicyViolation("Cancellation policy is not supported by the Sprint 0 supervisor")
 
         definition = self.registry.find(request.command_id)
-        if request.executable != definition.executable:
+        if request.executable not in definition.allowed_executables:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
         if tuple(request.arguments) != definition.arguments:
             raise CommandPolicyViolation("Arguments do not match the registered command definition")
@@ -149,7 +164,7 @@ class CommandPolicy:
         return StructuredCommandRequest(
             dto=request,
             definition=definition,
-            command=(definition.executable, *definition.arguments),
+            command=(request.executable, *definition.arguments),
             working_directory=working_directory,
         )
 
@@ -176,7 +191,9 @@ class CommandPolicy:
 class CommandLogWriter:
     """Persist command execution records and bounded output artifacts."""
 
-    def __init__(self, artifact_store: LocalFilesystemArtifactStore, *, max_output_bytes: int | None = 1_000_000) -> None:
+    def __init__(
+        self, artifact_store: LocalFilesystemArtifactStore, *, max_output_bytes: int | None = 1_000_000
+    ) -> None:
         self._artifact_store = artifact_store
         self._max_output_bytes = max_output_bytes
 
@@ -286,7 +303,9 @@ class CommandLogWriter:
 class WorkerSupervisor:
     """Run approved processes with shell disabled and process-tree termination."""
 
-    def run(self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None) -> SupervisedProcessResult:
+    def run(
+        self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None
+    ) -> SupervisedProcessResult:
         creationflags = 0
         popen_kwargs: dict[str, object] = {}
         if os.name == "nt":
@@ -296,33 +315,76 @@ class WorkerSupervisor:
         command = list(request.command)
         if os.name == "nt":
             resolved_executable = shutil.which(command[0])
-            if resolved_executable: command[0] = resolved_executable
-        process = subprocess.Popen(command, cwd=request.working_directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False, creationflags=creationflags, **popen_kwargs)
+            if resolved_executable:
+                command[0] = resolved_executable
+        process = subprocess.Popen(
+            command,
+            cwd=request.working_directory,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=False,
+            creationflags=creationflags,
+            **popen_kwargs,
+        )
         chunks: list[tuple[str, str]] = []
         output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
+
         def read_stream(name: str, stream) -> None:
             for line in iter(stream.readline, ""):
-                item = (name, line); chunks.append(item); output_queue.put(item)
+                item = (name, line)
+                chunks.append(item)
+                output_queue.put(item)
             output_queue.put(None)
-        threads = [threading.Thread(target=read_stream, args=(name, stream), daemon=True) for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
-        for thread in threads: thread.start()
+
+        threads = [
+            threading.Thread(target=read_stream, args=(name, stream), daemon=True)
+            for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
+        ]
+        for thread in threads:
+            thread.start()
         deadline = monotonic() + request.dto.timeout_seconds
-        completed_streams = 0; timed_out = False; cancelled = False
+        completed_streams = 0
+        timed_out = False
+        cancelled = False
         while completed_streams < 2:
             if cancel_event is not None and cancel_event.is_set() and process.poll() is None:
-                cancelled = True; self.terminate_process_tree(process)
+                cancelled = True
+                self.terminate_process_tree(process)
             if monotonic() >= deadline and process.poll() is None:
-                timed_out = True; cancelled = True; self.terminate_process_tree(process)
-            try: item = output_queue.get(timeout=0.05)
-            except queue.Empty: continue
-            if item is None: completed_streams += 1
-            elif output_callback is not None: output_callback(item[0], item[1])
+                timed_out = True
+                cancelled = True
+                self.terminate_process_tree(process)
+            try:
+                item = output_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if item is None:
+                completed_streams += 1
+            elif output_callback is not None:
+                output_callback(item[0], item[1])
         process.wait()
-        for thread in threads: thread.join(timeout=1)
+        for thread in threads:
+            thread.join(timeout=1)
         stdout = "".join(value for name, value in chunks if name == "stdout")
         stderr = "".join(value for name, value in chunks if name == "stderr")
-        status = CommandStatus.CANCELLED if cancelled else CommandStatus.SUCCEEDED if process.returncode == 0 else CommandStatus.FAILED
-        return SupervisedProcessResult(status=status, exit_code=process.returncode, stdout=stdout, stderr=stderr, timed_out=timed_out, cancelled=cancelled, output_chunks=tuple(chunks))
+        status = (
+            CommandStatus.CANCELLED
+            if cancelled
+            else CommandStatus.SUCCEEDED
+            if process.returncode == 0
+            else CommandStatus.FAILED
+        )
+        return SupervisedProcessResult(
+            status=status,
+            exit_code=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            cancelled=cancelled,
+            output_chunks=tuple(chunks),
+        )
+
     def terminate_process_tree(self, process: subprocess.Popen[str]) -> None:
         if process.poll() is not None:
             return
@@ -367,7 +429,9 @@ class ExecutionWorker:
         self._supervisor = supervisor or WorkerSupervisor()
         self._idempotency_records: dict[tuple[str, str], CommandExecutionResult] = {}
 
-    def run(self, request: CommandRequestDto, *, cancel_event: threading.Event | None = None, output_callback=None) -> CommandExecutionResult:
+    def run(
+        self, request: CommandRequestDto, *, cancel_event: threading.Event | None = None, output_callback=None
+    ) -> CommandExecutionResult:
         replay = self._find_idempotent_result(request)
         if replay is not None:
             return CommandExecutionResult(
@@ -404,11 +468,26 @@ class ExecutionWorker:
             self._remember_idempotent_result(normalized_request, execution)
             return execution
 
-        supervised = self._supervisor.run(
-            structured_request,
-            cancel_event=cancel_event,
-            output_callback=output_callback,
-        )
+        try:
+            supervised = self._supervisor.run(
+                structured_request,
+                cancel_event=cancel_event,
+                output_callback=output_callback,
+            )
+        except OSError as exc:
+            execution = self._record(
+                normalized_request,
+                CommandStatus.FAILED,
+                started_at,
+                start_time,
+                command=structured_request.command,
+                working_directory=structured_request.working_directory,
+                stdout="",
+                stderr=f"Unable to start approved command: {exc}",
+                exit_code=None,
+            )
+            self._remember_idempotent_result(normalized_request, execution)
+            return execution
         execution = self._record(
             normalized_request,
             supervised.status,

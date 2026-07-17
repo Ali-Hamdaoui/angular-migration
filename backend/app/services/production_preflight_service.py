@@ -58,8 +58,10 @@ class ProductionPreflightService:
             preflight_id = f"preflight-{uuid4().hex[:12]}"
             try:
                 output_root = path_snapshot.resolved_output_root or path_snapshot.target_output_path
-                # Preflight evidence has no run yet, so it lives in registered output metadata.
-                metadata_root = self._layout.for_run(output_root, preflight_id).metadata_root / "preflights"
+                self._layout.for_run(output_root, preflight_id)
+                # A preflight has no approved run yet. Keep its evidence under the configured
+                # external application-data root so validation never creates the selected output.
+                metadata_root = self._fallback_artifact_root / "preflights"
                 artifacts = LocalFilesystemArtifactStore(metadata_root / preflight_id, fixed_run_root=metadata_root / preflight_id)
             except WorkspaceLayoutError as error:
                 raise PreflightError("UNSAFE_WORKSPACE_LAYOUT", str(error), status_code=422) from error
@@ -175,8 +177,7 @@ class ProductionPreflightService:
             return self._decision(decision)
 
     def _artifact_store(self, snapshot: PreflightSnapshot) -> LocalFilesystemArtifactStore:
-        output_root = snapshot.resolved_output_root or snapshot.target_output_path
-        metadata_root = self._layout.for_run(output_root, "preflight-" + snapshot.preflight_id).metadata_root / "preflights" / snapshot.preflight_id
+        metadata_root = self._fallback_artifact_root / "preflights" / snapshot.preflight_id
         return LocalFilesystemArtifactStore(metadata_root, fixed_run_root=metadata_root)
 
     @staticmethod

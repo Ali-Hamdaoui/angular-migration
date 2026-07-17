@@ -9,14 +9,23 @@ from app.services.environment_capability_service import EnvironmentCapabilitySer
 
 
 class FakeWorker:
-    def __init__(self):
+    def __init__(self, failures: dict[str, str] | None = None):
         self.requests = []
+        self.failures = failures or {}
 
     def run(self, request):
         self.requests.append(request)
+        failure = self.failures.get(request.command_id)
+        if failure:
+            return SimpleNamespace(
+                result=SimpleNamespace(status=CommandStatus.FAILED),
+                stdout_artifact=None,
+                stderr_artifact=SimpleNamespace(content=failure),
+            )
         return SimpleNamespace(
             result=SimpleNamespace(status=CommandStatus.SUCCEEDED),
             stdout_artifact=SimpleNamespace(content=f"{request.command_id} 1.2.3\n"),
+            stderr_artifact=None,
         )
 
 
@@ -35,14 +44,21 @@ def make_settings(tmp_path: Path) -> Settings:
     )
 
 
-def make_service(tmp_path: Path, locations: dict[str, Path]) -> tuple[EnvironmentCapabilityService, FakeWorker]:
-    worker = FakeWorker()
+def make_service(
+    tmp_path: Path,
+    locations: dict[str, Path],
+    *,
+    failures: dict[str, str] | None = None,
+    is_windows: bool = False,
+) -> tuple[EnvironmentCapabilityService, FakeWorker]:
+    worker = FakeWorker(failures)
     service = EnvironmentCapabilityService(
         make_settings(tmp_path),
         worker,
         LocalFilesystemArtifactStore(tmp_path / "artifact-store"),
         which=lambda name: str(locations[name]) if name in locations else None,
         now_provider=lambda: datetime(2026, 7, 14, tzinfo=UTC),
+        is_windows=is_windows,
     )
     return service, worker
 
@@ -108,3 +124,65 @@ def test_diagnose_reports_missing_worker_runtime_and_rejects_blank_idempotency(t
         assert "idempotency_key" in str(exc)
     else:
         raise AssertionError("blank idempotency key must be rejected")
+
+
+def test_windows_discovery_uses_executable_extensions_and_py_fallback(tmp_path, monkeypatch):
+    root = tmp_path / "nodejs"
+    locations = {
+        "node.exe": root / "node.exe",
+        "npm.cmd": root / "npm.cmd",
+        "npx.cmd": root / "npx.cmd",
+        "git.exe": root / "git.exe",
+        "py": tmp_path / "python" / "py.exe",
+    }
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://registry.example.invalid")
+
+    service, worker = make_service(tmp_path, locations, is_windows=True)
+    result = service.diagnose("windows-refresh")
+
+    assert result.snapshot.status == "available"
+    assert [request.executable for request in worker.requests] == ["node.exe", "npm.cmd", "npx.cmd", "git.exe", "py"]
+    assert result.snapshot.runtimes[-1].executable == str(locations["py"])
+    assert result.snapshot.runtimes[-1].attempted_executable == "py"
+
+
+def test_missing_windows_tools_include_attempt_and_remediation(tmp_path):
+    service, _ = make_service(tmp_path, {}, is_windows=True)
+
+    result = service.diagnose("missing-windows-tools")
+    runtimes = {runtime.name: runtime for runtime in result.snapshot.runtimes}
+
+    assert runtimes["npm"].attempted_executable == "npm.cmd"
+    assert runtimes["npm"].reason == "The executable was not found in the backend process PATH."
+    assert "restart the backend" in runtimes["npm"].remediation
+    assert runtimes["python"].attempted_executable == "python.exe"
+    assert "py launcher" in runtimes["python"].remediation
+    assert len(result.snapshot.blockers) == 3
+
+
+def test_failed_version_probe_keeps_executor_detail_and_blocks_readiness(tmp_path, monkeypatch):
+    root = tmp_path / "tools"
+    locations = {
+        "node.exe": root / "node.exe",
+        "npm.cmd": root / "npm.cmd",
+        "npx.cmd": root / "npx.cmd",
+        "git.exe": root / "git.exe",
+        "python.exe": root / "python.exe",
+    }
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://registry.example.invalid")
+
+    service, _ = make_service(
+        tmp_path,
+        locations,
+        failures={"git-version": "Access is denied"},
+        is_windows=True,
+    )
+    result = service.diagnose("failed-git-probe")
+    git = next(runtime for runtime in result.snapshot.runtimes if runtime.name == "git")
+
+    assert git.status == "failed"
+    assert git.attempted_executable == "git.exe"
+    assert git.reason == "The authoritative version probe failed: Access is denied"
+    assert "captured command stderr" in git.remediation
+    assert result.snapshot.status == "blocked"
+    assert result.snapshot.blockers == ["GIT_UNAVAILABLE"]

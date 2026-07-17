@@ -7,7 +7,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.sources import get_path_validation_service
-from app.domain.path_validation import PathRuleResult, PathValidationResult, PathValidationSnapshot
+from app.core.config import Settings
+from app.domain.path_validation import PathRuleResult, PathValidationRequest, PathValidationResult, PathValidationSnapshot
 from app.main import app
 from app.repositories.models import Base
 from app.repositories.path_validation import PathValidationRepository
@@ -84,3 +85,49 @@ def test_path_validation_routes_use_typed_contracts():
             assert client.get("/sources/path-validations/path-validation-test").status_code == 200
     finally:
         app.dependency_overrides.clear()
+
+def test_application_service_persists_reservation_without_creating_previewed_output(tmp_path):
+    source = tmp_path / "source"
+    target_parent = tmp_path / "target-parent"
+    source.mkdir()
+    target_parent.mkdir()
+    settings = Settings(
+        _env_file=None,
+        database_url=f"sqlite:///{tmp_path / 'paths.db'}",
+        artifact_root=tmp_path / "artifacts",
+        workspace_root=tmp_path / "workspaces",
+        snapshot_root=tmp_path / "snapshots",
+        delivery_root=tmp_path / "delivery",
+        sandbox_root=tmp_path / "sandboxes",
+        allowed_source_roots=[tmp_path],
+        allowed_target_roots=[tmp_path],
+        minimum_free_disk_bytes=0,
+    )
+    engine = create_engine(settings.database_url)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def scope():
+        with sessions() as session:
+            yield session
+            session.commit()
+
+    service = PathValidationApplicationService(settings, session_scope_factory=scope)
+    result = service.validate(
+        PathValidationRequest(
+            source_path=str(source),
+            target_parent_path=str(target_parent),
+            idempotency_key="future-output-reservation",
+            actor="operator",
+        )
+    )
+
+    output_root = target_parent / "source-angular-21"
+    assert result.snapshot.status == "passed"
+    assert result.snapshot.reservation_id is not None
+    assert not output_root.exists()
+    assert not (output_root / ".migration-factory").exists()
+    assert not (output_root / "migrated-app").exists()
+    with scope() as session:
+        assert PathValidationRepository().get_by_id(session, result.snapshot.validation_id) is not None

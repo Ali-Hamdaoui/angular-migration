@@ -20,9 +20,12 @@ class RuntimeInventoryEntry(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: Literal["node", "npm", "npx", "git", "python"]
     executable: str | None = None
+    attempted_executable: str | None = None
     version: str | None = None
     installation_root: str | None = None
     status: Literal["available", "missing", "failed"]
+    reason: str | None = None
+    remediation: str | None = None
 
 
 class LocalStorageReadiness(BaseModel):

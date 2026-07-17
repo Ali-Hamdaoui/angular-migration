@@ -14,3 +14,17 @@ export function decideG01(
 ): Promise<G01DecisionResponse> {
   return client.post<G01DecisionResponse>(`/api/v1/preflights/${encodeURIComponent(preflightId)}/g01/decisions`, request);
 }
+export function createProductionPreflight(
+  request: {
+    path_validation_id: string;
+    environment_snapshot_id: string;
+    source_analysis_id: string;
+    target_angular_family: string;
+    migration_mode: string;
+    idempotency_key: string;
+    actor: string;
+  },
+  client: ApiClient = apiClient,
+): Promise<ProductionPreflight> {
+  return client.post<ProductionPreflight>("/api/v1/preflights", request);
+}

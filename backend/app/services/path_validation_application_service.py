@@ -41,7 +41,8 @@ class PathValidationApplicationService:
                 actor=request.actor,
                 now=datetime.now(timezone.utc),
             )
-        return result
+            persisted = self._repository.to_result(record)
+        return persisted
 
     def get(self, validation_id: str) -> PathValidationResult | None:
         with self._session_scope() as session:

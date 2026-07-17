@@ -14,6 +14,10 @@ export type ProductionPreflight = {
     target_angular_family: string;
     migration_mode: string;
     source_path: string;
+    target_parent_path: string;
+    generated_output_name: string;
+    resolved_output_root: string;
+    platform_repository_root: string;
     target_output_path: string;
     target_reservation_id: string | null;
     blockers: string[];

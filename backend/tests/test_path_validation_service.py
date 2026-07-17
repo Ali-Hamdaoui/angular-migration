@@ -62,3 +62,58 @@ def test_validate_blocks_overlap_network_and_internal_paths(tmp_path):
 
     assert result.snapshot.status == "blocked"
     assert "OUTPUT_ROOT_INSIDE_SOURCE" in result.snapshot.blockers
+
+def test_validate_previews_a_future_output_root_without_creating_directories(tmp_path):
+    source = tmp_path / "sources" / "project"
+    target_parent = tmp_path / "targets"
+    source.mkdir(parents=True)
+    target_parent.mkdir()
+
+    result = PathValidationService(settings(tmp_path)).validate(
+        PathValidationRequest(
+            source_path=str(source),
+            target_parent_path=str(target_parent),
+            idempotency_key="future-output-preview",
+        )
+    )
+
+    output = Path(result.snapshot.resolved_output_root)
+    assert result.snapshot.status == "passed"
+    assert output == target_parent / "project-angular-21"
+    assert not output.exists()
+    assert not (output / ".migration-factory").exists()
+    assert not (output / "migrated-app").exists()
+
+def test_validate_allows_safe_external_paths_outside_legacy_allowed_roots(tmp_path: Path):
+    source = tmp_path / "external-source" / "angular-app"
+    target_parent = tmp_path / "external-targets"
+    source.mkdir(parents=True)
+    target_parent.mkdir()
+    (source / "package.json").write_text("{}", encoding="utf-8")
+    service = PathValidationService(
+        Settings(
+            _env_file=None,
+            artifact_root=tmp_path / "artifacts",
+            workspace_root=tmp_path / "workspaces",
+            snapshot_root=tmp_path / "snapshots",
+            delivery_root=tmp_path / "delivery",
+            sandbox_root=tmp_path / "sandboxes",
+            platform_repository_root=tmp_path / "platform-repository",
+            allowed_source_roots=[tmp_path / "legacy-source-root"],
+            allowed_target_roots=[tmp_path / "legacy-target-root"],
+            minimum_free_disk_bytes=0,
+        )
+    )
+
+    result = service.validate(
+        PathValidationRequest(
+            source_path=str(source),
+            target_parent_path=str(target_parent),
+            idempotency_key="external-paths",
+        )
+    )
+
+    assert result.snapshot.status == "passed"
+    assert "source_path_outside_allowed_roots" not in result.snapshot.blockers
+    assert "target_path_outside_allowed_roots" not in result.snapshot.blockers
+    assert result.snapshot.resolved_output_root == str(target_parent / "angular-app-angular-21")

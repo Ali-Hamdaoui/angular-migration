@@ -1,96 +1,116 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MigrationSetupForm } from "@/components/MigrationSetupForm";
-import { createMockMigration, validatePaths, validatePreflight } from "@/api/migrations";
+import { analyzeSource, refreshEnvironment, validatePaths } from "@/api/migrations";
+import { createProductionPreflight } from "@/api/preflights";
+import { ApiClientError } from "@/api/client";
+import type { ProductionPreflight } from "@/types/preflight";
 
 const push = vi.fn();
 
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push })
-}));
-
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 vi.mock("@/api/migrations", () => ({
   validatePaths: vi.fn(),
-  validatePreflight: vi.fn(),
-  createMockMigration: vi.fn()
+  refreshEnvironment: vi.fn(),
+  analyzeSource: vi.fn(),
 }));
+vi.mock("@/api/preflights", () => ({ createProductionPreflight: vi.fn() }));
+
+const now = new Date().toISOString();
+const expires = new Date(Date.now() + 60_000).toISOString();
+
+function preflight(status: "passed" | "passed_with_warnings" | "blocked", blockers: string[] = [], warnings: string[] = []): ProductionPreflight {
+  return {
+    snapshot: {
+      preflight_id: "preflight-1", gate_id: "G01", gate_version: "s1-g01-v1", state_version: 1,
+      status, approval_status: "pending", created_at: now, expires_at: expires,
+      input_checksum: "sha256:input", artifact_set_checksum: "sha256:evidence",
+      target_angular_family: "21.x", migration_mode: "strict-functional-parity",
+      source_path: "C:/external/source", target_parent_path: "C:/external/target",
+      generated_output_name: "source-angular-21", resolved_output_root: "C:/external/target/source-angular-21",
+      platform_repository_root: "C:/platform/angular-migration", target_output_path: "C:/external/target/source-angular-21",
+      target_reservation_id: "reservation-1", blockers, warnings,
+      artifacts: { "preflight_result.json": { artifact_id: "artifact-preflight", checksum: "sha256:artifact", relative_path: "00_job_setup/preflight_result.json" } },
+      decision_history: [],
+    },
+  };
+}
 
 describe("MigrationSetupForm", () => {
   beforeEach(() => {
     vi.mocked(validatePaths).mockReset();
-    vi.mocked(validatePaths).mockResolvedValue({
-      snapshot: { validation_id: "path-1", captured_at: new Date().toISOString(), policy_version: "path-validation-v1", status: "passed", source_path: "source", target_parent_path: "target", generated_output_name: "source-angular-21", resolved_output_root: "target/source-angular-21", target_output_path: "target/source-angular-21", source_fingerprint: "sha256:source", rules: [], blockers: [], warnings: [], target_reservation_eligible: true, checksum: "sha256:path" }
-    });
-    vi.mocked(validatePreflight).mockReset();
-    vi.mocked(createMockMigration).mockReset();
+    vi.mocked(refreshEnvironment).mockReset();
+    vi.mocked(analyzeSource).mockReset();
+    vi.mocked(createProductionPreflight).mockReset();
     push.mockReset();
+    vi.mocked(validatePaths).mockResolvedValue({ snapshot: { validation_id: "path-1", captured_at: now, policy_version: "path-validation-v2-external-output", status: "passed", source_path: "C:/external/source", target_parent_path: "C:/external/target", generated_output_name: "source-angular-21", resolved_output_root: "C:/external/target/source-angular-21", reservation_id: "reservation-1", reservation_expires_at: expires, target_output_path: "C:/external/target/source-angular-21", source_fingerprint: "sha256:source", rules: [], blockers: [], warnings: [], target_reservation_eligible: true, checksum: "sha256:path" } });
+    vi.mocked(refreshEnvironment).mockResolvedValue({ snapshot: { snapshot_id: "environment-1" } } as never);
+    vi.mocked(analyzeSource).mockResolvedValue({ snapshot: { analysis_id: "analysis-1", status: "accepted", source_path: "C:/external/source", blockers: [], warnings: [] } });
   });
 
-  it("keeps start disabled until the current inputs have a passed preflight", async () => {
-    vi.mocked(validatePreflight).mockResolvedValue({
-      preflight_id: "preflight-1",
-      checksum: "sha256:preflight",
-      expires_at: new Date(Date.now() + 60000).toISOString(),
-      source_path: "source",
-      target_output_path: "target/source-angular-21",
-      status: "passed",
-      message: "passed",
-      blockers: [],
-      warnings: [],
-      capabilities: { python: "SUCCEEDED" },
-      runtime_profile_available: true,
-      registry_access: "placeholder_not_checked",
-      topology_status: "placeholder_not_scanned",
-      angular_eligibility: "placeholder_not_scanned",
-      artifact: { artifact_id: "artifact-preflight", run_id: "preflight-1", stage_id: null, artifact_type: "json", relative_path: "00_job_setup/preflight-result.json", created_at: new Date().toISOString(), checksum: "sha256:artifact" }
-    });
-    vi.mocked(createMockMigration).mockResolvedValue({ run_id: "mock-run-angular-18-to-21" } as never);
-    render(<MigrationSetupForm />);
-
-    const start = screen.getByRole("button", { name: "Start" });
-    expect(start).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Source path"), { target: { value: "source" } });
-    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "target" } });
+  function fillAndValidate() {
+    fireEvent.change(screen.getByLabelText("Source path"), { target: { value: "C:/external/source" } });
+    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "C:/external/target" } });
     fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+  }
 
-    await screen.findAllByText("passed");
-    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
-
-    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
-
-    expect(start).toBeEnabled();
-
-    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "changed-target" } });
-    expect(start).toBeDisabled();
-  });
-
-  it("starts with the validated checksum", async () => {
-    vi.mocked(validatePreflight).mockResolvedValue({
-      preflight_id: "preflight-1",
-      checksum: "sha256:preflight",
-      expires_at: new Date(Date.now() + 60000).toISOString(),
-      source_path: "source",
-      target_output_path: "target/source-angular-21",
-      status: "passed_with_warnings",
-      message: "passed",
-      blockers: [],
-      warnings: ["placeholder"],
-      capabilities: {},
-      runtime_profile_available: true,
-      registry_access: "placeholder_not_checked",
-      topology_status: "placeholder_not_scanned",
-      angular_eligibility: "placeholder_not_scanned",
-      artifact: null
-    });
-    vi.mocked(createMockMigration).mockResolvedValue({ run_id: "mock-run-angular-18-to-21" } as never);
+  it("uses one durable validation chain and exposes only its authoritative passed result", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed"));
     render(<MigrationSetupForm />);
+    fillAndValidate();
 
-    fireEvent.change(screen.getByLabelText("Source path"), { target: { value: "source" } });
-    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "target" } });
-    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
-    await screen.findByText("passed_with_warnings");
+    await screen.findByText("Latest authoritative validation: preflight-1");
+    expect(validatePaths).toHaveBeenCalledTimes(1);
+    expect(refreshEnvironment).toHaveBeenCalledTimes(1);
+    expect(analyzeSource).toHaveBeenCalledWith(expect.objectContaining({ source_path: "C:/external/source" }));
+    expect(createProductionPreflight).toHaveBeenCalledWith(expect.objectContaining({ path_validation_id: "path-1", environment_snapshot_id: "environment-1", source_analysis_id: "analysis-1" }));
+    expect(screen.queryByLabelText("Path validation result")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(push).toHaveBeenCalledWith("/preflights/preflight-1");
+  });
 
-    await waitFor(() => expect(createMockMigration).toHaveBeenCalledWith({ preflight_checksum: "sha256:preflight" }));
-    expect(push).toHaveBeenCalledWith("/migrations/mock-run-angular-18-to-21");
+  it("keeps Start disabled when the latest authoritative decision is blocked", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("blocked", ["runtime_tool_unavailable_git"]));
+    render(<MigrationSetupForm />);
+    fillAndValidate();
+
+    await screen.findByText(/runtime_tool_unavailable_git/);
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+    expect(screen.queryByText(/Reserved future output root/)).toBeInTheDocument();
+  });
+
+  it("allows warnings without converting the latest result into a blocker", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed_with_warnings", [], ["WORKSPACE_TOPOLOGY_UNKNOWN"]));
+    render(<MigrationSetupForm />);
+    fillAndValidate();
+
+    await screen.findByText(/WORKSPACE_TOPOLOGY_UNKNOWN/);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeEnabled());
+  });
+  it("reports the failed secondary request without treating the path stage as a preflight", async () => {
+    vi.mocked(refreshEnvironment).mockRejectedValue(new ApiClientError("Backend request failed", 503, "POST", "/environment/refresh", '{"error_code":"environment_unavailable"}'));
+    render(<MigrationSetupForm />);
+    fillAndValidate();
+
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert")).toHaveTextContent("environment and source analysis failed — POST /environment/refresh returned 503");
+    expect(screen.getByRole("heading", { name: "Path validation" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Preflight result")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+  });
+
+  it("rejects an invalid production-preflight response and clears the error after a later success", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValueOnce({} as ProductionPreflight).mockResolvedValueOnce(preflight("passed"));
+    render(<MigrationSetupForm />);
+    fillAndValidate();
+
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert")).toHaveTextContent("production preflight failed");
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await screen.findByText("Latest authoritative validation: preflight-1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
   });
 });
