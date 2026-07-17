@@ -13,6 +13,7 @@ from app.api.routes.snapshots import router as snapshots_router
 from app.api.routes.migrations import assistant_router, router as migrations_router
 from app.api.routes.version import router as version_router
 from app.api.routes.baseline import router as baseline_router
+from app.api.routes.baseline_g03 import router as baseline_g03_router
 from app.api.routes.baseline_matrix import router as baseline_matrix_router
 from app.api.routes.baseline_parity import router as baseline_parity_router
 from app.api.routes.runs import router as runs_router
@@ -32,6 +33,7 @@ api_router.include_router(environment_router)
 api_router.include_router(execution_profiles_router)
 api_router.include_router(preflights_router)
 api_router.include_router(baseline_router)
+api_router.include_router(baseline_g03_router)
 api_router.include_router(baseline_parity_router)
 api_router.include_router(baseline_matrix_router)
 api_router.include_router(draft_approval_router)
@@ -51,6 +53,7 @@ api_v1_router.include_router(execution_profiles_router)
 api_v1_router.include_router(preflights_router)
 api_v1_router.include_router(draft_approval_router)
 api_v1_router.include_router(baseline_router)
+api_v1_router.include_router(baseline_g03_router)
 api_v1_router.include_router(baseline_parity_router)
 api_v1_router.include_router(baseline_matrix_router)
 api_router.include_router(api_v1_router)

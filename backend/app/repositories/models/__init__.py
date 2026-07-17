@@ -6,6 +6,7 @@ from app.repositories.g02_models import G02ApprovalModel
 from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.baseline_matrix_models import BaselineValidationModel
 from app.repositories.baseline_parity_models import BaselineParityEvidenceModel
+from app.repositories.baseline_g03_models import BaselineAssessmentModel, G03ApprovalModel
 from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
@@ -41,6 +42,8 @@ __all__ = [
     "BaselineQualificationModel",
     "BaselineValidationModel",
     "BaselineParityEvidenceModel",
+    "BaselineAssessmentModel",
+    "G03ApprovalModel",
     "ExecutionProfileModel",
     "CommandExecutionModel",
     "EnvironmentCapabilityModel",

@@ -26,3 +26,9 @@ bundled Angular workspace/**/out-tsc/
 .tmp/
 tmp-pytest*/
 backend/Usershamdaoui.aliangular-migrationtmp-pytest/
+
+# Disposable generated test workspaces
+.s1f09-persistence-test/
+.pytest-tmp-*/
+.pytest_cache/
+.ruff_cache/
