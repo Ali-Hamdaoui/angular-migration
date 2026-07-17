@@ -55,9 +55,12 @@ export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: Ru
 export type RuntimeInventoryEntry = {
   name: "node" | "npm" | "npx" | "git" | "python";
   executable: string | null;
+  attempted_executable: string | null;
   version: string | null;
   installation_root: string | null;
   status: "available" | "missing" | "failed";
+  reason: string | null;
+  remediation: string | null;
 };
 export type LocalStorageReadiness = {
   database_path: string;
@@ -105,6 +108,8 @@ export type PathValidationSnapshot = {
   target_parent_path: string;
   generated_output_name: string;
   resolved_output_root: string;
+  reservation_id: string | null;
+  reservation_expires_at: string | null;
   target_output_path: string;
   source_fingerprint: string | null;
   rules: PathRuleResult[];

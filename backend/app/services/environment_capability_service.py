@@ -27,6 +27,13 @@ class EnvironmentCapabilityService:
 
     policy_version = "environment-readiness-v1"
     runtime_names = ("node", "npm", "npx", "git", "python")
+    _windows_executables = {
+        "node": ("node.exe", "node"),
+        "npm": ("npm.cmd", "npm"),
+        "npx": ("npx.cmd", "npx"),
+        "git": ("git.exe", "git"),
+        "python": ("python.exe", "python", "py.exe", "py"),
+    }
 
     def __init__(
         self,
@@ -36,12 +43,14 @@ class EnvironmentCapabilityService:
         *,
         which: Callable[[str], str | None] = shutil.which,
         now_provider: Callable[[], datetime] | None = None,
+        is_windows: bool | None = None,
     ) -> None:
         self._settings = settings
         self._worker = worker
         self._artifact_store = artifact_store
         self._which = which
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self._is_windows = os.name == "nt" if is_windows is None else is_windows
 
     def diagnose(self, idempotency_key: str = "environment-refresh") -> EnvironmentCapabilityResult:
         if not idempotency_key.strip():
@@ -51,19 +60,14 @@ class EnvironmentCapabilityService:
         snapshot_id = f"environment-{uuid4().hex[:12]}"
         self._artifact_store.ensure_run_layout(snapshot_id)
 
-        runtimes = [
-            self._probe_runtime(name, snapshot_id, idempotency_key, captured_at)
-            for name in self.runtime_names
-        ]
+        runtimes = [self._probe_runtime(name, snapshot_id, idempotency_key, captured_at) for name in self.runtime_names]
         blockers: list[str] = []
         warnings: list[str] = []
         runtime_by_name = {runtime.name: runtime for runtime in runtimes}
         pair_names = ("node", "npm", "npx")
         pair_available = all(runtime_by_name[name].status == "available" for name in pair_names)
         pair_roots = {
-            runtime_by_name[name].installation_root
-            for name in pair_names
-            if runtime_by_name[name].installation_root
+            runtime_by_name[name].installation_root for name in pair_names if runtime_by_name[name].installation_root
         }
         paired = pair_available and len(pair_roots) == 1
         if pair_available and not paired:
@@ -120,7 +124,9 @@ class EnvironmentCapabilityService:
         inventory = self._artifact_store.write_text_artifact(
             snapshot_id,
             "global/00_setup/runtime_inventory.json",
-            json.dumps({"runtimes": [runtime.model_dump(mode="json") for runtime in runtimes]}, indent=2, sort_keys=True),
+            json.dumps(
+                {"runtimes": [runtime.model_dump(mode="json") for runtime in runtimes]}, indent=2, sort_keys=True
+            ),
             ArtifactType.JSON,
             created_by="environment-capability-service",
             created_at=captured_at,
@@ -141,15 +147,21 @@ class EnvironmentCapabilityService:
         idempotency_key: str,
         now: datetime,
     ) -> RuntimeInventoryEntry:
-        executable = self._which(name)
+        attempted_executable, executable = self._discover_executable(name)
         if not executable:
-            return RuntimeInventoryEntry(name=name, status="missing")
+            return RuntimeInventoryEntry(
+                name=name,
+                attempted_executable=attempted_executable,
+                status="missing",
+                reason="The executable was not found in the backend process PATH.",
+                remediation=self._missing_remediation(name),
+            )
 
         request = CommandRequestDto(
             command_id=f"{name}-version",
             run_id=snapshot_id,
             requester="environment-capability-service",
-            executable=name,
+            executable=attempted_executable,
             arguments=["--version"],
             working_directory_alias="run_workspace",
             runtime_profile_id="source-runtime-profile",
@@ -160,15 +172,45 @@ class EnvironmentCapabilityService:
         )
         execution = self._worker.run(request)
         if execution.result.status is not CommandStatus.SUCCEEDED or execution.stdout_artifact is None:
-            return RuntimeInventoryEntry(name=name, executable=executable, status="failed")
+            detail = self._execution_detail(execution)
+            return RuntimeInventoryEntry(
+                name=name,
+                executable=executable,
+                attempted_executable=attempted_executable,
+                installation_root=str(Path(executable).resolve().parent),
+                status="failed",
+                reason=detail,
+                remediation="Review the captured command stderr, then verify that this executable can run from the backend process account and PATH.",
+            )
         version = execution.stdout_artifact.content.splitlines()[0].strip()
         return RuntimeInventoryEntry(
             name=name,
             executable=executable,
+            attempted_executable=attempted_executable,
             version=version or None,
             installation_root=str(Path(executable).resolve().parent),
             status="available",
         )
+
+    def _discover_executable(self, name: str) -> tuple[str, str | None]:
+        candidates = self._windows_executables[name] if self._is_windows else (name,)
+        for candidate in candidates:
+            executable = self._which(candidate)
+            if executable:
+                return candidate, executable
+        return candidates[0], None
+
+    @staticmethod
+    def _missing_remediation(name: str) -> str:
+        if name == "python":
+            return "Install Python or ensure python.exe (or the py launcher) is available in the backend process PATH."
+        return f"Install {name} or add its executable directory to the backend process PATH, then restart the backend."
+
+    @staticmethod
+    def _execution_detail(execution) -> str:
+        stderr = execution.stderr_artifact.content.strip() if execution.stderr_artifact else ""
+        status = execution.result.status.value.lower()
+        return f"The authoritative version probe {status}" + (f": {stderr}" if stderr else ".")
 
     def _storage_readiness(self) -> LocalStorageReadiness:
         artifact_root = self._settings.artifact_root.resolve()
@@ -180,7 +222,10 @@ class EnvironmentCapabilityService:
         ]
         local = not any(str(path).startswith("\\\\") for path in paths)
         writable = all(self._is_writable(path) for path in paths)
-        usage_path = next((path if path.exists() else path.parent for path in paths if path.exists() or path.parent.exists()), Path.cwd())
+        usage_path = next(
+            (path if path.exists() else path.parent for path in paths if path.exists() or path.parent.exists()),
+            Path.cwd(),
+        )
         free_bytes = shutil.disk_usage(usage_path).free
         status = "blocked" if not local or not writable else "available"
         if free_bytes < self._settings.minimum_free_disk_bytes:

@@ -78,3 +78,19 @@ export function getPathValidation(
 ): Promise<PathValidationResult> {
   return client.get<PathValidationResult>("/sources/path-validations/" + encodeURIComponent(validationId));
 }
+export type SourceAnalysisResult = {
+  snapshot: {
+    analysis_id: string;
+    status: "accepted" | "review_required" | "blocked";
+    source_path: string;
+    blockers: string[];
+    warnings: string[];
+  };
+};
+
+export function analyzeSource(
+  request: { source_path: string; idempotency_key: string; actor?: string | null },
+  client: ApiClient = apiClient,
+): Promise<SourceAnalysisResult> {
+  return client.post<SourceAnalysisResult>("/sources/analyze", request);
+}

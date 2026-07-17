@@ -1,6 +1,8 @@
 """Tests for the local filesystem artifact store and artifact routes."""
 
 import os
+from contextlib import contextmanager
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -176,3 +178,37 @@ def test_artifact_routes_list_and_open_store_records(monkeypatch: pytest.MonkeyP
     assert body["artifact"]["relative_path"] == "08_final/final_report.md"
     assert body["content"] == "Final report content"
     assert body["created_by"] == "report-agent"
+
+def test_artifact_id_route_reads_persisted_preflight_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    preflight_id = "preflight-test"
+    root = tmp_path / "operational-artifacts" / "preflights" / preflight_id
+    store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
+    stored = store.write_text_artifact(
+        preflight_id,
+        "00_job_setup/preflight_result.json",
+        '{"status":"passed"}',
+        ArtifactType.JSON,
+        created_by="production-preflight-service",
+    )
+
+    class Session:
+        def get(self, model, identifier):
+            if model.__name__ == "ArtifactMetadataModel":
+                return None
+            if model.__name__ == "PreflightArtifactMetadataModel" and identifier == f"metadata-{stored.ref.artifact_id}":
+                return SimpleNamespace(preflight_id=preflight_id)
+            if model.__name__ == "PreflightModel" and identifier == preflight_id:
+                return SimpleNamespace(id=preflight_id)
+            return None
+
+    @contextmanager
+    def scope():
+        yield Session()
+
+    monkeypatch.setattr("app.api.routes.artifacts.session_scope", scope)
+    monkeypatch.setattr("app.api.routes.artifacts.get_settings", lambda: SimpleNamespace(artifact_root=tmp_path / "operational-artifacts"))
+    response = TestClient(app).get(f"/artifacts/{stored.ref.artifact_id}")
+
+    assert response.status_code == 200
+    assert response.json()["content"] == '{"status":"passed"}'
+    assert response.json()["artifact"]["artifact_id"] == stored.ref.artifact_id
