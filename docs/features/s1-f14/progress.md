@@ -1,21 +1,12 @@
 # S1-F14 Progress
 
-## Delivered issues
+## Completed
 
-- S1-F14-I01: deterministic baseline qualification policy and checksum-bound G03 domain rules.
+- I01: deterministic baseline qualification now runs through `BaselineG03ApplicationService` and the Transition Service.
+- I02: assessment/G03 models, Alembic migration, typed APIs, durable events, and checksum-registered baseline artifacts are implemented.
+- I03: the Control Tower renders qualification evidence and submits G03 actions through authoritative APIs.
+- I04: optimistic version/idempotency checks, artifact metadata, SSE event vocabulary, restart rehydration, and frontend/backend verification are covered.
 
-## Scope boundary
+## Generated artifacts
 
-The domain evaluates S1-F10 through S1-F13 evidence without executing commands,
-mutating workspaces, persisting state, exposing API routes, or advancing the
-workflow directly. Database/API/event/artifact persistence, frontend projection,
-and the remaining Feature 14 issues are intentionally deferred.
-
-## Rules covered
-
-- Clean evidence qualifies under strict-clean policy.
-- Known failures qualify only when fingerprints exist and company policy allows
-  the explicit known-failure policy; the result remains visibly conditional.
-- Failed or unproven mandatory install/build evidence cannot be approved.
-- G03 approval is rejected when state, sandbox, or ExecutionProfile evidence is
-  stale.
+`frontend/next-env.d.ts` intentionally tracks Next.js 16's generated `./.next/types/routes.d.ts` location and is validated by `npm run build`. Disposable test output directories are intentionally ignored/retained when Windows holds open handles; they are not source artifacts.
