@@ -1,4 +1,4 @@
-"""S2-F01 verification: durable discovery evidence is authoritative and replayable."""
+﻿"""S2-F01 verification: durable discovery evidence is authoritative and replayable."""
 
 import asyncio
 import json
@@ -13,7 +13,7 @@ from app.api.discovery_contracts import DiscoveryCaptureRequest
 from app.api.routes import discovery as discovery_routes
 from app.api.routes import runs as runs_routes
 from app.main import app
-from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
 from app.services.discovery_evidence_application_service import DiscoveryEvidenceApplicationService
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
@@ -30,6 +30,7 @@ def fixture(tmp_path):
     with sessions() as session:
         session.add(MigrationRunModel(id="run-1", status="CREATED", run_phase="DISCOVERY_BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(tmp_path / "artifacts"), workspace_aliases={"SOURCE_SNAPSHOT": str(workspace)}, created_at=NOW, updated_at=NOW))
         session.add(ArtifactMetadataModel(id="metadata-baseline", run_id="run-1", stage_id=None, artifact_type="json", relative_path="baseline.json", checksum="sha256:baseline", created_at=NOW))
+        session.add(G03ApprovalModel(id="g03-1", run_id="run-1", gate_id="G03", gate_version="g03-v1", idempotency_key="g03-1", actor="operator", status="approved", decision="approved", package_checksum="sha256:package", evidence_set_checksum="sha256:evidence", qualification_status="qualified", policy_version="g03-v1", state_version=1, event_sequence=1, sandbox_fingerprint="sha256:sandbox", execution_profile_checksum="sha256:profile", package={}, artifact_ids=[], comment=None, created_at=NOW, updated_at=NOW))
         session.commit()
     @contextmanager
     def scope():
@@ -92,3 +93,4 @@ def test_discovery_versioned_api_and_sse_replay_expose_authoritative_events(monk
     finally:
         app.dependency_overrides.pop(discovery_routes.service, None)
         engine.dispose()
+
