@@ -1,0 +1,18 @@
+.panel { margin-top: 1.5rem; padding: 1.25rem; border: 1px solid #2b4770; border-radius: .75rem; background: rgba(12, 28, 51, .82); }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.eyebrow { margin: 0 0 .25rem; color: #88b8ff; text-transform: uppercase; letter-spacing: .1em; font-size: .7rem; }
+.header h2 { margin: 0; }
+.refresh { border: 0; border-radius: .45rem; padding: .55rem .8rem; background: #5a8cff; color: #06101f; font-weight: 700; cursor: pointer; }
+.refresh:disabled { opacity: .6; cursor: wait; }
+.note, .warning, .error { color: #b8c9e6; }
+.error { color: #ffb2ad; }
+.warning { color: #ffd78a; }
+.status { display: flex; justify-content: space-between; margin-top: 1rem; padding: .7rem; border-radius: .45rem; }
+.available { background: #123d32; color: #8ff0c3; }
+.degraded { background: #493816; color: #ffd78a; }
+.blocked { background: #4d1d25; color: #ffb2ad; }
+.runtimeGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: .6rem; margin-top: .8rem; }
+.card, .details > div { padding: .7rem; border: 1px solid #294262; border-radius: .45rem; }
+.card span, .card small, .details span { display: block; }
+.card small, .details span { margin-top: .25rem; color: #9db2d2; overflow-wrap: anywhere; }
+.details { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .6rem; margin-top: .8rem; }

@@ -1,8 +1,12 @@
 """Snapshot service package."""
-
 from app.snapshots.services import (
+    GitMetadata,
+    SnapshotIntegrityError,
+    SnapshotLinkError,
+    SnapshotPolicy,
     SnapshotRecord,
     SnapshotService,
+    SourceExclusion,
     SourceIntegrityVerifier,
     SourceManifest,
     SourceManifestBuilder,
@@ -12,8 +16,13 @@ from app.snapshots.services import (
 )
 
 __all__ = [
+    "GitMetadata",
+    "SnapshotIntegrityError",
+    "SnapshotLinkError",
+    "SnapshotPolicy",
     "SnapshotRecord",
     "SnapshotService",
+    "SourceExclusion",
     "SourceIntegrityVerifier",
     "SourceManifest",
     "SourceManifestBuilder",

@@ -53,13 +53,10 @@ ignored by Git.
 | Variable | Local default | Notes |
 | --- | --- | --- |
 | `APP_ENV` | `development` | Allowed values: `development`, `test`, `production`. |
-| `DATABASE_URL` | `sqlite:///./.migration-factory/migration-factory.db` | Used by AMF-S0-04. |
-| `ARTIFACT_ROOT` | `.migration-factory/runs` | Immutable run artifacts. |
-| `WORKSPACE_ROOT` | `.migration-factory/workspaces` | Internal mutable run workspaces. |
-| `SNAPSHOT_ROOT` | `.migration-factory/snapshots` | Immutable source snapshots. |
-| `DELIVERY_ROOT` | `.migration-factory/delivery` | Temporary delivery staging. |
-| `SANDBOX_ROOT` | `.migration-factory/sandboxes` | Legacy command working-root alias. |
-| `ALLOWED_SOURCE_ROOTS` | `demo-apps` | Comma-delimited normalized source roots. Windows example: `C:\projects\approved-sources`; POSIX example: `/opt/approved-sources`. |
+| `APPLICATION_DATA_ROOT` | `%LOCALAPPDATA%\\AngularMigrationControlTower` | Platform operational state, outside the repository. |
+| `DATABASE_URL` | `<application-data-root>/control-tower.db` | Global MVP SQLite state. |
+| Run paths | registered output root | Never configure repository-relative run artifacts, sandboxes, or logs. |
+| `ALLOWED_SOURCE_ROOTS` | `external source directories` | Comma-delimited normalized source roots. Windows example: `C:\projects\approved-sources`; POSIX example: `/opt/approved-sources`. |
 | `ALLOWED_TARGET_ROOTS` | `.migration-factory` | Comma-delimited normalized target roots. Windows example: `C:\tmp\migration-output`; POSIX example: `/tmp/migration-output`. |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000` | Comma-delimited allowlist. |
 | `COMMAND_TIMEOUT_SECONDS` | `300` | Must be positive. |
@@ -121,9 +118,9 @@ AMF-S0-19 separates immutable source evidence, mutable migration work, run
 artifacts, and final publication:
 
 ```text
-{target}/.migration-factory/snapshots/{snapshotId}/
-{target}/.migration-factory/workspaces/{runId}/repository/
-{ARTIFACT_ROOT}/{runId}/
+{resolved-output-root}/.migration-factory/runs/{runId}/source-snapshot/
+{resolved-output-root}/.migration-factory/runs/{runId}/baseline-sandbox/
+{resolved-output-root}/.migration-factory/runs/{runId}/artifacts/
 {target}/migrated-app/
 ```
 
@@ -142,9 +139,9 @@ AMF-S0-19 separates immutable source evidence, mutable migration work, run
 artifacts, and final publication:
 
 ```text
-{target}/.migration-factory/snapshots/{snapshotId}/
-{target}/.migration-factory/workspaces/{runId}/repository/
-{ARTIFACT_ROOT}/{runId}/
+{resolved-output-root}/.migration-factory/runs/{runId}/source-snapshot/
+{resolved-output-root}/.migration-factory/runs/{runId}/baseline-sandbox/
+{resolved-output-root}/.migration-factory/runs/{runId}/artifacts/
 {target}/migrated-app/
 ```
 
@@ -163,7 +160,7 @@ The local filesystem artifact store writes append-only evidence beneath
 `ARTIFACT_ROOT` using the Sprint 0 run layout:
 
 ```text
-{ARTIFACT_ROOT}/{runId}/
+{resolved-output-root}/.migration-factory/runs/{runId}/artifacts/
   00_job_setup/
   01_baseline/
   02_analysis/
@@ -217,7 +214,7 @@ git --version
 ```
 
 The worker rejects any command outside that allowlist and any working directory
-that is missing or outside `SANDBOX_ROOT`. It invokes subprocesses with
+that is missing or outside a registered mutable workspace alias. It invokes subprocesses with
 `shell=False`, captures stdout/stderr/exit code/timing, and writes a command-log
 artifact to `04_workflow_state/command_logs/{commandId}.json`. Those logs are
 opened through the artifact API like any other run artifact.

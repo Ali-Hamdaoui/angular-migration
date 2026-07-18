@@ -11,13 +11,14 @@ worker rejects raw shell behavior, unapproved executables, unknown command IDs,
 argument arrays that do not exactly match the registry, unknown aliases,
 unknown runtime or network profiles, and unsupported cancellation policies.
 
-Sprint 0's default command registry allows only safe version checks:
+The command registry allows safe version checks and the S1-F11 frozen baseline install:
 
 - `python-version`: `python --version`
 - `node-version`: `node --version`
 - `npm-version`: `npm --version`
 - `npx-version`: `npx --version`
 - `git-version`: `git --version`
+- `npm-ci-bootstrap`: `npm ci` (only in the registered `BASELINE_SANDBOX`, with an approved runtime and registry network profile)
 
 The supervisor starts commands with `shell=False`, enforces the request timeout,
 and terminates the process tree on timeout. Complete command records are written

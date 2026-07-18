@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import OperationalError
 
 from app.api.errors import error_response
 from app.api.router import api_router
@@ -18,6 +19,12 @@ from app.repositories.session import check_database_connection
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Confirm configured database connectivity before serving API requests."""
     check_database_connection()
+    from app.api.routes.baseline import get_baseline_install_service
+    try:
+        get_baseline_install_service().reconcile_orphans()
+    except OperationalError:
+        # Older test/development databases may predate the command columns.
+        pass
     yield
 
 

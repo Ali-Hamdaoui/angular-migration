@@ -15,6 +15,8 @@ export interface UseMigrationEventsResult {
 }
 
 const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
+  "STATE_CONTRACT_MIGRATED",
+  "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION",
   "run_state_changed",
   "stage_state_changed",
   "agent_state_changed",
@@ -22,6 +24,12 @@ const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
   "artifact_created",
   "approval_required",
   "workflow_completed",
+  "SNAPSHOT_STARTED",
+  "SNAPSHOT_CREATED",
+  "SNAPSHOT_FAILED",
+  "SNAPSHOT_PROGRESS_UPDATED",
+  "SNAPSHOT_QUARANTINED",
+  "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED", "COMMAND_QUEUED", "COMMAND_STARTED", "COMMAND_OUTPUT_AVAILABLE", "COMMAND_OUTPUT_CHUNK", "BASELINE_INSTALL_SUCCEEDED", "BASELINE_INSTALL_FAILED", "COMMAND_CANCELLED", "COMMAND_INTERRUPTED", "BASELINE_TARGETS_DISCOVERED", "BASELINE_BUILD_STARTED", "BASELINE_BUILD_COMPLETED", "BASELINE_TESTS_STARTED", "BASELINE_TESTS_COMPLETED", "BASELINE_LINT_STARTED", "BASELINE_LINT_COMPLETED", "G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE",
 ];
 
 const MAX_LIVE_EVENTS = 200;
@@ -64,7 +72,7 @@ export function useMigrationEvents(
   }, [markRecoveryRequired]);
 
   useEffect(() => {
-    const url = `${getBackendBaseUrl()}/migrations/${runId}/events`;
+    const url = `${getBackendBaseUrl()}/api/v1/runs/${runId}/events`;
     const source = new createEventSource(url);
     const listeners = new Map<string, EventListener>();
 

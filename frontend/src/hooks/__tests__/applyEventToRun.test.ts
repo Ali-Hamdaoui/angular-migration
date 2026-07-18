@@ -100,3 +100,26 @@ describe("applyEventToRun", () => {
     expect(mockMigrationRun).toEqual(original);
   });
 });
+
+describe("authoritative workflow dimensions", () => {
+  it("projects contract migration dimensions from the backend event", () => {
+    const updated = applyEventToRun(
+      mockMigrationRun,
+      event("STATE_CONTRACT_MIGRATED", {
+        phase_status: "completed",
+        approval_status: "approved",
+        repair_status: "not_required",
+      }),
+    );
+    expect(updated.phase_status).toBe("completed");
+    expect(updated.approval_status).toBe("approved");
+    expect(updated.repair_status).toBe("not_required");
+  });
+});
+it("projects baseline events into the authoritative ordered workflow event list", () => {
+  const baselineEvent = event("BASELINE_BUILD_STARTED", { kind: "build", next_state_version: 4 }, "evt-baseline", null);
+  const updated = applyEventToRun(mockMigrationRun, baselineEvent);
+  expect(updated.workflow_events.at(-1)?.event_type).toBe("BASELINE_BUILD_STARTED");
+  expect(updated.workflow_events.at(-1)?.sequence).toBe(1);
+  expect(applyEventToRun(updated, baselineEvent).workflow_events.filter((item) => item.event_id === "evt-baseline")).toHaveLength(1);
+});

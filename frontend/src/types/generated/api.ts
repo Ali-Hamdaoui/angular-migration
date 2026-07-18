@@ -1,26 +1,29 @@
 /** Manually synchronized from backend/app/domain/contracts.py for Sprint 0. */
 
-export type RunStatus = "CREATED" | "RUNNING" | "WAITING" | "CANCELLING" | "CANCELLED" | "COMPLETED" | "FAILED" | "DIAGNOSTIC_HOLD";
+export type RunStatus = "CREATED" | "SOURCE_VALIDATION_RUNNING" | "SOURCE_VALIDATED" | "WORKSPACE_CLASSIFICATION_RUNNING" | "BASELINE_RUNNING" | "BASELINE_QUALIFIED" | "CLIENT_CONSTRAINTS_CAPTURED" | "ELIGIBILITY_RUNNING" | "ANALYSIS_RUNNING" | "WAITING_ANALYSIS_APPROVAL" | "PLANNING_RUNNING" | "WAITING_PLAN_APPROVAL" | "STAGE_CREATED" | "TOOLCHAIN_PROFILE_SELECTED" | "SANDBOX_READY" | "DEPENDENCY_AUDITED" | "TRANSFORMATION_RUNNING" | "STATIC_SYMBOL_CHECK_RUNNING" | "VALIDATION_RUNNING" | "REPAIR_RUNNING" | "WAITING_REPAIR_APPROVAL" | "REVIEW_READY" | "STAGE_COMMITTED" | "STAGE_ROLLED_BACK" | "REPORT_RUNNING" | "DELIVERY_RUNNING" | "PAUSE_REQUESTED" | "PAUSED" | "RESUMING" | "CANCEL_REQUESTED" | "CANCELLING" | "TIMED_OUT" | "WORKER_LOST" | "RECOVERY_RUNNING" | "ORPHANED" | "CLEANUP_RUNNING" | "CLEANUP_FAILED" | "RUNNING" | "WAITING" | "CANCELLED" | "COMPLETED" | "FAILED" | "DIAGNOSTIC_HOLD";
 export type RunPhase = "PREFLIGHT_SNAPSHOT" | "DISCOVERY_BASELINE" | "FEASIBILITY_PLANNING" | "STAGED_MIGRATION" | "FINAL_ASSURANCE" | "DELIVERY_REPORTING";
-export type StageStatus = "PENDING" | "RUNNING" | "WAITING_APPROVAL" | "REPAIRING" | "PASSED" | "FAILED" | "ROLLED_BACK" | "CANCELLED" | "DIAGNOSTIC_HOLD";
+export type PhaseStatus = "not_started" | "running" | "waiting_approval" | "completed" | "blocked" | "failed" | "cancelled";
+export type StageStatus = "PENDING" | "preparing" | "RUNNING" | "WAITING_APPROVAL" | "REPAIRING" | "PASSED" | "passed_with_known_baseline_failures" | "passed_with_manual_items" | "FAILED" | "ROLLED_BACK" | "CANCELLED" | "DIAGNOSTIC_HOLD";
 export type StepStatus = "PENDING" | "QUEUED" | "RUNNING" | "PASSED" | "FAILED" | "BLOCKED" | "WAITING_APPROVAL" | "SKIPPED" | "MANUAL" | "DEFERRED" | "ACCEPTED_RISK" | "CANCELLED";
 export type AgentStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "SKIPPED" | "REQUIRES_APPROVAL";
 export type DeterministicComponentType = "SourceIntakeValidator" | "SnapshotService" | "WorkspaceTopologyClassifier" | "CompatibilityResolver" | "ToolchainRuntimeManager" | "CommandPolicyEngine" | "BaselineQualificationService" | "StaticSymbolGate" | "ParityEvidenceEngine" | "CheckpointService" | "ArtifactService" | "WorkerSupervisor" | "DeliveryService";
 export type AgentKind = "AnalysisAgent" | "PlanningAgent" | "TransformationAgent" | "BuildValidationAgent" | "RepairAgent" | "ReportAgent" | "AssistantAgent" | "EligibilityAgent";
 export type ValidationStatus = "passed" | "failed" | "not_configured" | "manual_validation_required" | "deferred_company_tool_required" | "blocked_by_environment" | "accepted_risk" | "skipped_not_applicable";
-export type ApprovalDecision = "PENDING" | "APPROVED" | "REJECTED" | "ACCEPTED_RISK" | "CANCELLED";
+export type ApprovalDecision = "PENDING" | "APPROVED" | "REJECTED" | "ACCEPTED_RISK" | "MODIFICATION_REQUESTED" | "APPROVED_WITH_RISK" | "CANCELLED";
+export type ApprovalStatus = "not_required" | "pending" | "approved" | "rejected" | "modification_requested" | "approved_with_risk" | "expired" | "cancelled";
+export type RepairStatus = "not_required" | "pending" | "running" | "waiting_approval" | "completed" | "failed" | "escalated" | "cancelled";
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 export type TopologySupportLevel = "officially_supported" | "historical_validated" | "historical_experimental" | "blocked";
 export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_required" | "not_evaluated";
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED" | "SNAPSHOT_PROGRESS_UPDATED" | "SNAPSHOT_QUARANTINED" | "SOURCE_INTEGRITY_VERIFIED" | "SOURCE_INTEGRITY_FAILED" | "G02_CREATED" | "G02_APPROVED" | "G02_REJECTED" | "G02_STALE" | "EXECUTION_PROFILE_RESOLUTION_STARTED" | "EXECUTION_PROFILE_RESOLVED" | "EXECUTION_PROFILE_BLOCKED" | "EXECUTION_PROFILE_SELECTED" | "COMMAND_QUEUED" | "COMMAND_STARTED" | "COMMAND_OUTPUT_AVAILABLE" | "COMMAND_OUTPUT_CHUNK" | "BASELINE_INSTALL_SUCCEEDED" | "BASELINE_INSTALL_FAILED" | "COMMAND_CANCELLED" | "COMMAND_INTERRUPTED" | "BASELINE_TARGETS_DISCOVERED" | "BASELINE_BUILD_STARTED" | "BASELINE_BUILD_COMPLETED" | "BASELINE_TESTS_STARTED" | "BASELINE_TESTS_COMPLETED" | "BASELINE_LINT_STARTED" | "BASELINE_LINT_COMPLETED";
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
-export type PreflightRequestDto = { source_path: string; target_output_path: string; target_angular_family: string; migration_mode: string; auto_approval_enabled: boolean };
-export type PreflightResultDto = { preflight_id: string; checksum: string; expires_at: string; source_path: string; target_output_path: string; status: "passed" | "passed_with_warnings" | "blocked" | "expired" | string; message: string; blockers: string[]; warnings: string[]; capabilities: Record<string, string>; runtime_profile_available: boolean; registry_access: string; topology_status: string; angular_eligibility: string; artifact: ArtifactRefDto | null };
+export type PreflightRequestDto = { source_path: string; target_output_path: string; target_parent_path?: string; generated_output_name?: string; resolved_output_root?: string; target_angular_family: string; migration_mode: string; auto_approval_enabled: boolean };
+export type PreflightResultDto = { preflight_id: string; checksum: string; expires_at: string; source_path: string; target_parent_path?: string; generated_output_name?: string; resolved_output_root?: string; target_output_path: string; status: "passed" | "passed_with_warnings" | "blocked" | "expired" | string; message: string; blockers: string[]; warnings: string[]; capabilities: Record<string, string>; runtime_profile_available: boolean; registry_access: string; topology_status: string; angular_eligibility: string; artifact: ArtifactRefDto | null };
 export type CreateMockMigrationRequestDto = { preflight_checksum: string; idempotency_key?: string | null };
 export type MigrationStageDto = { stage_id: string; run_id: string; stage_order: number; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; status: StageStatus; current_agent: string | null; created_at: string; started_at: string | null; completed_at: string | null };
 export type StageStepDto = { step_id: string; run_id: string; stage_id: string | null; name: string; status: StepStatus; component_type: string; started_at: string | null; completed_at: string | null };
@@ -32,7 +35,7 @@ export type ArtifactRefDto = { artifact_id: string; run_id: string; stage_id: st
 export type RuntimeProfileDto = { runtime_profile_id: string; node_version: string | null; npm_version: string | null; angular_cli_version: string | null; checksum: string };
 export type CommandRequestDto = { command_id: string; run_id: string; stage_id: string | null; requested_by: string | null; requester: string | null; executable: string; arguments: string[]; shell: boolean; working_directory_alias: string | null; working_directory: string | null; runtime_profile_id: string; timeout_seconds: number; network_profile: string; cancellation_policy: "terminate_process_tree" | "wait_for_safe_point"; idempotency_key: string | null; requested_at: string };
 export type CommandResultDto = { command_id: string; run_id: string; stage_id: string | null; status: CommandStatus; started_at: string; finished_at: string | null; duration_ms: number | null; exit_code: number | null; stdout_artifact: ArtifactRefDto | null; stderr_artifact: ArtifactRefDto | null };
-export type WorkerLeaseDto = { lease_id: string; run_id: string; worker_id: string; acquired_at: string; expires_at: string };
+export type WorkerLeaseDto = { lease_id: string; run_id: string; execution_id?: string | null; worker_id: string; backend_instance_id?: string | null; acquired_at: string; heartbeat_at?: string | null; expires_at: string };
 export type ActionProposalDto = { proposal_id: string; action_type: "read_file" | "run_approved_command" | "request_approval" | "read_artifact_summary" | "create_artifact" | "propose_patch"; rationale: string; registered_action_id: string | null; requires_backend_authorization: boolean; authorizes_execution: boolean; authorizes_approval: boolean };
 export type PatchProposalDto = { proposal_id: string; files: string[]; rationale: string; risk_level: RiskLevel; expected_behavior_impact: string; validation_requests: string[]; authorizes_application: boolean };
 export type PatchLedgerEntryDto = { patch_id: string; run_id: string; stage_id: string; affected_files: string[]; change_summary: string; risk_level: RiskLevel; created_at: string; validation_status: ValidationStatus };
@@ -48,4 +51,142 @@ export type AlertEventDto = { alert_id: string; run_id: string; alert_type: Aler
 export type DiagnosticsSummaryDto = { run_id: string; stage_id: string | null; generated_at: string; metrics: RunMetricDto[]; alerts: AlertEventDto[]; notes: string[] };
 export type WorkflowEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; sequence: number; payload: Record<string, unknown> };
 export type MigrationEventDto = { event_id: string; run_id: string; stage_id: string | null; event_type: WorkflowEventType; occurred_at: string; sequence: number; payload: Record<string, unknown> };
-export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: RunPhase; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; created_at: string; updated_at: string; stages: MigrationStageDto[]; steps: StageStepDto[]; component_executions: ComponentExecutionDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; worker_leases: WorkerLeaseDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; assurance: AssuranceStatusDto | null; delivery: DeliveryManifestDto | null; topology: TopologySummaryDto | null; llm_usage: LlmUsageRecordDto[]; diagnostics: DiagnosticsSummaryDto | null; workflow_events: WorkflowEventDto[] };
+export type MigrationRunDto = { run_id: string; status: RunStatus; run_phase: RunPhase; phase_status: PhaseStatus; approval_status: ApprovalStatus; repair_status: RepairStatus; source_version_family: string | null; target_version_family: string | null; source_version_detected: string | null; target_version_resolved: string | null; source_angular_version: string | null; target_angular_version: string | null; created_at: string; updated_at: string; stages: MigrationStageDto[]; steps: StageStepDto[]; component_executions: ComponentExecutionDto[]; agent_executions: AgentExecutionDto[]; validation_gates: ValidationGateDto[]; approval_events: ApprovalEventDto[]; artifacts: ArtifactRefDto[]; command_requests: CommandRequestDto[]; command_results: CommandResultDto[]; worker_leases: WorkerLeaseDto[]; patch_ledger: PatchLedgerEntryDto[]; repair_attempts: RepairAttemptDto[]; assurance: AssuranceStatusDto | null; delivery: DeliveryManifestDto | null; topology: TopologySummaryDto | null; llm_usage: LlmUsageRecordDto[]; diagnostics: DiagnosticsSummaryDto | null; workflow_events: WorkflowEventDto[] };
+export type RuntimeInventoryEntry = {
+  name: "node" | "npm" | "npx" | "git" | "python";
+  executable: string | null;
+  attempted_executable: string | null;
+  version: string | null;
+  installation_root: string | null;
+  status: "available" | "missing" | "failed";
+  reason: string | null;
+  remediation: string | null;
+};
+export type LocalStorageReadiness = {
+  database_path: string;
+  artifact_root: string;
+  writable: boolean;
+  local_filesystem: boolean;
+  free_bytes: number;
+  status: "available" | "degraded" | "blocked";
+};
+export type CorporateNetworkReadiness = {
+  registry_configured: boolean;
+  proxy_configured: boolean;
+  https_proxy_configured: boolean;
+  strict_ssl: boolean;
+  custom_ca_configured: boolean;
+  credentials_redacted: boolean;
+};
+export type EnvironmentCapabilitySnapshot = {
+  snapshot_id: string;
+  captured_at: string;
+  policy_version: string;
+  status: "available" | "degraded" | "blocked";
+  runtimes: RuntimeInventoryEntry[];
+  node_npm_npx_paired: boolean;
+  git_ready: boolean;
+  python_ready: boolean;
+  storage: LocalStorageReadiness;
+  network: CorporateNetworkReadiness;
+  blockers: string[];
+  warnings: string[];
+  checksum: string;
+};
+export type EnvironmentCapabilityResult = {
+  snapshot: EnvironmentCapabilitySnapshot;
+  artifact: Record<string, string> | null;
+};
+export type RefreshEnvironmentRequest = { idempotency_key: string; actor?: string | null };
+export type PathRuleResult = { code: string; status: "passed" | "warning" | "blocked"; message: string };
+export type PathValidationSnapshot = {
+  validation_id: string;
+  captured_at: string;
+  policy_version: string;
+  status: "passed" | "passed_with_warnings" | "blocked";
+  source_path: string;
+  target_parent_path: string;
+  generated_output_name: string;
+  resolved_output_root: string;
+  reservation_id: string | null;
+  reservation_expires_at: string | null;
+  target_output_path: string;
+  source_fingerprint: string | null;
+  rules: PathRuleResult[];
+  blockers: string[];
+  warnings: string[];
+  target_reservation_eligible: boolean;
+  checksum: string;
+};
+export type PathValidationResult = { snapshot: PathValidationSnapshot };
+export type CreateAuthoritativeRunRequestDto = { preflight_id: string; input_checksum: string; artifact_set_checksum: string; idempotency_key: string; actor: string; client_constraints: Record<string, boolean>; pricing_snapshot: Record<string, string | number> };
+export type StartAuthoritativeRunRequestDto = { expected_state_version: number; idempotency_key: string; actor: string };
+export type AuthoritativeRunMutationResultDto = { run_id: string; status: RunStatus; state_version: number; event_sequence: number; graph_thread_id: string; idempotent_replay: boolean; artifacts: ArtifactRefDto[] };
+export type AuthoritativeRunStateDto = { run_id: string; status: RunStatus; run_phase: RunPhase; phase_status: string; approval_status: ApprovalStatus; repair_status: RepairStatus; state_version: number; preflight_id: string; source_path: string; target_output_path: string; graph_thread_id: string; created_at: string; updated_at: string; artifacts: ArtifactRefDto[]; workflow_events: WorkflowEventDto[] };
+export type PathValidationRequest = { source_path: string; target_parent_path?: string | null; target_output_path?: string | null; target_angular_family?: string; idempotency_key: string; actor?: string | null };
+export type G01Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";
+export type G01DecisionResponse = { decision_id: string; preflight_id: string; gate_id: string; decision: G01Decision; actor: string; comment: string | null; decided_at: string; input_checksum: string; artifact_set_checksum: string; state_version: number; idempotent_replay: boolean };
+export type PreflightArtifactDto = { artifact_id: string; checksum: string; relative_path: string };
+export type ProductionPreflightDto = { snapshot: { preflight_id: string; gate_id: string; gate_version: string; state_version: number; status: string; approval_status: string; created_at: string; expires_at: string; input_checksum: string; artifact_set_checksum: string; target_angular_family: string; migration_mode: string; source_path: string; target_output_path: string; target_reservation_id: string | null; blockers: string[]; warnings: string[]; artifacts: Record<string, PreflightArtifactDto>; decision_history: G01DecisionResponse[] } };
+
+export type SnapshotStatus = "started" | "created" | "failed";
+export type CreateSourceSnapshotRequest = {
+  expected_state_version: number;
+  idempotency_key: string;
+  actor: string;
+};
+export type SourceSnapshotDto = {
+  snapshot_id: string;
+  run_id: string;
+  status: SnapshotStatus;
+  source_path: string;
+  snapshot_path: string;
+  manifest_id: string | null;
+  fingerprint: string | null;
+  policy_version: string;
+  file_count: number;
+  total_size_bytes: number;
+  exclusions: Array<{ relative_path: string; reason: string; policy_version: string }>;
+  git_metadata: Record<string, unknown>;
+  artifacts: ArtifactRefDto[];
+  state_version: number;
+  event_sequence: number;
+  idempotent_replay: boolean;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+};
+
+export type RuntimeCandidate = { profile_id: string; operating_system: string; architecture: string; node_executable: string; node_exact: string; npm_executable: string; npm_exact: string; npx_executable: string; npx_exact: string; angular_cli_exact?: string | null; installation_root?: string | null; registry_configured: boolean; proxy_configured: boolean; certificate_valid: boolean; environment_allowlist_valid: boolean; cache_policy_valid: boolean; network_policy: string; available: boolean };
+export type ExecutionProfile = { profile_id: string; operating_system: string; architecture: string; node_executable: string; node_exact: string; package_manager: "npm"; package_manager_executable: string; package_manager_exact: string; npx_executable: string; npx_exact: string; angular_cli_execution: "npx"; angular_cli_exact?: string | null; proxy_profile: string; certificate_profile: string; network_policy: string; environment_allowlist: string[]; cache_policy: string; compatibility_catalog_version: string; source_angular_exact: string; validated_at: string; checksum: string };
+export type ExecutionProfileResolveRequest = { expected_state_version: number; idempotency_key: string; actor: string; source_angular_exact: string; source_typescript_exact?: string | null; source_rxjs_exact?: string | null; candidates: RuntimeCandidate[]; validated_at: string };
+export type ExecutionProfileSelectRequest = { expected_state_version: number; idempotency_key: string; actor: string; profile_id: string; checksum: string };
+export type ExecutionProfileResponse = { run_id: string; status: string; policy_version: string; source_angular_exact: string; compatible_profiles: ExecutionProfile[]; selected_profile: ExecutionProfile | null; blockers: string[]; guidance: string[]; artifact_ids: string[]; state_version: number; event_sequence: number; idempotent_replay: boolean };export type G02Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";
+export type G02PackageInitializationRequest = { expected_state_version: number; idempotency_key: string; actor: string; gate_id?: string };
+export type G02DecisionRequest = { expected_state_version: number; idempotency_key: string; actor: string; decision: G02Decision; comment?: string | null; gate_id?: string };
+export type G02ArtifactRef = { artifact_id: string; run_id: string; stage_id: string | null; artifact_type: string; relative_path: string; created_at: string; checksum: string };
+export type G02IntegrityEvidence = { before_fingerprint: string; after_snapshot_fingerprint: string; snapshot_fingerprint: string; manifest_checksum: string; policy_version: string; source_read_only_verified: boolean; status: "verified" | "failed" };
+export type G02ApprovalPackage = { run_id: string; gate_id: string; gate_version: string; state_version: number; actor: string; policy_version: string; snapshot_id: string; source_fingerprint: string; snapshot_fingerprint: string; artifact_set_checksum: string; artifacts: G02ArtifactRef[]; integrity: G02IntegrityEvidence; package_checksum: string };
+export type G02ReviewResponse = { run_id: string; gate_id: string; gate_version: string; status: string; decision: G02Decision | null; package: G02ApprovalPackage; baseline_input_boundary: string | null; state_version: number; event_sequence: number; idempotent_replay: boolean; stale_reason: string | null; comment: string | null };
+
+
+export type BaselineWorkspaceRequest = { expected_state_version: number; idempotency_key: string; actor: string };
+export type BaselinePrequalifyRequest = BaselineWorkspaceRequest & { private_auth_configured?: boolean };
+export type BaselineInstallAuthorizationRequest = BaselineWorkspaceRequest & { decision: "authorize" | "reject"; comment?: string | null };
+export type BaselineResponse = { run_id: string; status: string; policy_version: string; snapshot_id: string; sandbox_path: string; input_fingerprint: string; sandbox_fingerprint: string | null; package: Record<string, unknown> | null; lockfile: Record<string, unknown> | null; sources: Array<Record<string, unknown>>; scripts: Array<Record<string, unknown>>; registry: Record<string, unknown> | null; blockers: string[]; warnings: string[]; authorization_status: string; checksum: string; artifact_ids: string[]; state_version: number; event_sequence: number; idempotent_replay: boolean };
+export type BaselineInstallRequest = { expected_state_version: number; idempotency_key: string; actor: string; runtime_profile_id: string; runtime_checksum: string; timeout_seconds?: number };
+export type BaselineInstallResponse = { run_id: string; execution_id: string; command_id: string; status: string; exit_code: number | null; started_at: string | null; finished_at: string | null; duration_ms: number | null; timed_out: boolean; cancelled: boolean; reconstruction_required: boolean; runtime_checksum: string | null; baseline_checksum: string | null; start_fingerprint: Record<string, unknown> | null; end_fingerprint: Record<string, unknown> | null; blockers: string[]; artifact_ids: string[]; state_version: number; event_sequence: number; idempotent_replay: boolean };
+
+export type BaselineInstallCancelRequest = { expected_state_version: number; idempotency_key: string; actor: string };
+
+export type BaselineMatrixKind = "build" | "test" | "lint";
+export type BaselineMatrixStatus = "passed" | "failed" | "skipped_not_configured" | "skipped_not_applicable" | "blocked" | "interrupted" | "cancelled";
+export type BaselineMatrixTarget = { target_id: string; kind: BaselineMatrixKind; project: string | null; configuration: string | null; command_id: string; executable: string; arguments: string[]; supported: boolean; blocker: string | null };
+export type BaselineMatrixResult = { target_id: string; kind: BaselineMatrixKind; status: BaselineMatrixStatus; exit_code: number | null; duration_ms: number | null; warnings: string[]; test_count: number | null; failed_tests: string[]; output_location: string | null; artifact_ids: string[]; blocker: string | null };
+export type BaselineTargetInventoryResponse = { run_id: string; targets: BaselineMatrixTarget[]; package_json_checksum: string; angular_json_present: boolean; state_version: number; event_sequence: number };
+export type BaselineValidationRequest = { expected_state_version: number; idempotency_key: string; actor: string; prerequisite_artifact_ids?: string[] };
+export type BaselineValidationResponse = { validation_id: string; run_id: string; kind: BaselineMatrixKind; status: BaselineMatrixStatus | "running"; targets: BaselineMatrixTarget[]; results: BaselineMatrixResult[]; parser_summary: Record<string, unknown> | null; artifact_ids: string[]; artifact_checksums: Record<string, string>; baseline_checksum: string | null; state_version: number; event_sequence: number; idempotent_replay: boolean };
+
+export type BaselineQualifyRequest = { expected_state_version:number; idempotency_key:string; actor:string; policy?: "strict_clean"|"qualified_known_failures"; company_policy_allows_known_failures?: boolean; prerequisite_artifact_ids?: string[]; prerequisite_artifact_checksums?: Record<string,string> };
+export type G03DecisionRequest = { expected_state_version:number; idempotency_key:string; actor:string; decision:"approved"|"modification_requested"|"rejected"; comment?:string|null };
+export type BaselineAssessmentResponse = { run_id:string; assessment_id:string; status:string; policy:string; policy_version:string; blockers:string[]; warnings:string[]; known_failures:Array<Record<string,unknown>>; evidence_confidence:Record<string,string>; evidence_set_checksum:string; sandbox_fingerprint:string; execution_profile_checksum:string; package_checksum:string; artifact_ids:string[]; state_version:number; event_sequence:number; g03_decision:string|null; stale_reason:string|null; idempotent_replay:boolean };

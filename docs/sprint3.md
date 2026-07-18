@@ -7,7 +7,7 @@ Build the trusted execution path and prove complete controlled Angular major-ver
 
 ### D.3.2 Sprint boundaries
 
-Includes command registry/policy/executor/process control, live logs, leases/cancellation, stage sandboxes, G07/G08/G09/G12, update/validation steps, copy-forward, and a parameterized 18→19→20→21 passing path. Full LLM repair is deferred to Sprint 4.
+Includes command registry/policy/executor/process control, live logs, leases/cancellation, run-scoped stage sandboxes, G07/G08/G09/G12, update/validation steps, copy-forward, and a parameterized 18→19→20→21 passing path. Full LLM repair is deferred to Sprint 4.
 
 ### D.3.3 Features in implementation order
 
@@ -20,7 +20,7 @@ Includes command registry/policy/executor/process control, live logs, leases/can
 
 4. **S3-F04 — Own commands with JobSupervisor, leases, timeout, and explicit cancellation** (Operational capability, Must)
 
-5. **S3-F05 — Prepare a dedicated stage sandbox and decide G07 stage start** (Approval capability, Must)
+5. **S3-F05 — Prepare a dedicated run-scoped stage sandbox and decide G07 stage start** (Approval capability, Must)
 
 6. **S3-F06 — Run the stage bootstrap clean install** (Execution capability, Must)
 
@@ -115,7 +115,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Register structured commands and reject arbitrary shell execution**, then the backend performs only the authorized service operation, persists the result, emits **COMMAND_AUTHORIZATION_ACCEPTED/REJECTED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Register structured commands and reject arbitrary shell execution**, then the backend performs only the authorized service operation, persists the result, emits the documented **COMMAND_AUTHORIZATION_ACCEPTED/REJECTED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Versioned command-template metadata and authorization audit records.** exist with state version, timestamps, and idempotency lineage.
@@ -128,7 +128,7 @@ User/reviewer/operator action
 
 **Preconditions:** S2-F07; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -215,7 +215,7 @@ S2-F07
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Register structured commands and reject arbitrary shell execution observable and auditable.
   - **Context:** All execution must pass through a structured registry and policy engine; plans authorize command references, not arbitrary shell text.
-  - **Scope:** Persistence: Versioned command-template metadata and authorization audit records.. API: GET /api/v1/operator/command-templates; POST /api/v1/operator/command-policy/validate. Events: COMMAND_AUTHORIZATION_ACCEPTED/REJECTED.. Artifacts: Sanitized command authorization decision artifact for operator tests.
+  - **Scope:** Persistence: Versioned command-template metadata and authorization audit records. API: GET /api/v1/operator/command-templates; POST /api/v1/operator/command-policy/validate. Events: COMMAND_AUTHORIZATION_ACCEPTED/REJECTED. Artifacts: Sanitized command authorization decision artifact for operator tests.
   - **Out of scope:** Starting processes, live logs, user-defined commands, PowerShell wrappers, and LLM command generation.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -277,8 +277,8 @@ S2-F07
   - **Context:** All execution must pass through a structured registry and policy engine; plans authorize command references, not arbitrary shell text.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Starting processes, live logs, user-defined commands, PowerShell wrappers, and LLM command generation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -314,7 +314,7 @@ S2-F07
 
 #### User-observable outcome
 
-A user can run one harmless approved diagnostic command and inspect exact executable, argv, profile, working directory, timestamps, exit code, and immutable stdout/stderr evidence.
+A user can run one harmless approved diagnostic command inspect exact executable, argv, profile, working directory, timestamps, exit code, and immutable stdout/stderr evidence.
 
 #### Context
 
@@ -374,7 +374,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Execute one approved command and persist authoritative command evidence**, then the backend performs only the authorized service operation, persists the result, emits **COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Execute one approved command and persist authoritative command evidence**, then the backend performs only the authorized service operation, persists the result, emits the documented **COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **command_executions with idempotency, state, runtime checksum, process metadata, and artifact references.** exist with state version, timestamps, and idempotency lineage.
@@ -387,7 +387,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F01; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -396,7 +396,7 @@ User/reviewer/operator action
 4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
 5. Open the resulting detail, event, and artifact views.
 
-**Expected UI result:** A user can run one harmless approved diagnostic command and inspect exact executable, argv, profile, working directory, timestamps, exit code, and immutable stdout/stderr evidence. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+**Expected UI result:** A user can run one harmless approved diagnostic command inspect exact executable, argv, profile, working directory, timestamps, exit code, and immutable stdout/stderr evidence. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
 **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
@@ -475,7 +475,7 @@ S3-F01
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Execute one approved command and persist authoritative command evidence observable and auditable.
   - **Context:** CommandExecutor is the sole authoritative external-process path and must be proven before Angular mutation.
-  - **Scope:** Persistence: command_executions with idempotency, state, runtime checksum, process metadata, and artifact references.. API: POST /api/v1/runs/{id}/commands; GET /api/v1/runs/{id}/commands/{commandId}. Events: COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED.. Artifacts: Command manifest, full stdout, full stderr, combined ordered stream where available, and result report.
+  - **Scope:** Persistence: command_executions with idempotency, state, runtime checksum, process metadata, and artifact references. API: POST /api/v1/runs/{id}/commands; GET /api/v1/runs/{id}/commands/{commandId}. Events: COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED. Artifacts: Command manifest, full stdout, full stderr, combined ordered stream where available, and result report.
   - **Out of scope:** Live log streaming, cancellation, interactive prompts, stage mutation, and arbitrary command selection.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -537,8 +537,8 @@ S3-F01
   - **Context:** CommandExecutor is the sole authoritative external-process path and must be proven before Angular mutation.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Live log streaming, cancellation, interactive prompts, stage mutation, and arbitrary command selection.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -634,7 +634,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Stream live command logs and recover after browser reconnect**, then the backend performs only the authorized service operation, persists the result, emits **COMMAND_OUTPUT_AVAILABLE**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Stream live command logs and recover after browser reconnect**, then the backend performs only the authorized service operation, persists the result, emits the documented **COMMAND_OUTPUT_AVAILABLE** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Command event metadata only; complete logs remain artifacts.** exist with state version, timestamps, and idempotency lineage.
@@ -645,9 +645,9 @@ User/reviewer/operator action
 
 #### Manual end-to-end test scenario
 
-**Preconditions:** S1-F05, S3-F02; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
+**Preconditions:** S3-F02; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -685,7 +685,7 @@ User/reviewer/operator action
 
 #### Dependencies
 
-S1-F05, S3-F02
+S3-F02
 
 #### Risks and edge cases
 
@@ -724,7 +724,7 @@ S1-F05, S3-F02
 - Given/When/Then: Given the same idempotency key and identical payload are retried, when the request is repeated, then the original result is returned; a different payload with the same key is rejected.
   - **Automated tests:** Unit tests for happy path, invalid input, illegal/stale transition, idempotent retry, dependency failure, and policy bypass attempts using fake external adapters.
   - **Manual verification contribution:** Enables the UI path to call one authoritative application service and observe a legal result.
-  - **Dependencies:** S1-F05, S3-F02
+  - **Dependencies:** S3-F02
   - **Suggested labels:** sprint-3, s3-f03, execution-capability, backend, mvp, vertical-slice
   - **Estimate:** M
   - **Risk level:** High
@@ -735,7 +735,7 @@ S1-F05, S3-F02
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Stream live command logs and recover after browser reconnect observable and auditable.
   - **Context:** Long installs and builds need transparent progress, but live chunks are not the authoritative log evidence.
-  - **Scope:** Persistence: Command event metadata only; complete logs remain artifacts.. API: GET /api/v1/runs/{id}/commands/{commandId}/logs; existing SSE endpoint emits COMMAND_OUTPUT_AVAILABLE.. Events: COMMAND_OUTPUT_AVAILABLE with offsets/sequence, followed by final command event.. Artifacts: Full immutable stdout/stderr logs with truncation metadata for UI stream.
+  - **Scope:** Persistence: Command event metadata only; complete logs remain artifacts. API: GET /api/v1/runs/{id}/commands/{commandId}/logs; existing SSE endpoint emits COMMAND_OUTPUT_AVAILABLE. Events: COMMAND_OUTPUT_AVAILABLE with offsets/sequence, followed by final command event. Artifacts: Full immutable stdout/stderr logs with truncation metadata for UI stream.
   - **Out of scope:** Terminal input, interactive command response, log editing, and cross-run aggregation.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -797,8 +797,8 @@ S1-F05, S3-F02
   - **Context:** Long installs and builds need transparent progress, but live chunks are not the authoritative log evidence.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Terminal input, interactive command response, log editing, and cross-run aggregation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -894,7 +894,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Own commands with JobSupervisor, leases, timeout, and explicit cancellation**, then the backend performs only the authorized service operation, persists the result, emits **RUN_CANCEL_REQUESTED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Own commands with JobSupervisor, leases, timeout, and explicit cancellation**, then the backend performs only the authorized service operation, persists the result, emits the documented **RUN_CANCEL_REQUESTED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **worker_leases, command cancellation metadata, run/step states, durable events.** exist with state version, timestamps, and idempotency lineage.
@@ -907,7 +907,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F02, S3-F03; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -995,7 +995,7 @@ S3-F02, S3-F03
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Own commands with JobSupervisor, leases, timeout, and explicit cancellation observable and auditable.
   - **Context:** Browser disconnect must not cancel work, but explicit user cancellation must stop scheduling and terminate the complete process tree safely.
-  - **Scope:** Persistence: worker_leases, command cancellation metadata, run/step states, durable events.. API: POST /api/v1/runs/{id}/cancel; GET /api/v1/runs/{id}/active-command. Events: RUN_CANCEL_REQUESTED, COMMAND_CANCELLED/INTERRUPTED, RUN_CANCELLED.. Artifacts: Partial logs, process-termination report, workspace trust/recovery classification, and partial cancellation summary.
+  - **Scope:** Persistence: worker_leases, command cancellation metadata, run/step states, durable events. API: POST /api/v1/runs/{id}/cancel; GET /api/v1/runs/{id}/active-command. Events: RUN_CANCEL_REQUESTED, COMMAND_CANCELLED/INTERRUPTED, RUN_CANCELLED. Artifacts: Partial logs, process-termination report, workspace trust/recovery classification, and partial cancellation summary.
   - **Out of scope:** Full startup reconciliation, resume after crash, multi-worker scheduling, and repair rollback.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1057,8 +1057,8 @@ S3-F02, S3-F03
   - **Context:** Browser disconnect must not cancel work, but explicit user cancellation must stop scheduling and terminate the complete process tree safely.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Full startup reconciliation, resume after crash, multi-worker scheduling, and repair rollback.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1082,7 +1082,7 @@ S3-F02, S3-F03
 
 ---
 
-### S3-F05 — Prepare a dedicated stage sandbox and decide G07 stage start
+### S3-F05 — Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
 #### Feature identity
 
@@ -1094,7 +1094,7 @@ S3-F02, S3-F03
 
 #### User-observable outcome
 
-A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, dedicated destination, and risks, approve G07, and then create the isolated stage sandbox.
+A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, registered external stage-sandbox destination, and risks, approve G07, and then create the isolated run-scoped stage sandbox under the selected output root.
 
 #### Context
 
@@ -1112,7 +1112,7 @@ Bootstrap install, Angular update, stage validation, and copy-forward.
 
 #### Backend slice
 
-- **Application service/components:** StagePreparationService, current-version re-detection, later-stage exact resolution hook, StageExecutionPlan lock, G07 package, WorkspaceManager stage-copy operation, fingerprint validation, and lease checks.
+- **Application service/components:** StagePreparationService, current-version re-detection, later-stage exact resolution hook, StageExecutionPlan lock, G07 package, WorkspaceManager stage-copy operation into the registered `STAGE_SANDBOX` alias at `<resolved-output-root>/.migration-factory/runs/<run-id>/sandboxes/stages/<stage-key>`, fingerprint validation, and lease checks.
 - **Domain aggregate/projection:** MigrationStage, StageExecutionPlan active version, ApprovalGate G07, WorkspaceFingerprint.
 - **Persistence:** migration_stages, active stage plan, workspace/fingerprint records, gate decisions.
 - **State/approval rule:** G07 is created as a persistent gate. Its decision is bound to the current state version, gate version, artifact-set checksum, plan version where applicable, and workspace fingerprint where applicable.
@@ -1154,7 +1154,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Prepare a dedicated stage sandbox and decide G07 stage start**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Prepare a dedicated run-scoped stage sandbox and decide G07 stage start**, then the backend performs only the authorized service operation, persists the result, emits the documented **STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **migration_stages, active stage plan, workspace/fingerprint records, gate decisions.** exist with state version, timestamps, and idempotency lineage.
@@ -1170,18 +1170,18 @@ User/reviewer/operator action
 
 **Preconditions:** S2-F07, S3-F04; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
     2. Navigate to the surface described by **Stage-start review page with plan/profile/input tabs, workspace alias, risk notices, G07 controls, copy progress, and ready/blocked states.**.
-    3. Trigger the primary action for **Prepare a dedicated stage sandbox and decide G07 stage start** using valid fixture data.
+    3. Trigger the primary action for **Prepare a dedicated run-scoped stage sandbox and decide G07 stage start** using valid fixture data.
     4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
     5. Open the resulting detail, event, and artifact views.
 6. Open the **G07** review package, enter a review comment, and choose an allowed decision.
 7. Repeat with a stale state version or changed bound artifact to verify rejection.
 
-    **Expected UI result:** A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, dedicated destination, and risks, approve G07, and then create the isolated stage sandbox. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+    **Expected UI result:** A reviewer can inspect the current stage input fingerprint, exact resolved plan/profile, registered external stage-sandbox destination, and risks, approve G07, and then create the isolated run-scoped stage sandbox under the selected output root. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
     **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
@@ -1225,11 +1225,11 @@ S2-F07, S3-F04
 
 #### Detailed sub-issues
 
-#### S3-F05-I01 — Implement backend application contract for Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I01 — Implement backend application contract for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** Backend
-  - **Technical story:** Implement the bounded backend/application behavior for Prepare a dedicated stage sandbox and decide G07 stage start so the feature has one authoritative service path.
+  - **Technical story:** Implement the bounded backend/application behavior for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start so the feature has one authoritative service path.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** StagePreparationService, current-version re-detection, later-stage exact resolution hook, StageExecutionPlan lock, G07 package, WorkspaceManager stage-copy operation, fingerprint validation, and lease checks.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
@@ -1256,13 +1256,13 @@ S2-F07, S3-F04
   - **Estimate:** M
   - **Risk level:** Medium
 
-#### S3-F05-I02 — Persist and expose evidence contracts for Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I02 — Persist and expose evidence contracts for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** API
-  - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Prepare a dedicated stage sandbox and decide G07 stage start observable and auditable.
+  - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Prepare a dedicated run-scoped stage sandbox and decide G07 stage start observable and auditable.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
-  - **Scope:** Persistence: migration_stages, active stage plan, workspace/fingerprint records, gate decisions.. API: POST /api/v1/runs/{id}/stages/{stageId}/prepare; POST /api/v1/runs/{id}/approvals/G07/decisions; POST /api/v1/runs/{id}/stages/{stageId}/sandbox. Events: STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY.. Artifacts: Stage-start package, exact plan/profile, copy report, input manifest, input fingerprint, and sandbox verification.
+  - **Scope:** Persistence: migration_stages, active stage plan, workspace/fingerprint records, gate decisions. API: POST /api/v1/runs/{id}/stages/{stageId}/prepare; POST /api/v1/runs/{id}/approvals/G07/decisions; POST /api/v1/runs/{id}/stages/{stageId}/sandbox. Events: STAGE_CREATED/PREPARING/PLAN_LOCKED/WAITING_APPROVAL/SANDBOX_READY. Artifacts: Stage-start package, exact plan/profile, copy report, input manifest, input fingerprint, and sandbox verification.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1287,11 +1287,11 @@ S2-F07, S3-F04
   - **Estimate:** M
   - **Risk level:** Medium
 
-#### S3-F05-I03 — Build frontend experience for Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I03 — Build frontend experience for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** Frontend
-  - **Technical story:** Create the React/Next.js projection and user interaction for Prepare a dedicated stage sandbox and decide G07 stage start, using backend snapshots and durable events only.
+  - **Technical story:** Create the React/Next.js projection and user interaction for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start, using backend snapshots and durable events only.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** Stage-start review page with plan/profile/input tabs, workspace alias, risk notices, G07 controls, copy progress, and ready/blocked states.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
@@ -1318,16 +1318,16 @@ S2-F07, S3-F04
   - **Estimate:** M
   - **Risk level:** Low
 
-#### S3-F05-I04 — Verify and document Prepare a dedicated stage sandbox and decide G07 stage start
+#### S3-F05-I04 — Verify and document Prepare a dedicated run-scoped stage sandbox and decide G07 stage start
 
   - **Parent feature:** S3-F05
   - **Issue type:** Testing
-  - **Technical story:** Prove Prepare a dedicated stage sandbox and decide G07 stage start through automated seams, security negatives, and the documented UI manual scenario.
+  - **Technical story:** Prove Prepare a dedicated run-scoped stage sandbox and decide G07 stage start through automated seams, security negatives, and the documented UI manual scenario.
   - **Context:** Every major transition starts from an approved clean boundary and has its own physical workspace.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Bootstrap install, Angular update, stage validation, and copy-forward.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1364,7 +1364,7 @@ S2-F07, S3-F04
 
 #### User-observable outcome
 
-A user can run the exact approved bootstrap install in the stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result.
+A user can run the exact approved bootstrap install in the run-scoped stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result.
 
 #### Context
 
@@ -1424,7 +1424,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run the stage bootstrap clean install**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_BOOTSTRAP_INSTALL_STARTED/COMPLETED/FAILED**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run the stage bootstrap clean install**, then the backend performs only the authorized service operation, persists the result, emits the documented **STAGE_BOOTSTRAP_INSTALL_STARTED/COMPLETED/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Step state, command execution, stage fingerprint references, and events.** exist with state version, timestamps, and idempotency lineage.
@@ -1437,7 +1437,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F05; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1446,7 +1446,7 @@ User/reviewer/operator action
 4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
 5. Open the resulting detail, event, and artifact views.
 
-**Expected UI result:** A user can run the exact approved bootstrap install in the stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+**Expected UI result:** A user can run the exact approved bootstrap install in the run-scoped stage sandbox and inspect its command, environment, lifecycle-script audit binding, logs, and result. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
 **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
@@ -1524,7 +1524,7 @@ S3-F05
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Run the stage bootstrap clean install observable and auditable.
   - **Context:** The update command must start from a reproducible dependency state and cannot silently use old node_modules.
-  - **Scope:** Persistence: Step state, command execution, stage fingerprint references, and events.. API: POST /api/v1/runs/{id}/stages/{stageId}/bootstrap-install; GET /api/v1/runs/{id}/stages/{stageId}/steps/bootstrap-install. Events: STAGE_BOOTSTRAP_INSTALL_STARTED/COMPLETED/FAILED plus command events.. Artifacts: Install command/logs/result, pre/post workspace fingerprints, and package-manager debug artifacts.
+  - **Scope:** Persistence: Step state, command execution, stage fingerprint references, and events. API: POST /api/v1/runs/{id}/stages/{stageId}/bootstrap-install; GET /api/v1/runs/{id}/stages/{stageId}/steps/bootstrap-install. Events: STAGE_BOOTSTRAP_INSTALL_STARTED/COMPLETED/FAILED plus command events. Artifacts: Install command/logs/result, pre/post workspace fingerprints, and package-manager debug artifacts.
   - **Out of scope:** Dependency repair, Angular update, final clean install, and generic retry of unsafe interrupted mutation.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1586,8 +1586,8 @@ S3-F05
   - **Context:** The update command must start from a reproducible dependency state and cannot silently use old node_modules.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Dependency repair, Angular update, final clean install, and generic retry of unsafe interrupted mutation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1683,7 +1683,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Execute the exact Angular update and verify the target version**, then the backend performs only the authorized service operation, persists the result, emits **ANGULAR_UPDATE_STARTED/COMPLETED/FAILED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Execute the exact Angular update and verify the target version**, then the backend performs only the authorized service operation, persists the result, emits the documented **ANGULAR_UPDATE_STARTED/COMPLETED/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Step/command results, version verification metadata, state/events.** exist with state version, timestamps, and idempotency lineage.
@@ -1696,7 +1696,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F06; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1784,7 +1784,7 @@ S3-F06
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Execute the exact Angular update and verify the target version observable and auditable.
   - **Context:** Official Angular tooling is the first migration mechanism; success requires exact target proof, not only command exit zero.
-  - **Scope:** Persistence: Step/command results, version verification metadata, state/events.. API: POST /api/v1/runs/{id}/stages/{stageId}/angular-update; GET /api/v1/runs/{id}/stages/{stageId}/target-version. Events: ANGULAR_UPDATE_STARTED/COMPLETED/FAILED, INTERACTIVE_DECISION_REQUIRED, TARGET_VERSION_VERIFIED/FAILED.. Artifacts: Exact update command/logs, migration output, target-version report, package/lockfile/dependency evidence, and prompt evidence if interrupted.
+  - **Scope:** Persistence: Step/command results, version verification metadata, state/events. API: POST /api/v1/runs/{id}/stages/{stageId}/angular-update; GET /api/v1/runs/{id}/stages/{stageId}/target-version. Events: ANGULAR_UPDATE_STARTED/COMPLETED/FAILED, INTERACTIVE_DECISION_REQUIRED, TARGET_VERSION_VERIFIED/FAILED. Artifacts: Exact update command/logs, migration output, target-version report, package/lockfile/dependency evidence, and prompt evidence if interrupted.
   - **Out of scope:** LLM repair, optional Angular modernization migrations, and transformation approval.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1846,8 +1846,8 @@ S3-F06
   - **Context:** Official Angular tooling is the first migration mechanism; success requires exact target proof, not only command exit zero.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** LLM repair, optional Angular modernization migrations, and transformation approval.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1943,7 +1943,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Capture transformation diffs and classify changed-file risk**, then the backend performs only the authorized service operation, persists the result, emits **TRANSFORMATION_EVIDENCE_STARTED/COMPLETED/BLOCKED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Capture transformation diffs and classify changed-file risk**, then the backend performs only the authorized service operation, persists the result, emits the documented **TRANSFORMATION_EVIDENCE_STARTED/COMPLETED/BLOCKED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Transformation summary/risk metadata and artifact references.** exist with state version, timestamps, and idempotency lineage.
@@ -1955,7 +1955,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F07; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2043,7 +2043,7 @@ S3-F07
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Capture transformation diffs and classify changed-file risk observable and auditable.
   - **Context:** Official tooling can produce behavior-sensitive or optional changes; the transformation must be reviewable before acceptance.
-  - **Scope:** Persistence: Transformation summary/risk metadata and artifact references.. API: POST /api/v1/runs/{id}/stages/{stageId}/transformation-evidence; GET /api/v1/runs/{id}/stages/{stageId}/transformation-evidence. Events: TRANSFORMATION_EVIDENCE_STARTED/COMPLETED/BLOCKED.. Artifacts: Complete unified diff, package/lockfile diff, migration list, changed-file inventory, risk report, forbidden-change report.
+  - **Scope:** Persistence: Transformation summary/risk metadata and artifact references. API: POST /api/v1/runs/{id}/stages/{stageId}/transformation-evidence; GET /api/v1/runs/{id}/stages/{stageId}/transformation-evidence. Events: TRANSFORMATION_EVIDENCE_STARTED/COMPLETED/BLOCKED. Artifacts: Complete unified diff, package/lockfile diff, migration list, changed-file inventory, risk report, forbidden-change report.
   - **Out of scope:** Approving G08, editing diff, applying repair patches, and runtime parity proof.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2105,8 +2105,8 @@ S3-F07
   - **Context:** Official tooling can produce behavior-sensitive or optional changes; the transformation must be reviewable before acceptance.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Approving G08, editing diff, applying repair patches, and runtime parity proof.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2202,7 +2202,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Review and decide G08 transformation acceptance**, then the backend performs only the authorized service operation, persists the result, emits **APPROVAL_GATE_CREATED**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Review and decide G08 transformation acceptance**, then the backend performs only the authorized service operation, persists the result, emits the documented **APPROVAL_GATE_CREATED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Gate version, evidence checksum, fingerprint, decisions, transition/event records.** exist with state version, timestamps, and idempotency lineage.
@@ -2217,7 +2217,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F08; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2307,7 +2307,7 @@ S3-F08
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Review and decide G08 transformation acceptance observable and auditable.
   - **Context:** Human review is required before the stage crosses the transformation boundary, especially for high-risk files and builder behavior.
-  - **Scope:** Persistence: Gate version, evidence checksum, fingerprint, decisions, transition/event records.. API: GET /api/v1/runs/{id}/approvals/G08; POST /api/v1/runs/{id}/approvals/G08/decisions. Events: APPROVAL_GATE_CREATED and G08 decision/stale events.. Artifacts: G08 package referencing all transformation and risk artifacts.
+  - **Scope:** Persistence: Gate version, evidence checksum, fingerprint, decisions, transition/event records. API: GET /api/v1/runs/{id}/approvals/G08; POST /api/v1/runs/{id}/approvals/G08/decisions. Events: APPROVAL_GATE_CREATED and G08 decision/stale events. Artifacts: G08 package referencing all transformation and risk artifacts.
   - **Out of scope:** Changing the diff in UI, technical validation, repair, and stage completion.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2371,8 +2371,8 @@ S3-F08
   - **Context:** Human review is required before the stage crosses the transformation boundary, especially for high-risk files and builder behavior.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Changing the diff in UI, technical validation, repair, and stage completion.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2469,7 +2469,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run final clean install and deterministic static checks**, then the backend performs only the authorized service operation, persists the result, emits **VALIDATION_FINAL_INSTALL_***-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run final clean install and deterministic static checks**, then the backend performs only the authorized service operation, persists the result, emits the documented **VALIDATION_FINAL_INSTALL_*** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Validation step results, command records, diagnostics, artifact references.** exist with state version, timestamps, and idempotency lineage.
@@ -2482,7 +2482,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F09; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2569,7 +2569,7 @@ S3-F09
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Run final clean install and deterministic static checks observable and auditable.
   - **Context:** Transformation acceptance does not prove reproducibility or source validity; validation must begin from a clean dependency boundary.
-  - **Scope:** Persistence: Validation step results, command records, diagnostics, artifact references.. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/install-static; GET /api/v1/runs/{id}/stages/{stageId}/validation/install-static. Events: VALIDATION_FINAL_INSTALL_* and STATIC_CHECKS_*.. Artifacts: Final install logs/result, static diagnostic reports, exact dependency tree evidence, and validation summary fragment.
+  - **Scope:** Persistence: Validation step results, command records, diagnostics, artifact references. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/install-static; GET /api/v1/runs/{id}/stages/{stageId}/validation/install-static. Events: VALIDATION_FINAL_INSTALL_* and STATIC_CHECKS_*. Artifacts: Final install logs/result, static diagnostic reports, exact dependency tree evidence, and validation summary fragment.
   - **Out of scope:** Builds, tests/lint, route/backend comparison, LLM repair, and G09.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2631,8 +2631,8 @@ S3-F09
   - **Context:** Transformation acceptance does not prove reproducibility or source validity; validation must begin from a clean dependency boundary.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Builds, tests/lint, route/backend comparison, LLM repair, and G09.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2728,7 +2728,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run and inspect the required stage build matrix**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_BUILD_STARTED/TARGET_COMPLETED/COMPLETED/FAILED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run and inspect the required stage build matrix**, then the backend performs only the authorized service operation, persists the result, emits the documented **STAGE_BUILD_STARTED/TARGET_COMPLETED/COMPLETED/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Per-target statuses, command records, diagnostics, artifact references.** exist with state version, timestamps, and idempotency lineage.
@@ -2741,7 +2741,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F10; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2828,7 +2828,7 @@ S3-F10
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Run and inspect the required stage build matrix observable and auditable.
   - **Context:** Build is a mandatory core gate and cannot be changed to passed by human approval.
-  - **Scope:** Persistence: Per-target statuses, command records, diagnostics, artifact references.. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/builds; GET /api/v1/runs/{id}/stages/{stageId}/validation/builds. Events: STAGE_BUILD_STARTED/TARGET_COMPLETED/COMPLETED/FAILED.. Artifacts: Build matrix, full logs, compiler diagnostics, output manifest/budget evidence where configured.
+  - **Scope:** Persistence: Per-target statuses, command records, diagnostics, artifact references. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/builds; GET /api/v1/runs/{id}/stages/{stageId}/validation/builds. Events: STAGE_BUILD_STARTED/TARGET_COMPLETED/COMPLETED/FAILED. Artifacts: Build matrix, full logs, compiler diagnostics, output manifest/budget evidence where configured.
   - **Out of scope:** Repair, unsupported custom-builder implementation, browser runtime tests, and G09.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2890,8 +2890,8 @@ S3-F10
   - **Context:** Build is a mandatory core gate and cannot be changed to passed by human approval.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Repair, unsupported custom-builder implementation, browser runtime tests, and G09.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2987,7 +2987,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run complete stage tests and conditional lint**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_TESTS_***-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run complete stage tests and conditional lint**, then the backend performs only the authorized service operation, persists the result, emits the documented **STAGE_TESTS_*** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Command results, comparison results, step statuses, diagnostics and artifacts.** exist with state version, timestamps, and idempotency lineage.
@@ -2999,7 +2999,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F11; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3087,7 +3087,7 @@ S3-F11
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Run complete stage tests and conditional lint observable and auditable.
   - **Context:** Full tests are required after each stage; lint is conditional but must be represented honestly.
-  - **Scope:** Persistence: Command results, comparison results, step statuses, diagnostics and artifacts.. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/quality; GET /api/v1/runs/{id}/stages/{stageId}/validation/quality. Events: STAGE_TESTS_* and STAGE_LINT_* events.. Artifacts: Full test/lint logs, structured results, baseline comparison, test-file change report, and known-failure delta.
+  - **Scope:** Persistence: Command results, comparison results, step statuses, diagnostics and artifacts. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/quality; GET /api/v1/runs/{id}/stages/{stageId}/validation/quality. Events: STAGE_TESTS_* and STAGE_LINT_* events. Artifacts: Full test/lint logs, structured results, baseline comparison, test-file change report, and known-failure delta.
   - **Out of scope:** Disabling tests, assertion weakening, test-framework replacement, browser E2E, and repair.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -3149,8 +3149,8 @@ S3-F11
   - **Context:** Full tests are required after each stage; lint is conditional but must be represented honestly.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Disabling tests, assertion weakening, test-framework replacement, browser E2E, and repair.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3246,7 +3246,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Compare parity evidence, display assurance, and decide G09 validation acceptance**, then the backend performs only the authorized service operation, persists the result, emits **PARITY_COMPARISON_COMPLETED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Compare parity evidence, display assurance, and decide G09 validation acceptance**, then the backend performs only the authorized service operation, persists the result, emits the documented **PARITY_COMPARISON_COMPLETED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Assurance dimension records, comparison summaries, gate/decisions, events.** exist with state version, timestamps, and idempotency lineage.
@@ -3261,7 +3261,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F10, S3-F11, S3-F12; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3352,7 +3352,7 @@ S3-F10, S3-F11, S3-F12
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Compare parity evidence, display assurance, and decide G09 validation acceptance observable and auditable.
   - **Context:** Stage validation combines machine gates and honest parity evidence; technical success remains separate from functional, security, and quality assurance.
-  - **Scope:** Persistence: Assurance dimension records, comparison summaries, gate/decisions, events.. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/parity; GET /api/v1/runs/{id}/stages/{stageId}/validation/summary; POST /api/v1/runs/{id}/approvals/G09/decisions. Events: PARITY_COMPARISON_COMPLETED, STAGE_VALIDATION_COMPLETED, G09 events.. Artifacts: Route comparison, backend-integration comparison, changed-risk rollup, parity checklist, assurance summary, and G09 package.
+  - **Scope:** Persistence: Assurance dimension records, comparison summaries, gate/decisions, events. API: POST /api/v1/runs/{id}/stages/{stageId}/validation/parity; GET /api/v1/runs/{id}/stages/{stageId}/validation/summary; POST /api/v1/runs/{id}/approvals/G09/decisions. Events: PARITY_COMPARISON_COMPLETED, STAGE_VALIDATION_COMPLETED, G09 events. Artifacts: Route comparison, backend-integration comparison, changed-risk rollup, parity checklist, assurance summary, and G09 package.
   - **Out of scope:** Automated browser/visual proof, repair flow, stage sealing, and external security/quality scans.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -3416,8 +3416,8 @@ S3-F10, S3-F11, S3-F12
   - **Context:** Stage validation combines machine gates and honest parity evidence; technical success remains separate from functional, security, and quality assurance.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Automated browser/visual proof, repair flow, stage sealing, and external security/quality scans.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3474,7 +3474,7 @@ LLM repair, final clean assurance, delivery, and startup crash recovery.
 
 - **Application service/components:** StageCompletionService, cleanup/cleanliness verification, stable output fingerprint, G12 package, copy-forward, next-stage exact re-resolution/plan revision hook, LangGraph stage loop, and stage status aggregation.
 - **Domain aggregate/projection:** MigrationStage, WorkspaceFingerprint, ApprovalGate G12, MigrationRun active-stage pointer.
-- **Persistence:** Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.
+- **Persistence:** Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events.
 - **State/approval rule:** G12 is created as a persistent gate. Its decision is bound to the current state version, gate version, artifact-set checksum, plan version where applicable, and workspace fingerprint where applicable.
 - **Validation and idempotency:** Mutating requests carry the expected aggregate state version and an idempotency key. Services validate prerequisites and return stable conflict/error codes before side effects.
 - **API contract:** `POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward`
@@ -3498,7 +3498,7 @@ User/reviewer/operator action
 → Next.js typed API request
 → FastAPI endpoint
 → StageCompletionService, cleanup/cleanliness verification, stable output fingerprint, G12 package, copy-forward, next-stage exact re-resolution/plan revision hook, LangGraph stage loop, and stage status aggregation.
-→ Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.
+→ Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events.
 → ArtifactService finalizes evidence: Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.
 → Transition/Event service persists and emits: STAGE_CLEANUP_COMPLETED, STAGE_WAITING_APPROVAL, STAGE_COMPLETED, NEXT_STAGE_CREATED/SANDBOX_READY.
 → SSE replay or snapshot refresh
@@ -3514,10 +3514,10 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Seal G12, copy forward, and reuse the parameterized stage engine through Angular 21**, then the backend performs only the authorized service operation, persists the result, emits **STAGE_CLEANUP_COMPLETED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Seal G12, copy forward, and reuse the parameterized stage engine through Angular 21**, then the backend performs only the authorized service operation, persists the result, emits the documented **STAGE_CLEANUP_COMPLETED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
-- **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.** exist with state version, timestamps, and idempotency lineage.
+- **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events.** exist with state version, timestamps, and idempotency lineage.
 - **Evidence:** Given the feature produces evidence, when the step is shown as passed or completed, then **Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.** is already finalized, SHA-256 registered, retrievable by artifact ID, and immutable.
 - **Frontend behavior:** Given loading, empty, running, success, blocked, stale, backend-failure, and reconnect states, when each is simulated, then the UI renders a distinct user-readable state and never advances the workflow locally.
 - **Backend failure:** Given the application service, database, filesystem, external process, or external provider fails, when the failure is returned, then partial evidence is preserved where safe, state remains legal, and the UI exposes a correlation ID and recovery guidance.
@@ -3529,7 +3529,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F13; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3544,7 +3544,7 @@ User/reviewer/operator action
 
     **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
-    **Expected database/API result:** Records described by `Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.` are retrievable through `POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward` and include idempotency and correlation metadata where the operation is mutating.
+    **Expected database/API result:** Records described by `Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events.` are retrievable through `POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward` and include idempotency and correlation metadata where the operation is mutating.
 
     **Expected artifact:** Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.
 
@@ -3596,7 +3596,7 @@ S3-F13
   - **Likely files/modules:** backend/app/domain, backend/app/services, backend/app/repositories, backend/app/models, and bounded orchestration/agent adapter modules only where named.
   - **Input contract:** Validated request identifiers, expected state version, idempotency key, prerequisite artifact IDs, and feature-specific data for `POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward`.
   - **Output contract:** Typed application result containing state version, result status, artifact references, and stable error codes; service behavior: StageCompletionService, cleanup/cleanliness verification, stable output fingerprint, G12 package, copy-forward, next-stage exact re-resolution/plan revision hook, LangGraph stage loop, and stage status aggregation.
-  - **Database impact:** Use or introduce the records summarized by: Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.
+  - **Database impact:** Use or introduce the records summarized by: Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events.
   - **API impact:** Define service-facing request/response models supporting: POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward
   - **Event impact:** Request durable events only through the transition/event service: STAGE_CLEANUP_COMPLETED, STAGE_WAITING_APPROVAL, STAGE_COMPLETED, NEXT_STAGE_CREATED/SANDBOX_READY.
   - **Artifact impact:** Produce or reference evidence only through ArtifactService: Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.
@@ -3621,13 +3621,13 @@ S3-F13
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Seal G12, copy forward, and reuse the parameterized stage engine through Angular 21 observable and auditable.
   - **Context:** Stage completion and copy-forward are separate trusted boundaries. The engine must use actual prior-stage output and finalize exact versions before each new stage.
-  - **Scope:** Persistence: Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.. API: POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward. Events: STAGE_CLEANUP_COMPLETED, STAGE_WAITING_APPROVAL, STAGE_COMPLETED, NEXT_STAGE_CREATED/SANDBOX_READY.. Artifacts: Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.
+  - **Scope:** Persistence: Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events. API: POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward. Events: STAGE_CLEANUP_COMPLETED, STAGE_WAITING_APPROVAL, STAGE_COMPLETED, NEXT_STAGE_CREATED/SANDBOX_READY. Artifacts: Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.
   - **Out of scope:** LLM repair, final clean assurance, delivery, and startup crash recovery.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
   - **Input contract:** Typed application-service result, aggregate IDs/version, artifact temporary files or serialized content, actor/correlation/idempotency metadata.
   - **Output contract:** Committed database records, finalized artifact IDs/checksums, durable event sequence, and versioned API response/error envelope.
-  - **Database impact:** Create/update schema and indexes required for: Stage output records, fingerprints, gate decisions, next-stage workspace records, transitions/events.
+  - **Database impact:** Create/update schema and indexes required for: Stage output records, fingerprints, gate decisions, next-stage sandbox records, transitions/events.
   - **API impact:** Implement and document: POST /api/v1/runs/{id}/stages/{stageId}/complete-package; POST /api/v1/runs/{id}/approvals/G12/decisions; POST /api/v1/runs/{id}/stages/{stageId}/copy-forward; include 400/403/404/409/422/500-class stable error codes as applicable.
   - **Event impact:** Persist then emit: STAGE_CLEANUP_COMPLETED, STAGE_WAITING_APPROVAL, STAGE_COMPLETED, NEXT_STAGE_CREATED/SANDBOX_READY.; event payload includes run/stage IDs, state version, actor, timestamp, and artifact refs.
   - **Artifact impact:** Atomic temp-write → SHA-256 → atomic rename → DB registration for: Cleanup report, cleanliness report, output manifest/fingerprint, stage evidence index, G12 package, and copy-forward report.
@@ -3685,8 +3685,8 @@ S3-F13
   - **Context:** Stage completion and copy-forward are separate trusted boundaries. The engine must use actual prior-stage output and finalize exact versions before each new stage.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** LLM repair, final clean assurance, delivery, and startup crash recovery.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3718,7 +3718,7 @@ S3-F13
 
 - Real harmless subprocess, timeout, live log, process-tree cancellation, and partial-evidence tests.
 
-- Stage sandbox isolation and no-node_modules copy-forward tests.
+- Run-scoped stage sandbox isolation and no-node_modules copy-forward tests.
 
 - Complete stage validation matrix and core-gate non-bypass tests.
 

@@ -32,7 +32,7 @@ npm install
 Angular 18 fixture, only when validating the fixture build:
 
 ```powershell
-cd demo-apps/angular-18-basic
+cd external synthetic Angular fixture
 npm ci
 npm run build
 ```

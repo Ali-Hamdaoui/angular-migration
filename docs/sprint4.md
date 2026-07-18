@@ -39,7 +39,7 @@ Complete the MVP with deterministic failure evidence and routing, checksum-bound
 
 #### User-observable outcome
 
-A reviewer can open a failed command and inspect immutable raw logs, normalized npm/Angular CLI/TypeScript/template/test/generic diagnostics, locations, fingerprints, and baseline origin.
+A reviewer can open a failed command inspect immutable raw logs, normalized npm/Angular CLI/TypeScript/template/test/generic diagnostics, locations, fingerprints, and baseline origin.
 
 #### Context
 
@@ -99,7 +99,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Capture FailureEvidence and parse deterministic diagnostics**, then the backend performs only the authorized service operation, persists the result, emits **FAILURE_CAPTURED**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Capture FailureEvidence and parse deterministic diagnostics**, then the backend performs only the authorized service operation, persists the result, emits the documented **FAILURE_CAPTURED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **failures and failure_diagnostics metadata plus artifact references and transition events.** exist with state version, timestamps, and idempotency lineage.
@@ -111,7 +111,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F02, S3-F12; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -120,7 +120,7 @@ User/reviewer/operator action
 4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
 5. Open the resulting detail, event, and artifact views.
 
-**Expected UI result:** A reviewer can open a failed command and inspect immutable raw logs, normalized npm/Angular CLI/TypeScript/template/test/generic diagnostics, locations, fingerprints, and baseline origin. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+**Expected UI result:** A reviewer can open a failed command inspect immutable raw logs, normalized npm/Angular CLI/TypeScript/template/test/generic diagnostics, locations, fingerprints, and baseline origin. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
 **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
@@ -198,7 +198,7 @@ S3-F02, S3-F12
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Capture FailureEvidence and parse deterministic diagnostics observable and auditable.
   - **Context:** Repair may begin only from a real failed command with deterministic evidence, never from a speculative LLM diagnosis.
-  - **Scope:** Persistence: failures and failure_diagnostics metadata plus artifact references and transition events.. API: POST /api/v1/runs/{id}/commands/{commandId}/failure-evidence; GET /api/v1/runs/{id}/failures/{failureId}. Events: FAILURE_CAPTURED and FAILURE_DIAGNOSTICS_PARSED.. Artifacts: Raw stdout/stderr references, structured FailureEvidence JSON, parser report, normalized diagnostics, and origin comparison.
+  - **Scope:** Persistence: failures and failure_diagnostics metadata plus artifact references and transition events. API: POST /api/v1/runs/{id}/commands/{commandId}/failure-evidence; GET /api/v1/runs/{id}/failures/{failureId}. Events: FAILURE_CAPTURED and FAILURE_DIAGNOSTICS_PARSED. Artifacts: Raw stdout/stderr references, structured FailureEvidence JSON, parser report, normalized diagnostics, and origin comparison.
   - **Out of scope:** C-Lite routing action, LLM context, patch proposal, and environment remediation execution.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -260,8 +260,8 @@ S3-F02, S3-F12
   - **Context:** Repair may begin only from a real failed command with deterministic evidence, never from a speculative LLM diagnosis.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** C-Lite routing action, LLM context, patch proposal, and environment remediation execution.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -358,7 +358,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Route failures with C-Lite and show environment or retry actions**, then the backend performs only the authorized service operation, persists the result, emits **FAILURE_CLASSIFIED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Route failures with C-Lite and show environment or retry actions**, then the backend performs only the authorized service operation, persists the result, emits the documented **FAILURE_CLASSIFIED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Route decision, confidence, policy version, action records, state/events.** exist with state version, timestamps, and idempotency lineage.
@@ -370,7 +370,7 @@ User/reviewer/operator action
 
 **Preconditions:** S4-F01; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -457,7 +457,7 @@ S4-F01
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Route failures with C-Lite and show environment or retry actions observable and auditable.
   - **Context:** Deterministic top-level routing prevents wasted LLM calls and unsafe source changes for proxy, certificate, disk, permission, or runtime failures.
-  - **Scope:** Persistence: Route decision, confidence, policy version, action records, state/events.. API: POST /api/v1/runs/{id}/failures/{failureId}/classify; GET /api/v1/runs/{id}/failures/{failureId}/route; POST /api/v1/runs/{id}/failures/{failureId}/retry. Events: FAILURE_CLASSIFIED, ENVIRONMENT_ACTION_REQUIRED, EXTERNAL_RETRY_SCHEDULED, DIAGNOSTIC_HOLD_ENTERED.. Artifacts: Classification decision, rule evidence, remediation checklist, and retry outcome.
+  - **Scope:** Persistence: Route decision, confidence, policy version, action records, state/events. API: POST /api/v1/runs/{id}/failures/{failureId}/classify; GET /api/v1/runs/{id}/failures/{failureId}/route; POST /api/v1/runs/{id}/failures/{failureId}/retry. Events: FAILURE_CLASSIFIED, ENVIRONMENT_ACTION_REQUIRED, EXTERNAL_RETRY_SCHEDULED, DIAGNOSTIC_HOLD_ENTERED. Artifacts: Classification decision, rule evidence, remediation checklist, and retry outcome.
   - **Out of scope:** Automated environment repair, LLM repair execution, unlimited retries, and changing source for auth/proxy errors.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -519,8 +519,8 @@ S4-F01
   - **Context:** Deterministic top-level routing prevents wasted LLM calls and unsafe source changes for proxy, certificate, disk, permission, or runtime failures.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Automated environment repair, LLM repair execution, unlimited retries, and changing source for auth/proxy errors.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -617,7 +617,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Build and inspect a bounded sanitized RepairContextPack**, then the backend performs only the authorized service operation, persists the result, emits **REPAIR_CONTEXT_CREATED**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Build and inspect a bounded sanitized RepairContextPack**, then the backend performs only the authorized service operation, persists the result, emits the documented **REPAIR_CONTEXT_CREATED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **repair_attempts, context-pack metadata, selection reasons, checksums, sanitizer record, artifact refs.** exist with state version, timestamps, and idempotency lineage.
@@ -630,7 +630,7 @@ User/reviewer/operator action
 
 **Preconditions:** S4-F01, S4-F02; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -717,7 +717,7 @@ S4-F01, S4-F02
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Build and inspect a bounded sanitized RepairContextPack observable and auditable.
   - **Context:** Repository content is untrusted data; the model cannot freely browse the workspace or receive secrets.
-  - **Scope:** Persistence: repair_attempts, context-pack metadata, selection reasons, checksums, sanitizer record, artifact refs.. API: POST /api/v1/runs/{id}/failures/{failureId}/repair-context; GET /api/v1/runs/{id}/repair-contexts/{contextId}. Events: REPAIR_CONTEXT_CREATED or REPAIR_CONTEXT_BLOCKED.. Artifacts: Sanitized context pack, selection manifest, redaction report, token estimate, and forbidden-action policy.
+  - **Scope:** Persistence: repair_attempts, context-pack metadata, selection reasons, checksums, sanitizer record, artifact refs. API: POST /api/v1/runs/{id}/failures/{failureId}/repair-context; GET /api/v1/runs/{id}/repair-contexts/{contextId}. Events: REPAIR_CONTEXT_CREATED or REPAIR_CONTEXT_BLOCKED. Artifacts: Sanitized context pack, selection manifest, redaction report, token estimate, and forbidden-action policy.
   - **Out of scope:** Calling Azure OpenAI, editing context manually, arbitrary file browsing, and patch generation.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -779,8 +779,8 @@ S4-F01, S4-F02
   - **Context:** Repository content is untrusted data; the model cannot freely browse the workspace or receive secrets.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Calling Azure OpenAI, editing context manually, arbitrary file browsing, and patch generation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -893,7 +893,7 @@ The output contains root cause, fix strategy, evidence references, changed files
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Generate and review a Proposer repair candidate**, then the backend performs only the authorized service operation, persists the result, emits **PROPOSER_STARTED/COMPLETED/INSUFFICIENT_CONTEXT/NOT_REPAIRABLE/FAILED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Generate and review a Proposer repair candidate**, then the backend performs only the authorized service operation, persists the result, emits the documented **PROPOSER_STARTED/COMPLETED/INSUFFICIENT_CONTEXT/NOT_REPAIRABLE/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Proposer invocation/result metadata, status, context lineage, usage/cost, artifact refs.** exist with state version, timestamps, and idempotency lineage.
@@ -905,7 +905,7 @@ The output contains root cause, fix strategy, evidence references, changed files
 
 **Preconditions:** S4-F03, S2-F03; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -993,7 +993,7 @@ S4-F03, S2-F03
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Generate and review a Proposer repair candidate observable and auditable.
   - **Context:** Only the Proposer LLM may author a repair diff; output remains an untrusted proposal until deterministic validation and Reviewer acceptance.
-  - **Scope:** Persistence: Proposer invocation/result metadata, status, context lineage, usage/cost, artifact refs.. API: POST /api/v1/runs/{id}/repair-attempts/{attemptId}/proposer; GET /api/v1/runs/{id}/repair-attempts/{attemptId}/proposer. Events: PROPOSER_STARTED/COMPLETED/INSUFFICIENT_CONTEXT/NOT_REPAIRABLE/FAILED.. Artifacts: Structured Proposer response, exact proposed diff, semantic validation report, changed-file inventory, usage/cost.
+  - **Scope:** Persistence: Proposer invocation/result metadata, status, context lineage, usage/cost, artifact refs. API: POST /api/v1/runs/{id}/repair-attempts/{attemptId}/proposer; GET /api/v1/runs/{id}/repair-attempts/{attemptId}/proposer. Events: PROPOSER_STARTED/COMPLETED/INSUFFICIENT_CONTEXT/NOT_REPAIRABLE/FAILED. Artifacts: Structured Proposer response, exact proposed diff, semantic validation report, changed-file inventory, usage/cost.
   - **Out of scope:** Reviewer decision, human Apply, patch application, command execution, and direct filesystem writes.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1055,8 +1055,8 @@ S4-F03, S2-F03
   - **Context:** Only the Proposer LLM may author a repair diff; output remains an untrusted proposal until deterministic validation and Reviewer acceptance.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Reviewer decision, human Apply, patch application, command execution, and direct filesystem writes.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1159,7 +1159,7 @@ Allowed decisions are `accept`, `request_revision`, `reject`, and `insufficient_
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Review a Proposer candidate with non-authoring Reviewer and bounded revision**, then the backend performs only the authorized service operation, persists the result, emits **REVIEWER_STARTED/ACCEPTED/REQUESTED_REVISION/REJECTED/INSUFFICIENT_CONTEXT**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Review a Proposer candidate with non-authoring Reviewer and bounded revision**, then the backend performs only the authorized service operation, persists the result, emits the documented **REVIEWER_STARTED/ACCEPTED/REQUESTED_REVISION/REJECTED/INSUFFICIENT_CONTEXT** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **review_decisions, revision/context counters, LLM invocations/usage, artifact refs.** exist with state version, timestamps, and idempotency lineage.
@@ -1171,7 +1171,7 @@ Allowed decisions are `accept`, `request_revision`, `reject`, and `insufficient_
 
 **Preconditions:** S4-F04; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1257,7 +1257,7 @@ S4-F04
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Review a Proposer candidate with non-authoring Reviewer and bounded revision observable and auditable.
   - **Context:** Critique is separated from authorship to preserve lineage and prevent a hidden replacement patch.
-  - **Scope:** Persistence: review_decisions, revision/context counters, LLM invocations/usage, artifact refs.. API: POST /api/v1/runs/{id}/repair-attempts/{attemptId}/reviewer; POST /api/v1/runs/{id}/repair-attempts/{attemptId}/revisions. Events: REVIEWER_STARTED/ACCEPTED/REQUESTED_REVISION/REJECTED/INSUFFICIENT_CONTEXT and PROPOSER_REVISION_COMPLETED.. Artifacts: Reviewer structured response, critique/revision instructions, schema-validation evidence, revised Proposer candidate where applicable.
+  - **Scope:** Persistence: review_decisions, revision/context counters, LLM invocations/usage, artifact refs. API: POST /api/v1/runs/{id}/repair-attempts/{attemptId}/reviewer; POST /api/v1/runs/{id}/repair-attempts/{attemptId}/revisions. Events: REVIEWER_STARTED/ACCEPTED/REQUESTED_REVISION/REJECTED/INSUFFICIENT_CONTEXT and PROPOSER_REVISION_COMPLETED. Artifacts: Reviewer structured response, critique/revision instructions, schema-validation evidence, revised Proposer candidate where applicable.
   - **Out of scope:** Human approval, patch application, unlimited review loops, and reviewer-edited patch.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1319,8 +1319,8 @@ S4-F04
   - **Context:** Critique is separated from authorship to preserve lineage and prevent a hidden replacement patch.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Human approval, patch application, unlimited review loops, and reviewer-edited patch.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1421,7 +1421,7 @@ The G10 package binds the exact base workspace fingerprint, failure, context, de
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Persist an accepted proposal and decide G10 Apply or Reject**, then the backend performs only the authorized service operation, persists the result, emits **REPAIR_PROPOSAL_READY**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Persist an accepted proposal and decide G10 Apply or Reject**, then the backend performs only the authorized service operation, persists the result, emits the documented **REPAIR_PROPOSAL_READY** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **repair_proposals, proposal status/checksum, gate binding, decisions, lineage and events.** exist with state version, timestamps, and idempotency lineage.
@@ -1436,7 +1436,7 @@ The G10 package binds the exact base workspace fingerprint, failure, context, de
 
 **Preconditions:** S4-F05; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1527,7 +1527,7 @@ S4-F05
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Persist an accepted proposal and decide G10 Apply or Reject observable and auditable.
   - **Context:** LLM acceptance is advisory. Human authorization is mandatory before any repair mutation.
-  - **Scope:** Persistence: repair_proposals, proposal status/checksum, gate binding, decisions, lineage and events.. API: GET /api/v1/runs/{id}/repair-proposals/{proposalId}; POST /api/v1/runs/{id}/approvals/G10/decisions. Events: REPAIR_PROPOSAL_READY and G10 approval/rejection/stale events.. Artifacts: Exact immutable accepted diff, proposal manifest, Reviewer decision, lineage/provenance, risk report, and G10 package.
+  - **Scope:** Persistence: repair_proposals, proposal status/checksum, gate binding, decisions, lineage and events. API: GET /api/v1/runs/{id}/repair-proposals/{proposalId}; POST /api/v1/runs/{id}/approvals/G10/decisions. Events: REPAIR_PROPOSAL_READY and G10 approval/rejection/stale events. Artifacts: Exact immutable accepted diff, proposal manifest, Reviewer decision, lineage/provenance, risk report, and G10 package.
   - **Out of scope:** Patch dry run/application, modifying proposal in UI, auto-apply, and repair validation.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1591,8 +1591,8 @@ S4-F05
   - **Context:** LLM acceptance is advisory. Human authorization is mandatory before any repair mutation.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Patch dry run/application, modifying proposal in UI, auto-apply, and repair validation.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1694,7 +1694,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Validate and apply only the exact persisted repair diff**, then the backend performs only the authorized service operation, persists the result, emits **REPAIR_APPLY_STARTED/APPLIED/REJECTED_STALE/REJECTED_UNSAFE/FAILED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Validate and apply only the exact persisted repair diff**, then the backend performs only the authorized service operation, persists the result, emits the documented **REPAIR_APPLY_STARTED/APPLIED/REJECTED_STALE/REJECTED_UNSAFE/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Patch apply metadata/idempotency, ledger, post-fingerprint, command/transition events.** exist with state version, timestamps, and idempotency lineage.
@@ -1706,7 +1706,7 @@ User/reviewer/operator action
 
 **Preconditions:** S4-F06; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -1795,7 +1795,7 @@ S4-F06
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Validate and apply only the exact persisted repair diff observable and auditable.
   - **Context:** PatchApplyService, not the UI or LLM, owns controlled mutation and must reject stale, escaping, or inapplicable proposals.
-  - **Scope:** Persistence: Patch apply metadata/idempotency, ledger, post-fingerprint, command/transition events.. API: POST /api/v1/runs/{id}/repair-proposals/{proposalId}/apply; GET /api/v1/runs/{id}/repair-proposals/{proposalId}/apply-result. Events: REPAIR_APPLY_STARTED/APPLIED/REJECTED_STALE/REJECTED_UNSAFE/FAILED.. Artifacts: Patch safety report, dry-run result, exact applied diff reference, patch ledger, pre/post fingerprints, and failure evidence.
+  - **Scope:** Persistence: Patch apply metadata/idempotency, ledger, post-fingerprint, command/transition events. API: POST /api/v1/runs/{id}/repair-proposals/{proposalId}/apply; GET /api/v1/runs/{id}/repair-proposals/{proposalId}/apply-result. Events: REPAIR_APPLY_STARTED/APPLIED/REJECTED_STALE/REJECTED_UNSAFE/FAILED. Artifacts: Patch safety report, dry-run result, exact applied diff reference, patch ledger, pre/post fingerprints, and failure evidence.
   - **Out of scope:** Patch preflight/build/test validation, automatic conflict resolution, manual patch editing, and arbitrary file creation outside approved scope.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -1857,8 +1857,8 @@ S4-F06
   - **Context:** PatchApplyService, not the UI or LLM, owns controlled mutation and must reject stale, escaping, or inapplicable proposals.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Patch preflight/build/test validation, automatic conflict resolution, manual patch editing, and arbitrary file creation outside approved scope.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -1955,7 +1955,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run patch preflight, resume normal validation, and decide G11**, then the backend performs only the authorized service operation, persists the result, emits **PATCH_PREFLIGHT_COMPLETED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run patch preflight, resume normal validation, and decide G11**, then the backend performs only the authorized service operation, persists the result, emits the documented **PATCH_PREFLIGHT_COMPLETED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Preflight results, validation rerun references, error delta, attempt outcome, gate/decision records.** exist with state version, timestamps, and idempotency lineage.
@@ -1970,7 +1970,7 @@ User/reviewer/operator action
 
 **Preconditions:** S4-F07, S3-F13; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2061,7 +2061,7 @@ S4-F07, S3-F13
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Run patch preflight, resume normal validation, and decide G11 observable and auditable.
   - **Context:** Patch preflight is fast feedback only; the repair must use the same ExecutionProfile and normal stage pipeline.
-  - **Scope:** Persistence: Preflight results, validation rerun references, error delta, attempt outcome, gate/decision records.. API: POST /api/v1/runs/{id}/repair-attempts/{attemptId}/validate; GET /api/v1/runs/{id}/repair-attempts/{attemptId}/validation; POST /api/v1/runs/{id}/approvals/G11/decisions. Events: PATCH_PREFLIGHT_COMPLETED, REPAIR_VALIDATION_STARTED/COMPLETED/FAILED and G11 events.. Artifacts: Patch preflight report, invalidation decision, rerun logs/results, error delta, repair validation summary, and G11 package.
+  - **Scope:** Persistence: Preflight results, validation rerun references, error delta, attempt outcome, gate/decision records. API: POST /api/v1/runs/{id}/repair-attempts/{attemptId}/validate; GET /api/v1/runs/{id}/repair-attempts/{attemptId}/validation; POST /api/v1/runs/{id}/approvals/G11/decisions. Events: PATCH_PREFLIGHT_COMPLETED, REPAIR_VALIDATION_STARTED/COMPLETED/FAILED and G11 events. Artifacts: Patch preflight report, invalidation decision, rerun logs/results, error delta, repair validation summary, and G11 package.
   - **Out of scope:** No-progress policy across multiple attempts, startup recovery, final assurance, and stage auto-completion.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2125,8 +2125,8 @@ S4-F07, S3-F13
   - **Context:** Patch preflight is fast feedback only; the repair must use the same ExecutionProfile and normal stage pipeline.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** No-progress policy across multiple attempts, startup recovery, final assurance, and stage auto-completion.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2224,7 +2224,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Stop no-progress repair loops and reconstruct or roll back safely**, then the backend performs only the authorized service operation, persists the result, emits **DUPLICATE_PATCH_REJECTED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Stop no-progress repair loops and reconstruct or roll back safely**, then the backend performs only the authorized service operation, persists the result, emits the documented **DUPLICATE_PATCH_REJECTED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Attempt counters/outcomes, no-progress decisions, rollback/reconstruction records, state/events.** exist with state version, timestamps, and idempotency lineage.
@@ -2236,7 +2236,7 @@ User/reviewer/operator action
 
 **Preconditions:** S4-F08; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2323,7 +2323,7 @@ S4-F08
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Stop no-progress repair loops and reconstruct or roll back safely observable and auditable.
   - **Context:** Bounded repair protects cost, source parity, and delivery predictability; repeated equivalent patches must never loop.
-  - **Scope:** Persistence: Attempt counters/outcomes, no-progress decisions, rollback/reconstruction records, state/events.. API: GET /api/v1/runs/{id}/repair-chains/{chainId}; POST /api/v1/runs/{id}/repair-chains/{chainId}/recover. Events: DUPLICATE_PATCH_REJECTED, NO_PROGRESS_DETECTED, REPAIR_ROLLED_BACK, STAGE_RECONSTRUCTED, ATTEMPT_LIMIT_REACHED.. Artifacts: Attempt lineage, fingerprint comparison, error-delta history, rollback/reconstruction report, and diagnostic-hold summary.
+  - **Scope:** Persistence: Attempt counters/outcomes, no-progress decisions, rollback/reconstruction records, state/events. API: GET /api/v1/runs/{id}/repair-chains/{chainId}; POST /api/v1/runs/{id}/repair-chains/{chainId}/recover. Events: DUPLICATE_PATCH_REJECTED, NO_PROGRESS_DETECTED, REPAIR_ROLLED_BACK, STAGE_RECONSTRUCTED, ATTEMPT_LIMIT_REACHED. Artifacts: Attempt lineage, fingerprint comparison, error-delta history, rollback/reconstruction report, and diagnostic-hold summary.
   - **Out of scope:** Automatic business-level resolution, unlimited human overrides, and cross-run learning.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2385,8 +2385,8 @@ S4-F08
   - **Context:** Bounded repair protects cost, source parity, and delivery predictability; repeated equivalent patches must never loop.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Automatic business-level resolution, unlimited human overrides, and cross-run learning.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2483,7 +2483,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Reconcile interrupted commands, leases, artifacts, and graph state on startup**, then the backend performs only the authorized service operation, persists the result, emits **RECONCILIATION_STARTED/COMPLETED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Reconcile interrupted commands, leases, artifacts, and graph state on startup**, then the backend performs only the authorized service operation, persists the result, emits the documented **RECONCILIATION_STARTED/COMPLETED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Reconciliation run/results, interrupted statuses, lease updates, artifact integrity findings, transitions/events.** exist with state version, timestamps, and idempotency lineage.
@@ -2496,7 +2496,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F04, S3-F14, S4-F09; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2584,7 +2584,7 @@ S3-F04, S3-F14, S4-F09
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Reconcile interrupted commands, leases, artifacts, and graph state on startup observable and auditable.
   - **Context:** SQLite is authoritative and LangGraph checkpoints are resume hints; restart must not duplicate mutation or invent evidence.
-  - **Scope:** Persistence: Reconciliation run/results, interrupted statuses, lease updates, artifact integrity findings, transitions/events.. API: POST /api/v1/operator/reconciliation; GET /api/v1/operator/reconciliation/latest; POST /api/v1/runs/{id}/resume. Events: RECONCILIATION_STARTED/COMPLETED, COMMAND_INTERRUPTED, ARTIFACT_INTEGRITY_FAILED, RUN_RECOVERY_READY/DIAGNOSTIC_HOLD.. Artifacts: Startup reconciliation report, artifact mismatch list, workspace recovery decision, and graph reconstruction summary.
+  - **Scope:** Persistence: Reconciliation run/results, interrupted statuses, lease updates, artifact integrity findings, transitions/events. API: POST /api/v1/operator/reconciliation; GET /api/v1/operator/reconciliation/latest; POST /api/v1/runs/{id}/resume. Events: RECONCILIATION_STARTED/COMPLETED, COMMAND_INTERRUPTED, ARTIFACT_INTEGRITY_FAILED, RUN_RECOVERY_READY/DIAGNOSTIC_HOLD. Artifacts: Startup reconciliation report, artifact mismatch list, workspace recovery decision, and graph reconstruction summary.
   - **Out of scope:** Distributed recovery, cross-host process adoption, silent artifact repair, and permanent retention deletion.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2646,8 +2646,8 @@ S3-F04, S3-F14, S4-F09
   - **Context:** SQLite is authoritative and LangGraph checkpoints are resume hints; restart must not duplicate mutation or invent evidence.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Distributed recovery, cross-host process adoption, silent artifact repair, and permanent retention deletion.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -2753,7 +2753,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Explain authoritative migration state through the AI Assistant**, then the backend performs only the authorized service operation, persists the result, emits **ASSISTANT_RESPONSE_STARTED/COMPLETED/FAILED.**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Explain authoritative migration state through the AI Assistant**, then the backend performs only the authorized service operation, persists the result, emits the documented **ASSISTANT_RESPONSE_STARTED/COMPLETED/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Conversation/message metadata, artifact refs, usage/cost; no hidden chain-of-thought.** exist with state version, timestamps, and idempotency lineage.
@@ -2765,7 +2765,7 @@ User/reviewer/operator action
 
 **Preconditions:** S2-F03, S4-F10; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -2853,7 +2853,7 @@ S2-F03, S4-F10
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Explain authoritative migration state through the AI Assistant observable and auditable.
   - **Context:** The Assistant improves comprehension but remains read-only and subordinate to authoritative services.
-  - **Scope:** Persistence: Conversation/message metadata, artifact refs, usage/cost; no hidden chain-of-thought.. API: POST /api/v1/runs/{id}/assistant/messages; GET /api/v1/runs/{id}/assistant/messages. Events: ASSISTANT_RESPONSE_STARTED/COMPLETED/FAILED.. Artifacts: Sanitized assistant input manifest, structured answer, evidence citations, and usage record.
+  - **Scope:** Persistence: Conversation/message metadata, artifact refs, usage/cost; no hidden chain-of-thought. API: POST /api/v1/runs/{id}/assistant/messages; GET /api/v1/runs/{id}/assistant/messages. Events: ASSISTANT_RESPONSE_STARTED/COMPLETED/FAILED. Artifacts: Sanitized assistant input manifest, structured answer, evidence citations, and usage record.
   - **Out of scope:** Direct command/file tools, silent approval, raw secret exposure, unrestricted filesystem search, and autonomous workflow changes.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -2915,8 +2915,8 @@ S2-F03, S4-F10
   - **Context:** The Assistant improves comprehension but remains read-only and subordinate to authoritative services.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Direct command/file tools, silent approval, raw secret exposure, unrestricted filesystem search, and autonomous workflow changes.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3013,7 +3013,7 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run independent final assurance and decide G13**, then the backend performs only the authorized service operation, persists the result, emits **FINAL_ASSURANCE_STARTED/STEP_COMPLETED/COMPLETED/FAILED**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Run independent final assurance and decide G13**, then the backend performs only the authorized service operation, persists the result, emits the documented **FINAL_ASSURANCE_STARTED/STEP_COMPLETED/COMPLETED/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Final assurance metadata/results, source integrity status, gate/decisions, artifacts/events.** exist with state version, timestamps, and idempotency lineage.
@@ -3028,7 +3028,7 @@ User/reviewer/operator action
 
 **Preconditions:** S3-F14, S4-F08, S4-F10; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3119,7 +3119,7 @@ S3-F14, S4-F08, S4-F10
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Run independent final assurance and decide G13 observable and auditable.
   - **Context:** Stage-local success is insufficient for delivery; the final candidate must be proven in a clean independent workspace.
-  - **Scope:** Persistence: Final assurance metadata/results, source integrity status, gate/decisions, artifacts/events.. API: POST /api/v1/runs/{id}/final-assurance; GET /api/v1/runs/{id}/final-assurance; POST /api/v1/runs/{id}/approvals/G13/decisions. Events: FINAL_ASSURANCE_STARTED/STEP_COMPLETED/COMPLETED/FAILED and G13 events.. Artifacts: Final workspace manifest/fingerprint, clean install/build/test logs, exact version inventory, route/backend comparisons, source integrity proof, assurance summary, G13 package.
+  - **Scope:** Persistence: Final assurance metadata/results, source integrity status, gate/decisions, artifacts/events. API: POST /api/v1/runs/{id}/final-assurance; GET /api/v1/runs/{id}/final-assurance; POST /api/v1/runs/{id}/approvals/G13/decisions. Events: FINAL_ASSURANCE_STARTED/STEP_COMPLETED/COMPLETED/FAILED and G13 events. Artifacts: Final workspace manifest/fingerprint, clean install/build/test logs, exact version inventory, route/backend comparisons, source integrity proof, assurance summary, G13 package.
   - **Out of scope:** Automated browser/visual tooling, external security/quality tools, delivery publication, and report acceptance.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -3183,8 +3183,8 @@ S3-F14, S4-F08, S4-F10
   - **Context:** Stage-local success is insufficient for delivery; the final candidate must be proven in a clean independent workspace.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Automated browser/visual tooling, external security/quality tools, delivery publication, and report acceptance.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3222,17 +3222,17 @@ S3-F14, S4-F08, S4-F10
 
 #### User-observable outcome
 
-A reviewer can inspect a clean delivery manifest/fingerprint and destination safety, decide G14, and publish migrated-app atomically or fail closed without exposing a partial final directory.
+A reviewer can inspect the exact user-selected external output root, clean delivery manifest/fingerprint, original-source integrity proof, and destination safety, decide G14, and publish `<resolved-output-root>/migrated-app` atomically or fail closed without exposing a partial final directory.
 
 #### Context
 
-Final output appears only from the approved final fingerprint after complete verification and human delivery authority.
+Final output appears only at `<resolved-output-root>/migrated-app`, beneath the exact user-selected external output root, and only from the approved final fingerprint after independent verification, unchanged-original-source proof, destination revalidation, and human delivery authority.
 
 **Governing specification sections:** 33-35, 53.9, 56.15, 68.10, 70.10
 
 #### Scope
 
-Candidate, manifest, destination safety, G14, atomic/fail-closed publication, and UI.
+Candidate copied from the approved final stage sandbox into the registered delivery-candidate alias under the same output root, manifest/fingerprint, source-integrity recheck, output-root ownership and destination safety, G14, atomic/fail-closed publication to `migrated-app/`, and UI.
 
 #### Out of scope
 
@@ -3240,19 +3240,19 @@ Cloud deployment, Git push/PR, backend migration, and publishing before final as
 
 #### Backend slice
 
-- **Application service/components:** DeliveryService for candidate copy/exclusions, manifest/fingerprint, destination revalidation, overwrite policy, G14 package, idempotent publication, same-volume atomic rename or two-phase fail-closed fallback, and source/final binding.
+- **Application service/components:** DeliveryService for candidate copy from the approved final stage sandbox, exclusions, manifest/fingerprint, original-source fingerprint revalidation, output-root containment, parent writability, and ownership revalidation, managed-output and overwrite policy, G14 package, idempotent publication to the exact registered `migrated-app` alias, same-volume atomic rename or two-phase fail-closed fallback, and source/snapshot/final binding.
 - **Domain aggregate/projection:** DeliveryRecord, ApprovalGate G14.
-- **Persistence:** delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.
+- **Persistence:** delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events.
 - **State/approval rule:** G14 is created as a persistent gate. Its decision is bound to the current state version, gate version, artifact-set checksum, plan version where applicable, and workspace fingerprint where applicable.
 - **Validation and idempotency:** Mutating requests carry the expected aggregate state version and an idempotency key. Services validate prerequisites and return stable conflict/error codes before side effects.
 - **API contract:** `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish`
 - **Durable event:** DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.
-- **Artifact Store output:** Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
+- **Artifact Store output:** Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
 - **Security controls:** Enforce actor/run authorization hooks, path/workspace confinement where relevant, artifact ID access, secret redaction, prompt-injection boundaries for untrusted content, and fail-closed behavior.
 
 #### Frontend slice
 
-- **Surface:** Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
+- **Surface:** Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
 - **Data source:** Typed FastAPI client plus authoritative state snapshot and durable SSE events where applicable.
 - **User actions:** Only actions authorized by the API contract; mutating actions include observed state version and idempotency key.
 - **Required visual states:** loading, empty, in progress, success, blocked, stale/conflict, reconnecting, backend failure, and authorization failure where applicable.
@@ -3265,12 +3265,12 @@ Cloud deployment, Git push/PR, backend migration, and publishing before final as
 User/reviewer/operator action
 → Next.js typed API request
 → FastAPI endpoint
-→ DeliveryService for candidate copy/exclusions, manifest/fingerprint, destination revalidation, overwrite policy, G14 package, idempotent publication, same-volume atomic rename or two-phase fail-closed fallback, and source/final binding.
-→ delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.
-→ ArtifactService finalizes evidence: Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
+→ DeliveryService for candidate copy from the approved final stage sandbox, exclusions, manifest/fingerprint, original-source fingerprint revalidation, output-root containment, parent writability, and ownership revalidation, managed-output and overwrite policy, G14 package, idempotent publication to the exact registered `migrated-app` alias, same-volume atomic rename or two-phase fail-closed fallback, and source/snapshot/final binding.
+→ delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events.
+→ ArtifactService finalizes evidence: Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
 → Transition/Event service persists and emits: DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.
 → SSE replay or snapshot refresh
-→ Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
+→ Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
 ```
 
 #### Sub-issues
@@ -3282,39 +3282,42 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Create a delivery candidate and publish atomically through G14**, then the backend performs only the authorized service operation, persists the result, emits **DELIVERY_CANDIDATE_READY,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Create a delivery candidate and publish atomically through G14**, then the backend performs only the authorized service operation, persists the result, emits the documented **DELIVERY_CANDIDATE_READY** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
-- **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.** exist with state version, timestamps, and idempotency lineage.
-- **Evidence:** Given the feature produces evidence, when the step is shown as passed or completed, then **Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.** is already finalized, SHA-256 registered, retrievable by artifact ID, and immutable.
+- **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events.** exist with state version, timestamps, and idempotency lineage.
+- **Evidence:** Given the feature produces evidence, when the step is shown as passed or completed, then **Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.** is already finalized, SHA-256 registered, retrievable by artifact ID, and immutable.
 - **Frontend behavior:** Given loading, empty, running, success, blocked, stale, backend-failure, and reconnect states, when each is simulated, then the UI renders a distinct user-readable state and never advances the workflow locally.
 - **Backend failure:** Given the application service, database, filesystem, external process, or external provider fails, when the failure is returned, then partial evidence is preserved where safe, state remains legal, and the UI exposes a correlation ID and recovery guidance.
 - **Missing approval:** Given G14 is pending, rejected, modification-requested, expired, or stale, when the next protected transition is requested, then the Transition Service rejects progression.
 - **Approval binding:** Given any bound artifact, plan version, state version, or workspace fingerprint changes, when an older G14 decision is replayed, then it is recorded as invalid/stale and cannot satisfy the active gate.
 - **Technical truth:** Given a mandatory technical check is failed, when a human submits approval, then the failed check remains failed and progression follows the configured non-bypass policy.
+- **Repository/source isolation:** Given publication starts, when all paths are revalidated, then the external source and platform repository are read-only/out-of-scope and only registered product-owned candidate and destination aliases may be touched.
+- **Destination contract:** Given publication succeeds, when the selected external output root is inspected, then `migrated-app/` exactly matches the approved candidate fingerprint and no temporary or partial final directory is presented as successful.
+- **Source integrity:** Given the original source fingerprint differs from the G02-approved boundary, when G14 or publication is attempted, then delivery is blocked and the changed source is reported without mutation.
 
 #### Manual end-to-end test scenario
 
 **Preconditions:** S4-F12; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
-    2. Navigate to the surface described by **Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.**.
+    2. Navigate to the surface described by **Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.**.
     3. Trigger the primary action for **Create a delivery candidate and publish atomically through G14** using valid fixture data.
     4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
     5. Open the resulting detail, event, and artifact views.
 6. Open the **G14** review package, enter a review comment, and choose an allowed decision.
 7. Repeat with a stale state version or changed bound artifact to verify rejection.
 
-    **Expected UI result:** A reviewer can inspect a clean delivery manifest/fingerprint and destination safety, decide G14, and publish migrated-app atomically or fail closed without exposing a partial final directory. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+    **Expected UI result:** A reviewer can inspect the exact user-selected external output root, clean delivery manifest/fingerprint, original-source integrity proof, and destination safety, decide G14, and publish `<resolved-output-root>/migrated-app` atomically or fail closed without exposing a partial final directory. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
     **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
-    **Expected database/API result:** Records described by `delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.` are retrievable through `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish` and include idempotency and correlation metadata where the operation is mutating.
+    **Expected database/API result:** Records described by `delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events.` are retrievable through `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish` and include idempotency and correlation metadata where the operation is mutating.
 
-    **Expected artifact:** Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
+    **Expected artifact:** Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
 
     **Expected durable event:** DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.
 
@@ -3342,14 +3345,13 @@ S4-F12
 
 #### Risks and edge cases
 
-- Cross-volume rename
-- destination changed after approval
-- existing migrated-app
-- partial copy
-- disk exhaustion
-- file locks
-- path escape
-- and duplicate publication.
+- Cross-volume rename or an unavailable atomic-rename boundary
+- Selected external output root changed after G14 evidence creation
+- Existing unmanaged `migrated-app/` or ownership ambiguity
+- Original external source changed after G02
+- Partial copy, disk exhaustion, or file locks during two-phase fallback
+- Reparse-point or containment escape into the source or platform repository
+- Duplicate publication or conflicting idempotency payload
 
 #### Detailed sub-issues
 
@@ -3358,19 +3360,19 @@ S4-F12
   - **Parent feature:** S4-F13
   - **Issue type:** Backend
   - **Technical story:** Implement the bounded backend/application behavior for Create a delivery candidate and publish atomically through G14 so the feature has one authoritative service path.
-  - **Context:** Final output appears only from the approved final fingerprint after complete verification and human delivery authority.
-  - **Scope:** DeliveryService for candidate copy/exclusions, manifest/fingerprint, destination revalidation, overwrite policy, G14 package, idempotent publication, same-volume atomic rename or two-phase fail-closed fallback, and source/final binding.
+  - **Context:** Final output appears only at `<resolved-output-root>/migrated-app`, beneath the exact user-selected external output root, and only from the approved final fingerprint after independent verification, unchanged-original-source proof, destination revalidation, and human delivery authority.
+  - **Scope:** DeliveryService for candidate copy from the approved final stage sandbox, exclusions, manifest/fingerprint, original-source fingerprint revalidation, output-root containment, parent writability, and ownership revalidation, managed-output and overwrite policy, G14 package, idempotent publication to the exact registered `migrated-app` alias, same-volume atomic rename or two-phase fail-closed fallback, and source/snapshot/final binding.
   - **Out of scope:** Cloud deployment, Git push/PR, backend migration, and publishing before final assurance.
   - **Implementation notes:** Keep domain rules outside route handlers and LangGraph nodes. Use repositories and the Transition Service for state changes. Model inputs/outputs with Pydantic v2. G14 is created as a persistent gate. Its decision is bound to the current state version, gate version, artifact-set checksum, plan version where applicable, and workspace fingerprint where applicable.
   - **Likely files/modules:** backend/app/domain, backend/app/services, backend/app/repositories, backend/app/models, and bounded orchestration/agent adapter modules only where named.
   - **Input contract:** Validated request identifiers, expected state version, idempotency key, prerequisite artifact IDs, and feature-specific data for `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish`.
-  - **Output contract:** Typed application result containing state version, result status, artifact references, and stable error codes; service behavior: DeliveryService for candidate copy/exclusions, manifest/fingerprint, destination revalidation, overwrite policy, G14 package, idempotent publication, same-volume atomic rename or two-phase fail-closed fallback, and source/final binding.
-  - **Database impact:** Use or introduce the records summarized by: delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.
+  - **Output contract:** Typed application result containing state version, result status, artifact references, and stable error codes; service behavior: DeliveryService for candidate copy from the approved final stage sandbox, exclusions, manifest/fingerprint, original-source fingerprint revalidation, output-root containment, parent writability, and ownership revalidation, managed-output and overwrite policy, G14 package, idempotent publication to the exact registered `migrated-app` alias, same-volume atomic rename or two-phase fail-closed fallback, and source/snapshot/final binding.
+  - **Database impact:** Use or introduce the records summarized by: delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events.
   - **API impact:** Define service-facing request/response models supporting: POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish
   - **Event impact:** Request durable events only through the transition/event service: DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.
-  - **Artifact impact:** Produce or reference evidence only through ArtifactService: Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
+  - **Artifact impact:** Produce or reference evidence only through ArtifactService: Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
   - **UI impact:** No UI implementation in this issue; return stable contracts required by the sibling frontend issue.
-  - **Security considerations:** Enforce authority boundaries, input validation, state/version checks, path/workspace confinement, secret redaction, and the risk controls relevant to: Cross-volume rename, destination changed after approval, existing migrated-app, partial copy, disk exhaustion, file locks, path escape, and duplicate publication.
+  - **Security considerations:** Enforce authority boundaries, input validation, state/version checks, path/workspace confinement, secret redaction, and the risk controls relevant to: Cross-volume rename, output path or migration output changed after approval, existing unmanaged `migrated-app`, partial copy, disk exhaustion, file locks, platform-repository/source path escape, changed original source, and duplicate publication.
   - **Acceptance criteria:**
     - Given/When/Then: Given the parent feature prerequisites are satisfied, when this issue's backend behavior is exercised, then the bounded contract described in Scope is observable and no unrelated authority is introduced.
 - Given/When/Then: Given invalid or unauthorized input, when the operation is attempted, then it fails with a stable reason and leaves authoritative state/evidence unchanged except for an auditable rejection where required.
@@ -3389,17 +3391,17 @@ S4-F12
   - **Parent feature:** S4-F13
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Create a delivery candidate and publish atomically through G14 observable and auditable.
-  - **Context:** Final output appears only from the approved final fingerprint after complete verification and human delivery authority.
-  - **Scope:** Persistence: delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.. API: POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish. Events: DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.. Artifacts: Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
+  - **Context:** Final output appears only at `<resolved-output-root>/migrated-app`, beneath the exact user-selected external output root, and only from the approved final fingerprint after independent verification, unchanged-original-source proof, destination revalidation, and human delivery authority.
+  - **Scope:** Persistence: delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events. API: POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish. Events: DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events. Artifacts: Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
   - **Out of scope:** Cloud deployment, Git push/PR, backend migration, and publishing before final assurance.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
   - **Input contract:** Typed application-service result, aggregate IDs/version, artifact temporary files or serialized content, actor/correlation/idempotency metadata.
   - **Output contract:** Committed database records, finalized artifact IDs/checksums, durable event sequence, and versioned API response/error envelope.
-  - **Database impact:** Create/update schema and indexes required for: delivery_records, candidate/final fingerprints, publication attempts, gate decisions/events.
+  - **Database impact:** Create/update schema and indexes required for: delivery_records, output-root/migrated-app aliases, source/snapshot/candidate/final fingerprints, publication attempts, gate decisions/events.
   - **API impact:** Implement and document: POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish; include 400/403/404/409/422/500-class stable error codes as applicable.
   - **Event impact:** Persist then emit: DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.; event payload includes run/stage IDs, state version, actor, timestamp, and artifact refs.
-  - **Artifact impact:** Atomic temp-write → SHA-256 → atomic rename → DB registration for: Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
+  - **Artifact impact:** Atomic temp-write → SHA-256 → atomic rename → DB registration for: Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
   - **UI impact:** Expose all IDs/statuses needed by the frontend; do not expose unsafe absolute paths or secrets.
   - **Security considerations:** Validate artifact containment and checksum, prevent silent overwrite and approval replay, sanitize response fields, and authorize actor/run access.
   - **Acceptance criteria:**
@@ -3420,18 +3422,18 @@ S4-F12
   - **Parent feature:** S4-F13
   - **Issue type:** Frontend
   - **Technical story:** Create the React/Next.js projection and user interaction for Create a delivery candidate and publish atomically through G14, using backend snapshots and durable events only.
-  - **Context:** Final output appears only from the approved final fingerprint after complete verification and human delivery authority.
-  - **Scope:** Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
+  - **Context:** Final output appears only at `<resolved-output-root>/migrated-app`, beneath the exact user-selected external output root, and only from the approved final fingerprint after independent verification, unchanged-original-source proof, destination revalidation, and human delivery authority.
+  - **Scope:** Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
   - **Out of scope:** Cloud deployment, Git push/PR, backend migration, and publishing before final assurance.
   - **Implementation notes:** Use typed API clients and a run-scoped projection store. Render loading, empty, running, success, blocked, stale, reconnecting, and failure states. Never infer a workflow transition from button clicks or log text; refresh authoritative state after mutations.
   - **Likely files/modules:** frontend/src/app, frontend/src/components, frontend/src/lib/api, frontend/src/lib/sse, frontend/src/stores, CSS Modules, and component tests.
   - **Input contract:** Backend responses from `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish` plus durable events `DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.` and artifact metadata IDs.
-  - **Output contract:** Accessible UI surface: Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.; user actions submit expected state version and idempotency key when mutating.
+  - **Output contract:** Accessible UI surface: Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.; user actions submit expected state version and idempotency key when mutating.
   - **Database impact:** None directly; frontend must never access SQLite or infer database truth.
   - **API impact:** Consume `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish` with typed success/error handling and correlation-ID display.
   - **Event impact:** Apply `DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.` only when sequence/state version is newer; reconnect or reload snapshot on gaps.
-  - **Artifact impact:** Render artifact links/previews by registered artifact ID for: Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.
-  - **UI impact:** Implement: Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
+  - **Artifact impact:** Render artifact links/previews by registered artifact ID for: Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.
+  - **UI impact:** Implement: Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.
   - **Security considerations:** Escape untrusted repository/log/model content, do not render secrets, do not accept raw authoritative diffs/paths, and protect destructive actions with explicit confirmation.
   - **Acceptance criteria:**
     - Given/When/Then: Given the parent feature prerequisites are satisfied, when this issue's frontend behavior is exercised, then the bounded contract described in Scope is observable and no unrelated authority is introduced.
@@ -3451,19 +3453,19 @@ S4-F12
   - **Parent feature:** S4-F13
   - **Issue type:** Testing
   - **Technical story:** Prove Create a delivery candidate and publish atomically through G14 through automated seams, security negatives, and the documented UI manual scenario.
-  - **Context:** Final output appears only from the approved final fingerprint after complete verification and human delivery authority.
+  - **Context:** Final output appears only at `<resolved-output-root>/migrated-app`, beneath the exact user-selected external output root, and only from the approved final fingerprint after independent verification, unchanged-original-source proof, destination revalidation, and human delivery authority.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Cloud deployment, Git push/PR, backend migration, and publishing before final assurance.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
   - **API impact:** Exercise `POST /api/v1/runs/{id}/delivery/candidate; GET /api/v1/runs/{id}/delivery; POST /api/v1/runs/{id}/approvals/G14/decisions; POST /api/v1/runs/{id}/delivery/publish` for happy, invalid, stale, missing-prerequisite/approval, and backend-failure cases.
   - **Event impact:** Assert ordering, replay, and payload of `DELIVERY_CANDIDATE_READY, PUBLICATION_STARTED/COMPLETED/FAILED and G14 events.` where applicable.
-  - **Artifact impact:** Assert existence, checksum, immutability, and safe retrieval of `Delivery manifest, exclusion list, candidate fingerprint, destination safety report, G14 package, and publication record.` where applicable.
-  - **UI impact:** Execute the feature through `Delivery review page with destination, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.` and record visible loading/empty/success/blocked/stale/failure behavior.
-  - **Security considerations:** Include at least one security or integrity negative derived from: Cross-volume rename, destination changed after approval, existing migrated-app, partial copy, disk exhaustion, file locks, path escape, and duplicate publication.
+  - **Artifact impact:** Assert existence, checksum, immutability, and safe retrieval of `Delivery manifest, exclusion list, candidate fingerprint, original-source final integrity report, output-root destination safety report, managed-output ownership report, G14 package, and publication record.` where applicable.
+  - **UI impact:** Execute the feature through `Delivery review page with selected external output root, final `migrated-app` path, source-integrity status, file counts, fingerprint, exclusions, overwrite/fallback explanation, G14 controls, publish progress, and partial-failure evidence.` and record visible loading/empty/success/blocked/stale/failure behavior.
+  - **Security considerations:** Include at least one security or integrity negative derived from: Cross-volume rename, output path or migration output changed after approval, existing unmanaged `migrated-app`, partial copy, disk exhaustion, file locks, platform-repository/source path escape, changed original source, and duplicate publication.
   - **Acceptance criteria:**
     - Given/When/Then: Given the parent feature prerequisites are satisfied, when this issue's testing behavior is exercised, then the bounded contract described in Scope is observable and no unrelated authority is introduced.
 - Given/When/Then: Given invalid or unauthorized input, when the operation is attempted, then it fails with a stable reason and leaves authoritative state/evidence unchanged except for an auditable rejection where required.
@@ -3561,7 +3563,7 @@ All locally calculated prices are displayed as **estimated cost using the projec
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Generate, view, download, and accept the final evidence and cost report through G15**, then the backend performs only the authorized service operation, persists the result, emits **REPORT_GENERATION_STARTED/READY/FAILED,**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Generate, view, download, and accept the final evidence and cost report through G15**, then the backend performs only the authorized service operation, persists the result, emits the documented **REPORT_GENERATION_STARTED/READY/FAILED** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Report metadata/version/checksum, aggregate usage/cost, gate decisions, completion transition.** exist with state version, timestamps, and idempotency lineage.
@@ -3576,7 +3578,7 @@ All locally calculated prices are displayed as **estimated cost using the projec
 
 **Preconditions:** S4-F11, S4-F13; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-    **Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+    **Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
     **UI steps:**
     1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3668,7 +3670,7 @@ S4-F11, S4-F13
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Generate, view, download, and accept the final evidence and cost report through G15 observable and auditable.
   - **Context:** The report is an evidence index and honest assurance summary, not a narrative that invents unexecuted success.
-  - **Scope:** Persistence: Report metadata/version/checksum, aggregate usage/cost, gate decisions, completion transition.. API: POST /api/v1/runs/{id}/report; GET /api/v1/runs/{id}/report; GET /api/v1/runs/{id}/report/download; POST /api/v1/runs/{id}/approvals/G15/decisions. Events: REPORT_GENERATION_STARTED/READY/FAILED, G15 events, RUN_COMPLETED after valid acceptance.. Artifacts: Machine-readable report, Markdown/HTML report, artifact index, token-cost summary, unresolved/manual/deferred list, and G15 package.
+  - **Scope:** Persistence: Report metadata/version/checksum, aggregate usage/cost, gate decisions, completion transition. API: POST /api/v1/runs/{id}/report; GET /api/v1/runs/{id}/report; GET /api/v1/runs/{id}/report/download; POST /api/v1/runs/{id}/approvals/G15/decisions. Events: REPORT_GENERATION_STARTED/READY/FAILED, G15 events, RUN_COMPLETED after valid acceptance. Artifacts: Machine-readable report, Markdown/HTML report, artifact index, token-cost summary, unresolved/manual/deferred list, and G15 package.
   - **Out of scope:** PDF unless separately approved, hidden chain-of-thought, cached/reasoning token metrics, and claiming external scans passed.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -3732,8 +3734,8 @@ S4-F11, S4-F13
   - **Context:** The report is an evidence index and honest assurance summary, not a narrative that invents unexecuted success.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** PDF unless separately approved, hidden chain-of-thought, cached/reasoning token metrics, and claiming external scans passed.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
@@ -3771,7 +3773,7 @@ S4-F11, S4-F13
 
 #### User-observable outcome
 
-The team can execute the final manual and automated runtime proof on Angular 18.0.x and 18.2.x fixtures, including all gates, one real repair, an environment blocker, cancellation, restart recovery, final assurance, atomic delivery, and unchanged source.
+The team can execute the final manual and automated runtime proof on Angular 18.0.x and 18.2.x workspaces generated under external temporary test roots, including all gates, one real repair, an environment blocker, cancellation, restart recovery, final assurance, external-output publication, and unchanged external source.
 
 #### Context
 
@@ -3796,7 +3798,7 @@ Angular 11-17 production validation, Angular 22, unsupported topologies, browser
 - **Validation and idempotency:** Mutating requests carry the expected aggregate state version and an idempotency key. Services validate prerequisites and return stable conflict/error codes before side effects.
 - **API contract:** `Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status`
 - **Durable event:** Existing production events validated for completeness/order; acceptance-suite status events optional.
-- **Artifact Store output:** Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+- **Artifact Store output:** External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
 - **Security controls:** Enforce actor/run authorization hooks, path/workspace confinement where relevant, artifact ID access, secret redaction, prompt-injection boundaries for untrusted content, and fail-closed behavior.
 
 #### Frontend slice
@@ -3816,7 +3818,7 @@ User/reviewer/operator action
 → FastAPI endpoint
 → Fixture harness, real subprocess test profiles, deterministic failure fixtures, fake model integration suite plus one configured Azure path, end-to-end orchestration tests, security tests, and runtime evidence collector.
 → Test execution metadata and complete migration-run records/artifacts.
-→ ArtifactService finalizes evidence: Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+→ ArtifactService finalizes evidence: External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
 → Transition/Event service persists and emits: Existing production events validated for completeness/order; acceptance-suite status events optional.
 → SSE replay or snapshot refresh
 → Operator acceptance checklist linking each scenario to live product pages/artifacts; no hidden API-only completion.
@@ -3831,11 +3833,11 @@ User/reviewer/operator action
 
 #### Feature acceptance criteria
 
-- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Prove the full Angular 18.x to approved 21.x MVP with fixtures, repair, cancel, and restart**, then the backend performs only the authorized service operation, persists the result, emits **Existing**-family durable events, and the UI displays the authoritative success state.
+- **Happy path:** Given all dependencies are complete and valid inputs are supplied, when the user completes the UI action for **Prove the full Angular 18.x to approved 21.x MVP with fixtures, repair, cancel, and restart**, then the backend performs only the authorized service operation, persists the result, emits the documented **Existing** durable events, and the UI displays the authoritative success state.
 - **Invalid input:** Given malformed, unsupported, unsafe, or incomplete input, when the request is submitted, then FastAPI returns a stable machine-readable error, no illegal transition occurs, no unregistered artifact is trusted, and the UI displays a corrective blocked or failure state.
 - **Stale state:** Given the aggregate state version changes after the page is loaded, when a mutating request uses the old version, then the backend returns `STALE_STATE_VERSION`, the UI reloads the snapshot, and the operation is not duplicated.
 - **Persistence:** Given the operation succeeds, when the database is inspected through its repository/API, then the expected records for **Test execution metadata and complete migration-run records/artifacts.** exist with state version, timestamps, and idempotency lineage.
-- **Evidence:** Given the feature produces evidence, when the step is shown as passed or completed, then **Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.** is already finalized, SHA-256 registered, retrievable by artifact ID, and immutable.
+- **Evidence:** Given the feature produces evidence, when the step is shown as passed or completed, then **External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.** is already finalized, SHA-256 registered, retrievable by artifact ID, and immutable.
 - **Frontend behavior:** Given loading, empty, running, success, blocked, stale, backend-failure, and reconnect states, when each is simulated, then the UI renders a distinct user-readable state and never advances the workflow locally.
 - **Backend failure:** Given the application service, database, filesystem, external process, or external provider fails, when the failure is returned, then partial evidence is preserved where safe, state remains legal, and the UI exposes a correlation ID and recovery guidance.
 
@@ -3843,7 +3845,7 @@ User/reviewer/operator action
 
 **Preconditions:** S4-F01, S4-F02, S4-F03, S2-F03, S4-F04, S4-F05, S4-F06, S4-F07, S4-F08, S4-F09, S4-F10, S4-F11, S4-F12, S4-F13, S4-F14; use an authenticated local reviewer/operator identity and the sprint fixture appropriate to this feature.
 
-**Fixture/test data:** a supported Angular 18.x single-application npm workspace for positive paths; a deliberately invalid, stale, blocked, or unsafe variant for the negative path.
+**Fixture/test data:** a synthetic Angular 18.x single-application npm workspace generated in an external temporary source directory for positive paths; a deliberately invalid, stale, blocked, or unsafe external variant for the negative path. The platform repository contains only fixture generators/manifests, never the generated full workspace.
 
 **UI steps:**
 1. Launch the backend and frontend and open the relevant run or operator page.
@@ -3852,13 +3854,13 @@ User/reviewer/operator action
 4. Observe progress through the UI and, when applicable, disconnect/refresh and reconnect.
 5. Open the resulting detail, event, and artifact views.
 
-**Expected UI result:** The team can execute the final manual and automated runtime proof on Angular 18.0.x and 18.2.x fixtures, including all gates, one real repair, an environment blocker, cancellation, restart recovery, final assurance, atomic delivery, and unchanged source. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
+**Expected UI result:** The team can execute the final manual and automated runtime proof on Angular 18.0.x and 18.2.x workspaces generated under external temporary test roots, including all gates, one real repair, an environment blocker, cancellation, restart recovery, final assurance, external-output publication, and unchanged external source. Loading, success, blocked, stale, and failure presentations are distinguishable; the UI derives final state from the backend snapshot/events.
 
 **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
 **Expected database/API result:** Records described by `Test execution metadata and complete migration-run records/artifacts.` are retrievable through `Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status` and include idempotency and correlation metadata where the operation is mutating.
 
-**Expected artifact:** Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+**Expected artifact:** External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
 
 **Expected durable event:** Existing production events validated for completeness/order; acceptance-suite status events optional.
 
@@ -3909,7 +3911,7 @@ S4-F01, S4-F02, S4-F03, S2-F03, S4-F04, S4-F05, S4-F06, S4-F07, S4-F08, S4-F09, 
   - **Database impact:** Use or introduce the records summarized by: Test execution metadata and complete migration-run records/artifacts.
   - **API impact:** Define service-facing request/response models supporting: Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status
   - **Event impact:** Request durable events only through the transition/event service: Existing production events validated for completeness/order; acceptance-suite status events optional.
-  - **Artifact impact:** Produce or reference evidence only through ArtifactService: Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+  - **Artifact impact:** Produce or reference evidence only through ArtifactService: External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
   - **UI impact:** No UI implementation in this issue; return stable contracts required by the sibling frontend issue.
   - **Security considerations:** Enforce authority boundaries, input validation, state/version checks, path/workspace confinement, secret redaction, and the risk controls relevant to: Fixture not representative, external registry/model instability, runtime duration, corporate proxy variance, flaky real tests, and treating simulated proof as runtime proof.
   - **Acceptance criteria:**
@@ -3930,7 +3932,7 @@ S4-F01, S4-F02, S4-F03, S2-F03, S4-F04, S4-F05, S4-F06, S4-F07, S4-F08, S4-F09, 
   - **Issue type:** API
   - **Technical story:** Add the persistence, API, artifact, and durable-event slice needed to make Prove the full Angular 18.x to approved 21.x MVP with fixtures, repair, cancel, and restart observable and auditable.
   - **Context:** The MVP is complete only when the integrated controlled platform—not isolated services—proves the authoritative workflow.
-  - **Scope:** Persistence: Test execution metadata and complete migration-run records/artifacts.. API: Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status. Events: Existing production events validated for completeness/order; acceptance-suite status events optional.. Artifacts: Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+  - **Scope:** Persistence: Test execution metadata and complete migration-run records/artifacts. API: Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status. Events: Existing production events validated for completeness/order; acceptance-suite status events optional. Artifacts: External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
   - **Out of scope:** Angular 11-17 production validation, Angular 22, unsupported topologies, browser automation, and enterprise scale.
   - **Implementation notes:** Use Alembic for schema changes, short transactions, optimistic versions, and unique idempotency keys. Finalize and checksum artifacts before committing a passed/completed transition. APIs accept IDs, never arbitrary artifact paths.
   - **Likely files/modules:** backend/app/db/models, backend/alembic/versions, backend/app/api/v1, backend/app/events, backend/app/artifacts, and API schema documentation.
@@ -3939,7 +3941,7 @@ S4-F01, S4-F02, S4-F03, S2-F03, S4-F04, S4-F05, S4-F06, S4-F07, S4-F08, S4-F09, 
   - **Database impact:** Create/update schema and indexes required for: Test execution metadata and complete migration-run records/artifacts.
   - **API impact:** Implement and document: Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status; include 400/403/404/409/422/500-class stable error codes as applicable.
   - **Event impact:** Persist then emit: Existing production events validated for completeness/order; acceptance-suite status events optional.; event payload includes run/stage IDs, state version, actor, timestamp, and artifact refs.
-  - **Artifact impact:** Atomic temp-write → SHA-256 → atomic rename → DB registration for: Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+  - **Artifact impact:** Atomic temp-write → SHA-256 → atomic rename → DB registration for: External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
   - **UI impact:** Expose all IDs/statuses needed by the frontend; do not expose unsafe absolute paths or secrets.
   - **Security considerations:** Validate artifact containment and checksum, prevent silent overwrite and approval replay, sanitize response fields, and authorize actor/run access.
   - **Acceptance criteria:**
@@ -3969,7 +3971,7 @@ S4-F01, S4-F02, S4-F03, S2-F03, S4-F04, S4-F05, S4-F06, S4-F07, S4-F08, S4-F09, 
   - **Database impact:** None directly; frontend must never access SQLite or infer database truth.
   - **API impact:** Consume `Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status` with typed success/error handling and correlation-ID display.
   - **Event impact:** Apply `Existing production events validated for completeness/order; acceptance-suite status events optional.` only when sequence/state version is newer; reconnect or reload snapshot on gaps.
-  - **Artifact impact:** Render artifact links/previews by registered artifact ID for: Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.
+  - **Artifact impact:** Render artifact links/previews by registered artifact ID for: External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.
   - **UI impact:** Implement: Operator acceptance checklist linking each scenario to live product pages/artifacts; no hidden API-only completion.
   - **Security considerations:** Escape untrusted repository/log/model content, do not render secrets, do not accept raw authoritative diffs/paths, and protect destructive actions with explicit confirmation.
   - **Acceptance criteria:**
@@ -3992,14 +3994,14 @@ S4-F01, S4-F02, S4-F03, S2-F03, S4-F04, S4-F05, S4-F06, S4-F07, S4-F08, S4-F09, 
   - **Context:** The MVP is complete only when the integrated controlled platform—not isolated services—proves the authoritative workflow.
   - **Scope:** Backend unit tests, API integration tests, frontend component tests, SSE/event tests where relevant, source-safety/security tests, and feature documentation.
   - **Out of scope:** Angular 11-17 production validation, Angular 22, unsupported topologies, browser automation, and enterprise scale.
-  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
-  - **Likely files/modules:** backend/tests, frontend tests, test fixtures, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
+  - **Implementation notes:** Use FastAPI + temporary SQLite + temporary Artifact Store + fake external adapters as the primary seam. Generate all full Angular fixture workspaces under an external temporary test root and pass them through the production source-path API. Add real subprocess or fixture tests only when the feature owns execution. Record exact manual evidence and update architecture/API docs.
+  - **Likely files/modules:** backend/tests, frontend tests, external fixture generators/manifests, temporary test-root helpers, docs/testing, docs/api, docs/architecture decisions, and sprint demonstration checklist.
   - **Input contract:** Feature acceptance criteria, representative valid and negative fixture data, fake adapter outcomes, and existing production API/UI.
   - **Output contract:** Passing automated suite, reproducible manual test record, captured evidence IDs, and updated traceability.
   - **Database impact:** Assert expected records/versions/idempotency and ensure tests isolate temporary databases.
   - **API impact:** Exercise `Existing production APIs; optional GET /api/v1/operator/acceptance-suite/status` for happy, invalid, stale, missing-prerequisite/approval, and backend-failure cases.
   - **Event impact:** Assert ordering, replay, and payload of `Existing production events validated for completeness/order; acceptance-suite status events optional.` where applicable.
-  - **Artifact impact:** Assert existence, checksum, immutability, and safe retrieval of `Fixture manifests, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and source-integrity proof.` where applicable.
+  - **Artifact impact:** Assert existence, checksum, immutability, and safe retrieval of `External fixture-generation manifests, repository-isolation evidence, external-output-layout evidence, automated integration results, real runtime proof report, cancellation/restart evidence, repair lineage, final output fingerprint, and external-source integrity proof.` where applicable.
   - **UI impact:** Execute the feature through `Operator acceptance checklist linking each scenario to live product pages/artifacts; no hidden API-only completion.` and record visible loading/empty/success/blocked/stale/failure behavior.
   - **Security considerations:** Include at least one security or integrity negative derived from: Fixture not representative, external registry/model instability, runtime duration, corporate proxy variance, flaky real tests, and treating simulated proof as runtime proof.
   - **Acceptance criteria:**
@@ -4152,10 +4154,11 @@ Only explicitly deferred post-MVP scope remains: older Angular family fixture va
 | LangGraph adapter | Sprint 0 + S1-F01/S1-F06; stage and repair subgraphs in 3/4 | Nodes call services, reconcile with SQLite, and cannot execute commands or write state directly |
 | Transition Service | Sprint 0 + S1-F01 | Legal transition, optimistic version, idempotency, event atomicity tests |
 | SQLite/WAL | Sprint 0 + S1-F01/S1-F02 | Same-host WAL diagnostics and authoritative state persistence |
-| Artifact Store | Sprint 0, used by every feature | Atomic finalization, SHA-256, immutable ID access, reconciliation |
+| Artifact Store | Sprint 0, used by every feature | Pre-run evidence uses external application data; every run artifact is finalized under the registered external run root with SHA-256, immutable ID access, and reconciliation |
 | Approval Service | Sprint 0 foundation; G01–G15 across 1–4 | State/artifact/plan/fingerprint-bound decisions and stale prevention |
 | JobSupervisor/leases | Sprint 0; exercised 1/3/4 | One active run, command ownership, cancellation, startup recovery |
-| WorkspaceManager | Sprint 0 skeleton; S1-F07/F10, Sprint 3 stages, S4 final sandbox | Source snapshot, baseline/stage isolation, copy-forward, quarantine |
+| ExternalSource/PathPolicy | S1-F03–F08 | External source and output-path intake, migration output reservation, platform-repository isolation, read-only source fingerprinting |
+| WorkspaceManager | Sprint 0 skeleton; S1-F06/F07/F10, Sprint 3 stages, S4 final sandbox | Run root under reserved output, source snapshot, baseline/stage isolation, typed workspace aliases, copy-forward, quarantine |
 | Compatibility Resolver/catalogue | S2-F05 | Family route, support level, exact versions and catalogue checksum |
 | ExecutionProfile | S1-F09 and S2-F05 | Exact paired Node/npm/npx profile reused by baseline, stage and repair validation |
 | MigrationPlan/StageExecutionPlan | S2-F06/S2-F07 | Immutable versions, command refs, builder/validation/recovery policy |
@@ -4170,18 +4173,19 @@ Only explicitly deferred post-MVP scope remains: older Angular family fixture va
 | PatchSafety/PatchApply | S4-F06/F07 | Exact persisted diff, dry-run, scope/path checks, patch ledger |
 | AI Assistant | S4-F11 | Read-only authoritative context, bounded history, labelled fallback |
 | FinalAssuranceService | S4-F12 | Independent clean candidate and G13 |
-| DeliveryService | S4-F13 | Manifest, fingerprint, atomic/fail-closed G14 publication |
+| DeliveryService | S4-F13 | Source-integrity recheck, user-selected output-root destination binding, manifest/fingerprint, atomic/fail-closed G14 publication to registered `migrated-app/` |
 | ReportService/optional narrator | S4-F14 | Deterministic truth always available; optional narrative cannot change facts |
 | SSE projection | Sprint 0, exercised throughout | Durable sequence/replay/gap recovery; browser never owns progress |
 
 # G. MVP end-to-end acceptance scenario
 
 ```text
-Angular 18.x source
-→ validate real Windows paths and Angular eligibility
+External Angular 18.x source path + exact external output path
+→ normalize, validate, and reserve the exact user-selected output root outside the platform repository
+→ validate real Windows paths, repository isolation, and Angular eligibility
 → G01
 → create authoritative run
-→ immutable snapshot and source-integrity proof
+→ controlled fetch/copy from the read-only external source into the run-scoped immutable snapshot and source-integrity proof
 → G02
 → exact source ExecutionProfile
 → baseline sandbox, npm ci, build, tests, lint and parity anchors
@@ -4216,28 +4220,28 @@ Angular 18.x source
 → Stage 20→21
 → final assurance sandbox
 → G13
-→ delivery candidate and atomic publication
+→ delivery candidate, final original-source/destination revalidation, and atomic publication to `<resolved-output-root>/migrated-app`
 → G14
 → deterministic evidence and estimated-cost report with optional AI narrative
 → G15
 → completed run with unchanged original-source fingerprint
 ```
 
-The scenario must also demonstrate stale approval rejection, environment failure without a code patch, duplicate/no-progress repair prevention, explicit cancellation, browser reconnect, backend restart recovery, and absence of a partially published `migrated-app`.
+The scenario must also demonstrate stale approval rejection, environment failure without a code patch, duplicate/no-progress repair prevention, explicit cancellation, browser reconnect, backend restart recovery, rejection of source/output paths inside the platform repository, and absence of a partially published `migrated-app`.
 
 # H. MVP Definition of Done
 
 The MVP is complete only when:
 
 1. Sprint 0 foundations are reused and production contracts are reconciled without losing historical mock data.
-2. Original source is never mutated and its fingerprint is verified at completion, failure, and cancellation.
+2. The real legacy application is never stored inside the platform repository; the external original source is never mutated and its fingerprint is verified at snapshot, completion, failure, cancellation, and delivery.
 3. Angular 18.0.x, 18.1.x, and 18.2.x normalize to 18.x while exact versions remain recorded.
 4. Every stage resolves exact approved Angular/CLI/TypeScript/RxJS/Node/npm versions before execution.
 5. The route is exactly 18.x→19.x→20.x→21.x, one major at a time.
 6. SQLite through the Transition Service remains authoritative state; LangGraph checkpoints cannot override it.
-7. Artifact Store evidence is finalized and checksum-registered before passed/completed state.
+7. Artifact Store evidence is finalized and checksum-registered before passed/completed state; after run creation every run artifact is stored beneath the registered external output root.
 8. CommandExecutor is the only process path; raw shell and forbidden flags are rejected.
-9. Every baseline and major stage uses a separate product-owned sandbox.
+9. Every snapshot, baseline, stage, repair, final-assurance, delivery-candidate, artifact, log, report, approval, validation, state-export, and temporary path uses a registered run-scoped product-owned alias beneath the exact selected external output root and outside the platform repository and original source.
 10. G01–G15 are persistent, explicit human gates and production auto-approval is unavailable.
 11. Core failed install/version/build/test evidence cannot be approved into passed.
 12. Deterministic discovery and planning remain the source of technical truth.
@@ -4250,7 +4254,7 @@ The MVP is complete only when:
 19. Technical, parity, security, quality, and delivery statuses remain independent and honest.
 20. Browser/visual parity is `manual_validation_required`; excluded external scanners are `deferred_company_tool_required`.
 21. Final assurance runs in a clean independent sandbox and is approved through G13.
-22. Delivery is manifest-bound and atomic/fail-closed through G14.
+22. Delivery is bound to the exact selected external output root, managed `migrated-app` alias, source/snapshot/candidate fingerprints, and is atomic/fail-closed through G14.
 23. Final report truth is deterministic; optional AI narrative cannot change facts and may fall back without invalidating the report.
 24. Provider-recorded input/output/total tokens and historical pricing snapshots produce clearly labelled estimated cost.
-25. The real fixture suite proves Angular 18.x→21.x, repair, cancellation, restart, source integrity, and final publication.
+25. The externally generated fixture suite proves Angular 18.x→21.x, repository isolation, external-output layout, repair, cancellation, 

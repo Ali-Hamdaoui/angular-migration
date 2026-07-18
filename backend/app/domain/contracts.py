@@ -15,9 +15,44 @@ class ContractModel(BaseModel):
 
 class RunStatus(str, Enum):
     CREATED = "CREATED"
+    SOURCE_VALIDATION_RUNNING = "SOURCE_VALIDATION_RUNNING"
+    SOURCE_VALIDATED = "SOURCE_VALIDATED"
+    WORKSPACE_CLASSIFICATION_RUNNING = "WORKSPACE_CLASSIFICATION_RUNNING"
+    BASELINE_RUNNING = "BASELINE_RUNNING"
+    BASELINE_QUALIFIED = "BASELINE_QUALIFIED"
+    CLIENT_CONSTRAINTS_CAPTURED = "CLIENT_CONSTRAINTS_CAPTURED"
+    ELIGIBILITY_RUNNING = "ELIGIBILITY_RUNNING"
+    ANALYSIS_RUNNING = "ANALYSIS_RUNNING"
+    WAITING_ANALYSIS_APPROVAL = "WAITING_ANALYSIS_APPROVAL"
+    PLANNING_RUNNING = "PLANNING_RUNNING"
+    WAITING_PLAN_APPROVAL = "WAITING_PLAN_APPROVAL"
+    STAGE_CREATED = "STAGE_CREATED"
+    TOOLCHAIN_PROFILE_SELECTED = "TOOLCHAIN_PROFILE_SELECTED"
+    SANDBOX_READY = "SANDBOX_READY"
+    DEPENDENCY_AUDITED = "DEPENDENCY_AUDITED"
+    TRANSFORMATION_RUNNING = "TRANSFORMATION_RUNNING"
+    STATIC_SYMBOL_CHECK_RUNNING = "STATIC_SYMBOL_CHECK_RUNNING"
+    VALIDATION_RUNNING = "VALIDATION_RUNNING"
+    REPAIR_RUNNING = "REPAIR_RUNNING"
+    WAITING_REPAIR_APPROVAL = "WAITING_REPAIR_APPROVAL"
+    REVIEW_READY = "REVIEW_READY"
+    STAGE_COMMITTED = "STAGE_COMMITTED"
+    STAGE_ROLLED_BACK = "STAGE_ROLLED_BACK"
+    REPORT_RUNNING = "REPORT_RUNNING"
+    DELIVERY_RUNNING = "DELIVERY_RUNNING"
+    PAUSE_REQUESTED = "PAUSE_REQUESTED"
+    PAUSED = "PAUSED"
+    RESUMING = "RESUMING"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"
+    CANCELLING = "CANCELLING"
+    TIMED_OUT = "TIMED_OUT"
+    WORKER_LOST = "WORKER_LOST"
+    RECOVERY_RUNNING = "RECOVERY_RUNNING"
+    ORPHANED = "ORPHANED"
+    CLEANUP_RUNNING = "CLEANUP_RUNNING"
+    CLEANUP_FAILED = "CLEANUP_FAILED"
     RUNNING = "RUNNING"
     WAITING = "WAITING"
-    CANCELLING = "CANCELLING"
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -33,12 +68,27 @@ class RunPhase(str, Enum):
     DELIVERY_REPORTING = "DELIVERY_REPORTING"
 
 
+class PhaseStatus(str, Enum):
+    """Status of a workflow phase, independent from the run current state."""
+
+    NOT_STARTED = "not_started"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class StageStatus(str, Enum):
     PENDING = "PENDING"
+    PREPARING = "preparing"
     RUNNING = "RUNNING"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     REPAIRING = "REPAIRING"
     PASSED = "PASSED"
+    PASSED_WITH_KNOWN_BASELINE_FAILURES = "passed_with_known_baseline_failures"
+    PASSED_WITH_MANUAL_ITEMS = "passed_with_manual_items"
     FAILED = "FAILED"
     ROLLED_BACK = "ROLLED_BACK"
     CANCELLED = "CANCELLED"
@@ -113,7 +163,31 @@ class ApprovalDecision(str, Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     ACCEPTED_RISK = "ACCEPTED_RISK"
+    MODIFICATION_REQUESTED = "MODIFICATION_REQUESTED"
+    APPROVED_WITH_RISK = "APPROVED_WITH_RISK"
     CANCELLED = "CANCELLED"
+
+
+class ApprovalStatus(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    MODIFICATION_REQUESTED = "modification_requested"
+    APPROVED_WITH_RISK = "approved_with_risk"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class RepairStatus(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ESCALATED = "escalated"
+    CANCELLED = "cancelled"
 
 
 class AutoApprovalMode(str, Enum):
@@ -177,6 +251,8 @@ class CancellationPolicy(str, Enum):
 
 
 class WorkflowEventType(str, Enum):
+    STATE_CONTRACT_MIGRATED = "STATE_CONTRACT_MIGRATED"
+    APPROVAL_POLICY_DISABLED_FOR_PRODUCTION = "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION"
     RUN_STATE_CHANGED = "run_state_changed"
     STAGE_STATE_CHANGED = "stage_state_changed"
     STEP_STATE_CHANGED = "step_state_changed"
@@ -186,6 +262,64 @@ class WorkflowEventType(str, Enum):
     ARTIFACT_CREATED = "artifact_created"
     APPROVAL_REQUIRED = "approval_required"
     WORKFLOW_COMPLETED = "workflow_completed"
+    RUN_CREATED = "RUN_CREATED"
+    RUN_START_ACCEPTED = "RUN_START_ACCEPTED"
+    RUN_STARTED = "RUN_STARTED"
+    RUN_START_REJECTED = "RUN_START_REJECTED"
+    RUN_RECONSTRUCTED = "RUN_RECONSTRUCTED"
+    SNAPSHOT_STARTED = "SNAPSHOT_STARTED"
+    SNAPSHOT_CREATED = "SNAPSHOT_CREATED"
+    SNAPSHOT_FAILED = "SNAPSHOT_FAILED"
+    SNAPSHOT_PROGRESS_UPDATED = "SNAPSHOT_PROGRESS_UPDATED"
+    SNAPSHOT_QUARANTINED = "SNAPSHOT_QUARANTINED"
+    SOURCE_INTEGRITY_VERIFIED = "SOURCE_INTEGRITY_VERIFIED"
+    SOURCE_INTEGRITY_FAILED = "SOURCE_INTEGRITY_FAILED"
+    G02_CREATED = "G02_CREATED"
+    G02_APPROVED = "G02_APPROVED"
+    G02_REJECTED = "G02_REJECTED"
+    G02_STALE = "G02_STALE"
+    EXECUTION_PROFILE_RESOLUTION_STARTED = "EXECUTION_PROFILE_RESOLUTION_STARTED"
+    EXECUTION_PROFILE_RESOLVED = "EXECUTION_PROFILE_RESOLVED"
+    EXECUTION_PROFILE_BLOCKED = "EXECUTION_PROFILE_BLOCKED"
+    EXECUTION_PROFILE_SELECTED = "EXECUTION_PROFILE_SELECTED"
+    BASELINE_WORKSPACE_STARTED = "BASELINE_WORKSPACE_STARTED"
+    BASELINE_WORKSPACE_READY = "BASELINE_WORKSPACE_READY"
+    LOCKFILE_PREQUALIFICATION_COMPLETED = "LOCKFILE_PREQUALIFICATION_COMPLETED"
+    LIFECYCLE_SCRIPT_REVIEW_REQUIRED = "LIFECYCLE_SCRIPT_REVIEW_REQUIRED"
+    BASELINE_INSTALL_AUTHORIZED = "BASELINE_INSTALL_AUTHORIZED"
+    BASELINE_INSTALL_BLOCKED = "BASELINE_INSTALL_BLOCKED"
+    COMMAND_QUEUED = "COMMAND_QUEUED"
+    COMMAND_STARTED = "COMMAND_STARTED"
+    COMMAND_OUTPUT_AVAILABLE = "COMMAND_OUTPUT_AVAILABLE"
+    COMMAND_OUTPUT_CHUNK = "COMMAND_OUTPUT_CHUNK"
+    BASELINE_INSTALL_SUCCEEDED = "BASELINE_INSTALL_SUCCEEDED"
+    BASELINE_INSTALL_FAILED = "BASELINE_INSTALL_FAILED"
+    COMMAND_CANCELLED = "COMMAND_CANCELLED"
+    COMMAND_INTERRUPTED = "COMMAND_INTERRUPTED"
+    BASELINE_TARGETS_DISCOVERED = "BASELINE_TARGETS_DISCOVERED"
+    BASELINE_BUILD_STARTED = "BASELINE_BUILD_STARTED"
+    BASELINE_BUILD_COMPLETED = "BASELINE_BUILD_COMPLETED"
+    BASELINE_TESTS_STARTED = "BASELINE_TESTS_STARTED"
+    BASELINE_TESTS_COMPLETED = "BASELINE_TESTS_COMPLETED"
+    BASELINE_LINT_STARTED = "BASELINE_LINT_STARTED"
+    BASELINE_LINT_COMPLETED = "BASELINE_LINT_COMPLETED"
+    BASELINE_FAILURES_FINGERPRINTED = "BASELINE_FAILURES_FINGERPRINTED"
+    BASELINE_ROUTE_ANCHOR_CREATED = "BASELINE_ROUTE_ANCHOR_CREATED"
+    BASELINE_BACKEND_ANCHOR_CREATED = "BASELINE_BACKEND_ANCHOR_CREATED"
+    BASELINE_QUALIFIED = "BASELINE_QUALIFIED"
+    BASELINE_QUALIFIED_WITH_KNOWN_FAILURES = "BASELINE_QUALIFIED_WITH_KNOWN_FAILURES"
+    BASELINE_BLOCKED = "BASELINE_BLOCKED"
+    G03_CREATED = "G03_CREATED"
+    G03_APPROVED = "G03_APPROVED"
+    G03_REJECTED = "G03_REJECTED"
+    DISCOVERY_STARTED = "DISCOVERY_STARTED"
+    SCANNER_COMPLETED = "SCANNER_COMPLETED"
+    DISCOVERY_COMPLETED = "DISCOVERY_COMPLETED"
+    DISCOVERY_BLOCKED = "DISCOVERY_BLOCKED"
+    PARITY_BASELINE_STARTED = "PARITY_BASELINE_STARTED"
+    PARITY_BASELINE_COMPLETED = "PARITY_BASELINE_COMPLETED"
+    PARITY_BASELINE_BLOCKED = "PARITY_BASELINE_BLOCKED"
+    SPRINT1_BOUNDARY_REACHED = "SPRINT1_BOUNDARY_REACHED"
 
 
 class ErrorEnvelope(ContractModel):
@@ -392,8 +526,11 @@ class CommandResultDto(ContractModel):
 class WorkerLeaseDto(ContractModel):
     lease_id: str
     run_id: str
+    execution_id: str | None = None
     worker_id: str
+    backend_instance_id: str | None = None
     acquired_at: datetime
+    heartbeat_at: datetime | None = None
     expires_at: datetime
 
 
@@ -455,7 +592,6 @@ class LlmUsageRecordDto(ContractModel):
     created_at: datetime
 
 
-
 class AlertSeverity(str, Enum):
     INFO = "info"
     WARNING = "warning"
@@ -499,6 +635,8 @@ class DiagnosticsSummaryDto(ContractModel):
     metrics: list[RunMetricDto] = Field(default_factory=list)
     alerts: list[AlertEventDto] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
 class WorkflowEventDto(ContractModel):
     event_id: str
     run_id: str
@@ -523,6 +661,9 @@ class MigrationRunDto(ContractModel):
     run_id: str
     status: RunStatus
     run_phase: RunPhase = RunPhase.FEASIBILITY_PLANNING
+    phase_status: PhaseStatus = PhaseStatus.RUNNING
+    approval_status: ApprovalStatus = ApprovalStatus.NOT_REQUIRED
+    repair_status: RepairStatus = RepairStatus.NOT_REQUIRED
     source_version_family: str | None = None
     target_version_family: str | None = None
     source_version_detected: str | None = None
@@ -557,6 +698,50 @@ class MigrationRunDto(ContractModel):
             if any(stage.status in active for stage in self.stages):
                 raise ValueError("terminal runs cannot contain active stages")
         return self
+
+
+class CreateAuthoritativeRunRequestDto(ContractModel):
+    preflight_id: str = Field(min_length=1)
+    input_checksum: str = Field(min_length=1)
+    artifact_set_checksum: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+    client_constraints: dict[str, bool] = Field(default_factory=dict)
+    pricing_snapshot: dict[str, str | float | int] = Field(default_factory=dict)
+
+
+class StartAuthoritativeRunRequestDto(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+
+
+class AuthoritativeRunStateDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    run_phase: RunPhase
+    phase_status: str
+    approval_status: ApprovalStatus
+    repair_status: RepairStatus
+    state_version: int = Field(ge=1)
+    preflight_id: str
+    source_path: str
+    target_output_path: str
+    graph_thread_id: str
+    created_at: datetime
+    updated_at: datetime
+    artifacts: list[ArtifactRefDto] = Field(default_factory=list)
+    workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
+
+
+class AuthoritativeRunMutationResultDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    state_version: int = Field(ge=1)
+    event_sequence: int = Field(ge=1)
+    graph_thread_id: str
+    idempotent_replay: bool = False
+    artifacts: list[ArtifactRefDto] = Field(default_factory=list)
 
 
 # Deterministic component and AI-agent contracts (AMF-S0-10)
@@ -605,6 +790,7 @@ class AllowedAction(str, Enum):
     READ_ARTIFACT_SUMMARY = "read_artifact_summary"
     CREATE_ARTIFACT = "create_artifact"
     PROPOSE_PATCH = "propose_patch"
+
 
 class ClientConstraints(ContractModel):
     preserve_ui: bool = True

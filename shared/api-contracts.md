@@ -77,3 +77,32 @@ Run the backend and inspect `/openapi.json` or `/docs`. The mock-state response
 nests every Sprint 0 DTO, allowing AMF-S0-07 to derive or synchronize frontend
 types without contract drift. These contracts describe data only; they do not
 authorize commands, mutations, approvals, or workflow transitions.
+## Authoritative Sprint 1 dimensions
+
+Sprint 1 extends the read model with independent `phase_status`, `approval_status`, and `repair_status` fields. The run state vocabulary includes the source-intake, baseline, analysis, planning, stage-execution, recovery, delivery, and cleanup states defined in `docs/mvp_overview.md` section 15. Legacy Sprint 0 coarse values remain readable only for migration compatibility.
+
+Stage outcomes include `preparing`, `passed_with_known_baseline_failures`, and `passed_with_manual_items`. Approval and repair statuses are separate from run and stage status.
+
+Production auto-approval is disabled. Requests that attempt to enable it return `AUTO_APPROVAL_NOT_ALLOWED`; automatic approval remains available only to isolated mock fixtures used by tests.
+## S1-F12 baseline validation matrix
+
+The backend exposes the baseline target inventory and validation operations under `/api/v1/runs/{runId}`:
+
+- `GET /baseline/targets`
+- `GET /baseline/{kind}` where kind is `build`, `test`, or `lint`
+- `POST /baseline/builds`, `/baseline/tests`, or `/baseline/lint`
+- `POST /baseline/{kind}/cancel`
+
+Mutation requests carry `expected_state_version`, `idempotency_key`, `actor`, and optional prerequisite artifact IDs. Results include target inventory, normalized status, exit code, duration, parser summaries, failed tests, warnings, output locations, artifact IDs and SHA-256 checksums, baseline checksum, state version, and event sequence. Missing lint is represented as `skipped_not_configured`; unsupported builders are `blocked`.
+## S1-F13 baseline parity evidence
+
+The backend captures checksum-bound baseline parity evidence through `POST /api/v1/runs/{runId}/baseline/parity` with `expected_state_version`, `idempotency_key`, `actor`, and optional prerequisite artifact IDs. The resulting immutable evidence is read through:
+
+- `GET /api/v1/runs/{runId}/baseline/failures`
+- `GET /api/v1/runs/{runId}/baseline/routes`
+- `GET /api/v1/runs/{runId}/baseline/backend-integration`
+- `GET /api/v1/runs/{runId}/baseline/anchors`
+
+Responses include parser/schema versions, confidence labels, source and evidence artifact references, SHA-256 checksums, state version, and event sequence. Capture emits `BASELINE_FAILURES_FINGERPRINTED`, `BASELINE_ROUTE_ANCHOR_CREATED`, and `BASELINE_BACKEND_ANCHOR_CREATED` through the authoritative Transition Service.
+
+Feature 13 capture requests may include prerequisite_artifact_checksums, an artifact-ID-to-SHA-256 map. When prerequisite IDs are supplied, every ID must have an expected checksum and the registered checksum must match before capture proceeds.
