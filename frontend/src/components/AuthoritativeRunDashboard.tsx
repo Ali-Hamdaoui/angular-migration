@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
@@ -8,6 +8,7 @@ import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
 import { BaselinePreparationPanel } from "./BaselinePreparationPanel";
 import { BaselineInstallationPanel } from "./BaselineInstallationPanel";
 import { BaselineParityPanel } from "./BaselineParityPanel";
+import { DiscoveryFindingsPanel } from "./DiscoveryFindingsPanel";
 import styles from "./ControlTowerShell.module.css";
 
 const pipelineSteps = [
@@ -42,10 +43,11 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
         <ol className={styles.pipelineList}>{pipelineSteps.map((step, index) => {
           const completed = step.completeWhen(state.workflow_events);
           const active = !completed && index === activePipelineStep;
-          return <li className={completed ? styles.pipelineComplete : active ? styles.pipelineActive : styles.pipelinePending} key={step.label}><span>{completed ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{step.label}</strong></li>;
+          return <li className={completed ? styles.pipelineComplete : active ? styles.pipelineActive : styles.pipelinePending} key={step.label}><span>{completed ? 'âœ“' : String(index + 1).padStart(2, '0')}</span><strong>{step.label}</strong></li>;
         })}</ol>
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
+      <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <div className={styles.dashboardGrid}>
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />
@@ -65,3 +67,4 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
     </main>
   );
 }
+
