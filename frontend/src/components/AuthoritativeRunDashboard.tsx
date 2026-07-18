@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
@@ -9,6 +9,7 @@ import { BaselinePreparationPanel } from "./BaselinePreparationPanel";
 import { BaselineInstallationPanel } from "./BaselineInstallationPanel";
 import { BaselineParityPanel } from "./BaselineParityPanel";
 import { DiscoveryFindingsPanel } from "./DiscoveryFindingsPanel";
+import { ParityBaselinePanel } from "./ParityBaselinePanel";
 import styles from "./ControlTowerShell.module.css";
 
 const pipelineSteps = [
@@ -48,6 +49,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
       <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
+      <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <div className={styles.dashboardGrid}>
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />

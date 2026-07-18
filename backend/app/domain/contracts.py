@@ -58,6 +58,7 @@ class RunStatus(str, Enum):
     FAILED = "FAILED"
     DIAGNOSTIC_HOLD = "DIAGNOSTIC_HOLD"
 
+
 class RunPhase(str, Enum):
     PREFLIGHT_SNAPSHOT = "PREFLIGHT_SNAPSHOT"
     DISCOVERY_BASELINE = "DISCOVERY_BASELINE"
@@ -65,6 +66,7 @@ class RunPhase(str, Enum):
     STAGED_MIGRATION = "STAGED_MIGRATION"
     FINAL_ASSURANCE = "FINAL_ASSURANCE"
     DELIVERY_REPORTING = "DELIVERY_REPORTING"
+
 
 class PhaseStatus(str, Enum):
     """Status of a workflow phase, independent from the run current state."""
@@ -92,6 +94,7 @@ class StageStatus(str, Enum):
     CANCELLED = "CANCELLED"
     DIAGNOSTIC_HOLD = "DIAGNOSTIC_HOLD"
 
+
 class StepStatus(str, Enum):
     PENDING = "PENDING"
     QUEUED = "QUEUED"
@@ -105,6 +108,7 @@ class StepStatus(str, Enum):
     DEFERRED = "DEFERRED"
     ACCEPTED_RISK = "ACCEPTED_RISK"
     CANCELLED = "CANCELLED"
+
 
 class AgentStatus(str, Enum):
     PENDING = "PENDING"
@@ -163,6 +167,7 @@ class ApprovalDecision(str, Enum):
     APPROVED_WITH_RISK = "APPROVED_WITH_RISK"
     CANCELLED = "CANCELLED"
 
+
 class ApprovalStatus(str, Enum):
     NOT_REQUIRED = "not_required"
     PENDING = "pending"
@@ -173,6 +178,7 @@ class ApprovalStatus(str, Enum):
     EXPIRED = "expired"
     CANCELLED = "cancelled"
 
+
 class RepairStatus(str, Enum):
     NOT_REQUIRED = "not_required"
     PENDING = "pending"
@@ -182,6 +188,7 @@ class RepairStatus(str, Enum):
     FAILED = "failed"
     ESCALATED = "escalated"
     CANCELLED = "cancelled"
+
 
 class AutoApprovalMode(str, Enum):
     OFF = "off"
@@ -309,6 +316,9 @@ class WorkflowEventType(str, Enum):
     SCANNER_COMPLETED = "SCANNER_COMPLETED"
     DISCOVERY_COMPLETED = "DISCOVERY_COMPLETED"
     DISCOVERY_BLOCKED = "DISCOVERY_BLOCKED"
+    PARITY_BASELINE_STARTED = "PARITY_BASELINE_STARTED"
+    PARITY_BASELINE_COMPLETED = "PARITY_BASELINE_COMPLETED"
+    PARITY_BASELINE_BLOCKED = "PARITY_BASELINE_BLOCKED"
     SPRINT1_BOUNDARY_REACHED = "SPRINT1_BOUNDARY_REACHED"
 
 
@@ -582,7 +592,6 @@ class LlmUsageRecordDto(ContractModel):
     created_at: datetime
 
 
-
 class AlertSeverity(str, Enum):
     INFO = "info"
     WARNING = "warning"
@@ -626,6 +635,8 @@ class DiagnosticsSummaryDto(ContractModel):
     metrics: list[RunMetricDto] = Field(default_factory=list)
     alerts: list[AlertEventDto] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
 class WorkflowEventDto(ContractModel):
     event_id: str
     run_id: str
@@ -779,6 +790,7 @@ class AllowedAction(str, Enum):
     READ_ARTIFACT_SUMMARY = "read_artifact_summary"
     CREATE_ARTIFACT = "create_artifact"
     PROPOSE_PATCH = "propose_patch"
+
 
 class ClientConstraints(ContractModel):
     preserve_ui: bool = True

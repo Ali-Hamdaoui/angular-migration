@@ -1,13 +1,20 @@
 """Persistence model package."""
 
 from app.repositories.models.base import Base
-from app.repositories.preflight_models import ApprovalGateModel, PreflightArtifactMetadataModel, PreflightEventModel, PreflightModel, UserDecisionModel
+from app.repositories.preflight_models import (
+    ApprovalGateModel,
+    PreflightArtifactMetadataModel,
+    PreflightEventModel,
+    PreflightModel,
+    UserDecisionModel,
+)
 from app.repositories.g02_models import G02ApprovalModel
 from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.baseline_matrix_models import BaselineValidationModel
 from app.repositories.baseline_parity_models import BaselineParityEvidenceModel
 from app.repositories.baseline_g03_models import BaselineAssessmentModel, G03ApprovalModel
 from app.repositories.discovery_models import DiscoveryEvidenceModel
+from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
@@ -45,6 +52,7 @@ __all__ = [
     "BaselineParityEvidenceModel",
     "BaselineAssessmentModel",
     "DiscoveryEvidenceModel",
+    "ParityBaselineEvidenceModel",
     "G03ApprovalModel",
     "ExecutionProfileModel",
     "CommandExecutionModel",
