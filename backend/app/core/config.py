@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     llm_input_price_per_million_tokens: float = Field(default=0.0, ge=0)
     llm_output_price_per_million_tokens: float = Field(default=0.0, ge=0)
+    llm_pricing_version: str = Field(default='mvp-pricing-2026-01', min_length=1)
+    llm_prompt_policy_version: str = Field(default='migration-policy-v1', min_length=1)
+    llm_schema_registry_version: str = Field(default='schema-registry-v1', min_length=1)
+    llm_timeout_seconds: float = Field(default=30.0, gt=0)
+    llm_max_transport_retries: int = Field(default=2, ge=0, le=5)
     llm_token_budget: int = Field(default=0, ge=0)
     llm_cost_budget_usd: float = Field(default=0.0, ge=0)
 
