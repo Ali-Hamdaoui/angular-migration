@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -22,9 +23,17 @@ class DiscoveryService:
         root = workspace.resolve(strict=True)
         if not root.is_dir():
             raise ValueError("DISCOVERY_WORKSPACE_INVALID")
-        scanners = (self._workspace, self._dependencies, self._builders, self._test_lint, self._indicators)
+        scanners = (
+            ("workspace", self._workspace),
+            ("dependencies", self._dependencies),
+            ("builders", self._builders),
+            ("test_lint", self._test_lint),
+            ("ssr_pwa_i18n", self._ssr_pwa_i18n),
+            ("ui_theme", self._ui_theme),
+            ("state_management", self._state_management),
+        )
         with ThreadPoolExecutor(max_workers=len(scanners)) as executor:
-            results = tuple(executor.map(lambda scanner: scanner(root), scanners))
+            results = tuple(executor.map(lambda entry: self._scan(entry[0], entry[1], root), scanners))
         ordered = tuple(sorted(results, key=lambda result: result.scanner))
         drafts = tuple(self._evidence(result) for result in ordered)
         return ordered, drafts
@@ -63,7 +72,7 @@ class DiscoveryService:
         for field in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
             values = package.get(field, {}) if isinstance(package, dict) else {}
             if isinstance(values, dict):
-                dependencies.update({str(name): str(version) for name, version in values.items()})
+                dependencies.update({str(name): self._redact(str(version)) for name, version in values.items()})
         private = sorted(name for name in dependencies if name.startswith("@") and not name.startswith("@angular/"))
         scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
         lifecycle = sorted(name for name in scripts if name in {"preinstall", "install", "postinstall", "prepare"}) if isinstance(scripts, dict) else []
@@ -96,23 +105,35 @@ class DiscoveryService:
         scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
         if not isinstance(scripts, dict):
             return self._unknown("test_lint", "PACKAGE_SCRIPTS_UNKNOWN", "package.json")
-        selected = {name: str(command) for name, command in sorted(scripts.items()) if name in {"test", "lint", "e2e"} or name.startswith(("test:", "lint:"))}
+        selected = {name: self._redact(str(command)) for name, command in sorted(scripts.items()) if name in {"test", "lint", "e2e"} or name.startswith(("test:", "lint:"))}
         return ScannerFinding(scanner="test_lint", status="completed", findings=(self._fact("scripts", selected, "package.json"),))
 
-    def _indicators(self, root: Path) -> ScannerFinding:
+    def _ssr_pwa_i18n(self, root: Path) -> ScannerFinding:
         package = self._json(root / "package.json") or {}
         angular = self._json(root / "angular.json") or {}
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         dependency_names = set(dependencies) if isinstance(dependencies, dict) else set()
         serialized = json.dumps(angular, sort_keys=True)
-        indicators = {
+        inventory = {
             "ssr": "@angular/ssr" in dependency_names or "@nguniversal/express-engine" in dependency_names,
             "pwa": "@angular/pwa" in dependency_names or (root / "ngsw-config.json").is_file(),
             "i18n": "@angular/localize" in dependency_names or "localize" in serialized.lower(),
-            "ui_libraries": sorted(name for name in dependency_names if name in {"@angular/material", "primeng", "ng-zorro-antd", "bootstrap"}),
-            "state_management": sorted(name for name in dependency_names if name.startswith("@ngrx/") or name in {"akita", "@angular-redux/store"}),
         }
-        return ScannerFinding(scanner="indicators", status="completed", findings=(self._fact("indicators", indicators, "package.json", "angular.json"),))
+        return ScannerFinding(scanner="ssr_pwa_i18n", status="completed", findings=(self._fact("inventory", inventory, "package.json", "angular.json"),))
+
+    def _ui_theme(self, root: Path) -> ScannerFinding:
+        package = self._json(root / "package.json") or {}
+        dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
+        names = set(dependencies) if isinstance(dependencies, dict) else set()
+        inventory = {"ui_libraries": sorted(name for name in names if name in {"@angular/material", "primeng", "ng-zorro-antd", "bootstrap"}), "theme_configuration": "unknown"}
+        return ScannerFinding(scanner="ui_theme", status="completed", findings=(self._fact("inventory", inventory, "package.json"),))
+
+    def _state_management(self, root: Path) -> ScannerFinding:
+        package = self._json(root / "package.json") or {}
+        dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
+        names = set(dependencies) if isinstance(dependencies, dict) else set()
+        inventory = {"libraries": sorted(name for name in names if name.startswith("@ngrx/") or name in {"akita", "@angular-redux/store"})}
+        return ScannerFinding(scanner="state_management", status="completed", findings=(self._fact("inventory", inventory, "package.json"),))
 
     def _evidence(self, result: ScannerFinding) -> DiscoveryEvidenceDraft:
         content = result.model_dump_json(indent=2)
@@ -120,6 +141,16 @@ class DiscoveryService:
 
     def _unknown(self, scanner: str, code: str, *references: str) -> ScannerFinding:
         return ScannerFinding(scanner=scanner, status="unknown", unknowns=(code,), findings=(), warnings=(),)
+
+    def _scan(self, name: str, scanner: object, root: Path) -> ScannerFinding:
+        try:
+            return scanner(root)  # type: ignore[operator]
+        except Exception as error:
+            return ScannerFinding(scanner=name, status="blocked", unknowns=("SCANNER_RESULT_UNAVAILABLE",), warnings=(f"SCANNER_FAILED:{type(error).__name__}",))
+
+    @staticmethod
+    def _redact(value: str) -> str:
+        return re.sub(r"(?i)((?:token|password|secret|authorization|api[_-]?key)\s*(?:=|:|\s)\s*)(?:Bearer\s+)?([^\s'\"]+)", r"\1[REDACTED]", value)
 
     @staticmethod
     def _fact(key: str, value: object, *references: str) -> DiscoveryFinding:

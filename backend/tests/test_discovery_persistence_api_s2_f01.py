@@ -1,4 +1,4 @@
-﻿"""S2-F01 verification: durable discovery evidence is authoritative and replayable."""
+"""S2-F01 verification: durable discovery evidence is authoritative and replayable."""
 
 import asyncio
 import json
@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.discovery_contracts import DiscoveryCaptureRequest
+from app.artifact_store import LocalFilesystemArtifactStore
 from app.api.routes import discovery as discovery_routes
 from app.api.routes import runs as runs_routes
 from app.main import app
@@ -52,10 +53,16 @@ def test_discovery_persists_immutable_evidence_events_and_idempotent_replay(tmp_
     with sessions() as session:
         record = session.get(DiscoveryEvidenceModel, result.discovery_id)
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
-        assert record is not None and len(result.artifact_ids) == 5
-        assert [event.event_type for event in events] == ["DISCOVERY_STARTED", *["SCANNER_COMPLETED"] * 5, "DISCOVERY_COMPLETED"]
-        assert [event.sequence for event in events] == list(range(1, 8))
+        assert record is not None and len(result.artifact_ids) == 7
+        assert [event.event_type for event in events] == ["DISCOVERY_STARTED", *["SCANNER_COMPLETED"] * 7, "DISCOVERY_COMPLETED"]
+        assert [event.sequence for event in events] == list(range(1, 10))
         assert all(value.startswith("sha256:") for value in result.artifact_checksums.values())
+        store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
+        artifact = store.read_artifact_by_id(result.artifact_ids[0])
+        assert artifact.ref.checksum == result.artifact_checksums[artifact.ref.artifact_id]
+        replacement = store.write_text_artifact("run-1", artifact.ref.relative_path, artifact.content, artifact.ref.artifact_type, created_by="test")
+        assert replacement.ref.relative_path != artifact.ref.relative_path
+        assert store.read_artifact_by_id(artifact.ref.artifact_id).content == artifact.content
     engine.dispose()
 
 
@@ -94,3 +101,22 @@ def test_discovery_versioned_api_and_sse_replay_expose_authoritative_events(monk
         app.dependency_overrides.pop(discovery_routes.service, None)
         engine.dispose()
 
+
+
+def test_discovery_execution_failure_persists_a_blocked_result_and_event(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+
+    class FailingCoordinator:
+        def discover(self, _workspace):
+            raise OSError("fixture storage interruption")
+
+    service = DiscoveryEvidenceApplicationService(session_scope_factory=scope, coordinator=FailingCoordinator(), now_provider=lambda: NOW)
+    result = service.capture("run-1", request("failure"))
+    assert result.status == "blocked"
+    assert result.error_code == "DISCOVERY_DEPENDENCY_FAILED"
+    with sessions() as session:
+        record = session.get(DiscoveryEvidenceModel, result.discovery_id)
+        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
+        assert record is not None and record.artifact_ids == []
+        assert [event.event_type for event in events] == ["DISCOVERY_STARTED", "DISCOVERY_BLOCKED"]
+    engine.dispose()

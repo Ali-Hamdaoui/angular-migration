@@ -5,6 +5,7 @@ import pytest
 
 from app.domain.discovery import DiscoveryApplicationResult, DiscoveryRequest
 from app.services.discovery_application_service import DiscoveryApplicationError, DiscoveryApplicationService
+from app.services.discovery_service import DiscoveryService
 
 
 class RunPort:
@@ -50,7 +51,8 @@ def test_discovery_is_parallel_deterministic_and_registers_only_canonical_eviden
     runs, transitions = RunPort(workspace(tmp_path)), Transitions()
     result = DiscoveryApplicationService(runs, Artifacts(), transitions).discover(request())
     assert result.status == "completed"
-    assert [item.scanner for item in result.scanner_results] == ["builders", "dependencies", "indicators", "test_lint", "workspace"]
+    assert [item.scanner for item in result.scanner_results] == ["builders", "dependencies", "ssr_pwa_i18n", "state_management", "test_lint", "ui_theme", "workspace"]
+    assert len(result.evidence_drafts) == 7
     assert all(item.checksum.startswith("sha256:") for item in result.evidence_drafts)
     assert transitions.calls == ["start", "complete"]
 
@@ -80,3 +82,27 @@ def test_discovery_preserves_a_legal_blocked_result_when_artifact_dependency_fai
     assert result.status == "blocked"
     assert result.error_code == "DISCOVERY_DEPENDENCY_FAILED"
     assert transitions.calls == ["start", ("block", "DISCOVERY_DEPENDENCY_FAILED")]
+
+
+def test_discovery_isolates_a_failed_scanner_and_redacts_artifact_content(tmp_path, monkeypatch):
+    root = workspace(tmp_path)
+    (root / "package.json").write_text(json.dumps({
+        "dependencies": {"private-registry": "token=super-secret"},
+        "scripts": {"test": "node test.js --api_key super-secret --authorization Bearer bearer-secret", "lint": "ng lint"},
+    }))
+    service = DiscoveryService()
+
+    def fail(_root):
+        raise OSError("fixture scanner failure")
+
+    monkeypatch.setattr(service, "_builders", fail)
+    results, drafts = service.discover(root)
+
+    builders = next(result for result in results if result.scanner == "builders")
+    assert builders.status == "blocked"
+    assert builders.warnings == ("SCANNER_FAILED:OSError",)
+    assert {result.scanner for result in results if result.status == "completed"} >= {"workspace", "dependencies", "test_lint", "ssr_pwa_i18n", "ui_theme", "state_management"}
+    evidence = "\n".join(draft.content for draft in drafts)
+    assert "super-secret" not in evidence
+    assert "bearer-secret" not in evidence
+    assert "[REDACTED]" in evidence

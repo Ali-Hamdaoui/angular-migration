@@ -2,7 +2,7 @@
 
 ## Delivered issues
 
-- S2-F01-I01: deterministic, read-only workspace, dependency, builder, test/lint, and indicator scanners.
+- S2-F01-I01: deterministic, read-only workspace, dependency, builder, test/lint, SSR/PWA/i18n, UI/theme, and state-management scanners.
 - S2-F01-I02: checksum-bound evidence persistence, API contracts, and durable discovery events.
 - S2-F01-I03: authoritative findings explorer with filters, confidence/unknown labels, source references, and artifact links.
 - S2-F01-I04: automated API/persistence/SSE/frontend/security regression coverage and this manual-validation record.
@@ -13,7 +13,17 @@ Discovery reads only the run's `SOURCE_SNAPSHOT` alias. It receives no user-supp
 
 ## Automated verification
 
-I04 verifies deterministic persisted inventories, immutable SHA-256 artifact references, ordered `DISCOVERY_STARTED`, `SCANNER_COMPLETED`, and `DISCOVERY_COMPLETED` events, idempotent replay, versioned API retrieval, SSE replay, stale-state rejection, prerequisite-checksum tamper rejection, and findings-panel success/unknown/filter/empty/backend-failure states. The test fixture is generated under pytest's external temporary root and is not a repository workspace.
+I04 verifies deterministic persisted inventories, immutable SHA-256 artifact references and ID retrieval/versioning, ordered `DISCOVERY_STARTED`, `SCANNER_COMPLETED`, `DISCOVERY_COMPLETED`, and blocked scanner events, idempotent replay, versioned API retrieval, SSE replay/gap recovery, stale-state rejection, prerequisite-checksum tamper rejection, scanner isolation, redaction, and findings-panel loading/success/unknown/filter/empty/blocked/stale/authorization/backend-failure states. The test fixture is generated under pytest's external temporary root and is not a repository workspace.
+
+## External-fixture evidence
+
+On 2026-07-18, the S2-F01 persistence/API scenario was executed against a generated external Angular-style fixture under `C:\tmp\s2f01-artifact`: an isolated SQLite run, approved G03 record, registered baseline prerequisite, and source snapshot containing `angular.json` and `package.json`. The run produced seven redacted, immutable `02_analysis` inventories; the persisted API/SSE assertion passed, and artifact-ID retrieval plus versioned rewrite preserved the original artifact unchanged. This is reproducible with:
+
+```text
+python -m pytest backend/tests/test_discovery_persistence_api_s2_f01.py -q --basetemp C:\tmp\s2f01-artifact
+```
+
+A human browser walkthrough is still required before release: this record does not claim an interactive browser session was performed.
 
 ## Manual acceptance scenario
 

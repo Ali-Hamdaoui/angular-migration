@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useState } from "react";
 import { getBackendBaseUrl } from "@/api/client";
@@ -39,6 +39,12 @@ export function useAuthoritativeRun(runId: string, initialState: AuthoritativeRu
         const next = JSON.parse(event.data) as WorkflowEventDto;
         setState((current) => {
           if (current.workflow_events.some((item) => item.event_id === next.event_id)) return current;
+          const latestSequence = Math.max(0, ...current.workflow_events.map((item) => item.sequence));
+          if (latestSequence && next.sequence > latestSequence + 1) {
+            setStatus("recovering");
+            void refresh();
+            return current;
+          }
           return { ...current, workflow_events: [...current.workflow_events, next].sort((a, b) => a.sequence - b.sequence), updated_at: next.occurred_at };
         });
       } catch {

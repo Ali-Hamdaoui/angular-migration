@@ -1,10 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "@/api/client";
-import { getDiscovery } from "@/api/discovery";
+import { captureDiscovery, getDiscovery } from "@/api/discovery";
 import { DiscoveryFindingsPanel } from "@/components/DiscoveryFindingsPanel";
 
-vi.mock("@/api/discovery", () => ({ getDiscovery: vi.fn() }));
+vi.mock("@/api/discovery", () => ({ getDiscovery: vi.fn(), captureDiscovery: vi.fn() }));
 const evidence = { run_id: "run-1", discovery_id: "discovery-1", status: "completed", scanner_results: [{ scanner: "workspace", status: "completed", findings: [{ key: "topology", value: "single_application_cli_workspace", confidence: "high", source_references: ["angular.json"] }], unknowns: [], warnings: [] }, { scanner: "dependencies", status: "unknown", findings: [], unknowns: ["PACKAGE_JSON_MISSING"], warnings: [] }], artifact_ids: ["artifact-workspace"], artifact_checksums: {}, prerequisite_artifact_ids: ["baseline"], state_version: 8, event_sequence: 12, idempotent_replay: false } as const;
 
 describe("DiscoveryFindingsPanel", () => {
@@ -28,3 +28,23 @@ describe("DiscoveryFindingsPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Discovery findings could not be loaded.");
   });
 });
+
+
+  it("shows blocked safe partial findings and a corrective stale reload", async () => {
+    vi.mocked(getDiscovery).mockResolvedValue({ ...evidence, status: "blocked", error_code: "DISCOVERY_SCANNER_BLOCKED" } as never);
+    vi.mocked(captureDiscovery).mockRejectedValue(new ApiClientError("stale", 409));
+    render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="open" artifacts={[{ artifact_id: "baseline", checksum: "sha256:baseline" }]} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Discovery is blocked");
+    fireEvent.click(screen.getByRole("button", { name: "Run discovery" }));
+    expect(await screen.findByText(/Authoritative state was reloaded before retrying/)).toBeInTheDocument();
+    expect(captureDiscovery).toHaveBeenCalledWith("run-1", expect.objectContaining({ expected_state_version: 8, prerequisite_artifact_ids: ["baseline"] }));
+  });
+
+  it("renders an authorization failure with its correlation ID", async () => {
+    vi.mocked(getDiscovery).mockRejectedValueOnce(new ApiClientError("not found", 404));
+    vi.mocked(captureDiscovery).mockRejectedValue(new ApiClientError("forbidden", 403, "POST", "/api/v1/runs/run-1/discovery", '{"correlation_id":"corr-7"}'));
+    render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="open" artifacts={[{ artifact_id: "baseline", checksum: "sha256:baseline" }]} />);
+    await screen.findByText("No authoritative discovery findings are available yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Run discovery" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("not authorized to run discovery. Correlation ID: corr-7");
+  });

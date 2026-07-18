@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { getAuthoritativeRunState } from "@/api/runs";
 import { AUTHORITATIVE_EVENT_TYPES, useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 
@@ -35,6 +36,10 @@ describe("useAuthoritativeRun Feature 13 SSE", () => {
       "BASELINE_FAILURES_FINGERPRINTED",
       "BASELINE_ROUTE_ANCHOR_CREATED",
       "BASELINE_BACKEND_ANCHOR_CREATED",
+      "DISCOVERY_STARTED",
+      "SCANNER_COMPLETED",
+      "DISCOVERY_COMPLETED",
+      "DISCOVERY_BLOCKED",
     ]));
     act(() => {
       source!.emit("BASELINE_BACKEND_ANCHOR_CREATED", { event_id: "e3", event_type: "BASELINE_BACKEND_ANCHOR_CREATED", sequence: 3, occurred_at: "3" });
@@ -45,3 +50,19 @@ describe("useAuthoritativeRun Feature 13 SSE", () => {
     unmount();
   });
 });
+
+
+  it("recovers the authoritative snapshot after an SSE sequence gap and ignores duplicates", async () => {
+    let source: MockEventSource | undefined;
+    class CapturingEventSource extends MockEventSource { constructor(url: string) { super(url); source = this; } }
+    vi.stubGlobal("EventSource", CapturingEventSource);
+    vi.mocked(getAuthoritativeRunState).mockResolvedValue({ workflow_events: [{ event_id: "e1", sequence: 1, occurred_at: "1" }], updated_at: "recovered" } as never);
+    const { result, unmount } = renderHook(() => useAuthoritativeRun("run-1", initialState));
+    await act(async () => {});
+    act(() => { source!.emit("DISCOVERY_STARTED", { event_id: "e1", event_type: "DISCOVERY_STARTED", sequence: 1, occurred_at: "1" }); });
+    act(() => { source!.emit("DISCOVERY_COMPLETED", { event_id: "e3", event_type: "DISCOVERY_COMPLETED", sequence: 3, occurred_at: "3" }); });
+    await act(async () => {});
+    expect(getAuthoritativeRunState).toHaveBeenCalled();
+    expect(result.current.state.updated_at).toBe("recovered");
+    unmount();
+  });
