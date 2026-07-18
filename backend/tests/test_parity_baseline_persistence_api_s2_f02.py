@@ -6,9 +6,12 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.parity_baseline_contracts import ParityBaselineCaptureRequest
+from app.api.routes import parity_baseline as parity_baseline_routes
+from app.main import app
 from app.repositories.models import ArtifactMetadataModel, Base, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.services.parity_baseline_evidence_application_service import ParityBaselineEvidenceApplicationService
+from fastapi.testclient import TestClient
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 
@@ -89,7 +92,6 @@ def request(key="parity-1", checksum="sha256:baseline"):
     return ParityBaselineCaptureRequest(
         expected_state_version=1,
         idempotency_key=key,
-        actor="operator",
         prerequisite_artifact_ids=["baseline"],
         prerequisite_artifact_checksums={"baseline": checksum},
     )
@@ -119,3 +121,29 @@ def test_rejects_checksum_mismatch_without_event(tmp_path):
         assert error.code == "PREREQUISITE_ARTIFACT_CHECKSUM_MISMATCH"
     with sessions() as s:
         assert s.scalar(select(ParityBaselineEvidenceModel)) is None and s.scalar(select(WorkflowEventModel)) is None
+
+
+def test_api_derives_actor_from_authenticated_context_and_rejects_client_actor(tmp_path):
+    scope, sessions = fixture(tmp_path)
+    service = ParityBaselineEvidenceApplicationService(scope=scope, now_provider=lambda: NOW)
+    app.dependency_overrides[parity_baseline_routes.service] = lambda: service
+    payload = request().model_dump()
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/runs/run-1/discovery/parity-baseline",
+                json=payload,
+                headers={"X-Authenticated-Actor": "reviewer"},
+            )
+            rejected = client.post(
+                "/api/v1/runs/run-1/discovery/parity-baseline",
+                json={**payload, "idempotency_key": "actor-spoof", "actor": "spoofed"},
+            )
+    finally:
+        app.dependency_overrides.pop(parity_baseline_routes.service, None)
+
+    assert response.status_code == 200
+    assert rejected.status_code == 422
+    with sessions() as s:
+        evidence = s.get(ParityBaselineEvidenceModel, response.json()["evidence_id"])
+        assert evidence is not None and evidence.actor == "reviewer"

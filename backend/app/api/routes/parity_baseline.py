@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Request
+from app.api.authentication import authenticated_actor
 from app.api.errors import error_response
 from app.api.parity_baseline_contracts import ParityBaselineCaptureRequest, ParityBaselineResponse
 from app.services.parity_baseline_evidence_application_service import (
@@ -14,9 +15,9 @@ def service():
 
 
 @router.post("/{run_id}/discovery/parity-baseline", response_model=ParityBaselineResponse)
-def capture(run_id: str, request: ParityBaselineCaptureRequest, http_request: Request, s=Depends(service)):
+def capture(run_id: str, request: ParityBaselineCaptureRequest, http_request: Request, actor: str = Depends(authenticated_actor), s=Depends(service)):
     try:
-        return s.capture(run_id, request)
+        return s.capture(run_id, request, actor=actor)
     except ParityBaselineEvidenceError as error:
         return error_response(http_request, status_code=error.status_code, error_code=error.code, message=error.message)
 

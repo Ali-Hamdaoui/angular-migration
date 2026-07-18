@@ -6,7 +6,6 @@ from app.domain.contracts import ContractModel
 class ParityBaselineCaptureRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
     prerequisite_artifact_ids: list[str] = Field(min_length=1)
     prerequisite_artifact_checksums: dict[str, str] = Field(default_factory=dict)
 

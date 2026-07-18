@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { captureParityBaseline, getParityBaseline } from "@/api/parityBaseline";
 import type { createApiClient } from "@/api/client";
 
-const request = { expected_state_version: 4, idempotency_key: "parity-1", actor: "operator", prerequisite_artifact_ids: ["artifact-1"], prerequisite_artifact_checksums: { "artifact-1": "sha256:one" } };
+const request = { expected_state_version: 4, idempotency_key: "parity-1", prerequisite_artifact_ids: ["artifact-1"], prerequisite_artifact_checksums: { "artifact-1": "sha256:one" } };
 function client() { return { get: vi.fn().mockResolvedValue({}), post: vi.fn().mockResolvedValue({}) } as unknown as ReturnType<typeof createApiClient>; }
 
 describe("parity baseline API", () => {

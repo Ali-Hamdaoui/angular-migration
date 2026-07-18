@@ -28,7 +28,7 @@ class ParityBaselineEvidenceApplicationService:
             now_provider or (lambda: datetime.now(UTC)),
         )
 
-    def capture(self, run_id, request):
+    def capture(self, run_id, request, *, actor="local-operator"):
         checksum = self._checksum(request)
         with self.scope() as s:
             old = s.scalar(
@@ -44,12 +44,12 @@ class ParityBaselineEvidenceApplicationService:
                     )
                 return self.dto(old, True)
             run = self.validate(s, run_id, request)
-            self.transition(s, run, request, WorkflowEventType.PARITY_BASELINE_STARTED, "parity baseline started", {})
+            self.transition(s, run, request, actor, WorkflowEventType.PARITY_BASELINE_STARTED, "parity baseline started", {})
             workspace = Path((run.workspace_aliases or {}).get("SOURCE_SNAPSHOT", ""))
         try:
             baseline = self.builder.build(workspace)
         except Exception:
-            return self.block(run_id, request, checksum, None)
+            return self.block(run_id, request, checksum, actor, None)
         try:
             with self.scope() as s:
                 run = s.get(MigrationRunModel, run_id)
@@ -72,7 +72,7 @@ class ParityBaselineEvidenceApplicationService:
                     s,
                     run,
                     request,
-                    WorkflowEventType.PARITY_BASELINE_COMPLETED,
+                    actor, WorkflowEventType.PARITY_BASELINE_COMPLETED,
                     "parity baseline completed",
                     {"artifact_count": len(ids)},
                 )
@@ -81,7 +81,7 @@ class ParityBaselineEvidenceApplicationService:
                     run_id=run_id,
                     idempotency_key=request.idempotency_key,
                     request_checksum=checksum,
-                    actor=request.actor,
+                    actor=actor,
                     status="completed",
                     payload=baseline.model_dump(mode="json", exclude={"evidence_drafts"}),
                     artifact_ids=ids,
@@ -111,7 +111,7 @@ class ParityBaselineEvidenceApplicationService:
         except ParityBaselineEvidenceError:
             raise
         except Exception:
-            return self.block(run_id, request, checksum, baseline)
+            return self.block(run_id, request, checksum, actor, baseline)
 
     def get(self, run_id):
         with self.scope() as s:
@@ -122,14 +122,14 @@ class ParityBaselineEvidenceApplicationService:
             )
             return self.dto(row) if row else None
 
-    def block(self, run_id, request, checksum, baseline):
+    def block(self, run_id, request, checksum, actor, baseline):
         with self.scope() as s:
             run = s.get(MigrationRunModel, run_id)
             t = self.transition(
                 s,
                 run,
                 request,
-                WorkflowEventType.PARITY_BASELINE_BLOCKED,
+                actor, WorkflowEventType.PARITY_BASELINE_BLOCKED,
                 "parity baseline dependency failed",
                 {"error_code": "PARITY_BASELINE_DEPENDENCY_FAILED"},
             )
@@ -138,7 +138,7 @@ class ParityBaselineEvidenceApplicationService:
                 run_id=run_id,
                 idempotency_key=request.idempotency_key,
                 request_checksum=checksum,
-                actor=request.actor,
+                actor=actor,
                 status="blocked",
                 payload=baseline.model_dump(mode="json", exclude={"evidence_drafts"}) if baseline else {},
                 artifact_ids=[],
@@ -183,14 +183,14 @@ class ParityBaselineEvidenceApplicationService:
             )
         return run
 
-    def transition(self, s, run, r, event, reason, payload):
+    def transition(self, s, run, r, actor, event, reason, payload):
         return StateTransitionService(s).apply_transition(
             TransitionRequest(
                 run_id=run.id,
                 expected_state_version=run.state_version,
                 idempotency_key=r.idempotency_key + ":" + event.value,
                 event_type=event,
-                actor=r.actor,
+                actor=actor,
                 reason=reason,
                 occurred_at=self.now(),
                 payload=payload,

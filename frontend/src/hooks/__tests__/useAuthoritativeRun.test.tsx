@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getAuthoritativeRunState } from "@/api/runs";
-import { AUTHORITATIVE_EVENT_TYPES, useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
+import { AUTHORITATIVE_EVENT_TYPES, PARITY_BASELINE_EVENT_TYPES, useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 
 vi.mock("@/api/runs", () => ({ getAuthoritativeRunState: vi.fn().mockResolvedValue({ workflow_events: [], updated_at: "initial" }) }));
@@ -45,6 +45,7 @@ describe("useAuthoritativeRun Feature 13 SSE", () => {
       source!.emit("BASELINE_BACKEND_ANCHOR_CREATED", { event_id: "e3", event_type: "BASELINE_BACKEND_ANCHOR_CREATED", sequence: 3, occurred_at: "3" });
       source!.emit("BASELINE_FAILURES_FINGERPRINTED", { event_id: "e1", event_type: "BASELINE_FAILURES_FINGERPRINTED", sequence: 1, occurred_at: "1" });
       source!.emit("BASELINE_ROUTE_ANCHOR_CREATED", { event_id: "e2", event_type: "BASELINE_ROUTE_ANCHOR_CREATED", sequence: 2, occurred_at: "2" });
+    expect(PARITY_BASELINE_EVENT_TYPES).toEqual(["PARITY_BASELINE_STARTED", "PARITY_BASELINE_COMPLETED", "PARITY_BASELINE_BLOCKED"]);
     });
     expect(result.current.state.workflow_events.map((event) => event.sequence)).toEqual([1, 2, 3]);
     unmount();
