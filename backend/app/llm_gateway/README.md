@@ -64,3 +64,13 @@ The gateway writes redacted metadata artifacts only:
 These artifacts contain concise summaries, usage, cost, and budget decisions.
 They do not contain raw secrets, credentials, hidden reasoning, or executable
 instructions.
+
+## S2-F03-I02 evidence surface
+
+The backend persists append-only invocation and usage/cost records and exposes
+`GET /api/v1/llm/readiness`, `POST /api/v1/llm/smoke`,
+`GET /api/v1/runs/{id}/llm/activity`, and `GET /api/v1/runs/{id}/usage`.
+Smoke evidence is stored by artifact ID with checksums; raw prompts and
+provider credentials are not persisted. Invocation lifecycle events are
+written through the Transition Service so replay and optimistic state checks
+remain authoritative.

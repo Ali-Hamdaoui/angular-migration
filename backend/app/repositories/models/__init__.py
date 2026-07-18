@@ -26,6 +26,8 @@ from app.repositories.models.workflow import (
     EnvironmentCapabilityModel,
     EnvironmentDiagnosticEventModel,
     LlmUsageRecordModel,
+    LlmInvocationModel,
+    UsageCostRecordModel,
     MigrationRunModel,
     PathValidationModel,
     TargetReservationModel,
@@ -40,6 +42,8 @@ from app.repositories.models.workflow import (
 )
 
 __all__ = [
+    'LlmInvocationModel',
+    'UsageCostRecordModel',
     "AgentExecutionModel",
     "ActiveRunClaimModel",
     "ApprovalEventModel",

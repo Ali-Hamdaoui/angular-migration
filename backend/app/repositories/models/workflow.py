@@ -259,6 +259,55 @@ class LlmUsageRecordModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class LlmInvocationModel(Base):
+    __tablename__ = 'llm_invocations'
+    __table_args__ = (UniqueConstraint('run_id', 'idempotency_key', name='uq_llm_invocations_run_idempotency'),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey('migration_runs.id'), nullable=False, index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey('migration_stages.id'), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    deployment_alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UsageCostRecordModel(Base):
+    __tablename__ = 'usage_cost_records'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    invocation_id: Mapped[str] = mapped_column(ForeignKey('llm_invocations.id'), nullable=False, unique=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey('migration_runs.id'), nullable=False, index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey('migration_stages.id'), index=True)
+    pricing_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_price_per_million: Mapped[float] = mapped_column(Float, nullable=False)
+    output_price_per_million: Mapped[float] = mapped_column(Float, nullable=False)
+    input_cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    output_cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class RunAssuranceStatusModel(Base):
     __tablename__ = "run_assurance_statuses"
 

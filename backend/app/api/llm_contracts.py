@@ -1,0 +1,63 @@
+from typing import Any, Literal
+
+from pydantic import Field
+
+from app.domain.contracts import ContractModel
+
+
+class LlmReadinessResponse(ContractModel):
+    status: Literal['ready', 'blocked']
+    provider: str = 'azure_openai'
+    deployment_configured: bool
+    model_capability: str
+    error_code: str | None = None
+
+
+class LlmSmokeRequest(ContractModel):
+    run_id: str = Field(min_length=1)
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+    correlation_id: str | None = Field(default=None, max_length=128)
+
+
+class LlmInvocationResponse(ContractModel):
+    invocation_id: str
+    run_id: str
+    status: Literal['in_progress', 'completed', 'failed', 'blocked']
+    role: str
+    task_type: str
+    provider: str
+    deployment_alias: str
+    artifact_ids: list[str] = Field(default_factory=list)
+    artifact_checksums: dict[str, str] = Field(default_factory=dict)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    input_cost_usd: float = 0.0
+    output_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+    retries: int = 0
+    latency_ms: int | None = None
+    failure_code: str | None = None
+    state_version: int
+    event_sequence: int
+    idempotent_replay: bool = False
+
+
+class LlmActivityResponse(ContractModel):
+    run_id: str
+    invocations: list[LlmInvocationResponse] = Field(default_factory=list)
+
+
+class LlmUsageResponse(ContractModel):
+    run_id: str
+    invocation_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    input_cost_usd: float
+    output_cost_usd: float
+    total_cost_usd: float
+    pricing_versions: list[str] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(default_factory=list)
