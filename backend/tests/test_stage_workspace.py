@@ -560,8 +560,8 @@ class TestEdgeCases:
         with pytest.raises(PrepError, match="stale"):
             svc.prepare_stage("run-stale", req)
 
-    def test_stale_state_version_during_decision_rejected(self, db, now, tmp_path):
-        from collections import namedtuple
+    def test_stale_state_version_during_prepare_rejected(self, db, now, tmp_path):
+        from app.repositories.models.workflow import MigrationRunModel
         run = MigrationRunModel(
             id="run-001", status="WAITING", run_phase="STAGED_MIGRATION", phase_status="running",
             approval_status="not_required", repair_status="not_required", state_version=1,
@@ -574,10 +574,8 @@ class TestEdgeCases:
             "expected_state_version": 999, "idempotency_key": "stale-decide", "actor": "op",
             "stage_key": "k", "source_version_family": "a18", "target_version_family": "a19", "plan_version": "v1",
         })()
-        with pytest.raises(PrepError, match="stale"):
-            svc.prepare_stage("run-001", req)
         with pytest.raises(Exception, match="STALE_STATE_VERSION"):
-            svc.prepare_stage("run-stale", req)
+            svc.prepare_stage("run-001", req)
 
     def test_stale_state_version_during_decision_rejected(self, db, now, tmp_path):
         from app.repositories.models.workflow import MigrationRunModel

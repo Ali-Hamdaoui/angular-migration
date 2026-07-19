@@ -142,6 +142,42 @@ class StagePreparationApplicationService:
             if run.state_version != request.expected_state_version:
                 raise StageApplicationError("STALE_STATE_VERSION", "The run state version is stale.", status_code=409)
 
+            # Check for existing idempotent sandbox
+            existing = session.scalar(
+                select(StageWorkspaceModel)
+                .where(StageWorkspaceModel.run_id == run_id, StageWorkspaceModel.stage_id == stage_id)
+            )
+            if existing is not None:
+                verification = StageSandboxVerification(
+                    stage_id=stage_id,
+                    sandbox_path=existing.sandbox_path,
+                    pre_fingerprint=StageFingerprint(
+                        workspace_path=existing.sandbox_path,
+                        fingerprint=existing.source_fingerprint,
+                        policy_version=existing.policy_version,
+                        file_count=existing.file_count,
+                        total_size_bytes=existing.total_size_bytes,
+                    ),
+                    post_fingerprint=StageFingerprint(
+                        workspace_path=existing.sandbox_path,
+                        fingerprint=existing.workspace_fingerprint,
+                        policy_version=existing.policy_version,
+                        file_count=existing.file_count,
+                        total_size_bytes=existing.total_size_bytes,
+                    ),
+                    verification_checksum=existing.verification_checksum or "",
+                    verified=(existing.source_fingerprint == existing.workspace_fingerprint),
+                )
+                return StageSandboxResponse(
+                    run_id=run_id, stage_id=stage_id,
+                    sandbox_path=existing.sandbox_path,
+                    status="waiting_approval",
+                    state_version=existing.state_version,
+                    event_sequence=existing.event_sequence,
+                    verification=verification.model_dump(mode="json"),
+                    idempotent_replay=True,
+                )
+
             # Resolve output root and sandbox path
             output_root = run.resolved_output_root or run.target_output_path
             if not output_root:
@@ -367,7 +403,17 @@ class StagePreparationApplicationService:
             # Apply decision rules
             result: G07ApprovalResult = G07ApprovalService().decide(package, request.decision, comment=request.comment)
 
-            # Determine event type
+            # Emit G07_CREATED before the decision event
+            StateTransitionService(session).apply_transition(TransitionRequest(
+                run_id=run_id, expected_state_version=run.state_version,
+                idempotency_key=f"{request.idempotency_key}:g07_created",
+                event_type=WorkflowEventType.G07_CREATED,
+                actor=request.actor, reason="G07 approval package created",
+                occurred_at=now,
+                payload={"package_checksum": package.package_checksum, "stage_id": stage_id},
+            ))
+
+            # Determine decision event type
             if result.stale:
                 event_type = WorkflowEventType.G07_STALE
             elif result.decision in {G07Decision.APPROVED, G07Decision.APPROVED_WITH_COMMENT}:
