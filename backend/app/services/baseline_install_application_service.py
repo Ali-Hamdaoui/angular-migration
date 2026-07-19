@@ -33,8 +33,9 @@ class BaselineInstallApplicationError(ValueError):
 class BaselineInstallApplicationService:
     POLICY_VERSION = "baseline-install-v1"
 
-    def __init__(self, *, session_scope_factory=session_scope, worker_factory=None, now_provider=None) -> None:
+    def __init__(self, *, session_scope_factory=session_scope, worker_factory=None, now_provider=None, g05_service=None) -> None:
         self._scope = session_scope_factory; self._worker_factory = worker_factory; self._now = now_provider or (lambda: datetime.now(UTC))
+        self._g05 = g05_service
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="baseline-install")
         self._cancel_events: dict[str, threading.Event] = {}
         self._output_buffers: dict[str, dict[str, list[str]]] = {}
@@ -98,6 +99,11 @@ class BaselineInstallApplicationService:
             if baseline.authorization_status != "authorized": raise BaselineInstallApplicationError("BASELINE_INSTALL_AUTHORIZATION_REQUIRED", "Baseline installation authorization is required.", 409)
             if baseline.blockers: raise BaselineInstallApplicationError("BASELINE_INSTALL_BLOCKED", "Blocked baseline prequalification cannot be installed.", 409)
             if run.state_version != request.expected_state_version: raise BaselineInstallApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
+            if self._g05 is not None:
+                try:
+                    self._g05.require_approved_g05(run_id, expected_state_version=request.expected_state_version, workspace_fingerprint=None, plan_version=None, actor=request.actor)
+                except Exception as error:
+                    raise BaselineInstallApplicationError(getattr(error, "code", "G05_APPROVAL_REQUIRED"), "An approved current G05 gate is required before baseline installation.", 409) from error
             g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
             if g02 is None or g02.status not in {"approved", "approved_with_comment"}: raise BaselineInstallApplicationError("BASELINE_G02_REQUIRED", "Approved G02 evidence is required.", 409)
             aliases = run.workspace_aliases or {}

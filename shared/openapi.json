@@ -2238,6 +2238,27 @@
         "title": "CommandStatus",
         "type": "string"
       },
+      "CompatibilityArtifact": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Checksum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "checksum"
+        ],
+        "title": "CompatibilityArtifact",
+        "type": "object"
+      },
       "ComponentExecutionDto": {
         "additionalProperties": false,
         "properties": {
@@ -3220,6 +3241,328 @@
         "title": "ExecutionProfileSelectRequest",
         "type": "object"
       },
+      "FeasibilityCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "catalogue_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Catalogue Version",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "dependency_findings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Dependency Findings",
+            "type": "array"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "plan_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Version"
+          },
+          "prerequisite_artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/CompatibilityArtifact"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Prerequisite Artifacts",
+            "type": "array"
+          },
+          "registry_snapshot_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Registry Snapshot Checksum",
+            "type": "string"
+          },
+          "registry_snapshot_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Registry Snapshot Id",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "runtime_candidates": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RuntimeCandidate"
+            },
+            "title": "Runtime Candidates",
+            "type": "array"
+          },
+          "source_angular_exact": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Angular Exact",
+            "type": "string"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          },
+          "workspace_topology": {
+            "default": "single_application_cli_workspace",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Workspace Topology",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "source_angular_exact",
+          "catalogue_version",
+          "registry_snapshot_id",
+          "registry_snapshot_checksum",
+          "prerequisite_artifacts"
+        ],
+        "title": "FeasibilityCreateRequest",
+        "type": "object"
+      },
+      "FeasibilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "artifact_links": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Links",
+            "type": "object"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "catalogue_snapshot": {
+            "additionalProperties": true,
+            "title": "Catalogue Snapshot",
+            "type": "object"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "gate_created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Created At"
+          },
+          "gate_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Decision"
+          },
+          "gate_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Expires At"
+          },
+          "gate_id": {
+            "default": "G05",
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_status": {
+            "title": "Gate Status",
+            "type": "string"
+          },
+          "gate_version": {
+            "default": "g05-v1",
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "package": {
+            "additionalProperties": true,
+            "title": "Package",
+            "type": "object"
+          },
+          "package_checksum": {
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "registry_snapshot": {
+            "additionalProperties": true,
+            "title": "Registry Snapshot",
+            "type": "object"
+          },
+          "resolution_id": {
+            "title": "Resolution Id",
+            "type": "string"
+          },
+          "route": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Route",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "runtime_candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Runtime Candidates",
+            "type": "array"
+          },
+          "selected_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Stage1ExecutionProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_exact": {
+            "title": "Source Exact",
+            "type": "string"
+          },
+          "source_family": {
+            "title": "Source Family",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "support_level": {
+            "title": "Support Level",
+            "type": "string"
+          },
+          "target_family": {
+            "title": "Target Family",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "resolution_id",
+          "status",
+          "source_exact",
+          "source_family",
+          "target_family",
+          "support_level",
+          "route",
+          "package",
+          "package_checksum",
+          "gate_status",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "FeasibilityResponse",
+        "type": "object"
+      },
       "G01Decision": {
         "properties": {
           "actor": {
@@ -3738,6 +4081,158 @@
           "event_sequence"
         ],
         "title": "G04DecisionResponse",
+        "type": "object"
+      },
+      "G05DecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_set_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decision": {
+            "enum": [
+              "approve",
+              "approve_with_comment",
+              "request_modification",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "gate_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "package_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "plan_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Version"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "gate_version",
+          "package_checksum",
+          "artifact_set_checksum",
+          "decision"
+        ],
+        "title": "G05DecisionRequest",
+        "type": "object"
+      },
+      "G05DecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "artifact_set_checksum": {
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "gate_id": {
+            "default": "G05",
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_version": {
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "package_checksum": {
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "gate_version",
+          "decision",
+          "status",
+          "accepted",
+          "package_checksum",
+          "artifact_set_checksum",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "G05DecisionResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -4304,6 +4799,17 @@
               }
             ]
           },
+          "catalogue_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogue Version"
+          },
           "command_requests": {
             "items": {
               "$ref": "#/components/schemas/CommandRequestDto"
@@ -4368,6 +4874,18 @@
             "$ref": "#/components/schemas/PhaseStatus",
             "default": "running"
           },
+          "registry_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Snapshot"
+          },
           "repair_attempts": {
             "items": {
               "$ref": "#/components/schemas/RepairAttemptDto"
@@ -4386,6 +4904,25 @@
           "run_phase": {
             "$ref": "#/components/schemas/RunPhase",
             "default": "FEASIBILITY_PLANNING"
+          },
+          "runtime_candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Runtime Candidates",
+            "type": "array"
+          },
+          "source_angular_exact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Angular Exact"
           },
           "source_angular_version": {
             "anyOf": [
@@ -6154,6 +6691,86 @@
           "created_at"
         ],
         "title": "SourceSnapshotDto",
+        "type": "object"
+      },
+      "Stage1ExecutionProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "angular_cli_exact": {
+            "title": "Angular Cli Exact",
+            "type": "string"
+          },
+          "angular_exact": {
+            "title": "Angular Exact",
+            "type": "string"
+          },
+          "architecture": {
+            "title": "Architecture",
+            "type": "string"
+          },
+          "catalogue_version": {
+            "title": "Catalogue Version",
+            "type": "string"
+          },
+          "checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Checksum",
+            "type": "string"
+          },
+          "node_exact": {
+            "title": "Node Exact",
+            "type": "string"
+          },
+          "node_executable": {
+            "title": "Node Executable",
+            "type": "string"
+          },
+          "npm_exact": {
+            "title": "Npm Exact",
+            "type": "string"
+          },
+          "npm_executable": {
+            "title": "Npm Executable",
+            "type": "string"
+          },
+          "npx_exact": {
+            "title": "Npx Exact",
+            "type": "string"
+          },
+          "npx_executable": {
+            "title": "Npx Executable",
+            "type": "string"
+          },
+          "operating_system": {
+            "title": "Operating System",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "source_angular_exact": {
+            "title": "Source Angular Exact",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "angular_exact",
+          "angular_cli_exact",
+          "node_exact",
+          "npm_exact",
+          "npx_exact",
+          "node_executable",
+          "npm_executable",
+          "npx_executable",
+          "operating_system",
+          "architecture",
+          "catalogue_version",
+          "source_angular_exact",
+          "checksum"
+        ],
+        "title": "Stage1ExecutionProfile",
         "type": "object"
       },
       "StageStatus": {
@@ -7969,6 +8586,74 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/approvals/G05/decisions": {
+      "post": {
+        "operationId": "decide_g05_api_v1_runs__run_id__approvals_G05_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G05DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G05DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G05",
+        "tags": [
+          "feasibility"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/approvals/{gate_id}": {
       "get": {
         "operationId": "inspect_g02_api_v1_runs__run_id__approvals__gate_id__get",
@@ -9520,6 +10205,186 @@
         "summary": "Select Execution Profile",
         "tags": [
           "execution-profiles"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/feasibility": {
+      "get": {
+        "operationId": "get_feasibility_api_v1_runs__run_id__feasibility_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeasibilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Feasibility",
+        "tags": [
+          "feasibility"
+        ]
+      },
+      "post": {
+        "operationId": "resolve_feasibility_api_v1_runs__run_id__feasibility_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeasibilityCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeasibilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Feasibility",
+        "tags": [
+          "feasibility"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/feasibility/reconcile-artifacts": {
+      "post": {
+        "operationId": "reconcile_feasibility_artifacts_api_v1_runs__run_id__feasibility_reconcile_artifacts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Feasibility Artifacts",
+        "tags": [
+          "feasibility"
         ]
       }
     },
@@ -11366,6 +12231,74 @@
         ]
       }
     },
+    "/runs/{run_id}/approvals/G05/decisions": {
+      "post": {
+        "operationId": "decide_g05_runs__run_id__approvals_G05_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G05DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G05DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G05",
+        "tags": [
+          "feasibility"
+        ]
+      }
+    },
     "/runs/{run_id}/approvals/{gate_id}": {
       "get": {
         "operationId": "inspect_g02_runs__run_id__approvals__gate_id__get",
@@ -12917,6 +13850,186 @@
         "summary": "Select Execution Profile",
         "tags": [
           "execution-profiles"
+        ]
+      }
+    },
+    "/runs/{run_id}/feasibility": {
+      "get": {
+        "operationId": "get_feasibility_runs__run_id__feasibility_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeasibilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Feasibility",
+        "tags": [
+          "feasibility"
+        ]
+      },
+      "post": {
+        "operationId": "resolve_feasibility_runs__run_id__feasibility_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeasibilityCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeasibilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Feasibility",
+        "tags": [
+          "feasibility"
+        ]
+      }
+    },
+    "/runs/{run_id}/feasibility/reconcile-artifacts": {
+      "post": {
+        "operationId": "reconcile_feasibility_artifacts_runs__run_id__feasibility_reconcile_artifacts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Feasibility Artifacts",
+        "tags": [
+          "feasibility"
         ]
       }
     },

@@ -267,6 +267,14 @@ class WorkflowEventType(str, Enum):
     G04_MODIFICATION_REQUESTED = 'G04_MODIFICATION_REQUESTED'
     G04_REJECTED = 'G04_REJECTED'
     G04_STALE = 'G04_STALE'
+    COMPATIBILITY_RESOLUTION_STARTED = "COMPATIBILITY_RESOLUTION_STARTED"
+    COMPATIBILITY_RESOLUTION_COMPLETED = "COMPATIBILITY_RESOLUTION_COMPLETED"
+    COMPATIBILITY_RESOLUTION_BLOCKED = "COMPATIBILITY_RESOLUTION_BLOCKED"
+    G05_CREATED = "G05_CREATED"
+    G05_APPROVED = "G05_APPROVED"
+    G05_MODIFICATION_REQUESTED = "G05_MODIFICATION_REQUESTED"
+    G05_REJECTED = "G05_REJECTED"
+    G05_STALE = "G05_STALE"
     STATE_CONTRACT_MIGRATED = "STATE_CONTRACT_MIGRATED"
     APPROVAL_POLICY_DISABLED_FOR_PRODUCTION = "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION"
     RUN_STATE_CHANGED = "run_state_changed"
@@ -688,6 +696,10 @@ class MigrationRunDto(ContractModel):
     target_angular_version: str | None = None
     created_at: datetime
     updated_at: datetime
+    source_angular_exact: str | None = None
+    catalogue_version: str | None = None
+    registry_snapshot: dict[str, Any] | None = None
+    runtime_candidates: list[dict[str, Any]] = Field(default_factory=list)
     stages: list[MigrationStageDto] = Field(min_length=1)
     steps: list[StageStepDto] = Field(default_factory=list)
     component_executions: list[ComponentExecutionDto] = Field(default_factory=list)

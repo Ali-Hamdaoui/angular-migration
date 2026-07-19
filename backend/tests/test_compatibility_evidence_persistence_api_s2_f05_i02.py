@@ -1,0 +1,169 @@
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import sessionmaker
+
+from app.api.compatibility_contracts import FeasibilityCreateRequest, G05DecisionRequest
+from app.api.routes import compatibility as compatibility_routes
+from app.artifact_store import LocalFilesystemArtifactStore
+from app.domain.compatibility import CompatibilityCatalogue, CompatibilityCatalogueEntry
+from app.domain.contracts import ArtifactType
+from app.domain.execution_profile import RuntimeCandidate
+from app.main import app
+from app.repositories.models import (
+    ArtifactMetadataModel,
+    Base,
+    CompatibilityCatalogueModel,
+    CompatibilityResolutionModel,
+    G05ApprovalModel,
+    MigrationRunModel,
+    RegistrySnapshotModel,
+    WorkflowEventModel,
+)
+from app.repositories.session import create_database_engine
+from app.services.compatibility_application_service import CompatibilityResolver
+from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
+
+
+NOW = datetime(2026, 7, 19, tzinfo=UTC)
+
+
+def _catalogue():
+    return CompatibilityCatalogue.build(
+        "catalog-v1",
+        tuple(
+            CompatibilityCatalogueEntry(
+                stage_id=f"angular-{major}-to-{major + 1}",
+                source_family=f"angular-{major}.x",
+                target_family=f"angular-{major + 1}.x",
+                target_angular_exact=f"{major + 1}.0.0",
+                target_cli_exact=f"{major + 1}.0.0",
+                node_major=20,
+                npm_major=10,
+                support_level="historical_experimental",
+                fixture_status="incomplete",
+                validation_policy_id="angular-stage-standard-v2",
+                known_risks=("historical_fixture_evidence_incomplete",),
+            )
+            for major in range(18, 21)
+        ),
+    )
+
+
+def _candidate():
+    return RuntimeCandidate(
+        profile_id="node-20-approved",
+        node_executable=r"C:\Tools\node\node.exe",
+        node_exact="20.11.1",
+        npm_executable=r"C:\Tools\node\npm.cmd",
+        npm_exact="10.2.4",
+        npx_executable=r"C:\Tools\node\npx.cmd",
+        npx_exact="10.2.4",
+    )
+
+
+def setup(tmp_path: Path):
+    engine = create_database_engine(f"sqlite:///{tmp_path / 'test.db'}", sqlite_wal_enabled=False)
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    run_root = tmp_path / "artifacts" / "run-1"
+    store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=run_root)
+    store.ensure_run_layout("run-1")
+    prerequisite = store.write_text_artifact("run-1", "02_analysis/findings.json", '{"finding":"builder"}', ArtifactType.JSON, created_at=NOW)
+    with sessions.begin() as session:
+        session.add(MigrationRunModel(id="run-1", status="RUNNING", run_phase="FEASIBILITY", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, actor="operator", artifact_root=str(run_root), created_at=NOW, updated_at=NOW))
+        session.add(ArtifactMetadataModel(id="metadata-" + prerequisite.ref.artifact_id, run_id="run-1", stage_id=None, artifact_type="json", relative_path=prerequisite.ref.relative_path, checksum=prerequisite.ref.checksum, created_at=NOW))
+
+    def scope():
+        from contextlib import contextmanager
+
+        @contextmanager
+        def managed():
+            session = sessions()
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        return managed()
+
+    resolver = CompatibilityResolver(_catalogue())
+    service = CompatibilityEvidenceApplicationService(session_scope_factory=scope, resolver=resolver, now_provider=lambda: NOW)
+    payload = FeasibilityCreateRequest(expected_state_version=1, idempotency_key="feasibility-1", source_angular_exact="18.2.4", catalogue_version="catalog-v1", registry_snapshot_id="registry-1", registry_snapshot_checksum="sha256:" + "b" * 64, prerequisite_artifacts=[{"artifact_id": prerequisite.ref.artifact_id, "checksum": prerequisite.ref.checksum}], runtime_candidates=(_candidate(),), workspace_fingerprint="sha256:" + "c" * 64)
+    return service, payload, sessions, store, resolver
+
+
+def test_persists_six_immutable_evidence_artifacts_and_ordered_events(tmp_path):
+    service, payload, sessions, store, _ = setup(tmp_path)
+
+    result = service.resolve("run-1", payload, "operator")
+
+    assert result.status == "feasible_with_warnings"
+    assert len(result.artifact_ids) == 6
+    assert all(checksum.startswith("sha256:") for checksum in result.artifact_checksums.values())
+    with sessions() as session:
+        assert session.query(CompatibilityCatalogueModel).count() == 1
+        assert session.query(RegistrySnapshotModel).count() == 1
+        assert session.query(CompatibilityResolutionModel).count() == 1
+        assert session.query(G05ApprovalModel).count() == 1
+        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == ["COMPATIBILITY_RESOLUTION_STARTED", "COMPATIBILITY_RESOLUTION_COMPLETED"]
+        assert session.query(MigrationRunModel).one().state_version == 3
+    package = store.read_artifact_by_id(result.artifact_ids[-1])
+    assert package.ref.checksum == result.artifact_checksums[result.artifact_ids[-1]]
+    assert "artifact_root" not in package.content
+
+
+def test_api_exposes_snapshot_and_decision_with_idempotent_replay(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    app.dependency_overrides[compatibility_routes.get_service] = lambda: service
+    try:
+        client = TestClient(app)
+        response = client.post("/api/v1/runs/run-1/feasibility", headers={"x-authenticated-actor": "operator", "x-correlation-id": "corr-1"}, json=payload.model_dump(mode="json"))
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["artifact_ids"]) == 6
+        assert all(link.startswith("/api/v1/artifacts/") for link in body["artifact_links"].values())
+        replay = client.post("/api/v1/runs/run-1/feasibility", headers={"x-authenticated-actor": "operator"}, json=payload.model_dump(mode="json"))
+        assert replay.status_code == 200
+        assert replay.json()["idempotent_replay"] is True
+        decision = G05DecisionRequest(expected_state_version=3, idempotency_key="g05-decision-1", gate_version=body["gate_version"], package_checksum=body["package_checksum"], artifact_set_checksum=body["package"]["artifact_set_checksum"], workspace_fingerprint=payload.workspace_fingerprint, decision="approve_with_comment", comment="Proceed with the documented experimental risk.")
+        decision_response = client.post("/api/v1/runs/run-1/approvals/G05/decisions", headers={"x-authenticated-actor": "operator"}, json=decision.model_dump(mode="json"))
+        assert decision_response.status_code == 200
+        assert decision_response.json()["accepted"] is True
+        assert client.post("/api/v1/runs/run-1/approvals/G05/decisions", headers={"x-authenticated-actor": "operator"}, json=decision.model_dump(mode="json")).json()["idempotent_replay"] is True
+    finally:
+        app.dependency_overrides.pop(compatibility_routes.get_service, None)
+    with sessions() as session:
+        assert session.query(G05ApprovalModel).count() == 2
+        assert session.query(MigrationRunModel).one().state_version == 4
+
+
+def test_rejects_stale_state_checksum_and_unauthorized_actor_without_mutation(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    with pytest.raises(Exception) as unauthorized:
+        service.resolve("run-1", payload, "other-operator")
+    assert getattr(unauthorized.value, "code", None) == "RUN_NOT_AUTHORIZED"
+    with pytest.raises(Exception) as stale:
+        service.resolve("run-1", payload.model_copy(update={"expected_state_version": 2}), "operator")
+    assert getattr(stale.value, "code", None) == "STALE_STATE_VERSION"
+    with sessions() as session:
+        assert session.query(CompatibilityResolutionModel).count() == 0
+        assert session.query(WorkflowEventModel).count() == 0
+
+
+def test_reuses_versioned_catalogue_and_registry_metadata_on_new_resolution(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+
+    service.resolve("run-1", payload, "operator")
+    service.resolve("run-1", payload.model_copy(update={"expected_state_version": 3, "idempotency_key": "feasibility-2"}), "operator")
+
+    with sessions() as session:
+        assert session.query(CompatibilityCatalogueModel).count() == 1
+        assert session.query(RegistrySnapshotModel).count() == 1
+        assert session.query(CompatibilityResolutionModel).count() == 2
