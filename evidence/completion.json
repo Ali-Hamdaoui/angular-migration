@@ -33,5 +33,6 @@
   ],
   "pushed": true,
   "push_remote": "origin",
-  "push_branch": "hermes/09-assurance-delivery-report"
+  "push_branch": "hermes/09-assurance-delivery-report",
+  "head_sha": "3d576b6d3576f39d9edacff5e43b8b17de6ff9ed"
 }
