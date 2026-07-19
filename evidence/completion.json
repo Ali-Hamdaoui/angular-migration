@@ -1,0 +1,67 @@
+{
+  "version": "3",
+  "goal": "G03",
+  "folder": "03-angular-transform-review",
+  "branch": "hermes/03-angular-transform-review",
+  "base_branch": "goal",
+  "base_sha": "d759861",
+  "branch_ready": true,
+  "integration_verified": false,
+  "completion_level": "branch_ready",
+  "jira_complete": false,
+  "features": {
+    "S3-F07": {
+      "jira": "AMFA-146",
+      "status": "complete",
+      "subtasks": ["AMFA-178", "AMFA-179", "AMFA-180", "AMFA-181"]
+    },
+    "S3-F08": {
+      "jira": "AMFA-147",
+      "status": "complete",
+      "subtasks": ["AMFA-182", "AMFA-183", "AMFA-184", "AMFA-185"]
+    },
+    "S3-F09": {
+      "jira": "AMFA-148",
+      "status": "complete",
+      "subtasks": ["AMFA-186", "AMFA-187", "AMFA-188", "AMFA-189"]
+    }
+  },
+  "tests_passed": {
+    "domain_tests": 18,
+    "api_integration_tests": 9,
+    "regression_tests_passed": 33
+  },
+  "new_files": [
+    "backend/app/domain/transformation.py",
+    "backend/app/services/transformation_application_service.py",
+    "backend/app/api/transformation_contracts.py",
+    "backend/app/api/routes/transformations.py",
+    "backend/app/repositories/transformation_models.py",
+    "backend/alembic/versions/20260719_07_g03_angular_update_transformation_g08.py",
+    "frontend/src/types/transformation.ts",
+    "frontend/src/api/transformations.ts",
+    "frontend/src/components/AngularUpdatePanel.tsx",
+    "frontend/src/components/TransformationEvidenceViewer.tsx",
+    "frontend/src/components/G08ReviewWorkspace.tsx",
+    "backend/tests/test_g03_domain.py",
+    "backend/tests/test_g03_api.py"
+  ],
+  "modified_files": [
+    "backend/app/domain/contracts.py",
+    "backend/app/api/router.py",
+    "backend/app/repositories/models/__init__.py"
+  ],
+  "blocked_integrated_criteria": ["G02 integration required for full end-to-end"],
+  "artifact_set_checksum": null,
+  "dependency_evidence": {
+    "consumed_contracts": [
+      "transformation_result.schema.json",
+      "approved_stage_plan.schema.json",
+      "stage_sandbox_ready.schema.json",
+      "command_execution_record.schema.json",
+      "artifact_ref.schema.json",
+      "durable_event_envelope.schema.json"
+    ],
+    "provided_contracts": ["transformation_result.schema.json"]
+  }
+}

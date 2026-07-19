@@ -1,0 +1,10 @@
+{
+  "task_id": "10-S3-F09-I02",
+  "jira": "AMFA-187",
+  "title": "Persist and expose evidence contracts for G08",
+  "status": "PASS",
+  "reviewer_verdict": "PASS",
+  "commit_sha": null,
+  "tests_passed": 27,
+  "regression_pass": true
+}

@@ -1,0 +1,10 @@
+{
+  "task_id": "06-S3-F08-I02",
+  "jira": "AMFA-183",
+  "title": "Persist and expose evidence contracts for transformation evidence",
+  "status": "PASS",
+  "reviewer_verdict": "PASS",
+  "commit_sha": null,
+  "tests_passed": 27,
+  "regression_pass": true
+}

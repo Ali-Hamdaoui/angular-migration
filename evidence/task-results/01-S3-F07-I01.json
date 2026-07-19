@@ -1,0 +1,12 @@
+{
+  "task_id": "T01-S3-F07-I01",
+  "jira": "AMFA-178",
+  "title": "Implement backend application contract for Execute exact Angular update and verify target version",
+  "status": "PASS",
+  "reviewer_verdict": "PASS",
+  "commit_sha": null,
+  "changed_files": [
+    "backend/app/domain/transformation.py",
+    "backend/app/domain/contracts.py"
+  ]
+}

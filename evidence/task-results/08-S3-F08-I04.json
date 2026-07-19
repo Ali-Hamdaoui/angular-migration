@@ -1,0 +1,10 @@
+{
+  "task_id": "08-S3-F08-I04",
+  "jira": "AMFA-185",
+  "title": "Verify and document transformation evidence",
+  "status": "PASS",
+  "reviewer_verdict": "PASS",
+  "commit_sha": null,
+  "tests_passed": 27,
+  "regression_pass": true
+}

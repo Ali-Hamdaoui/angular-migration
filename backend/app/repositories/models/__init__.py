@@ -16,6 +16,7 @@ from app.repositories.baseline_g03_models import BaselineAssessmentModel, G03App
 from app.repositories.discovery_models import DiscoveryEvidenceModel
 from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.repositories.execution_profiles import ExecutionProfileModel
+from app.repositories.transformation_models import AngularUpdateRecordModel, TransformationEvidenceModel, G08ApprovalModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     ActiveRunClaimModel,

@@ -1,0 +1,10 @@
+{
+  "task_id": "11-S3-F09-I03",
+  "jira": "AMFA-188",
+  "title": "Build frontend experience for G08 review workspace",
+  "status": "PASS",
+  "reviewer_verdict": "PASS",
+  "commit_sha": null,
+  "tests_passed": 27,
+  "regression_pass": true
+}

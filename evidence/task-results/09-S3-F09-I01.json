@@ -1,0 +1,10 @@
+{
+  "task_id": "09-S3-F09-I01",
+  "jira": "AMFA-186",
+  "title": "Implement backend application contract for G08 transformation acceptance",
+  "status": "PASS",
+  "reviewer_verdict": "PASS",
+  "commit_sha": null,
+  "tests_passed": 27,
+  "regression_pass": true
+}
