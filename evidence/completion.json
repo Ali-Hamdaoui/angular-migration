@@ -3,7 +3,7 @@
   "goal_id": "G09",
   "branch": "hermes/09-assurance-delivery-report",
   "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
-  "head_sha": "38d9a47d6e8b3f14db4d2d0a1ee234049cfd4184",
+  "head_sha": "0543e68d6e8b3f14db4d2d0a1ee234049cfd4184",
   "goal_package_sha256": "39992175495c4d17ff54b06f49523de8d1379b79fe1a8eb08159ce066df4caf5",
   "completion_level": "branch_ready",
   "jira_features": ["AMFA-222", "AMFA-223", "AMFA-224"],
@@ -30,7 +30,8 @@
     "Manual runtime validation requires full Angular fixtures generated outside Git",
     "Integration verification requires all Sprint 3/4 branches to be merged",
     "Frontend UI for G13/G14/G15 exists as API clients + enhanced ReportPanel; full page components deferred",
-    "test_workspace_delivery::test_fixture_manifest_snapshot_workspace_and_delivery_flow fails with PermissionError (pre-existing workspace issue)"
+    "test_workspace_delivery::test_fixture_manifest_snapshot_workspace_and_delivery_flow fails with PermissionError (pre-existing workspace issue)",
+    "G14 approval records decision but actual DeliveryService.publish_mock_delivery() filesystem publication requires live workspace from upstream G02/G07 integration"
   ],
   "audit_fixes": [
     "models/__init__.py: Added FinalAssuranceRecordModel, DeliveryRecordModel, ReportRecordModel imports and __all__ entries",
@@ -44,7 +45,7 @@
     "Gap map: Updated from stale all-MISSING to accurate current-state assessment",
     "Migration chain: 20260719_09 correctly depends on 20260719_06"
   ],
-  "pushed": false,
-  "push_remote": null,
-  "push_branch": null
+  "pushed": true,
+  "push_remote": "origin",
+  "push_branch": "hermes/09-assurance-delivery-report"
 }
