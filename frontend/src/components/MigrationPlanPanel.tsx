@@ -17,8 +17,10 @@ export function MigrationPlanPanel({ runId, initialState, connectionStatus, arti
   const [tab, setTab] = useState<Tab>("Commands");
   const inputs = (initialState as PlanState).plan_inputs ?? {};
   const prerequisiteArtifacts = artifacts.map((artifact) => ({ artifact_id: artifact.artifact_id, checksum: artifact.checksum }));
-  const g05Approved = workflowEvents.some((event) => event.event_type === "G05_APPROVED");
-  const canGenerate = g05Approved && prerequisiteArtifacts.length > 0 && Boolean(inputs.source_exact && inputs.source_family && inputs.target_family && inputs.catalogue_version && inputs.input_fingerprint && inputs.execution_profile_id && inputs.target_cli_exact && inputs.stage_route?.length && inputs.builder);
+  // The backend remains the authority for G05 and complete input validation.
+  // Keep the action available when the projection has enough evidence to make
+  // a request so stale/conflict responses can refresh the authoritative state.
+  const canGenerate = prerequisiteArtifacts.length > 0 && Boolean(inputs.source_exact && inputs.source_family && inputs.target_family && inputs.catalogue_version && inputs.input_fingerprint && inputs.execution_profile_id && inputs.stage_route?.length && inputs.builder);
   const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "running" ? "Generating plan..." : status;
 
   useEffect(() => { if (status === "success") setTab("Commands"); }, [status, plan?.plan_checksum]);
