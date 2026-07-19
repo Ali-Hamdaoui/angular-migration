@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.contracts import AgentKind
 from app.domain.planning import (
+    BuildSystemDecision,
     MigrationPlan,
     StageExecutionPlan,
     checksum_model,
@@ -342,6 +343,15 @@ class PlanRevisionService:
                 }
             )
             stage_values["build_system_decision"] = decision
+        current_decision = stage_values["build_system_decision"]
+        if not isinstance(current_decision, BuildSystemDecision):
+            current_decision = BuildSystemDecision.model_validate(current_decision)
+        stage_values["build_system_decision"] = BuildSystemDecision.create(
+            decision_id=f"builder-{plan.run_id}-{stage.stage_id}-v{version}",
+            builder=current_decision.builder,
+            action=current_decision.action,
+            rationale=current_decision.rationale,
+        )
         revised_plan = MigrationPlan(
             **plan_values, plan_id=f"plan-{plan.run_id}-v{version}", version=version, checksum="sha256:" + "0" * 64
         )
@@ -377,6 +387,8 @@ class PlanRevisionService:
         if (
             request.gate_version != gate.gate_version
             or request.gate_version != self.gate_version
+            or request.package_checksum is not None
+            and request.package_checksum != gate.package_checksum
             or request.artifact_set_checksum != gate.artifact_set_checksum
             or request.plan_checksum != gate.plan_checksum
             or request.stage_plan_checksum != gate.stage_plan_checksum

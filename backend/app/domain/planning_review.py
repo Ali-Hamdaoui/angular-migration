@@ -145,6 +145,7 @@ class G06DecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
     gate_version: str = Field(min_length=1, max_length=128)
+    package_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     artifact_set_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     plan_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     stage_plan_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -160,6 +161,7 @@ class G06Gate(ContractModel):
     artifact_set_checksum: str
     plan_checksum: str
     stage_plan_checksum: str
+    package_checksum: str | None = None
     workspace_fingerprint: str | None = None
     state_version: int = Field(ge=1)
 

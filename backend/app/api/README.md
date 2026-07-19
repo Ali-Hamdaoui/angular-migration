@@ -57,3 +57,23 @@ artifact registration and content checksums; authorization, stale versions,
 unsupported builders, malformed structured commands, and provider failures
 fail closed with stable error codes and correlation IDs. No route executes a
 command, approves a plan, or accepts arbitrary artifact paths.
+
+## S2-F07 plan review and G06 evidence
+
+The versioned planning-review routes persist immutable revisions and the
+checksum-bound Planning review chain:
+
+- `POST /api/v1/runs/{runId}/plan/revisions` creates a new plan and stage-plan
+  version, records the deterministic diff, updates the active pointer, and
+  marks dependent approvals stale.
+- `POST /api/v1/runs/{runId}/plan/explanation` persists the Planning proposer,
+  reviewer, explanation, usage/cost, and pending G06 evidence package.
+- `POST /api/v1/runs/{runId}/approvals/G06/decisions` appends an approval,
+  rejection, or modification request bound to the current package, plan,
+  stage-plan, state version, and workspace fingerprint.
+- `GET /api/v1/runs/{runId}/plan/review` returns the latest persisted review
+  projection and registered artifact links.
+
+Artifacts are finalized and checksum-registered before completion events are
+committed. The routes accept artifact IDs and checksums, never arbitrary paths;
+revisions are idempotent and stale or tampered bindings fail closed.
