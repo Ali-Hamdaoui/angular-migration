@@ -1,0 +1,55 @@
+{
+  "schema_version": "3.0.0",
+  "goal_id": "G05",
+  "branch": "hermes/05-failure-diagnostics-context",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "head_sha": "9c5001f00e6046be94ea94834bb0791ff49fc05b",
+  "goal_package_sha256": "87edafcaaa90147f854cc200d567325c78b8a30a1c5ad1269c9d3324f832aafa",
+  "completion_level": "branch_ready",
+  "jira_features": [
+    "AMFA-211",
+    "AMFA-212",
+    "AMFA-213"
+  ],
+  "jira_subtasks": [
+    "AMFA-226",
+    "AMFA-227",
+    "AMFA-228",
+    "AMFA-229",
+    "AMFA-230",
+    "AMFA-231",
+    "AMFA-232",
+    "AMFA-233",
+    "AMFA-234",
+    "AMFA-235",
+    "AMFA-236",
+    "AMFA-237"
+  ],
+  "branch_ready": true,
+  "harness_ready": false,
+  "integration_verified": false,
+  "jira_complete": false,
+  "automated_tests": "PASS",
+  "manual_tests": "BLOCKED",
+  "documentation": "BLOCKED",
+  "architecture_audit": "BLOCKED",
+  "product_audit": "BLOCKED",
+  "human_product_signoff": "not_required",
+  "blocked_integrated_criteria": [
+    "Integration with S3-F02/S3-F12 baseline services",
+    "Full runtime Angular fixture verification",
+    "Independent manual runtime validation (C91)",
+    "As-built documentation (C92)",
+    "Final audits (C93)"
+  ],
+  "limitations": [
+    "Full runtime validation requires ng-update fixture generation and live backend",
+    "Manual tests require running backend on port 8305",
+    "Frontend component tests not run (npm deps not installed)",
+    "API integration tests need baseline S3-F02/S3-F12 services available",
+    "Parser stubs are regex-based; production parsers should use AST-aware analysis"
+  ],
+  "pushed": false,
+  "push_remote": null,
+  "push_branch": null
+}
