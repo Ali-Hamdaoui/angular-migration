@@ -43,7 +43,8 @@ class StageExecutionPlanService:
         self._builders = build_system_decisions or BuildSystemDecisionService()
 
     def create(self, request: PlanGenerationRequest, *, plan_version: int = 1) -> StageExecutionPlan:
-        source_family, target_family, stage_id, target_exact = request.stage_route[0]
+        source_family, target_family, stage_id, target_exact = request.stage_route[0][:4]
+        target_cli_exact = request.target_cli_exact or (request.stage_route[0][4] if len(request.stage_route[0]) == 5 else target_exact)
         decision = self._builders.decide(builder=request.builder, decision_id=f"builder-{request.run_id}-{stage_id}-v{plan_version}")
         if decision.action == "blocked":
             raise PlanningApplicationError("UNSUPPORTED_BUILD_SYSTEM", decision.rationale, 409)
@@ -53,14 +54,14 @@ class StageExecutionPlanService:
         forbidden = ForbiddenChangePolicy(policy_id="forbidden-modernization-v1")
         commands = {
             "bootstrap_install": (self._command("npm-ci-bootstrap", "npm", ("ci",), request, 3600),),
-            "angular_update": (self._command("angular-update-exact", "npx", ("--yes", "-p", "@angular/cli@" + target_exact, "ng", "update", "@angular/core@" + target_exact, "@angular/cli@" + target_exact, "--interactive=false"), request, 1800),),
+            "angular_update": (self._command("angular-update-exact", "npx", ("--yes", "-p", "@angular/cli@" + target_cli_exact, "ng", "update", "@angular/core@" + target_exact, "@angular/cli@" + target_cli_exact, "--interactive=false"), request, 1800),),
             "target_version_check": (self._command("angular-version-verify", "npx", ("ng", "version"), request, 300),),
             "final_install": (self._command("npm-ci-final", "npm", ("ci",), request, 3600),),
             "builds": (self._command("npm-script-build-production", "npm", ("run", "build", "--", "--configuration", "production"), request, 3600),),
             "tests": (self._command("npm-script-test-ci", "npm", ("run", "test", "--", "--watch=false"), request, 3600),),
             "lint": (self._command("npm-script-lint", "npm", ("run", "lint"), request, 1800, conditional=True),),
         }
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, execution_profile_id=request.execution_profile_id, commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod

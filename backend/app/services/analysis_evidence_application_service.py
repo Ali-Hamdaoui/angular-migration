@@ -217,10 +217,10 @@ class AnalysisEvidenceApplicationService:
             ]
             ids = [item.ref.artifact_id for item in artifacts]
             checks = {item.ref.artifact_id: item.ref.checksum for item in artifacts}
-            completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_COMPLETED, "analysis proposer completed", {"artifact_ids": json.dumps(ids), "proposer_output_checksum": package.proposer_output_checksum})
+            completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_COMPLETED, "analysis proposer completed", {"artifact_ids": ids, "proposer_output_checksum": package.proposer_output_checksum})
             reviewer_started = self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_STARTED, "analysis reviewer started", {"proposer_output_checksum": package.proposer_output_checksum})
             reviewer_completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_COMPLETED, "analysis reviewer accepted", {"reviewer_output_checksum": package.reviewer_output_checksum, "revision_count": package.revision_count})
-            gate_event = self._transition(session, run, request, WorkflowEventType.G04_CREATED, "G04 created", {"artifact_ids": json.dumps(ids), "artifact_set_checksum": package.artifact_set_checksum, "package_checksum": checks[ids[-1]]})
+            gate_event = self._transition(session, run, request, WorkflowEventType.G04_CREATED, "G04 created", {"artifact_ids": ids, "artifact_set_checksum": package.artifact_set_checksum, "package_checksum": checks[ids[-1]]})
             now = self.now()
             invocation.status = "completed"; invocation.deployment_alias = package.model_provenance.get("provider", "azure-openai"); invocation.prompt_version = package.prompt_version; invocation.schema_version = package.schema_version; invocation.pricing_version = package.usage.get("pricing_version", "unknown"); invocation.artifact_ids = ids; invocation.artifact_checksums = checks; invocation.state_version = completed.next_state_version; invocation.event_sequence = completed.event_sequence; invocation.completed_at = now
             usage = package.usage

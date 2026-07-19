@@ -120,7 +120,7 @@ class LlmEvidenceApplicationService:
             if budget.action == LlmBudgetAction.WARN:
                 warning = self._transition(session, run, request, WorkflowEventType.LLM_BUDGET_WARNING, 'LLM budget warning', {'invocation_id': row.id, 'reason': budget.reason}, actor)
                 row.state_version = warning.next_state_version; row.event_sequence = warning.event_sequence
-            event = self._transition(session, run, request, WorkflowEventType.LLM_INVOCATION_COMPLETED, 'LLM invocation completed', {'invocation_id': row.id, 'artifact_ids': json.dumps(row.artifact_ids), 'total_tokens': response.usage.total_tokens}, actor)
+            event = self._transition(session, run, request, WorkflowEventType.LLM_INVOCATION_COMPLETED, 'LLM invocation completed', {'invocation_id': row.id, 'artifact_ids': row.artifact_ids, 'total_tokens': response.usage.total_tokens}, actor)
             row.state_version = event.next_state_version; row.event_sequence = event.event_sequence
             session.flush(); return self._dto(session, row)
 
@@ -132,7 +132,7 @@ class LlmEvidenceApplicationService:
             artifact = self._artifact(session, store, request.run_id, '04_workflow_state/llm_error_redacted.json', json.dumps({'error_code': error.code.value if isinstance(error, AzureGatewayError) else error.code, 'message': message}, sort_keys=True))
             row.status = 'failed'; row.redacted_summary = 'LLM invocation failed; provider details redacted.'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.latency_ms = latency; row.artifact_ids = [artifact.ref.artifact_id]; row.artifact_checksums = {artifact.ref.artifact_id: artifact.ref.checksum}
             event_type = WorkflowEventType.LLM_BUDGET_BLOCKED if row.failure_code == 'budget' else WorkflowEventType.LLM_INVOCATION_FAILED
-            event = self._transition(session, run, request, event_type, message, {'invocation_id': row.id, 'error_code': row.failure_code, 'artifact_ids': json.dumps(row.artifact_ids)}, actor)
+            event = self._transition(session, run, request, event_type, message, {'invocation_id': row.id, 'error_code': row.failure_code, 'artifact_ids': row.artifact_ids}, actor)
             row.state_version = event.next_state_version; row.event_sequence = event.event_sequence
             session.flush(); return self._dto(session, row)
 

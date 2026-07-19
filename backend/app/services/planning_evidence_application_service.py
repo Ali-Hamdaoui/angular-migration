@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from app.api.planning_contracts import PlanCreateRequest, PlanResponse
@@ -18,6 +19,8 @@ from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
     BuildSystemDecisionModel,
+    CompatibilityResolutionModel,
+    G05ApprovalModel,
     MigrationPlanModel,
     MigrationRunModel,
     StageExecutionPlanModel,
@@ -48,7 +51,10 @@ class PlanningEvidenceApplicationService:
         now = self._now()
         with self._scope() as session:
             run = self._authorized_run(session, run_id, actor)
-            request = self._request(run_id, payload, actor)
+            try:
+                request = self._request(run_id, payload, actor)
+            except ValidationError as error:
+                raise PlanningEvidenceError("DOMAIN_VALIDATION_FAILED", "Planning input validation failed.", 422) from error
             request_checksum = self._checksum(request.model_dump(mode="json"))
             existing = session.scalar(select(MigrationPlanModel).where(MigrationPlanModel.run_id == run_id, MigrationPlanModel.idempotency_key == payload.idempotency_key))
             if existing:
@@ -57,6 +63,9 @@ class PlanningEvidenceApplicationService:
                 return self._response(session, existing, replay=True)
             self._require_state(run, payload.expected_state_version)
             self._validate_prerequisites(session, run, request)
+            self._require_approved_feasibility(session, run, request)
+            if session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration")) is not None:
+                raise PlanningEvidenceError("ACTIVE_PLAN_EXISTS", "An active migration plan already exists; use its idempotent request or explicitly replace it.", 409)
             version = (session.scalar(select(func.max(MigrationPlanModel.version)).where(MigrationPlanModel.run_id == run_id)) or 0) + 1
             try:
                 result = PlanningApplicationService(artifact_checksum_reader=lambda artifact_id: self._artifact_checksum(self._store_for_run(run), artifact_id)).generate(request, plan_version=version)
@@ -75,8 +84,8 @@ class PlanningEvidenceApplicationService:
             session.flush()
             decision = BuildSystemDecisionModel(id=f"decision-{uuid4().hex[:12]}", run_id=run_id, stage_plan_id=stage_record.id, decision_id=stage.build_system_decision.decision_id, decision=stage.build_system_decision.model_dump(mode="json"), checksum=stage.build_system_decision.checksum, created_at=now)
             session.add(decision)
-            migration_event = self._transition(session, run, payload.idempotency_key + ":migration", payload.expected_state_version, WorkflowEventType.MIGRATION_PLAN_CREATED, actor, now, {"plan_id": plan.id, "artifact_ids": json.dumps(artifacts[0])})
-            stage_event = self._transition(session, run, payload.idempotency_key, migration_event.next_state_version, WorkflowEventType.STAGE_PLAN_CREATED, actor, now, {"stage_id": stage.stage_id, "stage_plan_id": stage_record.id, "artifact_ids": json.dumps(artifacts[0])})
+            migration_event = self._transition(session, run, payload.idempotency_key + ":migration", payload.expected_state_version, WorkflowEventType.MIGRATION_PLAN_CREATED, actor, now, {"plan_id": plan.id, "artifact_ids": artifacts[0]})
+            stage_event = self._transition(session, run, payload.idempotency_key, migration_event.next_state_version, WorkflowEventType.STAGE_PLAN_CREATED, actor, now, {"stage_id": stage.stage_id, "stage_plan_id": stage_record.id, "artifact_ids": artifacts[0]})
             plan.state_version, plan.event_sequence = migration_event.next_state_version, migration_event.event_sequence
             stage_record.state_version, stage_record.event_sequence = stage_event.next_state_version, stage_event.event_sequence
             session.add(ActivePlanVersionModel(id=f"active-plan-{uuid4().hex[:12]}", run_id=run_id, scope="migration", migration_plan_id=plan.id, stage_plan_id=None, version=version, state_version=plan.state_version, updated_at=now))
@@ -135,6 +144,32 @@ class PlanningEvidenceApplicationService:
                 self._verify_stored(store, artifact.artifact_id, artifact.checksum)
             except (ArtifactNotFoundError, OSError, ValueError) as error:
                 raise PlanningEvidenceError("PREREQUISITE_ARTIFACT_UNAVAILABLE", "A prerequisite artifact is unavailable.", 409) from error
+
+    def _require_approved_feasibility(self, session, run, request):
+        gate = session.scalar(select(G05ApprovalModel).where(G05ApprovalModel.run_id == run.id, G05ApprovalModel.gate_id == "G05", G05ApprovalModel.status == "approved").order_by(G05ApprovalModel.state_version.desc(), G05ApprovalModel.created_at.desc()))
+        if gate is None:
+            raise PlanningEvidenceError("G05_APPROVAL_REQUIRED", "An approved current G05 feasibility package is required before plan generation.", 409)
+        resolution = session.scalar(select(CompatibilityResolutionModel).where(CompatibilityResolutionModel.run_id == run.id, CompatibilityResolutionModel.package_checksum == gate.package_checksum).order_by(CompatibilityResolutionModel.created_at.desc()))
+        if resolution is None or resolution.package_checksum != gate.package_checksum or resolution.artifact_set_checksum != gate.artifact_set_checksum:
+            raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 feasibility package binding is stale.", 409)
+        package = resolution.package
+        if any((request.source_exact, request.source_family, request.target_family, request.catalogue_version)[i] != package.get(key) for i, key in enumerate(("source_exact", "source_family", "target_family", "catalogue_version"))):
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "Planning inputs do not match the approved feasibility package.", 409)
+        profile = package.get("selected_profile") or {}
+        if request.execution_profile_id != profile.get("profile_id"):
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning execution profile does not match the approved Stage 1 profile.", 409)
+        if request.input_fingerprint != resolution.artifact_set_checksum:
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning input fingerprint does not match the approved feasibility artifact set.", 409)
+        approved_route = package.get("route") or []
+        if len(request.stage_route) != len(approved_route):
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route does not match the approved feasibility route.", 409)
+        for index, (supplied, approved) in enumerate(zip(request.stage_route, approved_route)):
+            supplied_cli = request.target_cli_exact if index == 0 and request.target_cli_exact else (supplied[4] if len(supplied) == 5 else supplied[3])
+            if tuple(supplied[:3]) != (approved.get("source_family"), approved.get("target_family"), approved.get("stage_id")) or supplied[3] != approved.get("target_angular_exact") or supplied_cli != approved.get("target_cli_exact"):
+                raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route contains an exact target that differs from the approved feasibility package.", 409)
+        supplied_artifact_set = "sha256:" + hashlib.sha256(json.dumps([(item.artifact_id, item.checksum) for item in request.prerequisite_artifacts], separators=(",", ":")).encode()).hexdigest()
+        if supplied_artifact_set != resolution.artifact_set_checksum:
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "Planning prerequisite artifacts do not match the approved feasibility artifact set.", 409)
 
     def _verify_artifacts(self, session, run_id, artifact_ids, checksums):
         run = session.get(MigrationRunModel, run_id)

@@ -20,7 +20,8 @@ export type PlanCreateRequest = {
   catalogue_version: string;
   input_fingerprint: string;
   execution_profile_id: string;
-  stage_route: [string, string, string, string][];
+  stage_route: ([string, string, string, string] | [string, string, string, string, string])[];
+  target_cli_exact?: string | null;
   builder: string;
   prerequisite_artifacts: PlanArtifactInput[];
   validation_policy_id?: string;
@@ -60,6 +61,7 @@ export type PlanResponse = {
     source_exact: string;
     target_family: string;
     target_exact: string;
+    target_cli_exact?: string;
     execution_profile_id: string;
     commands: Record<string, PlanCommand[]>;
     build_system_decision: { decision_id: string; builder: string; action: string; rationale: string; checksum: string };

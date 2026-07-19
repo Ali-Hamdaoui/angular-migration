@@ -25,6 +25,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("ix_preflight_artifact_metadata_preflight_id", table_name="preflight_artifact_metadata")
+    op.drop_table("preflight_artifact_metadata")
     op.drop_table("preflight_events")
     op.drop_table("user_decisions")
     op.drop_table("approval_gates")

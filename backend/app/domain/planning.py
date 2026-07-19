@@ -122,6 +122,7 @@ class StageExecutionPlan(ContractModel):
     source_exact: str = Field(min_length=1, max_length=64)
     target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
     target_exact: str = Field(min_length=1, max_length=64)
+    target_cli_exact: str | None = Field(default=None, max_length=64)
     execution_profile_id: str = Field(min_length=1, max_length=128)
     commands: dict[str, tuple[CommandTemplateReference, ...]]
     build_system_decision: BuildSystemDecision
@@ -155,7 +156,8 @@ class PlanGenerationRequest(ContractModel):
     catalogue_version: str = Field(min_length=1, max_length=128)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     execution_profile_id: str = Field(min_length=1, max_length=128)
-    stage_route: tuple[tuple[str, str, str, str], ...] = Field(min_length=1)
+    stage_route: tuple[tuple[str, ...], ...] = Field(min_length=1)
+    target_cli_exact: str = Field(min_length=1, max_length=64)
     builder: str = Field(min_length=1, max_length=256)
     prerequisite_artifacts: tuple[PlanArtifactInput, ...] = ()
     validation_policy_id: str = "angular-stage-standard-v2"
@@ -164,13 +166,18 @@ class PlanGenerationRequest(ContractModel):
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":
+        if any(len(route) not in {4, 5} for route in self.stage_route):
+            raise ValueError("stage route entries must contain Angular and CLI exact versions")
         if any(_SHELL_TOKENS.search(value) for route in self.stage_route for value in route):
             raise ValueError("stage route identifiers cannot contain shell syntax")
-        if not _EXACT_VERSION.fullmatch(self.source_exact) or any(not _EXACT_VERSION.fullmatch(route[3]) for route in self.stage_route):
+        if self.target_cli_exact is not None and not _EXACT_VERSION.fullmatch(self.target_cli_exact):
+            raise ValueError("target CLI version must be an exact semantic version")
+        if not _EXACT_VERSION.fullmatch(self.source_exact) or any(not _EXACT_VERSION.fullmatch(route[3]) or (len(route) == 5 and not _EXACT_VERSION.fullmatch(route[4])) for route in self.stage_route):
             raise ValueError("source and target versions must be exact semantic versions")
         if self.stage_route[0][0] != self.source_family or self.stage_route[-1][1] != self.target_family:
             raise ValueError("stage route must connect the requested source and target families")
-        for index, (source, target, _stage_id, target_exact) in enumerate(self.stage_route):
+        for index, route in enumerate(self.stage_route):
+            source, target, _stage_id, target_exact = route[:4]
             source_major = int(source.removeprefix("angular-").removesuffix(".x"))
             target_major = int(target.removeprefix("angular-").removesuffix(".x"))
             if target_major != source_major + 1 or not target_exact:
