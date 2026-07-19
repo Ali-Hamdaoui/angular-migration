@@ -644,6 +644,21 @@ class CommandExecutionResponseDto(ContractModel):
     idempotent_replay: bool = False
 
 
+class CancelCommandRequestDto(ContractModel):
+    """Request body for POST /api/v1/runs/{run_id}/commands/{execution_id}/cancel."""
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+
+
+class LogChunkResponseDto(ContractModel):
+    """One log chunk in a response."""
+    sequence: int
+    stream: str
+    text: str
+    redacted: bool = False
+    created_at: str = ""
+
+
 class WorkerLeaseDto(ContractModel):
     lease_id: str
     run_id: str

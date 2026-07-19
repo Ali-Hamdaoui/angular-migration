@@ -195,6 +195,24 @@ class CommandAuthorizationAuditModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CommandLogChunkModel(Base):
+    """One ordered log chunk from a command execution (S3-F03)."""
+    __tablename__ = "command_log_chunks"
+    __table_args__ = (
+        Index("ix_cmd_log_chunks_exec_seq", "execution_id", "sequence"),
+        UniqueConstraint("execution_id", "sequence", name="uq_cmd_log_chunks_exec_seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    execution_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    stream: Mapped[str] = mapped_column(String(16), nullable=False)  # stdout, stderr, system
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class CommandExecutionModel(Base):
     __tablename__ = "command_executions"
     __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_command_executions_run_idempotency"),)

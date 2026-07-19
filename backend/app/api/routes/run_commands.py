@@ -13,6 +13,8 @@ from app.core.config import get_settings
 from app.domain.contracts import (
     CommandExecutionResponseDto,
     CommandExecuteRequestDto,
+    CancelCommandRequestDto,
+    LogChunkResponseDto,
 )
 from app.repositories.session import session_scope
 from app.services.command_executor_service import (
@@ -20,6 +22,8 @@ from app.services.command_executor_service import (
     CommandExecutorService,
     CommandExecutionResponse,
 )
+from app.services.command_log_service import CommandLogService
+from app.services.job_supervisor_service import JobSupervisorService, JobSupervisorError
 
 router = APIRouter(prefix="/runs", tags=["run-commands"])
 
@@ -123,4 +127,120 @@ def list_command_executions(
                 for m in models
             ],
             "total": len(models),
+        }
+
+
+@router.get("/{run_id}/commands/{execution_id}/logs")
+def get_command_logs(
+    run_id: str,
+    execution_id: str,
+    request: Request,
+    offset: int = 0,
+    limit: int = 1000,
+    stream: str | None = None,
+):
+    """Get log chunks for a command execution."""
+    with session_scope() as session:
+        log_service = CommandLogService()
+        chunks, total = log_service.get_logs(
+            session, execution_id,
+            offset=offset,
+            limit=min(limit, 5000),
+            stream_filter=stream,
+        )
+        return {
+            "execution_id": execution_id,
+            "run_id": run_id,
+            "chunks": [LogChunkResponseDto(
+                sequence=c.sequence,
+                stream=c.stream,
+                text=c.text,
+                redacted=c.redacted,
+                created_at=c.created_at,
+            ) for c in chunks],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+
+
+@router.get("/{run_id}/commands/{execution_id}/logs/summary")
+def get_command_log_summary(
+    run_id: str,
+    execution_id: str,
+):
+    """Get a summary of available log streams for a command."""
+    with session_scope() as session:
+        log_service = CommandLogService()
+        return log_service.get_stream_summary(session, execution_id)
+
+
+@router.post("/{run_id}/commands/{execution_id}/cancel")
+def cancel_command(
+    run_id: str,
+    execution_id: str,
+    body: CancelCommandRequestDto,
+    request: Request,
+):
+    """Cancel a running command execution."""
+    with session_scope() as session:
+        supervisor = JobSupervisorService()
+        try:
+            result = supervisor.cancel_command(
+                session,
+                run_id=run_id,
+                execution_id=execution_id,
+                actor=body.actor,
+                idempotency_key=body.idempotency_key,
+            )
+        except JobSupervisorError as error:
+            status_code = 404 if error.code == "EXECUTION_NOT_FOUND" else 409
+            return error_response(request, status_code=status_code, error_code=error.code, message=error.message)
+        return result
+
+
+@router.get("/{run_id}/active-command")
+def get_active_command(
+    run_id: str,
+    request: Request,
+):
+    """Get the currently active command for a run."""
+    with session_scope() as session:
+        supervisor = JobSupervisorService()
+        execution = supervisor.get_active_command(session, run_id)
+        if execution is None:
+            return {"run_id": run_id, "active_command": None}
+        return {
+            "run_id": run_id,
+            "active_command": {
+                "execution_id": execution.id,
+                "command_id": execution.command_id,
+                "executable": execution.executable,
+                "arguments": execution.arguments,
+                "status": execution.status,
+                "started_at": execution.started_at.isoformat() if execution.started_at else None,
+            },
+        }
+
+
+@router.get("/{run_id}/active-lease")
+def get_active_lease(
+    run_id: str,
+    request: Request,
+):
+    """Get the active worker lease for a run."""
+    with session_scope() as session:
+        supervisor = JobSupervisorService()
+        lease = supervisor.get_active_lease(session, run_id)
+        if lease is None:
+            return {"run_id": run_id, "active_lease": None}
+        return {
+            "run_id": run_id,
+            "active_lease": {
+                "lease_id": lease.id,
+                "worker_id": lease.worker_id,
+                "execution_id": lease.execution_id,
+                "acquired_at": lease.acquired_at.isoformat() if lease.acquired_at else None,
+                "expires_at": lease.expires_at.isoformat() if lease.expires_at else None,
+            },
         }
