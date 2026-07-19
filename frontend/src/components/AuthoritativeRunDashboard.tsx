@@ -10,6 +10,7 @@ import { BaselineInstallationPanel } from "./BaselineInstallationPanel";
 import { BaselineParityPanel } from "./BaselineParityPanel";
 import { DiscoveryFindingsPanel } from "./DiscoveryFindingsPanel";
 import { ParityBaselinePanel } from "./ParityBaselinePanel";
+import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
 import styles from "./ControlTowerShell.module.css";
 
 const pipelineSteps = [
@@ -49,6 +50,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
       <LlmDiagnosticsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} refreshAuthoritativeState={refresh} workflowEvents={state.workflow_events} />
+      <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
       <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <div className={styles.dashboardGrid}>
