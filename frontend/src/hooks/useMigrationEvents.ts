@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBackendBaseUrl } from "@/api/client";
-import type { MigrationEventDto, WorkflowEventType } from "@/types/generated/api";
+import type { MigrationEventDto } from "@/types/generated/api";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "recovering" | "closed";
 
@@ -14,7 +14,8 @@ export interface UseMigrationEventsResult {
   clearRecoveryRequired: () => void;
 }
 
-const WORKFLOW_EVENT_TYPES: WorkflowEventType[] = [
+const WORKFLOW_EVENT_TYPES: string[] = [
+  "ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "ANALYSIS_AGENT_FAILED", "ANALYSIS_REVIEWER_STARTED", "ANALYSIS_REVIEWER_COMPLETED", "ANALYSIS_REVIEWER_FAILED", "G04_CREATED", "G04_APPROVED", "G04_MODIFICATION_REQUESTED", "G04_REJECTED", "G04_STALE",
   "STATE_CONTRACT_MIGRATED",
   "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION",
   "run_state_changed",
