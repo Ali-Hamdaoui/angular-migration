@@ -696,6 +696,10 @@ class MigrationRunDto(ContractModel):
     target_angular_version: str | None = None
     created_at: datetime
     updated_at: datetime
+    source_angular_exact: str | None = None
+    catalogue_version: str | None = None
+    registry_snapshot: dict[str, Any] | None = None
+    runtime_candidates: list[dict[str, Any]] = Field(default_factory=list)
     stages: list[MigrationStageDto] = Field(min_length=1)
     steps: list[StageStepDto] = Field(default_factory=list)
     component_executions: list[ComponentExecutionDto] = Field(default_factory=list)

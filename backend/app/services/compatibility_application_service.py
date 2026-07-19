@@ -37,7 +37,7 @@ class CompatibilityResolver:
         if request.catalogue_version != self.catalogue.version:
             raise CompatibilityApplicationError("STALE_CATALOGUE", "The requested compatibility catalogue is not current.", 409)
         source = Version.parse(request.source_angular_exact)
-        if source is None or source.major not in {18, 19, 20, 21}:
+        if source is None or source.major != 18:
             return self._blocked(request, "SOURCE_FAMILY_UNSUPPORTED")
         source_family = f"angular-{source.major}.x"
         families = list(range(source.major, 21))
@@ -54,23 +54,23 @@ class CompatibilityResolver:
             self._stage(entry, request, blockers if entry.blockers else (), warnings if entry.known_risks else ())
             for entry in entries
         )
-        profile = self._select_stage1_profile(request, entries[0].target_angular_exact, entries[0].target_cli_exact)
+        profile = self._select_stage1_profile(request, entries[0])
         if profile is None:
             blockers.append("NO_COMPATIBLE_STAGE1_PROFILE")
         status = "blocked" if blockers else ("feasible_with_warnings" if warnings else "feasible")
         support_level = "blocked" if blockers else ("historical_experimental" if any(e.support_level == "historical_experimental" for e in entries) else entries[0].support_level)
         return self._result(request, source_family, route, profile, support_level, status, tuple(blockers), tuple(warnings))
 
-    def _select_stage1_profile(self, request, angular_exact: str, cli_exact: str) -> Stage1ExecutionProfile | None:
-        candidates = [candidate for candidate in request.runtime_candidates if self._candidate_allowed(candidate)]
+    def _select_stage1_profile(self, request, entry) -> Stage1ExecutionProfile | None:
+        candidates = [candidate for candidate in request.runtime_candidates if self._candidate_allowed(candidate, entry)]
         if not candidates:
             return None
         candidates.sort(key=lambda candidate: (self._version_key(candidate.node_exact), candidate.profile_id), reverse=True)
         candidate = candidates[0]
         payload = {
             "profile_id": candidate.profile_id,
-            "angular_exact": angular_exact,
-            "angular_cli_exact": cli_exact,
+            "angular_exact": entry.target_angular_exact,
+            "angular_cli_exact": entry.cli_exact or entry.target_cli_exact,
             "node_exact": candidate.node_exact,
             "npm_exact": candidate.npm_exact,
             "npx_exact": candidate.npx_exact,
@@ -86,7 +86,7 @@ class CompatibilityResolver:
         return Stage1ExecutionProfile(**payload, checksum=checksum)
 
     @staticmethod
-    def _candidate_allowed(candidate: RuntimeCandidate) -> bool:
+    def _candidate_allowed(candidate: RuntimeCandidate, entry) -> bool:
         node = Version.parse(candidate.node_exact)
         npm = Version.parse(candidate.npm_exact)
         npx = Version.parse(candidate.npx_exact)
@@ -95,9 +95,14 @@ class CompatibilityResolver:
             and candidate.operating_system.lower() == "windows"
             and candidate.architecture.lower() == "amd64"
             and node
-            and node.major in {18, 20, 22}
+            and node.major == entry.node_major
             and npm
+            and npm.major == entry.npm_major
             and npx
+            and npx.major == entry.npm_major
+            and (entry.node_exact is None or candidate.node_exact == entry.node_exact)
+            and (entry.npm_exact is None or candidate.npm_exact == entry.npm_exact)
+            and (candidate.angular_cli_exact is None or candidate.angular_cli_exact == (entry.cli_exact or entry.target_cli_exact))
             and candidate.registry_configured
             and candidate.proxy_configured
             and candidate.certificate_valid
@@ -120,6 +125,8 @@ class CompatibilityResolver:
             "support_level": entry.support_level,
             "target_angular_exact": entry.target_angular_exact,
             "target_cli_exact": entry.target_cli_exact,
+            "node_exact": entry.node_exact,
+            "npm_exact": entry.npm_exact,
             "blockers": tuple(blockers),
             "warnings": tuple(warnings),
         }

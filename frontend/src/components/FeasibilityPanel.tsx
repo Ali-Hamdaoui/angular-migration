@@ -21,10 +21,8 @@ function correlationFrom(error: ApiClientError) {
 
 function operationKey(prefix: string, runId: string) { return `${prefix}-${runId}-${Date.now()}`; }
 
-function sourceVersion(state: AuthoritativeRunStateDto) {
-  const extended = state as AuthoritativeRunStateDto & { source_angular_version?: string | null; source_version_detected?: string | null };
-  return extended.source_angular_version ?? extended.source_version_detected ?? "18.0.0";
-}
+type Feature5Inputs = AuthoritativeRunStateDto & { source_angular_exact?: string | null; runtime_candidates?: Array<Record<string, unknown>>; registry_snapshot?: { snapshot_id?: string; checksum?: string } | null; catalogue_version?: string | null };
+function sourceVersion(state: AuthoritativeRunStateDto) { return (state as Feature5Inputs).source_angular_exact ?? null; }
 
 export function FeasibilityPanel({ runId, initialState, connectionStatus, artifacts, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts: ArtifactRefDto[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
   const [feasibility, setFeasibility] = useState<FeasibilityResponse | null>(null);
@@ -36,6 +34,10 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
   const [decision, setDecision] = useState<G05Decision>("approve");
   const [comment, setComment] = useState("");
   const latestEvent = useMemo(() => [...workflowEvents].reverse().find((event) => F05_EVENTS.includes(event.event_type)), [workflowEvents]);
+  const inputs = initialState as Feature5Inputs;
+  const exactSource = sourceVersion(initialState);
+  const runtimeCandidates = inputs.runtime_candidates ?? [];
+  const registrySnapshot = inputs.registry_snapshot;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -52,17 +54,18 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
   useEffect(() => { void refresh(); }, [refresh, initialState.state_version, latestEvent?.sequence]);
 
   async function resolve() {
-    if (!artifacts.length) return;
+    if (!artifacts.length || !exactSource || !registrySnapshot?.snapshot_id || !registrySnapshot.checksum || !runtimeCandidates.length) return;
     setWorking(true); setError(null); setStale(false);
     try {
       setFeasibility(await resolveFeasibility(runId, {
         expected_state_version: initialState.state_version,
         idempotency_key: operationKey("feasibility", runId),
-        source_angular_exact: sourceVersion(initialState),
-        catalogue_version: "catalog-v1",
-        registry_snapshot_id: "registry-snapshot-v1",
-        registry_snapshot_checksum: "sha256:" + "0".repeat(64),
+        source_angular_exact: exactSource,
+        catalogue_version: inputs.catalogue_version ?? "catalog-v1",
+        registry_snapshot_id: registrySnapshot.snapshot_id,
+        registry_snapshot_checksum: registrySnapshot.checksum,
         prerequisite_artifacts: artifacts.map((artifact) => ({ artifact_id: artifact.artifact_id, checksum: artifact.checksum })),
+        runtime_candidates: runtimeCandidates,
       }));
       setEmpty(false);
       await refreshAuthoritativeState?.();
@@ -94,14 +97,14 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
     {loading ? <p role="status">Loading authoritative feasibility...</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {stale ? <p role="alert">The feasibility or G05 state is stale. The authoritative snapshot was reloaded; review the current package before retrying.</p> : null}
-    {!loading && empty ? <><p className={styles.note}>No feasibility package is available yet.</p><button type="button" onClick={() => void resolve()} disabled={working || !artifacts.length}>{working ? "Resolving feasibility..." : "Resolve route and Stage 1 profile"}</button>{!artifacts.length ? <p role="alert">Feasibility is blocked until prerequisite evidence artifacts are available.</p> : null}</> : null}
+    {!loading && empty ? <><p className={styles.note}>No feasibility package is available yet.</p><button type="button" onClick={() => void resolve()} disabled={working || !artifacts.length || !exactSource || !registrySnapshot?.snapshot_id || !registrySnapshot.checksum || !runtimeCandidates.length}>{working ? "Resolving feasibility..." : "Resolve route and Stage 1 profile"}</button>{!artifacts.length ? <p role="alert">Feasibility is blocked until prerequisite evidence artifacts are available.</p> : null}{!exactSource || !registrySnapshot?.checksum || !runtimeCandidates.length ? <p role="alert">Authoritative source exact version, runtime candidates, and registry snapshot data are required.</p> : null}</> : null}
     {feasibility?.status === "in_progress" ? <p role="status">Compatibility resolution is running. This view will refresh from authoritative events and snapshots.</p> : null}
     {feasibility?.status === "blocked" ? <div role="alert"><p>Feasibility is blocked; G05 cannot approve this route.</p><ul className={styles.list}>{feasibility.blockers.map((item) => <li key={item}><code>{item}</code></li>)}</ul></div> : null}
     {feasibility ? <>
-      <div className={styles.dimensionGrid} aria-label="Feasibility summary"><div><span>Source</span><strong>{feasibility.source_exact}</strong></div><div><span>Target</span><strong>{feasibility.target_family}</strong></div><div><span>Support</span><strong>{feasibility.support_level}</strong></div><div><span>Catalogue</span><strong>{feasibility.package.catalogue_version as string ?? "catalogue"}</strong></div></div>
+      <div className={styles.dimensionGrid} aria-label="Feasibility summary"><div><span>Source</span><strong>{feasibility.source_exact}</strong></div><div><span>Target</span><strong>{feasibility.target_family}</strong></div><div><span>Support</span><strong>{feasibility.support_level}</strong></div><div><span>Catalogue</span><strong>{feasibility.catalogue_snapshot?.version ?? "unknown"}</strong><code>{feasibility.catalogue_snapshot?.checksum ?? "checksum unavailable"}</code></div><div><span>Registry snapshot</span><strong>{feasibility.registry_snapshot?.snapshot_id ?? "unknown"}</strong><code>{feasibility.registry_snapshot?.checksum ?? "checksum unavailable"}</code></div></div>
       <h3>Major-stage ladder</h3><ol className={styles.list}>{feasibility.route.map((stage) => <li key={stage.stage_id}><strong>{stage.source_family} → {stage.target_family}</strong> <span className={styles.status}>{stage.support_level}</span>{stage.target_angular_exact ? <span> · Angular {stage.target_angular_exact} / CLI {stage.target_cli_exact}</span> : null}</li>)}</ol>
       {feasibility.warnings.length ? <div><h3>Warnings</h3><ul className={styles.list}>{feasibility.warnings.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
-      <div className={styles.previewPanel}><h3>Candidate runtimes</h3>{feasibility.selected_profile ? <ul className={styles.list}><li><strong>{feasibility.selected_profile.profile_id}</strong> · {feasibility.selected_profile.operating_system}/{feasibility.selected_profile.architecture} · Node {feasibility.selected_profile.node_exact} · npm {feasibility.selected_profile.npm_exact} · npx {feasibility.selected_profile.npx_exact}</li></ul> : <p className={styles.note}>No compatible runtime candidate was resolved.</p>}<h3>Exact Stage 1 profile</h3>{feasibility.selected_profile ? <div className={styles.dimensionGrid}><div><span>Angular / CLI</span><strong>{feasibility.selected_profile.angular_exact} / {feasibility.selected_profile.angular_cli_exact}</strong></div><div><span>Node / npm / npx</span><strong>{feasibility.selected_profile.node_exact} / {feasibility.selected_profile.npm_exact} / {feasibility.selected_profile.npx_exact}</strong></div><div><span>Profile</span><strong>{feasibility.selected_profile.profile_id}</strong></div><div><span>Checksum</span><code>{feasibility.selected_profile.checksum}</code></div></div> : <p className={styles.note}>No exact Stage 1 profile was resolved.</p>}</div>
+      <div className={styles.previewPanel}><h3>Candidate runtimes</h3>{(feasibility.runtime_candidates ?? []).length ? <ul className={styles.list}>{(feasibility.runtime_candidates ?? []).map((candidate) => <li key={String(candidate.profile_id)}><strong>{String(candidate.profile_id)}</strong> · {String(candidate.operating_system)}/{String(candidate.architecture)} · Node {String(candidate.node_exact)} · npm {String(candidate.npm_exact)} · npx {String(candidate.npx_exact)}</li>)}</ul> : <p className={styles.note}>No runtime candidates were supplied by the authoritative backend.</p>}<h3>Exact Stage 1 profile</h3>{feasibility.selected_profile ? <div className={styles.dimensionGrid}><div><span>Angular / CLI</span><strong>{feasibility.selected_profile.angular_exact} / {feasibility.selected_profile.angular_cli_exact}</strong></div><div><span>Node / npm / npx</span><strong>{feasibility.selected_profile.node_exact} / {feasibility.selected_profile.npm_exact} / {feasibility.selected_profile.npx_exact}</strong></div><div><span>Profile</span><strong>{feasibility.selected_profile.profile_id}</strong></div><div><span>Checksum</span><code>{feasibility.selected_profile.checksum}</code></div></div> : <p className={styles.note}>No exact Stage 1 profile was resolved.</p>}</div>
       <div className={styles.previewPanel}><h3>Immutable evidence</h3><ul className={styles.list}>{feasibility.artifact_ids.map((id) => <li key={id}><a className={styles.actionLink} href={feasibility.artifact_links[id] ?? `/api/v1/artifacts/${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">{id}</a><code>{feasibility.artifact_checksums[id]}</code></li>)}</ul></div>
       <div className={styles.previewPanel}><h3>G05: {feasibility.gate_status}</h3>{approved ? <p role="status">G05 was accepted by the authoritative backend. This control does not locally advance the workflow.</p> : feasibility.gate_status === "blocked" ? <p role="alert">G05 is blocked until the feasibility evidence is renewed.</p> : <><label htmlFor="g05-decision">Decision</label><select id="g05-decision" value={decision} onChange={(event) => setDecision(event.target.value as G05Decision)}>{decisions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label htmlFor="g05-comment">Review comment</label><textarea id="g05-comment" value={comment} onChange={(event) => setComment(event.target.value)} rows={3} placeholder="Optional rationale; required for approval with comment." /><button type="button" onClick={() => void submitDecision()} disabled={working || feasibility.gate_status !== "pending"}>{working ? "Recording decision..." : "Record G05 decision"}</button></>}</div>
     </> : null}

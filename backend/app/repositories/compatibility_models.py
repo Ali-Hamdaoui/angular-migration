@@ -46,6 +46,8 @@ class CompatibilityResolutionModel(Base):
     catalogue_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
     registry_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False)
     registry_snapshot_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    registry_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    runtime_candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     source_exact: Mapped[str] = mapped_column(String(64), nullable=False)
     source_family: Mapped[str] = mapped_column(String(64), nullable=False)
     target_family: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -65,6 +67,7 @@ class CompatibilityResolutionModel(Base):
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class G05ApprovalModel(Base):
@@ -88,5 +91,6 @@ class G05ApprovalModel(Base):
     artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     comment: Mapped[str | None] = mapped_column(Text)
     stale_reason: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

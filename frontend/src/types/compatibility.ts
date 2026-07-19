@@ -52,6 +52,9 @@ export type FeasibilityResponse = {
   source_family: string;
   target_family: string;
   support_level: string;
+  catalogue_snapshot?: { version?: string; checksum?: string; [key: string]: unknown };
+  registry_snapshot?: { snapshot_id?: string; checksum?: string; [key: string]: unknown };
+  runtime_candidates?: Array<Record<string, unknown>>;
   route: CompatibilityStage[];
   selected_profile: Stage1ExecutionProfile | null;
   blockers: string[];
@@ -65,6 +68,8 @@ export type FeasibilityResponse = {
   gate_version: string;
   gate_status: string;
   gate_decision: string | null;
+  gate_created_at?: string | null;
+  gate_expires_at?: string | null;
   state_version: number;
   event_sequence: number;
   idempotent_replay: boolean;

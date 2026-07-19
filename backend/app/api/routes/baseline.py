@@ -3,9 +3,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, BaselineInstallCancelRequest, BaselineInstallRequest, BaselineInstallResponse, BaselinePrequalifyRequest, BaselineResponse, BaselineWorkspaceRequest
 from app.services.baseline_application_service import BaselineApplicationError, BaselineApplicationService
 from app.services.baseline_install_application_service import BaselineInstallApplicationError, BaselineInstallApplicationService
+from app.api.routes.compatibility import default_catalogue
+from app.services.compatibility_application_service import CompatibilityResolver
+from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 
 router = APIRouter(prefix="/runs", tags=["baseline"])
-_install_service = BaselineInstallApplicationService()
+_install_service = BaselineInstallApplicationService(g05_service=CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(default_catalogue())))
 
 def get_baseline_service() -> BaselineApplicationService: return BaselineApplicationService()
 def get_baseline_install_service() -> BaselineInstallApplicationService: return _install_service

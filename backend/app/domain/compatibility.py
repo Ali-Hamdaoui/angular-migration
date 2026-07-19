@@ -51,6 +51,9 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     zone_js_exact: str | None = None
     node_major: int = Field(ge=0)
     npm_major: int = Field(ge=0)
+    node_exact: str | None = None
+    npm_exact: str | None = None
+    cli_exact: str | None = None
     support_level: SupportLevel
     fixture_status: Literal["passed", "incomplete", "failed"]
     validation_policy_id: str = Field(min_length=1)
@@ -169,6 +172,8 @@ class G05Package(CompatibilityModel):
     state_version: int
     workspace_fingerprint: str | None = None
     plan_version: str | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
     feasibility: FeasibilityPackage
 
 

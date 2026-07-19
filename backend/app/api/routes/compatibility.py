@@ -22,6 +22,9 @@ def default_catalogue() -> CompatibilityCatalogue:
             target_cli_exact=f"{major + 1}.0.0",
             node_major=20,
             npm_major=10,
+            node_exact="20.11.1",
+            npm_exact="10.2.4",
+            cli_exact=f"{major + 1}.0.0",
             support_level="historical_experimental",
             fixture_status="incomplete",
             validation_policy_id="angular-stage-standard-v2",
@@ -55,6 +58,14 @@ def get_feasibility(run_id: str, request: Request, actor: str = Depends(authenti
         if result is None:
             return error_response(request, status_code=404, error_code="FEASIBILITY_NOT_FOUND", message="Feasibility evidence was not found.")
         return result
+    except CompatibilityEvidenceError as error:
+        return _error(request, error)
+
+
+@router.post("/runs/{run_id}/feasibility/reconcile-artifacts")
+def reconcile_feasibility_artifacts(run_id: str, request: Request, actor: str = Depends(authenticated_actor), service: CompatibilityEvidenceApplicationService = Depends(get_service)):
+    try:
+        return service.reconcile_orphans(run_id, actor)
     except CompatibilityEvidenceError as error:
         return _error(request, error)
 

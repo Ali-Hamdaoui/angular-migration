@@ -42,6 +42,8 @@ def upgrade():
         sa.Column("catalogue_checksum", sa.String(128), nullable=False),
         sa.Column("registry_snapshot_id", sa.String(128), nullable=False),
         sa.Column("registry_snapshot_checksum", sa.String(128), nullable=False),
+        sa.Column("registry_snapshot", sa.JSON(), nullable=False, server_default="{}"),
+        sa.Column("runtime_candidates", sa.JSON(), nullable=False, server_default="[]"),
         sa.Column("source_exact", sa.String(64), nullable=False),
         sa.Column("source_family", sa.String(64), nullable=False),
         sa.Column("target_family", sa.String(64), nullable=False),
@@ -61,6 +63,7 @@ def upgrade():
         sa.Column("event_sequence", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint("run_id", "idempotency_key", name="uq_compatibility_resolutions_run_idempotency"),
     )
     op.create_index("ix_compatibility_resolutions_run_id", "compatibility_resolutions", ["run_id"])
@@ -84,6 +87,7 @@ def upgrade():
         sa.Column("artifact_ids", sa.JSON(), nullable=False),
         sa.Column("comment", sa.Text()),
         sa.Column("stale_reason", sa.Text()),
+        sa.Column("expires_at", sa.DateTime(timezone=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("run_id", "idempotency_key", name="uq_g05_approvals_run_idempotency"),

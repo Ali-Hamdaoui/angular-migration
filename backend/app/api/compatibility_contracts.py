@@ -47,6 +47,9 @@ class FeasibilityResponse(ContractModel):
     source_family: str
     target_family: str
     support_level: str
+    catalogue_snapshot: dict[str, Any] = Field(default_factory=dict)
+    registry_snapshot: dict[str, Any] = Field(default_factory=dict)
+    runtime_candidates: list[dict[str, Any]] = Field(default_factory=list)
     route: list[dict[str, Any]]
     selected_profile: Stage1ExecutionProfile | None = None
     blockers: list[str] = Field(default_factory=list)
@@ -60,6 +63,8 @@ class FeasibilityResponse(ContractModel):
     gate_version: str = "g05-v1"
     gate_status: str
     gate_decision: str | None = None
+    gate_created_at: datetime | None = None
+    gate_expires_at: datetime | None = None
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False
