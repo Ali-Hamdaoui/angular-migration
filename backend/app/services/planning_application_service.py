@@ -85,7 +85,7 @@ class PlanningApplicationService:
         self._stage_plans = stage_plans or StageExecutionPlanService()
         self._results: dict[tuple[str, str], tuple[str, PlanGenerationResult]] = {}
 
-    def generate(self, request: PlanGenerationRequest) -> PlanGenerationResult:
+    def generate(self, request: PlanGenerationRequest, *, plan_version: int = 1) -> PlanGenerationResult:
         key = (request.run_id, request.idempotency_key)
         request_checksum = self._request_checksum(request)
         existing = self._results.get(key)
@@ -97,8 +97,8 @@ class PlanningApplicationService:
             raise PlanningApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
         self._validate_prerequisites(request)
         try:
-            plan = self._migration_plans.create(request)
-            stage = self._stage_plans.create(request)
+            plan = self._migration_plans.create(request, plan_version=plan_version)
+            stage = self._stage_plans.create(request, plan_version=plan_version)
         except PlanningApplicationError:
             raise
         except Exception as error:

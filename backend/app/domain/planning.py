@@ -148,6 +148,7 @@ class PlanGenerationRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
     actor: str = Field(min_length=1, max_length=128)
+    correlation_id: str | None = Field(default=None, max_length=128)
     source_exact: str = Field(min_length=1, max_length=64)
     source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
     target_family: str = Field(default="angular-21.x", pattern=r"^angular-(19|20|21)\.x$")
