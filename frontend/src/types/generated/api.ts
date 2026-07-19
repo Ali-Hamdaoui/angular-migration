@@ -190,3 +190,53 @@ export type BaselineValidationResponse = { validation_id: string; run_id: string
 export type BaselineQualifyRequest = { expected_state_version:number; idempotency_key:string; actor:string; policy?: "strict_clean"|"qualified_known_failures"; company_policy_allows_known_failures?: boolean; prerequisite_artifact_ids?: string[]; prerequisite_artifact_checksums?: Record<string,string> };
 export type G03DecisionRequest = { expected_state_version:number; idempotency_key:string; actor:string; decision:"approved"|"modification_requested"|"rejected"; comment?:string|null };
 export type BaselineAssessmentResponse = { run_id:string; assessment_id:string; status:string; policy:string; policy_version:string; blockers:string[]; warnings:string[]; known_failures:Array<Record<string,unknown>>; evidence_confidence:Record<string,string>; evidence_set_checksum:string; sandbox_fingerprint:string; execution_profile_checksum:string; package_checksum:string; artifact_ids:string[]; state_version:number; event_sequence:number; g03_decision:string|null; stale_reason:string|null; idempotent_replay:boolean };
+
+/** --- Harness / Acceptance-Suite DTOs (added T03 — S4-F15-I03, AMFA-284) --- */
+
+/** Angular-version fixture types for the acceptance harness. */
+export type HarnessFixtureType = "angular_180x" | "angular_182x" | "passable" | "compiler_error" | "dependency_conflict" | "environment_blocker" | "cancellable";
+
+/** Request to create a new harness fixture. */
+export type HarnessRequestDto = {
+  fixture_type: HarnessFixtureType;
+  name: string;
+  idempotency_key?: string | null;
+  expected_state_version?: number;
+  actor?: string;
+};
+
+/** Request to evaluate an existing harness fixture. */
+export type HarnessEvaluateRequestDto = {
+  fixture_id: string;
+};
+
+/** Result of a single harness fixture evaluation. */
+export type HarnessResultDto = {
+  fixture_id: string;
+  fixture_root: string;
+  outcome: string;
+  evidence_refs: ArtifactRefDto[];
+  state_version: number;
+  idempotent_replay?: boolean;
+};
+
+/** Aggregate status of the full acceptance suite. */
+export type HarnessStatusDto = {
+  overall_status: string;
+  fixtures: HarnessResultDto[];
+  errors: string[];
+  evidence_summary: Record<string, string | number | string[]>;
+};
+
+/** Status of a single acceptance-suite run. */
+export type HarnessRunStatusDto = {
+  run_id: string;
+  suite_id: string;
+  overall_status: string;
+  fixture_count: number;
+  passed: number;
+  failed: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  evidence_refs: ArtifactRefDto[];
+};

@@ -1,0 +1,106 @@
+{
+  "goal": "G10",
+  "goal_folder": "10-full-runtime-proof",
+  "branch": "hermes/10-full-runtime-proof",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "inventory_date": "2026-07-19T21:37:00Z",
+  "phase": "Phase A — harness_ready",
+  "dependencies": {
+    "S2-F03 (LLM Gateway)": {
+      "status": "PRESENT",
+      "note": "Mock LLM gateway exists at backend/app/llm_gateway/mock_gateway.py. Real Azure gateway also present. Phase A uses mock/fake adapters only.",
+      "integration_required": false,
+      "test_fake_boundary": "backend/app/llm_gateway/mock_gateway.py — used as fake model integration suite adapter"
+    },
+    "S4-F01 (Command Runtime)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 01 exists (hermes/01-command-runtime) but not integrated into this branch. Phase A implements harness-owned subprocess profiles that consume the existing command execution worker.",
+      "integration_required": true,
+      "test_fake_boundary": "backend/app/command_execution/worker.py — existing implementation used directly for harness subprocesses"
+    },
+    "S4-F02 (Stage Workspace Bootstrap)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 02 exists but not integrated. Phase A does not duplicate workspace services.",
+      "integration_required": true,
+      "test_fake_boundary": "Harness uses external temp directories directly, not through stage workspace bootstrap"
+    },
+    "S4-F03 (Angular Transform Review)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 03 exists (pushed to remote) but not integrated. Phase A implements harness-only synthetic fixture generation.",
+      "integration_required": true,
+      "test_fake_boundary": "Existing angular_fixture.py extended for harness purposes"
+    },
+    "S4-F04 (Stage Validation Seal)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 04 exists but not integrated. Phase A does not duplicate validation services.",
+      "integration_required": true,
+      "test_fake_boundary": "Harness records own validation results"
+    },
+    "S4-F05 (Failure Diagnostics Context)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 05 exists (pushed to remote) but not integrated. Phase A implements deterministic failure fixtures for harness testing.",
+      "integration_required": true,
+      "test_fake_boundary": "Deterministic failure fixtures are harness-owned"
+    },
+    "S4-F06 (Repair Agents G10)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 06 exists but not integrated. Phase A does not duplicate repair services.",
+      "integration_required": true,
+      "test_fake_boundary": "Phase B consumes repair services directly"
+    },
+    "S4-F07 (Patch Validation Loop)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 07 exists but not integrated.",
+      "integration_required": true,
+      "test_fake_boundary": "Phase B consumes patch services directly"
+    },
+    "S4-F08 (Reconciliation Assistant)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "Worktree 08 exists but not integrated.",
+      "integration_required": true,
+      "test_fake_boundary": "Phase B consumes reconciliation services directly"
+    },
+    "S4-F09 (Assurance Delivery Report)": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "No worktree for 09 exists yet.",
+      "integration_required": true,
+      "test_fake_boundary": "Phase B consumes assurance services directly"
+    },
+    "S4-F10–F14": {
+      "status": "BLOCKED_UPSTREAM",
+      "note": "All S4-F10 through S4-F14 are upstream dependencies not yet integrated. Phase A records every blocked criterion explicitly.",
+      "integration_required": true,
+      "test_fake_boundary": "All consumed through production port contracts and test fakes"
+    },
+    "Cross-goal frozen schemas": {
+      "status": "PRESENT",
+      "note": "All 26 shared contracts exist in goals/shared/contracts/. G10 provides goal_completion.schema.json which also exists.",
+      "integration_required": false,
+      "test_fake_boundary": "Not applicable — contracts are frozen"
+    }
+  },
+  "blocked_integrated_criteria": [
+    "Real 18.0.x→19→20→21 passing path — requires G01–G09 integrated",
+    "Human gates and stale-state protection — requires G01–G09 integrated",
+    "Real migration failure through Proposer/Reviewer/G10 — requires G04–G09 integrated",
+    "Environment failure without code patch — requires G05–G09 integrated",
+    "Cancellation and process-tree cleanup — requires G01, G04 integrated",
+    "Backend restart/lease/checkpoint/SSE reconnect — requires G01, G08 integrated",
+    "Assistant evidence-grounded answer — requires G08 integrated",
+    "Final assurance/G13/Delivery/G14/Report/G15 — requires G09 integrated",
+    "Source fingerprint unchanged and final output fingerprint — requires G03–G05 integrated",
+    "Human product sign-off — requires all integration to demonstrate"
+  ],
+  "phase_a_deliverables": [
+    "Extended fixture generators (18.0.x, 18.2.x, passing, repairable, blocked, cancellable)",
+    "Harness orchestration service",
+    "Harness subprocess profiles",
+    "Deterministic failure fixtures",
+    "Fake model integration suite (reusing existing mock gateway)",
+    "Runtime evidence collector service",
+    "Acceptance-suite status API endpoint (optional, GET /api/v1/operator/acceptance-suite/status)",
+    "Frontend acceptance checklist component",
+    "Extensive automated tests",
+    "Documentation and evidence"
+  ]
+}

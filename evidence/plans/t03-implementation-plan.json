@@ -1,0 +1,424 @@
+{
+  "task": "T03 - S4-F15-I03",
+  "jira": "AMFA-284",
+  "phase": "Phase A — harness_ready",
+  "summary": "Build the frontend acceptance checklist for the Angular acceptance harness. Composes a typed API client for acceptance-suite endpoints, a React/Next.js AcceptanceChecklist component that renders each acceptance scenario linked to live API data, a useAcceptanceChecklist hook for polling-based state management with all required UI states (loading, empty, running, success, blocked, stale, backend-failure, reconnect), and a dedicated page route to serve the checklist. No G01–G09 production UX is duplicated; the checklist reads exclusively from backend snapshots and events. Phase A boundary: no full G01–G09 workflow UX, no Jira completion claim.",
+  "reusable_assets": [
+    {
+      "category": "API Client Pattern",
+      "symbols": [
+        "createApiClient(baseUrl, fetchImplementation) -> { get, post }",
+        "apiClient (singleton with NEXT_PUBLIC_BACKEND_URL default)",
+        "ApiClientError class (status, method, path, responseBody)",
+        "getBackendBaseUrl() -> string"
+      ],
+      "files": ["frontend/src/api/client.ts"],
+      "reuse": "Direct import — all new acceptance API functions accept optional client override for DI in tests"
+    },
+    {
+      "category": "Existing API Module Pattern",
+      "symbols": [
+        "runs.ts: typed functions (createAuthoritativeRun, startAuthoritativeRun, getAuthoritativeRunState)",
+        "Each function accepts (param, client?) signature with default apiClient",
+        "Uses encodeURIComponent for path segments"
+      ],
+      "files": ["frontend/src/api/runs.ts"],
+      "reuse": "Copy pattern for acceptance.ts — one function per backend endpoint, same optional client injection"
+    },
+    {
+      "category": "Generated API Types (shared DTOs)",
+      "symbols": [
+        "ArtifactRefDto (artifact_id, run_id, stage_id, artifact_type, relative_path, created_at, checksum)",
+        "WorkflowEventDto (event_id, run_id, stage_id, event_type, occurred_at, sequence, payload)",
+        "BaselineResponse pattern (state_version, idempotent_replay, artifact_ids)",
+        "RunStatus, ArtifactType, CommandStatus enums"
+      ],
+      "files": ["frontend/src/types/generated/api.ts"],
+      "reuse": "Manually add new harness DTOs (HarnessFixtureType, HarnessStatusDto, HarnessResultDto, HarnessRunStatusDto) alongside existing types"
+    },
+    {
+      "category": "SSE / Polling Hook Pattern",
+      "symbols": [
+        "useMigrationEvents(runId, createEventSource) -> { status, events, lastSequence, recoveryRequired, clearRecoveryRequired }",
+        "useAuthoritativeRun(runId, initialState) -> { state, status, error, refresh }",
+        "AUTHORITATIVE_EVENT_TYPES, PARITY_BASELINE_EVENT_TYPES, LLM_EVENT_TYPES",
+        "ConnectionStatus, AuthoritativeConnectionStatus"
+      ],
+      "files": [
+        "frontend/src/hooks/useMigrationEvents.ts",
+        "frontend/src/hooks/useAuthoritativeRun.ts"
+      ],
+      "reuse": "Copy polling pattern from useAuthoritativeRun (setInterval + refresh callback). No SSE needed for acceptance checklist — polling GET /status and GET /runs/{run_id} is sufficient for Phase A"
+    },
+    {
+      "category": "CSS Module Design System",
+      "symbols": [
+        "ControlTowerShell.module.css: shell, panel, card, header, pipeline, connectionBar, dimensionGrid, twoColumns, list, eventList, metadataGrid, kicker, status, note, actionLink",
+        "globals.css: dark theme (--bg: #09111f, --text: #eef4ff, accent: #5a8cff)",
+        ".connectionBar pattern (inline-flex, rounded pill, border, uppercase)"
+      ],
+      "files": [
+        "frontend/src/components/ControlTowerShell.module.css",
+        "frontend/src/app/globals.css"
+      ],
+      "reuse": "Create AcceptanceChecklist.module.css extending existing design tokens. Import shared classes from ControlTowerShell.module.css where applicable"
+    },
+    {
+      "category": "Component Test Pattern",
+      "symbols": [
+        "AuthoritativeRunDashboard.test.tsx: vi.mock for hooks, render + screen assertions",
+        "ArtifactPreviewPanel.test.tsx pattern: mock loadArtifact, test state transitions",
+        "render, screen from @testing-library/react",
+        "describe / it pattern with vitest globals"
+      ],
+      "files": ["frontend/src/components/__tests__/AuthoritativeRunDashboard.test.tsx"],
+      "reuse": "Copy mock-hook pattern for useAcceptanceChecklist. Same vi.mock approach, same testing-library render pattern"
+    },
+    {
+      "category": "Page Route Pattern",
+      "symbols": [
+        "migrations/[runId]/page.tsx: dynamic=force-dynamic, params destructuring, try/catch with error fallback",
+        "page.tsx render pattern: <main> wrapper, component composition"
+      ],
+      "files": ["frontend/src/app/migrations/[runId]/page.tsx"],
+      "reuse": "Copy for acceptance/page.tsx — server-side data fetch (getAcceptanceStatus), pass to client component"
+    },
+    {
+      "category": "Backend Acceptance API (from T01+T02)",
+      "symbols": [
+        "GET /api/v1/operator/acceptance-suite/status -> HarnessStatusDto",
+        "POST /api/v1/operator/acceptance-suite/fixtures -> HarnessResultDto (201)",
+        "POST /api/v1/operator/acceptance-suite/fixtures/evaluate -> HarnessResultDto",
+        "GET /api/v1/operator/acceptance-suite/runs -> list[dict]",
+        "GET /api/v1/operator/acceptance-suite/runs/{run_id} -> HarnessRunStatusDto",
+        "GET /api/v1/operator/acceptance-suite/runs/{run_id}/evidence -> list[ArtifactRefDto]"
+      ],
+      "files": ["backend/app/api/routes/acceptance.py"],
+      "reuse": "All six endpoints consumed by the frontend acceptance checklist. No backend changes needed for T03"
+    },
+    {
+      "category": "Backend Harness Domain Contracts (from T01+T02)",
+      "symbols": [
+        "HarnessFixtureType enum (7 values: ANGULAR_180X, ANGULAR_182X, PASSABLE, COMPILER_ERROR, DEPENDENCY_CONFLICT, ENVIRONMENT_BLOCKER, CANCELLABLE)",
+        "HarnessStatusDto (overall_status, fixtures list[HarnessResultDto], errors, evidence_summary dict)",
+        "HarnessResultDto (fixture_id, fixture_root, outcome, evidence_refs list[ArtifactRefDto], state_version, idempotent_replay)",
+        "HarnessRunStatusDto (run_id, suite_id, overall_status, fixture_count, passed, failed, started_at, completed_at, evidence_refs list[ArtifactRefDto])",
+        "ArtifactRefDto (artifact_id, run_id, stage_id, artifact_type, relative_path, created_at, checksum)"
+      ],
+      "files": ["backend/app/domain/contracts.py"],
+      "reuse": "These DTOs define the contract. Frontend types must mirror them exactly for type safety"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "GAP-001",
+      "description": "Missing frontend API client module for acceptance-suite endpoints — no acceptance.ts in frontend/src/api/; consuming code would inline fetch() calls without client reuse",
+      "severity": "HIGH",
+      "affected_files": ["frontend/src/api/acceptance.ts"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-002",
+      "description": "Missing frontend TypeScript types for harness DTOs — HarnessFixtureType, HarnessStatusDto, HarnessResultDto, HarnessRunStatusDto, HarnessEvaluateRequestDto are not in frontend/src/types/generated/api.ts",
+      "severity": "HIGH",
+      "affected_files": ["frontend/src/types/generated/api.ts"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-003",
+      "description": "Missing useAcceptanceChecklist hook — no polling-based hook exists for acceptance-suite status; operator dashboard would have no state management for loading/empty/running/success/blocked/stale/backend-failure/reconnect",
+      "severity": "HIGH",
+      "affected_files": ["frontend/src/hooks/useAcceptanceChecklist.ts"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-004",
+      "description": "Missing AcceptanceChecklist component — no React component that renders the acceptance checklist linking each scenario to live API endpoints and artifacts; the core deliverable of T03 does not exist",
+      "severity": "HIGH",
+      "affected_files": ["frontend/src/components/AcceptanceChecklist.tsx"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-005",
+      "description": "Missing CSS Module for AcceptanceChecklist — no styling file; component would render unstyled, breaking the established dark-theme design system",
+      "severity": "MEDIUM",
+      "affected_files": ["frontend/src/components/AcceptanceChecklist.module.css"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-006",
+      "description": "Missing page route for acceptance checklist — no /acceptance route serving the server-side rendered page with initial status fetch",
+      "severity": "MEDIUM",
+      "affected_files": ["frontend/src/app/acceptance/page.tsx"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-007",
+      "description": "Missing test coverage for acceptance API module — no vitest tests for acceptance.ts request/response handling and error cases",
+      "severity": "MEDIUM",
+      "affected_files": ["frontend/src/api/__tests__/acceptance.test.ts"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-008",
+      "description": "Missing test coverage for useAcceptanceChecklist hook — no tests for state transitions through all UI states (loading, empty, running, success, blocked, stale, backend-failure, reconnect)",
+      "severity": "HIGH",
+      "affected_files": ["frontend/src/hooks/__tests__/useAcceptanceChecklist.test.ts"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-009",
+      "description": "Missing test coverage for AcceptanceChecklist component — no rendered component tests verifying scenario display, evidence links, error state rendering, and accessibility",
+      "severity": "HIGH",
+      "affected_files": ["frontend/src/components/__tests__/AcceptanceChecklist.test.tsx"],
+      "requires_new_code": true
+    }
+  ],
+  "implementation_steps": [
+    {
+      "order": 1,
+      "file": "evidence/plans/t03-implementation-plan.json",
+      "action": "create",
+      "description": "This plan document — read-only planner output"
+    },
+    {
+      "order": 2,
+      "file": "frontend/src/types/generated/api.ts",
+      "action": "modify",
+      "description": "Add TypeScript types for all acceptance-suite DTOs consumed by the frontend. Add these types after the existing ArtifactRefDto type (around line 34): (A) HarnessFixtureType — union literal type with 7 string values matching the Python enum ('angular_180x', 'angular_182x', 'passable', 'compiler_error', 'dependency_conflict', 'environment_blocker', 'cancellable'); (B) HarnessRequestDto — fixture_type (HarnessFixtureType), name (string), idempotency_key (string|null), expected_state_version (number), actor (string); (C) HarnessResultDto — fixture_id (string), fixture_root (string), outcome (string), evidence_refs (ArtifactRefDto[]), state_version (number), idempotent_replay (boolean); (D) HarnessEvaluateRequestDto — fixture_id (string); (E) HarnessStatusDto — overall_status (string), fixtures (HarnessResultDto[]), errors (string[]), evidence_summary (Record<string, string | number | string[]>); (F) HarnessRunStatusDto — run_id (string), suite_id (string), overall_status (string), fixture_count (number), passed (number), failed (number), started_at (string|null), completed_at (string|null), evidence_refs (ArtifactRefDto[]). All types follow the existing pattern: exported type aliases, optional fields marked with ? where appropriate. Do not remove or modify existing types."
+    },
+    {
+      "order": 3,
+      "file": "frontend/src/api/acceptance.ts",
+      "action": "create",
+      "description": "Create the acceptance-suite API client module following the pattern in runs.ts. Export typed functions: (1) getAcceptanceStatus(client?) -> Promise<HarnessStatusDto> — calls GET /api/v1/operator/acceptance-suite/status; (2) createAcceptanceFixture(request: HarnessRequestDto, client?) -> Promise<HarnessResultDto> — calls POST /api/v1/operator/acceptance-suite/fixtures; (3) evaluateAcceptanceFixture(request: HarnessEvaluateRequestDto, client?) -> Promise<HarnessResultDto> — calls POST /api/v1/operator/acceptance-suite/fixtures/evaluate; (4) listHarnessRuns(client?) -> Promise<Array<{run_id: string, artifact_count: number, latest_event: string|null}>> — calls GET /api/v1/operator/acceptance-suite/runs; (5) getHarnessRun(runId: string, client?) -> Promise<HarnessRunStatusDto> — calls GET /api/v1/operator/acceptance-suite/runs/{encodeURIComponent(runId)}; (6) getHarnessRunEvidence(runId: string, client?) -> Promise<ArtifactRefDto[]> — calls GET /api/v1/operator/acceptance-suite/runs/{encodeURIComponent(runId)}/evidence. Each function accepts optional client parameter defaulting to the shared apiClient singleton. Use encodeURIComponent for path segments. Import types from @/types/generated/api."
+    },
+    {
+      "order": 4,
+      "file": "frontend/src/hooks/useAcceptanceChecklist.ts",
+      "action": "create",
+      "description": "Create a polling-based hook that manages acceptance-suite state. Export type ChecklistConnectionStatus = 'loading' | 'idle' | 'polling' | 'stale' | 'backend-failure' | 'reconnect-required'. Export interface UseAcceptanceChecklistResult { status: ChecklistConnectionStatus; suiteStatus: HarnessStatusDto | null; runDetails: HarnessRunStatusDto | null; error: string | null; start: (fixtureType: HarnessFixtureType, name?: string) => Promise<HarnessResultDto>; evaluate: (fixtureId: string) => Promise<HarnessResultDto>; refresh: () => Promise<void>; evidence: ArtifactRefDto[];}. Implementation: (1) useState for status, suiteStatus, runDetails, error, evidence; (2) useRef for polling interval, abort controller; (3) refresh() function calls getAcceptanceStatus() — sets status='polling' on success, 'backend-failure' on network error; (4) start() calls createAcceptanceFixture then immediately calls refresh(); (5) evaluate() calls evaluateAcceptanceFixture then refresh(); (6) useEffect with setInterval(5000) calling refresh() when status is 'polling' or 'idle'; (7) On consecutive failures (>3), set status='reconnect-required'; (8) On stale state_version detection from backend response, set status='stale'; (9) cleanup: clearInterval and abort in effect return. All state reads from backend snapshots only — no local workflow advancement. Imports from @/api/acceptance and @/types/generated/api."
+    },
+    {
+      "order": 5,
+      "file": "frontend/src/components/AcceptanceChecklist.module.css",
+      "action": "create",
+      "description": "Create CSS Module following the ControlTowerShell.module.css pattern. Include classes: .shell (max-width 1220px, margin 0 auto, padding 2rem), .header (flexbox with gap), .connectionBar (inline-flex pill, green for idle, blue for polling, red for backend-failure, amber for stale), .scenarioGrid (card grid with 3 columns on desktop, 1 on mobile), .scenarioCard (panel-style card with border, background, padding, rounding), .scenarioPass (green accent border), .scenarioFail (red accent border), .scenarioPending (neutral border), .scenarioBlocked (amber accent border), .scenarioTitle (bold, color var), .scenarioStatus (inline badge with appropriate colors), .scenarioMeta (grid of dt/dd pairs for fixture type, outcome, version), .evidenceList (stacked list with border separators), .evidenceItem (flex row, code for path, span for checksum), .actionBar (flex row for Start/Evaluate buttons), .button (styled per existing design: background, border, rounding, font-weight), .button:disabled (opacity reduce, cursor not-allowed), .errorBanner (red background border), .emptyState (centered note), .twoColumns (grid 2 cols), .pipeline (horizontal step indicator for scenario progression). All on dark theme (#09111f background, #eef4ff text, #5a8cff primary accent). Responsive breakpoints for <900px (single column) and <680px (compact padding)."
+    },
+    {
+      "order": 6,
+      "file": "frontend/src/components/AcceptanceChecklist.tsx",
+      "action": "create",
+      "description": "Create the operator acceptance checklist React component. 'use client' directive. Props: initialStatus (HarnessStatusDto | null), runId (string | null). Implementation: (1) Use useAcceptanceChecklist hook for state management; (2) Render a connection bar showing the current ChecklistConnectionStatus with appropriate visual styling (green='All systems nominal', blue='Checking backend…', red='Backend unreachable — retrying', amber='State is stale — refresh', yellow='Reconnection needed'); (3) Render a header with title 'Operator Acceptance Checklist', subtitle 'Angular Acceptance Harness — Phase A', and a dimension grid showing overall_status, fixture count, error count, evidence summary; (4) Render a scenario grid where each HarnessFixtureType is a scenario card linking to the corresponding live data: for each fixture type in the fixtures list, render a scenario card showing fixture_type label, outcome badge (SUCCEEDED=green, FAILED=red, PENDING=grey, BLOCKED=amber), fixture_id, fixture_root path, state_version, evidence_refs linked to artifact preview links; (5) For fixture types not yet in the fixtures list, render a pending card with 'Not yet evaluated' status and a 'Start' button; (6) Action bar: buttons for triggering fixture generation and evaluation, disabled when status is not 'idle' or 'polling'; (7) Evidence panel: for each selected fixture, render its ArtifactRefDto list with artifact_type badge, relative_path, checksum — each linked to the existing artifact preview infrastructure (reuse ArtifactPreviewPanel with initial artifact metadata); (8) Error banner: when error is non-null, render a styled error section with the error message; (9) Run details section: when runId is provided and runDetails is available, render HarnessRunStatusDto fields (run_id, suite_id, overall_status, fixture_count, passed/failed counts, started_at/completed_at timestamps); (10) Empty state: when suiteStatus is not null and fixtures.length === 0, render 'No fixtures have been evaluated. Create a fixture to begin.' with a prominent action button; (11) Links each acceptance scenario to live product artifacts by embedding ArtifactRefDto evidence_refs in each scenario card with artifact_id hrefs pointing to the existing artifact fetch mechanism. No G01–G09 production UX is duplicated. No hidden API-only completion tracking."
+    },
+    {
+      "order": 7,
+      "file": "frontend/src/app/acceptance/page.tsx",
+      "action": "create",
+      "description": "Create the acceptance checklist page route under Next.js App Router. Export dynamic = 'force-dynamic' to ensure fresh data on every request. Default async export function AcceptancePage(): (1) On the server, call the acceptance API client directly to fetch initial status (getAcceptanceStatus) — this SSR's the initial state so the page renders immediately; (2) On fetch failure, catch the error and return a minimal fallback <main> with error message and a 'Retry' link; (3) Render the client-side AcceptanceChecklist component passing the server-fetched initialStatus and an optional runId (initially null, the user selects a run client-side); (4) Page layout: full-width shell within the existing globals.css theme. Import AcceptanceChecklist from @/components/AcceptanceChecklist. Import getAcceptanceStatus from @/api/acceptance."
+    },
+    {
+      "order": 8,
+      "file": "frontend/src/api/__tests__/acceptance.test.ts",
+      "action": "create",
+      "description": "Create vitest tests for the acceptance API module. Test groups: (A) Request construction — each function sends correct HTTP method and path; (B) Response parsing — valid JSON responses are parsed to the correct TypeScript types; (C) Error handling — backend 4xx/5xx responses throw ApiClientError with correct status, path, and message; (D) Client injection — passing a custom fetch implementation works (mock fetch returning canned responses); (E) Edge cases — empty response arrays, null values in DTOs, special characters in run_id are properly encoded. Use vi.fn() for mock fetch, vi.mock() for client.ts imports. Pattern follows existing __tests__ files in frontend/src/api/__tests__/."
+    },
+    {
+      "order": 9,
+      "file": "frontend/src/hooks/__tests__/useAcceptanceChecklist.test.ts",
+      "action": "create",
+      "description": "Create vitest tests for the useAcceptanceChecklist hook. Test groups: (A) Initial state — status is 'loading', suiteStatus is null, error is null; (B) Successful startup — after initial refresh, status transitions to 'polling', suiteStatus is populated; (C) Backend failure — consecutive API failures set status to 'backend-failure' (after 3 retries) and then 'reconnect-required' (after 6 retries); (D) Start fixture — calling start() sends POST to /fixtures and triggers a refresh of status; (E) Evaluate fixture — calling evaluate() sends POST to /fixtures/evaluate and triggers refresh; (F) Stale state detection — when state_version in response differs from previous version, status becomes 'stale'; (G) Cleanup — unmounting the component clears the polling interval and aborts pending requests; (H) Edge cases — empty fixture list, null runDetails, network timeout. Use renderHook from @testing-library/react with a wrapper pattern. Mock the acceptance API module with vi.mock()."
+    },
+    {
+      "order": 10,
+      "file": "frontend/src/components/__tests__/AcceptanceChecklist.test.tsx",
+      "action": "create",
+      "description": "Create vitest tests for the AcceptanceChecklist component. Test groups using @testing-library/react render + screen assertions: (A) Loading state — renders a 'Connecting to backend…' connection bar and no scenario grid; (B) Empty state — suiteStatus with fixtures=[] renders 'No fixtures have been evaluated' message and an action button; (C) Running state — suiteStatus with evaluation-in-progress renders scenario cards with PENDING badges and spinner indicators; (D) Success state — completed fixture with outcome='SUCCEEDED' renders green PASS badge with evidence_refs as clickable artifact links; (E) Blocked state — fixture with outcome='BLOCKED' renders amber blocked badge with error message; (F) Backend-failure state — status='backend-failure' renders red connection bar and retry prompt; (G) Stale state — status='stale' renders amber connection bar with 'State is stale — refresh' message; (H) All scenario cards render fixture_type label correctly; (I) Evidence refs render artifact_type badge, relative_path, and checksum; (J) Action buttons are disabled when status is not 'idle' or 'polling'; (K) Error banner renders when error prop is non-null; (L) Accessibility: connection bar has role='status' aria-live='polite', buttons have accessible names, scenario cards have aria-labels; (M) Snapshot test for the full state with all 7 fixture types in various outcomes. vi.mock('@/hooks/useAcceptanceChecklist') returning canned state for each test scenario. Pattern follows AuthoritativeRunDashboard.test.tsx."
+    }
+  ],
+  "tests_needed": [
+    {
+      "id": "T-001",
+      "file": "frontend/src/api/__tests__/acceptance.test.ts",
+      "description": "Acceptance API client unit tests — verifying HTTP method, path, response parsing, error handling, client injection",
+      "acceptance_criteria": [
+        "getAcceptanceStatus sends GET to /api/v1/operator/acceptance-suite/status",
+        "createAcceptanceFixture sends POST to /api/v1/operator/acceptance-suite/fixtures with HarnessRequestDto body",
+        "evaluateAcceptanceFixture sends POST to /api/v1/operator/acceptance-suite/fixtures/evaluate with HarnessEvaluateRequestDto body",
+        "listHarnessRuns sends GET to /api/v1/operator/acceptance-suite/runs",
+        "getHarnessRun sends GET to /api/v1/operator/acceptance-suite/runs/{run_id} with encoded ID",
+        "getHarnessRunEvidence sends GET to /api/v1/operator/acceptance-suite/runs/{run_id}/evidence with encoded ID",
+        "All functions parse valid JSON into typed DTOs",
+        "4xx/5xx responses throw ApiClientError with correct status, method, path",
+        "Custom fetch implementation injected correctly for DI",
+        "Special characters in run_id are URL-encoded via encodeURIComponent"
+      ]
+    },
+    {
+      "id": "T-002",
+      "file": "frontend/src/hooks/__tests__/useAcceptanceChecklist.test.ts",
+      "description": "useAcceptanceChecklist hook tests — state transitions through all UI states (loading, idle, polling, stale, backend-failure, reconnect-required)",
+      "acceptance_criteria": [
+        "Initial state: status='loading', suiteStatus=null, error=null, evidence=[]",
+        "Successful first refresh transitions to status='polling' with populated suiteStatus",
+        "3 consecutive API failures set status='backend-failure'",
+        "6 consecutive API failures set status='reconnect-required'",
+        "start() POSTs to /fixtures then triggers status refresh",
+        "evaluate() POSTs to /fixtures/evaluate then triggers status refresh",
+        "Polling interval is 5000ms when status is 'polling' or 'idle'",
+        "Stale state_version detected in response sets status='stale'",
+        "Unmount cleanup clears interval and aborts pending requests",
+        "Empty fixture list handled gracefully (no crash)",
+        "null runDetails handled gracefully (no crash)"
+      ]
+    },
+    {
+      "id": "T-003",
+      "file": "frontend/src/components/__tests__/AcceptanceChecklist.test.tsx",
+      "description": "AcceptanceChecklist component rendering tests — verifying all UI states display correctly with appropriate accessibility",
+      "acceptance_criteria": [
+        "Loading state shows 'Connecting to backend…' connection bar",
+        "Empty state shows 'No fixtures have been evaluated' message with action button",
+        "Running state shows scenario cards with PENDING badges",
+        "Success state shows green PASS badge with evidence artifact links",
+        "Blocked state shows amber blocked badge with error message",
+        "Backend-failure state shows red connection bar with retry prompt",
+        "Stale state shows amber connection bar with 'State is stale' message",
+        "Each fixture type (7 variants) renders correct label in scenario card",
+        "Evidence refs render artifact_type badge, relative_path, and checksum",
+        "Action buttons disabled when status is not 'idle' or 'polling'",
+        "Error banner renders when error prop is non-null",
+        "Connection bar has role='status' aria-live='polite'",
+        "Buttons have human-readable accessible names",
+        "All 7 HarnessFixtureType values render without crashing",
+        "Component re-renders correctly when mock state changes"
+      ]
+    },
+    {
+      "id": "T-004",
+      "file": "frontend/src/types/generated/api.ts",
+      "description": "Manual type synchronization — verify harness DTO types match backend contracts exactly",
+      "acceptance_criteria": [
+        "HarnessFixtureType is a union of 7 string literals matching Python enum values",
+        "HarnessStatusDto.overall_status is string, fixtures is HarnessResultDto[], errors is string[], evidence_summary is Record",
+        "HarnessResultDto includes fixture_id, fixture_root, outcome, evidence_refs, state_version, idempotent_replay",
+        "HarnessRunStatusDto includes run_id, suite_id, overall_status, fixture_count, passed, failed, started_at, completed_at, evidence_refs",
+        "All types are exported and importable via @/types/generated/api",
+        "Existing types are not modified or removed"
+      ]
+    },
+    {
+      "id": "T-005",
+      "file": "frontend/src/components/AcceptanceChecklist.tsx",
+      "description": "Component contract verification — checklist links each acceptance scenario to live API endpoints and products, no hidden completion tracking",
+      "acceptance_criteria": [
+        "Each acceptance scenario (fixture_type) is rendered as a visible card",
+        "Each scenario shows its outcome status badge derived from backend data",
+        "Each scenario links evidence artifacts by ArtifactRefDto (artifact_id reference)",
+        "No client-side workflow advancement — all state reads from backend snapshots only",
+        "No G01–G09 production UX components are imported or duplicated",
+        "Component accepts initialStatus and runId props from server-side render",
+        "Components use CSS Modules with the existing dark theme design system",
+        "No Jira completion status displayed or tracked on this page"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "severity": "HIGH",
+      "description": "Backend DTO shape changes — if T01/T02 are still evolving, the frontend types and API client may need synchronization after backend settles",
+      "mitigation": "Frontend types in generated/api.ts are manually synchronized. Pin to the exact backend contract shapes documented above. If backend changes, update types as a coordinated step before merging T03."
+    },
+    {
+      "id": "R-002",
+      "severity": "MEDIUM",
+      "description": "Polling vs SSE — the acceptance checklist uses polling (setInterval 5s) instead of SSE events, which could produce slightly stale data compared to the event-driven production UX",
+      "mitigation": "Polling is intentional for Phase A: acceptance-suite events are optional per S4-F15. The checklist is read-only monitoring. If SSE becomes available in Phase B, the hook can switch to EventSource while keeping the same component interface."
+    },
+    {
+      "id": "R-003",
+      "severity": "MEDIUM",
+      "description": "No WebSocket/SSE for harness events — useAcceptanceChecklist cannot detect mid-evaluation state changes in real time, only the last snapshot",
+      "mitigation": "5-second polling is adequate for operator monitoring. The hook exposes status='polling' while waiting and status='stale' when data doesn't advance. Phase B can add SSE event subscription for the acceptance-suite optional events."
+    },
+    {
+      "id": "R-004",
+      "severity": "LOW",
+      "description": "Artifact preview integration — evidence links in the checklist need to interoperate with existing ArtifactPreviewPanel which expects artifact content to be loadable via artifact_id",
+      "mitigation": "The checklist passes ArtifactRefDto items to ArtifactPreviewPanel. Ensure the artifact content endpoint (GET /artifacts/{artifact_id}) works for harness-prefixed artifact_ids. If not, the checklist shows metadata without preview until Phase B."
+    },
+    {
+      "id": "R-005",
+      "severity": "LOW",
+      "description": "CSS Module class name conflict — AcceptanceChecklist.module.css may duplicate class names from ControlTowerShell.module.css",
+      "mitigation": "CSS Modules scope class names locally. Import shared classes from ControlTowerShell.module.css where appropriate (e.g., styles.panel, styles.shell, styles.connectionBar). New classes use distinctive names (scenarioCard, scenarioGrid, etc.) to avoid ambiguity."
+    },
+    {
+      "id": "R-006",
+      "severity": "LOW",
+      "description": "Manual type synchronization drift — generated/api.ts is manually updated and may drift from the Python backend contracts",
+      "mitigation": "Add a brief comment header noting that acceptance-suite types were synchronized as of Phase A. In Phase B, consider auto-generating TypeScript types from the OpenAPI schema."
+    },
+    {
+      "id": "R-007",
+      "severity": "LOW",
+      "description": "No frontend creation/admin of harness runs — the operator can only view status; run lifecycle management (create, cancel, restart) is backend-initiated only",
+      "mitigation": "Phase B may expose full lifecycle controls. Phase A is read-only monitoring per the acceptance checklist spec. Document that run creation/deletion is out-of-scope for T03."
+    }
+  ],
+  "blocked_criteria": [
+    "Real 18.0.x→19→20→21 passing path through production stages — requires G01–G09 integrated (BLOCKED_INTEGRATION)",
+    "Human gates and stale-state protection through production approval workflow — requires G01–G09 integrated (BLOCKED_INTEGRATION)",
+    "Real migration failure through Proposer/Reviewer/G10 — requires G04–G09 integrated (BLOCKED_INTEGRATION)",
+    "Environment failure without code patch through G05–G09 — requires G05–G09 integrated (BLOCKED_INTEGRATION)",
+    "Cancellation and process-tree cleanup through G01, G04 — requires G01, G04 integrated (BLOCKED_INTEGRATION)",
+    "SSE-based real-time event stream for acceptance-suite events — acceptance-suite events are optional in Phase A; SSE would require backend event emission (BLOCKED_INTEGRATION)",
+    "Full G01–G09 production UX panels in the acceptance checklist — Phase A explicitly avoids duplicating production UX (BLOCKED_INTEGRATION)",
+    "Jira completion (jira_complete=true) — Phase A marks as false; becomes true only in Phase B (BLOCKED_INTEGRATION)",
+    "Harness run creation from frontend UI — currently backend-initiated only (BLOCKED_INTEGRATION)",
+    "Operator trigger of repair/restart/cancel flows — run lifecycle controls are out of scope for Phase A (BLOCKED_INTEGRATION)"
+  ],
+  "acceptance_criteria_coverage": [
+    {
+      "criterion": "Operator acceptance checklist as a React/Next.js component",
+      "covered_by": "Step 6: AcceptanceChecklist.tsx — a 'use client' React component rendering the full checklist with scenarios, evidence links, connection bar, action bar, and error handling"
+    },
+    {
+      "criterion": "Links each acceptance scenario to the live API endpoints/artifacts",
+      "covered_by": "Steps 3, 6: acceptance.ts API client fetches from live backend; AcceptanceChecklist renders each HarnessFixtureType with its evidence_refs linked via ArtifactRefDto artifact_id to existing artifact preview infrastructure"
+    },
+    {
+      "criterion": "Shows loading, empty, running, success, blocked, stale, backend-failure, and reconnect states",
+      "covered_by": "Steps 4, 6, 9, 10: useAcceptanceChecklist hook manages all 8 UI states; component tests verify each state renders correctly"
+    },
+    {
+      "criterion": "Reads from backend snapshots/events only (no local workflow advancement)",
+      "covered_by": "Step 4: useAcceptanceChecklist exclusively calls GET endpoints (status, runs) and POST endpoints (fixtures, evaluate) that are backend-controlled. No local state inference, no client-side workflow advancement."
+    },
+    {
+      "criterion": "Uses typed API client",
+      "covered_by": "Steps 2, 3: all DTOs are typed in generated/api.ts; acceptance.ts functions return typed Promises; client injection follows the existing runs.ts pattern"
+    },
+    {
+      "criterion": "Given parent feature prerequisites satisfied, when frontend behavior exercised, then bounded contract is observable and no unrelated authority introduced",
+      "covered_by": "Steps 6, 10: AcceptanceChecklist component is self-contained; tests verify no G01–G09 production components are imported or rendered; component exclusively consumes acceptance-suite API endpoints"
+    },
+    {
+      "criterion": "Given invalid or unauthorized input, fails with stable error and leaves state unchanged",
+      "covered_by": "Steps 8, 9: acceptance API client tests verify ApiClientError on 4xx/5xx; hook tests verify backend-failure and reconnect-required states without corrupting previous state"
+    },
+    {
+      "criterion": "Given backend unavailable, frontend displays failure state and retries gracefully",
+      "covered_by": "Steps 4, 9: useAcceptanceChecklist counts consecutive failures, transitions to backend-failure after 3 retries, reconnect-required after 6. Component renders red connection bar and retry prompt."
+    },
+    {
+      "criterion": "Given stale state detected, frontend signals staleness without overwriting",
+      "covered_by": "Steps 4, 9: stale state_version detection in useAcceptanceChecklist sets status='stale'; component renders amber connection bar with guidance to refresh"
+    },
+    {
+      "criterion": "Page route serves the checklist with server-side initial data",
+      "covered_by": "Step 7: acceptance/page.tsx SSR's the initial status via getAcceptanceStatus on the server, then hydrates the client-side AcceptanceChecklist component"
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "task": "T01 - S4-F15-I01 (AMFA-282) — Re-review after fixes",
+  "reviewer": "independent-reviewer",
+  "re_review_date": "2026-07-19",
+  "overall_verdict": "FAIL",
+  "findings": [
+    {
+      "id": 1,
+      "title": "HarnessEvaluateRequestDto exists, is frozen+forbid, and evaluate_fixture uses it instead of body:dict",
+      "verdict": "PASS",
+      "evidence": {
+        "dto_defined": "HarnessEvaluateRequestDto(ContractModel) at backend/app/domain/contracts.py:984 with fixture_id: str = Field(min_length=1)",
+        "frozen_forbid": "ContractModel at contracts.py:10-13 has model_config = ConfigDict(extra='forbid', frozen=True); HarnessEvaluateRequestDto inherits this",
+        "route_usage": "acceptance.py:110 — def evaluate_fixture(request: HarnessEvaluateRequestDto, ...) instead of raw body: dict"
+      },
+      "details": "The DTO class is properly defined, inherits ContractModel (frozen + extra='forbid'), and the route handler accepts it as a typed parameter instead of raw dict."
+    },
+    {
+      "id": 2,
+      "title": "get_harness_service is cached via @lru_cache so idempotency works across requests",
+      "verdict": "FAIL",
+      "evidence": {
+        "file": "backend/app/api/routes/acceptance.py",
+        "line": 43,
+        "current_code": "def get_harness_service() -> AcceptanceHarnessService:\n    ...\n    return AcceptanceHarnessService(settings)",
+        "lru_cache_present": false,
+        "lru_cache_search_across_backend": "Only found in config.py for get_settings(), nowhere in acceptance.py"
+      },
+      "details": "The get_harness_service() function at acceptance.py:43-52 does NOT have an @lru_cache decorator. Every FastAPI request creates a fresh AcceptanceHarnessService instance, so _idempotency_store is always empty across separate HTTP calls. Without @lru_cache (or similar memoization), cross-request idempotency is impossible. The @lru_cache is only used in config.py for get_settings().",
+      "recommendation": "Add @lru_cache(maxsize=1) or @lru_cache to get_harness_service() so the same service instance is returned across requests within the same process, enabling in-memory idempotency to persist across HTTP calls.",
+      "commit_needed": "Add 'from functools import lru_cache' and '@lru_cache' decorator to get_harness_service() in acceptance.py"
+    },
+    {
+      "id": 3,
+      "title": "Fake model config hook exists (get_harness_gateway_info method)",
+      "verdict": "PASS",
+      "evidence": {
+        "class": "AcceptanceHarnessService",
+        "init_parameter": "fake_model_config: dict | None = None at acceptance_harness_service.py:95",
+        "gateway_field": "self._fake_gateway = fake_model_config at line 108",
+        "gateway_method": "get_harness_gateway_info() at acceptance_harness_service.py:541-554",
+        "method_behavior": "Returns provider/status dict when _fake_gateway is configured, or skipped marker when None"
+      },
+      "details": "The AcceptanceHarnessService accepts a fake_model_config parameter and exposes get_harness_gateway_info() that returns structured gateway info. The evaluate_fixture method also writes a gateway/gateway_check.json artifact when _fake_gateway is configured (lines 369-392), serving as a Phase B contract point."
+    },
+    {
+      "id": 4,
+      "title": "fixture_id -> fixture_root mapping exists in AcceptanceHarnessService",
+      "verdict": "PASS",
+      "evidence": {
+        "mapping_field": "self._fixture_id_to_root: dict[str, Path] = {} at acceptance_harness_service.py:111",
+        "populated_at": "self._fixture_id_to_root[fixture_id] = created_path at line 166 in generate_fixture",
+        "lookup_at": "if fixture_id in self._fixture_id_to_root: at line 581 in _find_fixture_root",
+        "fallback": "Directory walk fallback still present at lines 584-590 for legacy/manual fixtures"
+      },
+      "details": "The _fixture_id_to_root dict is initialized in __init__, populated when generate_fixture creates a workspace, and checked first in _find_fixture_root before falling back to directory walk. This replaces the original behavior that only returned the first directory under the fixture root."
+    },
+    {
+      "id": 5,
+      "title": "Union return type annotations are present",
+      "verdict": "FAIL",
+      "evidence": {
+        "evaluate_fixture": "-> HarnessResultDto | dict: at acceptance.py:113 — PRESENT",
+        "create_fixture": "No return annotation at acceptance.py:77-81 — MISSING",
+        "recommended_annotation": "-> HarnessResultDto | JSONResponse for both route handlers"
+      },
+      "details": "evaluate_fixture has a Union return type annotation (HarnessResultDto | dict). However, create_fixture on line 77 still has no return type annotation at all — the function signature ends with '):' and relies solely on response_model for serialization. This was part of the same original finding and was only partially addressed.",
+      "recommendation": "Add -> HarnessResultDto | JSONResponse (or equivalent Union) return type annotation to create_fixture.",
+      "commit_needed": "Add return annotation to def create_fixture(...) -> HarnessResultDto | JSONResponse: on acceptance.py:77"
+    },
+    {
+      "id": 6,
+      "title": "evaluate_fixture has proper error handling with ValueError",
+      "verdict": "PASS",
+      "evidence": {
+        "route_handler": "acceptance.py:115-123 — try/except ValueError wrapping service.evaluate_fixture()",
+        "error_response": "Returns JSONResponse with status_code=422, error_code='FIXTURE_EVALUATION_FAILED'",
+        "validation_guard": "HarnessEvaluateRequestDto provides Pydantic validation (fixture_id min_length=1) before reaching the service layer"
+      },
+      "details": "The evaluate_fixture route catches ValueError and returns a structured error response with appropriate HTTP status code. Combined with HarnessEvaluateRequestDto validation providing early rejection of empty/invalid fixture_id, the original concern about unhandled exceptions is addressed."
+    }
+  ],
+  "acceptance_criteria_coverage": [
+    {
+      "criterion": "HarnessEvaluateRequestDto replaces raw body:dict with proper frozen+forbid DTO",
+      "status": "PASS"
+    },
+    {
+      "criterion": "get_harness_service is memoized for cross-request idempotency",
+      "status": "FAIL",
+      "evidence": "@lru_cache is missing from get_harness_service() in acceptance.py. Without it, each HTTP request gets a fresh AcceptanceHarnessService with an empty _idempotency_store."
+    },
+    {
+      "criterion": "Fake model config hook and get_harness_gateway_info exist",
+      "status": "PASS"
+    },
+    {
+      "criterion": "fixture_id->fixture_root mapping exists in AcceptanceHarnessService",
+      "status": "PASS"
+    },
+    {
+      "criterion": "Union return type annotations on all route handlers",
+      "status": "FAIL",
+      "evidence": "evaluate_fixture has `-> HarnessResultDto | dict:` but create_fixture lacks any return annotation entirely."
+    },
+    {
+      "criterion": "evaluate_fixture handles ValueError with proper error response",
+      "status": "PASS"
+    }
+  ],
+  "summary": "4 of 6 findings PASS, 2 FAIL. Findings #2 (@lru_cache on get_harness_service) and #5 (Union return type on create_fixture) remain unresolved and require code changes."
+}

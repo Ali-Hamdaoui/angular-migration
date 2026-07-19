@@ -355,6 +355,19 @@ class WorkflowEventType(str, Enum):
     G06_STALE = "G06_STALE"
     SPRINT1_BOUNDARY_REACHED = "SPRINT1_BOUNDARY_REACHED"
 
+    # Acceptance harness event types (AMFA-283, T02)
+    ACCEPTANCE_SUITE_STARTED = "ACCEPTANCE_SUITE_STARTED"
+    ACCEPTANCE_SUITE_COMPLETED = "ACCEPTANCE_SUITE_COMPLETED"
+    ACCEPTANCE_SUITE_FAILED = "ACCEPTANCE_SUITE_FAILED"
+    FIXTURE_GENERATED = "FIXTURE_GENERATED"
+    FIXTURE_GENERATION_FAILED = "FIXTURE_GENERATION_FAILED"
+    FIXTURE_EVALUATED = "FIXTURE_EVALUATED"
+    FIXTURE_EVALUATION_FAILED = "FIXTURE_EVALUATION_FAILED"
+    FIXTURE_CANCELLED = "FIXTURE_CANCELLED"
+    FIXTURE_RESTARTED = "FIXTURE_RESTARTED"
+    OUTPUT_FINGERPRINT_CREATED = "OUTPUT_FINGERPRINT_CREATED"
+    REPAIR_LINEAGE_RECORDED = "REPAIR_LINEAGE_RECORDED"
+
 
 class ErrorEnvelope(ContractModel):
     error_code: str
@@ -934,3 +947,62 @@ class AgentOutputEnvelope(ContractModel):
         if self.authorizes_execution or self.authorizes_approval:
             raise ValueError("AI output cannot authorize execution or approval")
         return self
+
+
+# ──────────────────────────────────────────────
+# Acceptance Harness Contracts (AMFA-282, T01)
+# ──────────────────────────────────────────────
+
+
+class HarnessFixtureType(str, Enum):
+    ANGULAR_180X = "angular_180x"
+    ANGULAR_182X = "angular_182x"
+    PASSABLE = "passable"
+    COMPILER_ERROR = "compiler_error"
+    DEPENDENCY_CONFLICT = "dependency_conflict"
+    ENVIRONMENT_BLOCKER = "environment_blocker"
+    CANCELLABLE = "cancellable"
+
+
+class HarnessRequestDto(ContractModel):
+    fixture_type: HarnessFixtureType
+    name: str = ""
+    idempotency_key: str | None = None
+    expected_state_version: int = 1
+    actor: str = "operator"
+
+
+class HarnessResultDto(ContractModel):
+    fixture_id: str
+    fixture_root: str
+    outcome: str
+    evidence_refs: list[ArtifactRefDto] = Field(default_factory=list)
+    state_version: int
+    idempotent_replay: bool = False
+
+
+class HarnessEvaluateRequestDto(ContractModel):
+    """DTO for evaluating a previously generated fixture."""
+
+    fixture_id: str = Field(min_length=1)
+
+
+class HarnessStatusDto(ContractModel):
+    overall_status: str
+    fixtures: list[HarnessResultDto] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    evidence_summary: dict[str, str | int | list[str]] = Field(default_factory=dict)
+
+
+class HarnessRunStatusDto(ContractModel):
+    """Aggregate run status for a completed acceptance suite run."""
+
+    run_id: str
+    suite_id: str = ""
+    overall_status: str
+    fixture_count: int = 0
+    passed: int = 0
+    failed: int = 0
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    evidence_refs: list[ArtifactRefDto] = []

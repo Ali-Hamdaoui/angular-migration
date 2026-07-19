@@ -1,0 +1,380 @@
+{
+  "task": "T02 - S4-F15-I02",
+  "jira": "AMFA-283",
+  "phase": "Phase A — harness_ready",
+  "summary": "Persist and expose evidence contracts for the Angular acceptance harness. Completes the evidence artifact set with 4 missing record methods (cancellation/restart, repair lineage, output fingerprint, source integrity proof), adds optional acceptance-suite event types, integrates DB-backed persistence for harness fixture runs via existing ArtifactMetadataModel, and exposes retrieval endpoints to enumerate/list harness runs and their evidence. No G01–G09 production services are duplicated. The existing GET /api/v1/operator/acceptance-suite/status from T01 is reused directly.",
+  "reusable_assets": [
+    {
+      "category": "Domain Contracts (T01)",
+      "symbols": [
+        "HarnessFixtureType enum (7 variants)",
+        "HarnessRequestDto (fixture_type, name, idempotency_key, expected_state_version, actor)",
+        "HarnessResultDto (fixture_id, fixture_root, outcome, evidence_refs, state_version, idempotent_replay)",
+        "HarnessStatusDto (overall_status, fixtures, errors, evidence_summary)",
+        "ArtifactRefDto (artifact_id, run_id, stage_id, artifact_type, relative_path, checksum, created_at)",
+        "WorkflowEventType enum (100+ existing types)",
+        "WorkflowEventDto, MigrationEventDto",
+        "ContractModel (frozen Pydantic v2 with extra='forbid')"
+      ],
+      "files": ["backend/app/domain/contracts.py"],
+      "reuse": "Direct import — add new WorkflowEventType entries for acceptance-suite events"
+    },
+    {
+      "category": "AcceptanceHarnessService (T01)",
+      "symbols": [
+        "AcceptanceHarnessService (generate_fixture, run_subprocess_profile, evaluate_fixture, run_acceptance_suite, get_status)",
+        "_IdempotencyRecord dataclass",
+        "StaleStateVersionError",
+        "FIXTURE_GENERATORS dict (7 generators)",
+        "_resolve_generator, _register_generators",
+        "_fixture_root_path, _output_root_path, _find_fixture_root, _checksum_workspace"
+      ],
+      "files": ["backend/app/services/acceptance_harness_service.py"],
+      "reuse": "Extend — wire new evidence methods into generate_fixture/evaluate_fixture; add run record persistence"
+    },
+    {
+      "category": "RuntimeEvidenceCollector (T01)",
+      "symbols": [
+        "RuntimeEvidenceCollector (5 record methods: fixture_manifest, isolation_evidence, output_layout, integration_result, proof_report)",
+        "EvidenceWriteResult dataclass",
+        "_write_and_register (atomic write + SHA-256 + ArtifactMetadataModel registration)"
+      ],
+      "files": ["backend/app/services/runtime_evidence_collector.py"],
+      "reuse": "Extend — add 4 new record methods for cancellation/restart, repair lineage, output fingerprint, source integrity proof"
+    },
+    {
+      "category": "Fixture Generators (T01)",
+      "symbols": [
+        "create_angular_fixture (18.2.x base)",
+        "create_angular_fixture_180x (18.0.x)",
+        "create_passable_fixture",
+        "create_compiler_error_fixture",
+        "create_dependency_conflict_fixture",
+        "create_environment_blocker_fixture",
+        "create_cancellable_fixture"
+      ],
+      "files": ["backend/tests/fixture_generators/angular_fixture.py"],
+      "reuse": "Direct reuse — fixtures consumed by AcceptanceHarnessService"
+    },
+    {
+      "category": "Harness Profiles (T01)",
+      "symbols": [
+        "build_harness_command_registry()",
+        "HARNESS_COMMAND_REGISTRY",
+        "HARNESS_PROFILE_ENTRIES (ng-new, ng-generate, ng-build, npm-install, npx-ng-update)",
+        "HARNESS_FIXTURE_ROOT, HARNESS_OUTPUT_ROOT aliases",
+        "HARNESS_PROFILE_ID"
+      ],
+      "files": ["backend/app/runtime_profiles/harness_profiles.py"],
+      "reuse": "Direct reuse — profiles consumed by AcceptanceHarnessService.run_subprocess_profile"
+    },
+    {
+      "category": "Acceptance API Routes (T01)",
+      "symbols": [
+        "GET /api/v1/operator/acceptance-suite/status → HarnessStatusDto",
+        "POST /api/v1/operator/acceptance-suite/fixtures → HarnessResultDto (201)",
+        "POST /api/v1/operator/acceptance-suite/fixtures/evaluate → HarnessResultDto",
+        "get_harness_service() dependency injection"
+      ],
+      "files": ["backend/app/api/routes/acceptance.py"],
+      "reuse": "Extend — add GET /runs and GET /runs/{run_id} endpoints; reuse get_harness_service DI"
+    },
+    {
+      "category": "Router Composition",
+      "symbols": [
+        "api_router (already includes acceptance_router)",
+        "api_v1_router (already includes acceptance_router)"
+      ],
+      "files": ["backend/app/api/router.py"],
+      "reuse": "No changes needed — acceptance_router already registered in both unversioned and v1 routers"
+    },
+    {
+      "category": "Persistence Infrastructure",
+      "symbols": [
+        "MigrationRunModel (full schema with state_version, status, artifact/layout paths)",
+        "MigrationStageModel (stage_order, status, versions, FK to migration_runs)",
+        "StageStepModel (status, component_type, attempt_id, idempotency_key)",
+        "ArtifactMetadataModel (run_id, stage_id, artifact_type, relative_path, checksum, schema_version)",
+        "WorkflowEventModel (run_id, event_type, sequence, idempotency_key, payload)",
+        "CommandExecutionModel, RepairAttemptModel, AgentExecutionModel",
+        "StateTransitionService (apply_transition, append_audit_event, request_cancel, acknowledge_cancel)",
+        "MigrationRunRepository (add, get_by_id, update_status_with_version, append_event)",
+        "TransitionRequest, TransitionResult, StaleStateVersionError"
+      ],
+      "files": [
+        "backend/app/repositories/models/workflow.py",
+        "backend/app/state/transition_service.py",
+        "backend/app/repositories/migration_run_repository.py"
+      ],
+      "reuse": "Direct reuse — harness runs use ArtifactMetadataModel for evidence metadata; StateTransitionService for event recording"
+    },
+    {
+      "category": "Artifact Store",
+      "symbols": [
+        "LocalFilesystemArtifactStore (atomic write, SHA-256 checksums, metadata sidecars)",
+        "StoredArtifact, ArtifactEnvelope",
+        "ARTIFACT_LAYOUT (15 directory folders)",
+        "read_artifact, write_text_artifact, list_artifacts"
+      ],
+      "files": ["backend/app/artifact_store/local_store.py"],
+      "reuse": "Direct reuse — no changes needed"
+    },
+    {
+      "category": "Existing Artifact Retrieval",
+      "symbols": [
+        "GET /migrations/{run_id}/artifacts — list run artifacts",
+        "GET /migrations/{run_id}/artifacts/{path} — read artifact content",
+        "GET /artifacts/{artifact_id} — read artifact by ID"
+      ],
+      "files": ["backend/app/api/routes/artifacts.py"],
+      "reuse": "Direct reuse — harness artifacts retrievable via existing endpoints by run_id"
+    },
+    {
+      "category": "Settings / Config",
+      "symbols": [
+        "Settings (artifact_root, workspace_root, database_url, platform_repository_root)",
+        "get_settings() cached singleton",
+        "session_scope() context manager",
+        "create_database_engine()"
+      ],
+      "files": [
+        "backend/app/core/config.py",
+        "backend/app/repositories/session.py"
+      ],
+      "reuse": "Direct import"
+    },
+    {
+      "category": "Test Patterns",
+      "symbols": [
+        "test_angular18_fixture.py (tmp_path isolation, parametrized tests)",
+        "test_migration_run_service.py (RecordingGraph, inline SQLite, test settings)",
+        "test_contracts.py (Pydantic validation, OpenAPI schema checks)",
+        "test_acceptance_harness.py (expected to exist from T01)"
+      ],
+      "files": ["backend/tests/*.py"],
+      "reuse": "Test patterns reused for T02 test files"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "GAP-001",
+      "description": "Missing 4 evidence record methods in RuntimeEvidenceCollector: cancellation/restart evidence, repair lineage, output fingerprint, source integrity proof",
+      "severity": "HIGH",
+      "affected_files": ["backend/app/services/runtime_evidence_collector.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-002",
+      "description": "Missing acceptance-suite-specific WorkflowEventType entries — existing event types are production-oriented; harness suites need their own event types for auditability",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/domain/contracts.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-003",
+      "description": "AcceptanceHarnessService.generate_fixture/evaluate_fixture do not record the new evidence types — only fixture_manifest and isolation_evidence are currently written; cancellation, repair lineage, output fingerprint, and source integrity proof are never emitted",
+      "severity": "HIGH",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-004",
+      "description": "Missing endpoint to enumerate harness fixture runs — no way to list completed harness runs or their evidence refs; only GET /status exists which is idle-state",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/api/routes/acceptance.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-005",
+      "description": "AcceptanceHarnessService uses in-memory idempotency (_idempotency_store dict) instead of DB-backed persistence via StateTransitionService — harness run records are not persisted as MigrationRunModel entries, making them non-recoverable across restarts",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-006",
+      "description": "Missing cancellation/restart evidence hooks — the cancellable fixture variant and run_acceptance_suite do not record cancellation or restart evidence when a run is interrupted or resumed",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-007",
+      "description": "Missing repair lineage tracking — AcceptanceHarnessService.evaluate_fixture does not record repair attempt lineage when a fixture fails and is repaired",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-008",
+      "description": "Missing output fingerprinting — no output checksum/fingerprint is computed after fixture evaluation",
+      "severity": "LOW",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-009",
+      "description": "Missing source integrity proof — no source integrity verification evidence recorded during fixture generation",
+      "severity": "LOW",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-010",
+      "description": "Tests for T02 components — new evidence methods, persistence integration, and API endpoints need test coverage",
+      "severity": "HIGH",
+      "affected_files": ["backend/tests/test_harness_persistence.py"],
+      "requires_new_code": true
+    }
+  ],
+  "implementation_steps": [
+    {
+      "order": 1,
+      "file": "evidence/plans/t02-implementation-plan.json",
+      "action": "create",
+      "description": "This plan document — read-only planner output"
+    },
+    {
+      "order": 2,
+      "file": "backend/app/domain/contracts.py",
+      "action": "modify",
+      "description": "Add optional acceptance-suite event types to WorkflowEventType enum: ACCEPTANCE_SUITE_STARTED, ACCEPTANCE_SUITE_COMPLETED, ACCEPTANCE_SUITE_FAILED, FIXTURE_GENERATED, FIXTURE_GENERATION_FAILED, FIXTURE_EVALUATED, FIXTURE_EVALUATION_FAILED, FIXTURE_CANCELLED, FIXTURE_RESTARTED, OUTPUT_FINGERPRINT_CREATED, SOURCE_INTEGRITY_VERIFIED, REPAIR_LINEAGE_RECORDED. These complete the event coverage for acceptance-suite auditability. Add HarnessRunStatusDto (run_id, suite_id, overall_status, fixture_count, passed, failed, started_at, completed_at, evidence_refs) for the suite retrieval endpoint."
+    },
+    {
+      "order": 3,
+      "file": "backend/app/services/runtime_evidence_collector.py",
+      "action": "modify",
+      "description": "Add 6 new evidence record methods to RuntimeEvidenceCollector:\n\n1. record_cancellation_evidence(run_id, fixture_id, fixture_root, reason, cancel_event_type) → ArtifactRefDto\n   - Records the cancellation event metadata, reason, and context as evidence\n   - Stores as 00_job_setup/cancellation_evidence_{hash8}.json\n\n2. record_restart_evidence(run_id, fixture_id, fixture_root, restart_context) → ArtifactRefDto\n   - Records the restart event metadata including previous evidence refs and state version\n   - Stores as 00_job_setup/restart_evidence_{hash8}.json\n\n3. record_repair_lineage(run_id, fixture_id, repair_attempts, repair_artifacts) → ArtifactRefDto\n   - Records the full repair lineage: attempt numbers, statuses, diagnosis, applied patches, outcome\n   - Stores as 00_job_setup/repair_lineage_{hash8}.json\n\n4. record_output_fingerprint(run_id, fixture_id, artifact_root, fingerprint_data) → ArtifactRefDto\n   - Records SHA256 fingerprints of the build output directory structure and content\n   - Stores as 00_job_setup/output_fingerprint_{hash8}.json\n\n5. record_source_integrity_proof(run_id, fixture_id, source_path, checksum, manifest) → ArtifactRefDto\n   - Records source integrity verification: pre-generation vs post-generation checksum comparison\n   - Stores as 00_job_setup/source_integrity_proof_{hash8}.json\n\n6. record_acceptance_suite_evidence(run_id, aggregate_summary, fixture_results) → ArtifactRefDto\n   - Records the complete acceptance suite run aggregate as a consolidated evidence artifact\n   - Stores as 00_job_setup/acceptance_suite_{hash8}.json\n\nAll methods follow the existing _write_and_register pattern: atomic write through LocalFilesystemArtifactStore + ArtifactMetadataModel registration. Each returns ArtifactRefDto with SHA-256 checksum."
+    },
+    {
+      "order": 4,
+      "file": "backend/app/services/acceptance_harness_service.py",
+      "action": "modify",
+      "description": "Add persistence and evidence integration to AcceptanceHarnessService:\n\n1. Persist harness run records: Change generate_fixture to optionally create ArtifactMetadataModel-based run records (track fixture runs by dedicated run_id prefix 'harness-run-' instead of in-memory dict)\n\n2. Wire new evidence methods: In generate_fixture, after fixture_manifest and isolation_evidence, also call:\n   - record_source_integrity_proof() with pre/post generation checksum comparison\n\n3. In evaluate_fixture, after integration_result and proof_report, also call:\n   - record_output_fingerprint() with output dir contents and SHA-256\n\n4. Add cancellation evidence: Add method _record_cancellation_for_run(run_id, fixture_id, reason) that records cancellation evidence using the new record_cancellation_evidence() method. Called from evaluate_fixture when the subprocess is cancelled/timeout.\n\n5. Add repair lineage: Add method _record_repair_for_run(run_id, fixture_id, repair_results) that records repair lineage using record_repair_lineage(). Called after a failed fixture evaluation that triggers a repair attempt.\n\n6. In run_acceptance_suite: After processing all fixtures, call:\n   - record_acceptance_suite_evidence() with the full aggregate summary\n   - The method now returns the full HarnessStatusDto with evidence_refs for the suite\n\n7. Keep in-memory idempotency store as-is (Phase A placeholder). Add a docstring noting it will be replaced by StateTransitionService in Phase B.\n\n8. Add new private method _compute_output_fingerprint(fixture_root) -> dict to compute SHA-256 fingerprint of all files in output directory."
+    },
+    {
+      "order": 5,
+      "file": "backend/app/api/routes/acceptance.py",
+      "action": "modify",
+      "description": "Add evidence retrieval endpoints to the acceptance router:\n\n1. GET /operator/acceptance-suite/runs\n   - Query ArtifactMetadataModel for all entries with run_id LIKE 'harness-run-%'\n   - Returns a list of unique run_ids with their latest evidence metadata\n   - Response: list[dict] with run_id, fixture_count, status, latest_event, evidence_summary\n   - Uses session_scope() directly (no service layer for simple queries)\n\n2. GET /operator/acceptance-suite/runs/{run_id}\n   - Returns full run details: all ArtifactRefDto entries associated with the run_id\n   - Returns proof report and aggregate evidence as well\n   - Response: HarnessStatusDto with all fixtures and evidence_refs populated from persisted data\n\n3. GET /operator/acceptance-suite/runs/{run_id}/evidence\n   - Returns all evidence artifact refs for a given harness run\n   - Returns list[ArtifactRefDto] ordered by artifact_type\n   - Note: Content retrieval is delegated to existing GET /migrations/{run_id}/artifacts/{path}\n\nAll endpoints include proper error handling (404 for unknown run_id, x-correlation-id in errors)."
+    },
+    {
+      "order": 6,
+      "file": "backend/tests/test_harness_persistence.py",
+      "action": "create",
+      "description": "Create comprehensive test file for T02 components. Test groups:\n\n(A) RuntimeEvidenceCollector new methods:\n   - record_cancellation_evidence returns ArtifactRefDto with valid checksum\n   - record_restart_evidence includes previous_state_version in payload\n   - record_repair_lineage captures multiple repair attempts sequentially\n   - record_output_fingerprint creates deterministic JSON with SHA-256\n   - record_source_integrity_proof compares pre/post checksums\n   - record_acceptance_suite_evidence contains aggregate fixture count\n\n(B) AcceptanceHarnessService persistence:\n   - generate_fixture now records source_integrity_proof evidence\n   - evaluate_fixture records output_fingerprint evidence on success\n   - Cancellation branch records cancellation_evidence\n   - run_acceptance_suite records aggregate suite evidence\n   - All evidence artifacts are retrievable via their ArtifactRefDto\n\n(C) API endpoints:\n   - GET /operator/acceptance-suite/runs returns 200 with list of run_ids\n   - GET /operator/acceptance-suite/runs/{run_id} returns 200 with evidence refs\n   - GET /operator/acceptance-suite/runs/{run_id} returns 404 for unknown run_id\n   - GET /operator/acceptance-suite/runs/{run_id}/evidence returns sorted ArtifactRefDto list\n\n(D) Event type consistency:\n   - New WorkflowEventType entries are registered and serializable\n   - HarnessRunStatusDto rejects unknown fields (extra='forbid' enforcement)\n\nUses tmp_path isolation, inline SQLite via session_scope with test settings, and LocalFilesystemArtifactStore with isolated root."
+    },
+    {
+      "order": 7,
+      "file": "backend/tests/test_contracts.py",
+      "action": "modify",
+      "description": "Add contract tests for T02 additions:\n\n1. test_acceptance_event_types_in_openapi — asserts new WorkflowEventType entries appear in OpenAPI schema\n2. test_harness_run_status_dto_rejects_unknown_fields — extra='forbid' enforcement\n3. test_harness_run_status_dto_frozen — mutation raises TypeError\n4. test_new_evidence_artifact_types_reflected — checks ArtifactRefDto types for new evidence methods"
+    }
+  ],
+  "tests_needed": [
+    {
+      "id": "T-001",
+      "file": "backend/tests/test_harness_persistence.py",
+      "description": "RuntimeEvidenceCollector new evidence methods — each new record_* method verified for artifact creation, checksum correctness, and metadata registration",
+      "acceptance_criteria": [
+        "record_cancellation_evidence writes atomic JSON artifact with valid SHA-256 checksum",
+        "record_restart_evidence serializes previous state version and restart context",
+        "record_repair_lineage captures multiple repair attempts with diagnosis and outcome",
+        "record_output_fingerprint produces deterministic SHA-256 over output directory contents",
+        "record_source_integrity_proof compares pre-generation vs post-generation source checksum",
+        "record_acceptance_suite_evidence contains aggregate fixture count, passed/failed totals",
+        "All new methods return ArtifactRefDto with artifact_id, artifact_type, relative_path, checksum",
+        "All artifacts registered in ArtifactMetadataModel"
+      ]
+    },
+    {
+      "id": "T-002",
+      "file": "backend/tests/test_harness_persistence.py",
+      "description": "AcceptanceHarnessService persistence integration — verifying new evidence hooks are called during fixture lifecycle",
+      "acceptance_criteria": [
+        "generate_fixture produces source_integrity_proof evidence alongside fixture_manifest and isolation_evidence",
+        "evaluate_fixture with success produces output_fingerprint evidence",
+        "evaluate_fixture with subprocess timeout/cancellation produces cancellation_evidence",
+        "run_acceptance_suite with multiple fixtures produces aggregate suite evidence",
+        "All evidence refs from a harness run have consistent run_id prefix",
+        "No G01–G09 production services are invoked during evidence recording"
+      ]
+    },
+    {
+      "id": "T-003",
+      "file": "backend/tests/test_harness_persistence.py",
+      "description": "API retrieval endpoints — GET /runs and GET /runs/{run_id} for harness fixture run evidence",
+      "acceptance_criteria": [
+        "GET /operator/acceptance-suite/runs returns 200 with list of runs",
+        "GET /operator/acceptance-suite/runs with no runs returns empty list",
+        "GET /operator/acceptance-suite/runs/{run_id} returns 200 with evidence refs",
+        "GET /operator/acceptance-suite/runs/{unknown_id} returns 404",
+        "GET /operator/acceptance-suite/runs/{run_id}/evidence returns sorted artifact list",
+        "All endpoints include stable error codes (404, 422, 500-class)"
+      ]
+    },
+    {
+      "id": "T-004",
+      "file": "backend/tests/test_contracts.py",
+      "description": "Contract tests for new DTOs and event types",
+      "acceptance_criteria": [
+        "New WorkflowEventType entries appear in OpenAPI schema",
+        "HarnessRunStatusDto rejects unknown fields with ValidationError",
+        "HarnessRunStatusDto is frozen — mutation raises TypeError",
+        "New event type enum values are serialized as strings in JSON"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "severity": "HIGH",
+      "description": "Phase A boundary violation — risk of inadvertently implementing G01–G09 production persistence in harness code (e.g., full StateTransitionService integration, MigrationRunModel creation for every fixture run)",
+      "mitigation": "T02 uses existing ArtifactMetadataModel exclusively (no new DB tables). AcceptanceHarnessService keeps in-memory idempotency for Phase A. StateTransitionService is consumed via fake adapters only. BLOCKED_INTEGRATION criteria explicitly documented."
+    },
+    {
+      "id": "R-002",
+      "severity": "HIGH",
+      "description": "Evidence artifact bloat — each fixture run creates up to 9 evidence artifacts (fixture_manifest, isolation_evidence, output_layout, integration_result, proof_report, cancellation/restart, repair_lineage, output_fingerprint, source_integrity_proof). Runs with many fixtures could generate hundreds of files.",
+      "mitigation": "Use harness-specific run_id prefix for grouping. Each artifact is ~1KB JSON — overhead is minimal. The ARTIFACT_LAYOUT already supports cleanup by run_id. Add note about cleanup in Phase B."
+    },
+    {
+      "id": "R-003",
+      "severity": "MEDIUM",
+      "description": "AcceptanceHarnessService still uses in-memory idempotency — run records are lost on service restart. Get /runs endpoint will only show runs from the current session.",
+      "mitigation": "Document that in-memory idempotency is Phase A only. Phase B will replace with StateTransitionService + MigrationRunModel. The evidence files themselves persist on disk regardless."
+    },
+    {
+      "id": "R-004",
+      "severity": "MEDIUM",
+      "description": "Cancellation evidence requires reliable subprocess cancellation detection — the current ExecutionWorker returns CANCELLED status only if cancellation_policy is respected; otherwise the process may hang.",
+      "mitigation": "Use CancellationPolicy.TERMINATE_PROCESS_TREE for all harness profiles. Cancellable fixture includes deterministic timeout. Evidence is recorded only after confirmed cancellation (exit status or timeout)."
+    },
+    {
+      "id": "R-005",
+      "severity": "LOW",
+      "description": "Output fingerprint will fail if build output directory doesn't exist (e.g., fixture not evaluated yet or ng build failed).",
+      "mitigation": "record_output_fingerprint handles missing directory gracefully: returns a fingerprint with {fingerprint: null, reason: 'output directory not found'}. AcceptanceHarnessService only calls after successful ng build."
+    },
+    {
+      "id": "R-006",
+      "severity": "LOW",
+      "description": "HarnessRunStatusDto changes may conflict with frontend consumers (S4-F15-I03).",
+      "mitigation": "HarnessRunStatusDto is a new DTO not consumed by existing frontend components. S4-F15-I03 will consume it in Phase A separately. Backward-compatible addition."
+    }
+  ],
+  "blocked_criteria": [
+    "Real 18.0.x→19→20→21 passing path through production stages — requires G01–G09 integrated (BLOCKED_INTEGRATION)",
+    "Human gates and stale-state protection through production approval workflow — requires G01–G09 integrated (BLOCKED_INTEGRATION)",
+    "DB-backed idempotency via StateTransitionService for harness runs — requires G01–G09 persistence integration (BLOCKED_INTEGRATION)",
+    "Real migration failure through Proposer/Reviewer/G10 — requires G04–G09 integrated (BLOCKED_INTEGRATION)",
+    "Environment failure without code patch through G05–G09 — requires G05–G09 integrated (BLOCKED_INTEGRATION)",
+    "Cancellation and process-tree cleanup through G01, G04 — requires G01, G04 integrated (BLOCKED_INTEGRATION)",
+    "Backend restart/lease/checkpoint/SSE reconnect through G01, G08 — requires G01, G08 integrated (BLOCKED_INTEGRATION)",
+    "Assistant evidence-grounded answer through G08 — requires G08 integrated (BLOCKED_INTEGRATION)",
+    "Final assurance/G13/Delivery/G14/Report/G15 through G09 — requires G09 integrated (BLOCKED_INTEGRATION)",
+    "Source fingerprint unchanged and final output fingerprint through G03–G05 — requires G03–G05 integrated (BLOCKED_INTEGRATION)",
+    "Human product sign-off through complete integrated workflow — requires all integration (BLOCKED_INTEGRATION)",
+    "Jira completion (jira_complete=true) — Phase A marks as false; becomes true only in Phase B (BLOCKED_INTEGRATION)"
+  ]
+}

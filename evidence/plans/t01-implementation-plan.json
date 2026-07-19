@@ -1,0 +1,527 @@
+{
+  "task": "T01 - S4-F15-I01",
+  "jira": "AMFA-282",
+  "phase": "Phase A - harness_ready",
+  "summary": "Implement the backend application contract for the Angular acceptance harness — extended fixture generators, real subprocess test profiles, deterministic failure fixtures, fake model integration suite, runtime evidence collector, and the optional acceptance-suite status endpoint. No G01–G09 production services are duplicated.",
+  "reusable_assets": [
+    {
+      "category": "Domain Contracts",
+      "symbols": [
+        "ContractModel (base frozen Pydantic model)",
+        "ErrorEnvelope (error_code, message, correlation_id, details)",
+        "ArtifactRefDto (artifact_id, run_id, stage_id, artifact_type, relative_path, checksum)",
+        "WorkflowEventDto (event_id, run_id, stage_id, event_type, occurred_at, sequence, payload)",
+        "ArtifactType enum (JSON, YAML, MARKDOWN, TEXT_LOG, COMMAND_LOG, PATCH, DIFF, REPORT)",
+        "CommandStatus enum (PENDING, RUNNING, SUCCEEDED, FAILED, REJECTED, TIMED_OUT, CANCELLED)",
+        "CancellationPolicy enum (TERMINATE_PROCESS_TREE, WAIT_FOR_SAFE_POINT)",
+        "WorkflowEventType enum (100+ event types including RUN_CREATED, RUN_STARTED, COMMAND_... variants)",
+        "RunStatus enum (all CREATED through COMPLETED, CANCELLED, FAILED etc.)",
+        "AuthoritativeRunStateDto, AuthoritativeRunMutationResultDto"
+      ],
+      "files": ["backend/app/domain/contracts.py"],
+      "reuse": "direct import — all Pydantic v2 frozen models with extra='forbid'"
+    },
+    {
+      "category": "Command Execution",
+      "symbols": [
+        "CommandExecutionWorker (full worker in worker.py)",
+        "ExecutionWorker (validate + run approved commands)",
+        "WorkerSupervisor (Popen with process-tree termination)",
+        "CommandPolicy (allowlist, working-directory, runtime, network, cancellation)",
+        "CommandRegistry (definitions for npm, node, python, git etc.)",
+        "CommandLogWriter (persist command evidence as artifacts)",
+        "CommandRequestDto, CommandResultDto, CommandExecutionResult, SupervisedProcessResult",
+        "CommandDefinition, StructuredCommandRequest"
+      ],
+      "files": ["backend/app/command_execution/worker.py"],
+      "reuse": "ExecutionWorker with custom CommandRegistry extensions for harness subprocesses"
+    },
+    {
+      "category": "Artifact Store",
+      "symbols": [
+        "LocalFilesystemArtifactStore (atomic write, SHA-256 checksums, metadata sidecars, versioning)",
+        "StoredArtifact, ArtifactEnvelope",
+        "ARTIFACT_LAYOUT (15 directory folders)",
+        "ArtifactNotFoundError, ArtifactStoreError"
+      ],
+      "files": ["backend/app/artifact_store/local_store.py"],
+      "reuse": "direct instantiation for harness evidence persistence"
+    },
+    {
+      "category": "LLM Gateway (Mock)",
+      "symbols": [
+        "MockLlmGateway (deterministic mock responses)",
+        "build_usage_record, summarize_usage, decide_budget",
+        "LlmRequest, LlmResponse, LlmUsageRecord, LlmBudgetDecision"
+      ],
+      "files": ["backend/app/llm_gateway/mock_gateway.py"],
+      "reuse": "direct instantiation as fake model integration adapter"
+    },
+    {
+      "category": "Mock Agents",
+      "symbols": [
+        "BaseMockAgent, AIAssistantAgent, EligibilityAgent, AnalysisAgent, PlanningAgent, TransformationAgent, BuildValidationAgent, RepairAgent, ReportAgent",
+        "MOCK_AGENTS catalog (8 agents), MOCK_AGENT_NAMES",
+        "AgentInputEnvelope, AgentOutputEnvelope"
+      ],
+      "files": ["backend/app/agents/mock_agents.py", "backend/app/agents/base.py"],
+      "reuse": "agents reused directly in fake model integration suite"
+    },
+    {
+      "category": "State Transition Service",
+      "symbols": [
+        "StateTransitionService (apply_transition, append_audit_event, request_cancel, acknowledge_cancel, resume_from_checkpoint)",
+        "TransitionRequest, TransitionResult",
+        "StaleStateVersionError, LeaseRequiredError, ResumeRejectedError, TransitionError"
+      ],
+      "files": ["backend/app/state/transition_service.py"],
+      "reuse": "direct usage for harness state transitions"
+    },
+    {
+      "category": "Workflow Persistence Models",
+      "symbols": [
+        "MigrationRunModel (full schema with state_version, status, run_phase, artifact/layout paths)",
+        "MigrationStageModel (stage_order, status, versions)",
+        "StageStepModel (status, component_type, attempt_id, idempotency_key)",
+        "ArtifactMetadataModel (run_id, stage_id, artifact_type, relative_path, checksum)",
+        "CommandExecutionModel, WorkflowEventModel, RepairAttemptModel, RunAssuranceStatusModel"
+      ],
+      "files": ["backend/app/repositories/models/workflow.py"],
+      "reuse": "persistence models reused directly for harness run records"
+    },
+    {
+      "category": "Migration Run Service",
+      "symbols": [
+        "MigrationRunService (create, start, get_state, _write_evidence pattern)",
+        "CreateRunRequest, RunResult, MigrationRunError",
+        "_approved_preflight, _thread_id, _result_from_event"
+      ],
+      "files": ["backend/app/services/migration_run_service.py"],
+      "reuse": "evidence writing pattern (_write_evidence) directly reused by evidence collector"
+    },
+    {
+      "category": "API Infrastructure",
+      "symbols": [
+        "error_response (stable error code envelope with x-correlation-id)",
+        "get_correlation_id",
+        "router composition pattern in api_router",
+        "SSE streaming pattern in runs.py"
+      ],
+      "files": ["backend/app/api/errors.py", "backend/app/api/router.py", "backend/app/api/routes/runs.py"],
+      "reuse": "error handling and SSE patterns reused; router.py gets new route registration"
+    },
+    {
+      "category": "Core Application",
+      "symbols": [
+        "APP_NAME, APP_VERSION (string constants)",
+        "Settings (all env config fields)"
+      ],
+      "files": ["backend/app/core/application.py", "backend/app/core/config.py"],
+      "reuse": "direct import"
+    },
+    {
+      "category": "Existing Fixture Generator",
+      "symbols": [
+        "create_angular_fixture(root, name) -> Path (basic 18.2.x single-app generator)"
+      ],
+      "files": ["backend/tests/fixture_generators/angular_fixture.py"],
+      "reuse": "extended with new fixture variants; all new generators live in same file"
+    },
+    {
+      "category": "Existing Tests (patterns)",
+      "symbols": [
+        "test_angular18_fixture.py (tmp_path fixture pattern, assertion pattern)",
+        "test_migration_run_service.py (RecordingGraph, SQLite bootstrap, isolated settings)",
+        "test_command_execution.py (worker fixture, CommandRegistry, subprocess runner)",
+        "test_mock_agents.py (parameterized agent tests, _make_input helper)",
+        "test_mock_orchestrator.py (isolated_artifact_root, end-to-end workflow)",
+        "test_contracts.py (Pydantic validation, OpenAPI schema checks)"
+      ],
+      "files": ["backend/tests/*.py"],
+      "reuse": "test patterns (tmp_path isolation, RecordingGraph, SQLite sessions) copied for new harness tests"
+    },
+    {
+      "category": "Frontend Hooks",
+      "symbols": [
+        "useMigrationEvents (SSE hook, WORKFLOW_EVENT_TYPES list, ConnectionStatus)",
+        "useAuthoritativeRun (SSE + snapshot refresh, AUTHORITATIVE_EVENT_TYPES)"
+      ],
+      "files": ["frontend/src/hooks/useMigrationEvents.ts", "frontend/src/hooks/useAuthoritativeRun.ts"],
+      "reuse": "events retrieved via same SSE stream; no UI changes for T01 (S4-F15-I03 owns frontend)"
+    },
+    {
+      "category": "Shared Contracts",
+      "symbols": [
+        "26 frozen JSON schemas (V3) in goals/shared/contracts/",
+        "goal_completion.schema.json (V3, harness_ready→integration_verified→jira_complete)"
+      ],
+      "files": ["goals/shared/contracts/*.json"],
+      "reuse": "conform to consumed schemas; harness produces goal_completion V3 data"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "GAP-001",
+      "description": "Missing fixture variants: 18.0.x, passable, compiler-error, dependency-conflict, environment-blocker, cancellable",
+      "severity": "HIGH",
+      "affected_files": ["backend/tests/fixture_generators/angular_fixture.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-002",
+      "description": "Missing harness subprocess profiles — CommandRegistry needs ng new, ng build, npm install, ng update entries",
+      "severity": "HIGH",
+      "affected_files": ["backend/app/runtime_profiles/__init__.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-003",
+      "description": "Missing deterministic failure fixtures — compiler error, dependency conflict, environment blocker, cancellable variants",
+      "severity": "HIGH",
+      "affected_files": ["backend/tests/fixture_generators/angular_fixture.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-004",
+      "description": "Missing harness domain contracts — HarnessRequestDto, HarnessResultDto, HarnessStatusDto, HarnessFixtureType enum",
+      "severity": "HIGH",
+      "affected_files": ["backend/app/domain/contracts.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-005",
+      "description": "Missing acceptance harness orchestration service — fixture selection+generation, subprocess execution, evidence collection, result evaluation",
+      "severity": "HIGH",
+      "affected_files": ["backend/app/services/acceptance_harness_service.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-006",
+      "description": "Missing runtime evidence collector — harness-specific evidence generation for manifests, isolation, output layout, integration results, proof report",
+      "severity": "HIGH",
+      "affected_files": ["backend/app/services/runtime_evidence_collector.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-007",
+      "description": "Missing GET /api/v1/operator/acceptance-suite/status endpoint",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/api/routes/acceptance.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-008",
+      "description": "Acceptance route not registered in api_router",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/app/api/router.py"],
+      "requires_new_code": false,
+      "note": "One-line import and include_router addition in existing file"
+    },
+    {
+      "id": "GAP-009",
+      "description": "Fake model integration test suite — exercises MockLlmGateway + mock agents together through harness",
+      "severity": "HIGH",
+      "affected_files": ["backend/tests/test_fake_model_integration.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-010",
+      "description": "Unit tests for acceptance harness service, evidence collector, fixture generators, harness DTOs",
+      "severity": "HIGH",
+      "affected_files": ["backend/tests/test_acceptance_harness.py"],
+      "requires_new_code": true
+    },
+    {
+      "id": "GAP-011",
+      "description": "Security and negative tests: path escape, checksum tamper, unauthorized input, stale state version for harness",
+      "severity": "MEDIUM",
+      "affected_files": ["backend/tests/test_acceptance_harness.py"],
+      "requires_new_code": true
+    }
+  ],
+  "implementation_steps": [
+    {
+      "order": 1,
+      "file": "evidence/plans/t01-implementation-plan.json",
+      "action": "create",
+      "description": "This plan document — read-only planner output"
+    },
+    {
+      "order": 2,
+      "file": "backend/tests/fixture_generators/angular_fixture.py",
+      "action": "modify",
+      "description": "Add 6 new fixture generators: create_angular_fixture_180x, create_passable_fixture, create_compiler_error_fixture, create_dependency_conflict_fixture, create_environment_blocker_fixture, create_cancellable_fixture. All accept (root: Path, name: str) -> Path signature. Each creates deterministic Angular workspace with package.json, angular.json, tsconfig.json, and one or more .ts source files. Compiler-error fixture includes intentional syntax error in main.ts. Dependency-conflict fixture publishes incompatible @angular/core/rxjs versions. Environment-blocker fixture adds a pre-check script that fails. Cancellable fixture adds an infinite setTimeout loop."
+    },
+    {
+      "order": 3,
+      "file": "backend/app/domain/contracts.py",
+      "action": "modify",
+      "description": "Add HarnessFixtureType enum (ANGULAR_180X, ANGULAR_182X, PASSABLE, COMPILER_ERROR, DEPENDENCY_CONFLICT, ENVIRONMENT_BLOCKER, CANCELLABLE). Add HarnessFixtureConfig DTO (fixture_type, name, root_dir path). Add HarnessRequestDto (fixture_type, idempotency_key, expected_state_version, actor). Add HarnessResultDto (fixture_id, fixture_root, outcome, evidence_refs, state_version, idempotent_replay). Add HarnessStatusDto (overall_status, fixtures list, errors list, evidence summary). All frozen, extra='forbid', Pydantic v2."
+    },
+    {
+      "order": 4,
+      "file": "backend/app/runtime_profiles/harness_profiles.py",
+      "action": "create",
+      "description": "Create harness subprocess profile definitions. Define HARNESS_COMMAND_REGISTRY extending CommandRegistry with: ng-new (ng new), ng-generate (ng generate), ng-build (ng build), npm-install (npm install), npx-ng-update (npx ng update). Define HARNESS_PROFILE_ID='harness-runtime-profile'. Define harness workspace directory aliases (HARNESS_FIXTURE_ROOT, HARNESS_OUTPUT_ROOT). Reuse existing CommandPolicy, ExecutionWorker, and WorkerSupervisor patterns."
+    },
+    {
+      "order": 5,
+      "file": "backend/app/services/runtime_evidence_collector.py",
+      "action": "create",
+      "description": "Create RuntimeEvidenceCollector service. Methods: record_fixture_manifest(fixture_type, root, checksum) -> ArtifactRefDto; record_isolation_evidence(fixture_root, output_root) -> ArtifactRefDto; record_output_layout_evidence(layout) -> ArtifactRefDto; record_integration_result(result, duration) -> ArtifactRefDto; record_proof_report(summary) -> ArtifactRefDto. Each method writes through LocalFilesystemArtifactStore with atomic write, SHA-256 checksum, and ArtifactMetadataModel registration. Reuses the _write_evidence pattern from MigrationRunService."
+    },
+    {
+      "order": 6,
+      "file": "backend/app/services/acceptance_harness_service.py",
+      "action": "create",
+      "description": "Create AcceptanceHarnessService. Constructor accepts settings, session_scope_factory, artifact_store, evidence_collector, execution_worker, now_provider. Methods: generate_fixture(request) -> HarnessResultDto — selects generator from fixture type, creates workspace under external temp root, writes fixture manifest evidence; run_subprocess_profile(request) -> CommandExecutionResult — configures harness CommandRegistry, resolves working directory, delegates to ExecutionWorker; evaluate_fixture(fixture_id, profile_id) -> HarnessResultDto — runs ng build, checks exit code, records pass/fail evidence; run_acceptance_suite(requests) -> HarnessStatusDto — orchestrates full fixture → subprocess → collection → evaluation cycle. Implements idempotency via StateTransitionService. Implements stale-state detection via expected_state_version. Returns typed HarnessResultDto with evidence ArifactRefDto list. Does NOT duplicate G01–G09 logic."
+    },
+    {
+      "order": 7,
+      "file": "backend/app/api/routes/acceptance.py",
+      "action": "create",
+      "description": "Create APIRouter with prefix='/api/v1/operator/acceptance-suite', tags=['acceptance']. Route: GET /status -> returns HarnessStatusDto (overall status from AcceptanceHarnessService). Route: POST /fixtures -> returns HarnessResultDto (generate + run fixture). Route: POST /fixtures/evaluate -> returns HarnessResultDto (evaluate specific fixture). All routes use Depends(get_harness_service) for dependency injection. Error handling via error_response(). SSE not required for phase A (acceptance-suite events are optional per S4-F15)."
+    },
+    {
+      "order": 8,
+      "file": "backend/app/api/router.py",
+      "action": "modify",
+      "description": "Import acceptance_router from app.api.routes.acceptance. Add api_router.include_router(acceptance_router) and api_v1_router.include_router(acceptance_router) to register the acceptance endpoints. Must declare as shared file edit per OWNERSHIP.yaml rules."
+    },
+    {
+      "order": 9,
+      "file": "backend/tests/test_angular18_fixture.py",
+      "action": "modify",
+      "description": "Extend existing test file with parametrized tests for each new fixture generator variant. Test: files exist (package.json, angular.json, tsconfig.json, main.ts). Test: compiler-error fixture fails TypeScript compilation (subprocess check). Test: dependency-conflict fixture has incompatible peer dependencies. Test: environment-blocker fixture returns non-zero from pre-check. Test: cancellable fixture has blocking operation. Test: all fixtures are created under external tmp_path root."
+    },
+    {
+      "order": 10,
+      "file": "backend/tests/test_acceptance_harness.py",
+      "action": "create",
+      "description": "Create comprehensive test file. Test groups: (A) AcceptanceHarnessService — happy path: generate_fixture returns HarnessResultDto with valid fixture_root; invalid input: unknown fixture type raises error; idempotent: same request returns same result; stale state: wrong expected_state_version fails. (B) RuntimeEvidenceCollector — each record method returns ArtifactRefDto with checksum; write is atomic; metadata is findable by artifact_id. (C) Harness subprocess profiles — ExecutionWorker configured with harness registry executes ng commands when ng CLI is available; throws CommandPolicyViolation for unregistered commands. (D) Fixture evaluation — passable fixture passes ng build; compiler-error fixture fails ng build. (E) Fake model integration — MockLlmGateway + mock agents invoked through harness returns deterministic outputs. Uses tmp_path isolation, inline SQLite, RecordingGraph-style DI."
+    },
+    {
+      "order": 11,
+      "file": "backend/tests/test_fake_model_integration.py",
+      "action": "create",
+      "description": "Create fake model integration suite. Test: MockLlmGateway.complete returns deterministic mock response. Test: mock agents return AgentOutputEnvelope with correct agent_name. Test: harness service can sequence: generate fixture → pass to fake agents → collect evidence. Test: usage records are created with correct token counts. Test: budget decisions work within constraints. Reuses MockLlmGateway, MOCK_AGENTS directly. Each test runs against fresh state."
+    },
+    {
+      "order": 12,
+      "file": "backend/tests/test_contracts.py",
+      "action": "modify",
+      "description": "Add test_openapi_publishes_harness_contracts — asserts new HarnessFixtureType, HarnessRequestDto, HarnessResultDto, HarnessStatusDto appear in OpenAPI schema. Add test_harness_dto_rejects_unknown_fields — Pydantic extra='forbid' enforcement. Add test_harness_dto_frozen — model_dump then mutation raises TypeError."
+    },
+    {
+      "order": 13,
+      "file": "backend/tests/test_acceptance_harness.py",
+      "action": "modify",
+      "description": "Security and negative test section. Tests: path escape in fixture root — fixture_root='../outside' raises ArtifactStoreError; checksum mismatch — tampered artifact content triggers checksum verification failure; unauthorized input — missing idempotency_key rejected; stale state version — expected_state_version mismatch returns stable error; policy bypass — unregistered command executable rejected by CommandPolicy."
+    }
+  ],
+  "tests_needed": [
+    {
+      "id": "T-001",
+      "file": "backend/tests/test_angular18_fixture.py",
+      "description": "Extended fixture generator parametrized tests — each new fixture variant verified for structural correctness and deterministic behavior",
+      "acceptance_criteria": [
+        "Every fixture generator creates a valid Angular directory tree under tmp_path",
+        "Compiler-error fixture produces a failing ng build exit code",
+        "Passable fixture produces a succeeding ng build (when ng CLI is available) or returns deterministic (SKIPPED) marker",
+        "All fixture manifests include fixture_type, root, and SHA-256 checksum",
+        "Cancellable fixture has observable long-running operation",
+        "Environment-blocker fixture signals pre-check failure"
+      ]
+    },
+    {
+      "id": "T-002",
+      "file": "backend/tests/test_acceptance_harness.py",
+      "description": "AcceptanceHarnessService unit tests — create, run, evaluate, idempotent, stale-state, invalid input",
+      "acceptance_criteria": [
+        "generate_fixture returns HarnessResultDto with valid fixture_root",
+        "generate_fixture with unknown fixture type returns stable ErrorEnvelope",
+        "Duplicate idempotency_key returns result with idempotent_replay=True",
+        "Wrong expected_state_version returns STALE_STATE_VERSION error",
+        "run_acceptance_suite cycles through fixture→subprocess→evidence→evaluation",
+        "No G01–G09 production services are invoked",
+        "All evidence artifacts have SHA-256 checksums and ArtifactMetadataModel records"
+      ]
+    },
+    {
+      "id": "T-003",
+      "file": "backend/tests/test_acceptance_harness.py",
+      "description": "RuntimeEvidenceCollector unit tests — evidence writing, atomicity, immutability, checksums",
+      "acceptance_criteria": [
+        "record_fixture_manifest writes atomic file + checksum sidecar",
+        "record_isolation_evidence stores fixture_root + output_root metadata",
+        "record_output_layout_evidence stores directory tree structure",
+        "record_integration_result stores exit code, duration, stdout/stderr logs",
+        "record_proof_report stores summary markdown evidence",
+        "All artifacts retrievable by artifact_id",
+        "Tampered artifact detected via checksum mismatch"
+      ]
+    },
+    {
+      "id": "T-004",
+      "file": "backend/tests/test_fake_model_integration.py",
+      "description": "Fake model integration suite — MockLlmGateway + MOCK_AGENTS through harness",
+      "acceptance_criteria": [
+        "MockLlmGateway.complete returns deterministic structured_output without network calls",
+        "All 8 mock agents return AgentOutputEnvelope with valid status",
+        "Usage records have correct input/output token estimates",
+        "Budget decisions (CONTINUE, WARN, BLOCK) work correctly",
+        "Fake adapter integration: harness→mock gateway→mock agents produces deterministic outputs"
+      ]
+    },
+    {
+      "id": "T-005",
+      "file": "backend/tests/test_acceptance_harness.py",
+      "description": "Security negative tests — path escape, checksum tamper, auth bypass, stale state",
+      "acceptance_criteria": [
+        "Path traversal in fixture root is rejected with ArtifactStoreError",
+        "Checksum mismatch on evidence returns stable error",
+        "Unregistered command executable is rejected by CommandPolicyViolation",
+        "Missing idempotency_key returns stable validation error",
+        "Stale state version returns STALE_STATE_VERSION with no side effects"
+      ]
+    },
+    {
+      "id": "T-006",
+      "file": "backend/tests/test_contracts.py",
+      "description": "Contract enrichment tests — new harness DTOs published in OpenAPI, frozen, reject extras",
+      "acceptance_criteria": [
+        "HarnessFixtureType, HarnessRequestDto, HarnessResultDto, HarnessStatusDto in OpenAPI schema",
+        "HarnessRequestDto rejects unknown fields (ValidationError)",
+        "HarnessResultDto frozen — mutation raises TypeError",
+        "Goal_completion V3 schema satisfied by completion data"
+      ]
+    },
+    {
+      "id": "T-007",
+      "file": "backend/tests/test_acceptance_harness_api.py",
+      "description": "API integration tests — acceptance-suite endpoints via TestClient",
+      "acceptance_criteria": [
+        "GET /api/v1/operator/acceptance-suite/status returns 200 with HarnessStatusDto",
+        "POST /api/v1/operator/acceptance-suite/fixtures returns 201 with HarnessResultDto",
+        "POST with invalid fixture_type returns 422 with ErrorEnvelope",
+        "Error responses include x-correlation-id header",
+        "All endpoints use stable error codes (400, 404, 409, 422, 500-class)"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "severity": "HIGH",
+      "description": "Fixture not representative — synthetic Angular workspaces may not trigger real-world migration edge cases or failure modes",
+      "mitigation": "Deterministic failure fixtures replicate known failure patterns (compiler errors, dep conflicts, env blockers). Phase B replaces with real-application fixtures."
+    },
+    {
+      "id": "R-002",
+      "severity": "MEDIUM",
+      "description": "Subprocess timing — npm install, ng build may be slow or time-dependent in test environments",
+      "mitigation": "Generous timeouts (120s for npm install, 60s for ng build). Cancellable fixtures use deterministic timeouts. Tests fall back to SKIPPED markers when CLI unavailable."
+    },
+    {
+      "id": "R-003",
+      "severity": "MEDIUM",
+      "description": "Environment dependency — some failure fixtures rely on specific tool versions (Node 18+, npm 9+, Angular CLI)",
+      "mitigation": "Harness profiles detect runtime availability via existing CommandRegistry version checks. Missing tools produce deterministic BLOCKED outcomes, not flaky failures."
+    },
+    {
+      "id": "R-004",
+      "severity": "HIGH",
+      "description": "Phase A boundary violation — risk of inadvertently implementing G01–G09 production services in harness code",
+      "mitigation": "AcceptanceHarnessService explicitly delegates to StateTransitionService for state changes (never duplicates). Uses fake adapters exclusively. No command execution policy that replicates G01–G09 logic. BLOCKED_INTEGRATION criteria strictly enforced."
+    },
+    {
+      "id": "R-005",
+      "severity": "MEDIUM",
+      "description": "Shared file conflicts — router.py and contracts.py are shared files requiring declaration before editing per OWNERSHIP.yaml",
+      "mitigation": "Declare shared edits explicitly in task result. Use minimal additions (one import + include_router line in router.py, one enum + three DTOs in contracts.py)."
+    },
+    {
+      "id": "R-006",
+      "severity": "MEDIUM",
+      "description": "Cancellable operations need reliable process-tree termination across platforms",
+      "mitigation": "Reuse existing WorkerSupervisor.terminate_process_tree which handles SIGTERM/SIGKILL on POSIX and CTRL_BREAK_EVENT on Windows. Cancellable fixture sets cancel_event thread signal."
+    },
+    {
+      "id": "R-007",
+      "severity": "LOW",
+      "description": "Evidence checksum integrity — must maintain SHA-256 immutability across all harness evidence artifacts",
+      "mitigation": "RuntimeEvidenceCollector delegates to LocalFilesystemArtifactStore which enforces atomic write + SHA-256. Testing verifies checksums match after readback."
+    },
+    {
+      "id": "R-008",
+      "severity": "LOW",
+      "description": "Cross-goal frozen schemas — harness evidence types must conform to 26 consumed schemas",
+      "mitigation": "Evidence written as artifact_ref.schema.json compatible ArtifactRefDto. No new frozen schemas introduced by Phase A."
+    },
+    {
+      "id": "R-009",
+      "severity": "HIGH",
+      "description": "Runtime duration — end-to-end harness test with real subprocesses may exceed test timeouts",
+      "mitigation": "Unit tests use fake subprocess profiles (mock ExecutionWorker). Real subprocess tests gated behind pytest.mark.slow. CI runs unit tests only; manual run triggers slow tests."
+    }
+  ],
+  "blocked_criteria": [
+    "Real 18.0.x→19→20→21 passing path through production stages — requires G01–G09 integrated (BLOCKED_INTEGRATION)",
+    "Human gates and stale-state protection through production approval workflow — requires G01–G09 integrated (BLOCKED_INTEGRATION)",
+    "Real migration failure through Proposer/Reviewer/G10 — requires G04–G09 integrated (BLOCKED_INTEGRATION)",
+    "Environment failure without code patch through G05–G09 — requires G05–G09 integrated (BLOCKED_INTEGRATION)",
+    "Cancellation and process-tree cleanup through G01, G04 — requires G01, G04 integrated (BLOCKED_INTEGRATION)",
+    "Backend restart/lease/checkpoint/SSE reconnect through G01, G08 — requires G01, G08 integrated (BLOCKED_INTEGRATION)",
+    "Assistant evidence-grounded answer through G08 — requires G08 integrated (BLOCKED_INTEGRATION)",
+    "Final assurance/G13/Delivery/G14/Report/G15 through G09 — requires G09 integrated (BLOCKED_INTEGRATION)",
+    "Source fingerprint unchanged and final output fingerprint through G03–G05 — requires G03–G05 integrated (BLOCKED_INTEGRATION)",
+    "Human product sign-off through complete integrated workflow — requires all integration (BLOCKED_INTEGRATION)",
+    "Jira completion (jira_complete=true) — Phase A marks as false; becomes true only in Phase B (BLOCKED_INTEGRATION)"
+  ],
+  "acceptance_criteria_coverage": [
+    {
+      "criterion": "Given parent feature prerequisites satisfied, when backend behavior exercised, then bounded contract is observable and no unrelated authority introduced",
+      "covered_by": "Steps 2–12: All new harness components test that no G01–G09 production service is duplicated. AcceptanceHarnessService explicitly delegates to StateTransitionService only."
+    },
+    {
+      "criterion": "Given invalid or unauthorized input, fails with stable reason and leaves state/evidence unchanged except auditable rejection",
+      "covered_by": "Step 13: Security negative tests cover path escape, checksum tamper, stale state version, missing idempotency key. ErrorEnvelope with stable error_code returned."
+    },
+    {
+      "criterion": "Given downstream dependency fails, partial evidence preserved safely, state remains legal, frontend contract can display failure",
+      "covered_by": "Steps 5–6: RuntimeEvidenceCollector writes partial evidence before failures. AcceptanceHarnessService catches subprocess failures and records partial state."
+    },
+    {
+      "criterion": "Given same idempotency key and identical payload retried, original result returned; different payload with same key rejected",
+      "covered_by": "Steps 6, 10: AcceptanceHarnessService uses StateTransitionService for idempotency. Unit tests verify idempotent_replay=True and different payload rejection."
+    },
+    {
+      "criterion": "Fixture harness for generating synthetic Angular workspaces under external temp roots",
+      "covered_by": "Steps 2, 9: Extended fixture generators (6 variants) all create workspaces under caller-supplied root (tmp_path in tests, external temp dir in production)."
+    },
+    {
+      "criterion": "Real subprocess test profiles",
+      "covered_by": "Step 4: Harness profiles register ng new, ng build, npm install, ng update in CommandRegistry. ExecutionWorker runs them through WorkerSupervisor."
+    },
+    {
+      "criterion": "Deterministic failure fixtures",
+      "covered_by": "Step 2: Four failure fixture types (compiler_error, dependency_conflict, environment_blocker, cancellable) with fully deterministic behavior."
+    },
+    {
+      "criterion": "Fake model integration suite (reuse existing mock_gateway.py)",
+      "covered_by": "Steps 10–11: FakeModelIntegrationTestSuite directly uses MockLlmGateway and MOCK_AGENTS. AcceptanceHarnessService composes them through harness flow."
+    },
+    {
+      "criterion": "Runtime evidence collector service",
+      "covered_by": "Step 5: RuntimeEvidenceCollector with 5 record_* methods, each writing atomic SHA-256 checksummed artifacts through LocalFilesystemArtifactStore."
+    },
+    {
+      "criterion": "No G01–G09 production service duplication",
+      "covered_by": "Architecture: AcceptanceHarnessService uses StateTransitionService only (not duplicate command executor, stage engine, repair chain, etc.). All BLOCKED_INTEGRATION criteria recorded."
+    },
+    {
+      "criterion": "Optional GET /api/v1/operator/acceptance-suite/status",
+      "covered_by": "Steps 7, 8: New acceptance.py route registered in router, returns HarnessStatusDto with overall status."
+    }
+  ]
+}

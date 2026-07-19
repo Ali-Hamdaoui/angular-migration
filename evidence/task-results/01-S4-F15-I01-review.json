@@ -1,0 +1,106 @@
+{
+  "task": "T01 - S4-F15-I01",
+  "jira": "AMFA-282",
+  "reviewer": "independent-reviewer",
+  "verdict": "FAIL",
+  "findings": [
+    {
+      "severity": "critical",
+      "file": "backend/app/services/acceptance_harness_service.py",
+      "finding": "Criterion 8 (Fake model integration suite reusing existing mock_gateway.py) not met: The acceptance harness service does not integrate with or reference mock_gateway.py anywhere. The scope explicitly requires 'fake model integration suite plus one configured Azure path' that reuses the existing mock_gateway.py. No mock_gateway import, dependency injection, or test infrastructure exists in the new code. The acceptance harness has no LLM integration point that could leverage the existing MockLlmGateway.",
+      "recommendation": "Either (a) add a fake model adapter/strategy in the acceptance harness that wires into the existing MockLlmGateway from app/llm_gateway/mock_gateway.py for testability, or (b) if model integration is genuinely out of scope for this service, document the rationale explicitly and create an acceptance test suite under backend/tests/ that demonstrates reuse of mock_gateway.py for the harness context."
+    },
+    {
+      "severity": "major",
+      "file": "backend/app/services/acceptance_harness_service.py",
+      "finding": "Idempotency is in-memory only and does not persist across HTTP requests. The FastAPI dependency get_harness_service() creates a new AcceptanceHarnessService instance on every request, so _idempotency_store is always empty across separate HTTP calls. Criterion 4 requires same idempotency key with identical payload to return the original result, which is impossible with per-request in-memory storage.",
+      "recommendation": "For Phase A, either make get_harness_service() a singleton/memoized function (e.g., using @lru_cache or a global instance) to preserve in-memory state across requests, or document the limitation clearly and add a STALE/EPHEMERAL flag to the idempotency response. For production (Phase B), back idempotency with a database table."
+    },
+    {
+      "severity": "major",
+      "file": "backend/app/api/routes/acceptance.py",
+      "finding": "The evaluate_fixture endpoint uses `body: dict` instead of a proper Pydantic ContractModel for the request body. This bypasses Pydantic validation, the extra='forbid' contract enforcement, and auto-generated OpenAPI schema. The fixture_id is extracted manually via .get() with empty string fallback.",
+      "recommendation": "Define a HarnessEvaluateRequestDto(ContractModel) with a required fixture_id: str field and use it as the route parameter instead of body: dict. This ensures consistency with criterion 12 (all DTOs frozen, extra='forbid') and proper validation."
+    },
+    {
+      "severity": "minor",
+      "file": "backend/app/services/acceptance_harness_service.py",
+      "finding": "No automated test files exist for the acceptance harness service, runtime evidence collector, or harness profiles. The task scope requires 'Unit tests for happy path, invalid input, illegal/stale transition, idempotent retry, dependency failure, and policy bypass attempts using fake external adapters.' The only test file (test_angular18_fixture.py) tests only the legacy create_angular_fixture function, not the 6 new generators.",
+      "recommendation": "Create test files for: (a) AcceptanceHarnessService.generate_fixture with happy path, unknown fixture type, and idempotency scenarios, (b) AcceptanceHarnessService.evaluate_fixture with pass/fail outcomes, (c) RuntimeEvidenceCollector record methods, (d) harness profile command registry construction, (e) API route integration tests for all 3 endpoints. Add tests for the 6 new fixture generators."
+    },
+    {
+      "severity": "minor",
+      "file": "backend/app/api/routes/acceptance.py",
+      "finding": "The evaluate_fixture and create_fixture routes return Union types (HarnessResultDto | JSONResponse) but the Python return annotation is not declared, relying on FastAPI's response_model for serialization. This can cause type-checking issues and makes the function signature imprecise.",
+      "recommendation": "Add proper Union return type annotations: `-> HarnessResultDto | JSONResponse` for create_fixture and evaluate_fixture."
+    },
+    {
+      "severity": "minor",
+      "file": "backend/app/services/acceptance_harness_service.py",
+      "finding": "The `_find_fixture_root` method returns the first directory under the fixture root, not a directory matching a specific fixture_id. This means evaluate_fixture will evaluate a fixture from a different generation request if multiple exist, or return FIXTURE_NOT_FOUND even though fixtures exist.",
+      "recommendation": "For Phase A, either store a dict mapping fixture_id to fixture_root (extending the in-memory idempotency store) or document this as an intentional Phase A simplification in the method docstring."
+    }
+  ],
+  "acceptance_criteria_coverage": [
+    {
+      "criterion": "Given parent feature prerequisites satisfied, when backend behavior exercised, bounded contract is observable and no unrelated authority introduced (no G01-G09 duplication)",
+      "status": "PASS",
+      "evidence": "The API exposes exactly 3 endpoints (GET /status, POST /fixtures, POST /fixtures/evaluate) under /operator/acceptance-suite. The AcceptanceHarnessService is a standalone service with no imports or references to G01-G09 production services. The service docstring explicitly states 'No G01–G09 production services are duplicated.' The acceptance router includes only these endpoints and is separately registered in api_router.py."
+    },
+    {
+      "criterion": "Given invalid or unauthorized input, fails with stable reason, leaves state unchanged",
+      "status": "FAIL",
+      "evidence": "create_fixture catches StaleStateVersionError (→ 409) and ValueError (→ 422) with stable error codes. evaluate_fixture validates fixture_id presence (→ 422 for empty). However, (a) evaluate_fixture uses raw `body: dict` without Pydantic validation, bypassing the ContractModel/extra='forbid' pattern, (b) no authentication/authorization layer exists for Phase A, and (c) exceptions from evaluate_fixture beyond missing fixture_id are unhandled (e.g., if service._find_fixture_root or _evidence_collector methods fail)."
+    },
+    {
+      "criterion": "Given downstream dependency fails, partial evidence preserved safely, state remains legal",
+      "status": "PASS",
+      "evidence": "In evaluate_fixture, if ng build fails (non-zero exit code), the integration_result is still recorded via record_integration_result and the proof_report is still recorded via record_proof_report. The outcome is set to 'FAILED' rather than propagating the exception. In generate_fixture, the workspace is created before evidence recording (manifest + isolation are both recorded). The `run_subprocess_profile` returns a result dict with status info even when the execution_worker is None (SKIPPED) or the profile is unknown (REJECTED)."
+    },
+    {
+      "criterion": "Given same idempotency key and identical payload retried, original result returned; different payload rejected",
+      "status": "FAIL",
+      "evidence": "The internal idempotency logic in AcceptanceHarnessService is correct: same idempotency_key + same expected_state_version returns cached result; different state_version raises StaleStateVersionError. HOWEVER, the FastAPI dependency get_harness_service() creates a new service instance per request (not a singleton), so the in-memory _idempotency_store is always empty across separate HTTP calls. Idempotency only applies within a single request scope. Additionally, different payload with same key + same state_version returns the cached (first-payload) result rather than rejecting — the service does not compare payloads, only state versions."
+    },
+    {
+      "criterion": "Fixture harness generates synthetic Angular workspaces under external temp roots",
+      "status": "PASS",
+      "evidence": "The _fixture_root_path() method defaults to /tmp/amfa-harness-fixtures when no workspace_root is configured. All 7 fixture generators (create_angular_fixture, create_angular_fixture_180x, create_passable_fixture, create_compiler_error_fixture, create_dependency_conflict_fixture, create_environment_blocker_fixture, create_cancellable_fixture) create workspaces under the provided root Path, which is the external temp root. The service creates the root directory with mkdir(parents=True, exist_ok=True)."
+    },
+    {
+      "criterion": "Real subprocess test profiles exist",
+      "status": "PASS",
+      "evidence": "harness_profiles.py defines HARNESS_PROFILE_ENTRIES with 5 real subprocess profiles: ng-new, ng-generate, ng-build, npm-install, npx-ng-update. Each has executable, default_args, timeout, network_profile, and cancellation_policy. The build_harness_command_registry() function creates a CommandRegistry extended with these harness command definitions."
+    },
+    {
+      "criterion": "Deterministic failure fixtures exist (compiler_error, dependency_conflict, environment_blocker, cancellable)",
+      "status": "PASS",
+      "evidence": "All 4 deterministic failure fixture generators exist in angular_fixture.py: (1) create_compiler_error_fixture — intentionally omits a closing parenthesis in main.ts, (2) create_dependency_conflict_fixture — pins @angular/core 19.0.0 with rxjs 6.6.7 (incompatible), (3) create_environment_blocker_fixture — adds a precheck.js script that calls process.exit(1), (4) create_cancellable_fixture — includes an infinite setTimeout recursion loop in main.ts. All registered in FIXTURE_GENERATORS."
+    },
+    {
+      "criterion": "Fake model integration suite (reuses existing mock_gateway.py)",
+      "status": "FAIL",
+      "evidence": "The acceptance harness service does not import, reference, or integrate with app/llm_gateway/mock_gateway.py (MockLlmGateway) anywhere. The acceptance harness involves no LLM calls — it generates Angular workspaces, runs subprocess builds, and collects evidence. There is no fake model integration suite, no Azure gateway integration path, and no test infrastructure that reuses mock_gateway.py for harness testing. The existing mock_gateway.py is only used by test_llm_gateway.py and test_planning_review_application_service_s2_f07_i01.py, neither of which relate to the acceptance harness."
+    },
+    {
+      "criterion": "Runtime evidence collector service exists",
+      "status": "PASS",
+      "evidence": "RuntimeEvidenceCollector class is defined in runtime_evidence_collector.py with 5 public record_* methods: record_fixture_manifest, record_isolation_evidence, record_output_layout_evidence, record_integration_result, record_proof_report. It uses LocalFilesystemArtifactStore for atomic writes and supports optional DB metadata registration via session_scope_factory. EvidenceWriteResult dataclass provides the return contract."
+    },
+    {
+      "criterion": "Optional GET /api/v1/operator/acceptance-suite/status endpoint exists",
+      "status": "PASS",
+      "evidence": "The acceptance router (prefix=/operator/acceptance-suite) defines GET /status returning HarnessStatusDto. It is registered in both api_router (→ /operator/acceptance-suite/status) and api_v1_router with prefix /api/v1 (→ /api/v1/operator/acceptance-suite/status) in router.py line 57 and 85. The service.get_status() method returns overall_status='READY' when idle."
+    },
+    {
+      "criterion": "Phase A boundary: no G01-G09 production service duplication",
+      "status": "PASS",
+      "evidence": "The AcceptanceHarnessService uses in-memory idempotency storage instead of a production DB-backed state transition service. The _find_fixture_root method uses filesystem-first approach instead of a DB registry. All evidence is written via LocalFilesystemArtifactStore rather than ArtifactService. No G01-G09 production services (StateTransitionService, ArtifactService, WorkerSupervisor, etc.) are imported or instantiated in the acceptance harness code."
+    },
+    {
+      "criterion": "ALL DTOs are frozen, extra='forbid', using ContractModel",
+      "status": "PASS",
+      "evidence": "ContractModel (line 10-13 of contracts.py) has model_config = ConfigDict(extra='forbid', frozen=True). HarnessRequestDto(ContractModel), HarnessResultDto(ContractModel), and HarnessStatusDto(ContractModel) all inherit from ContractModel, inheriting frozen=True and extra='forbid'. All enum types (HarnessFixtureType) are standard Python enums. NOTE: evaluate_fixture route uses raw `body: dict` instead of a Pydantic ContractModel for its request body, but this is a route implementation choice rather than a DTO definition issue."
+    }
+  ]
+}

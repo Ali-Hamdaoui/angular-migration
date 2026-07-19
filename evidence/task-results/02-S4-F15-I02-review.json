@@ -1,0 +1,101 @@
+{
+  "task": "T02 — S4-F15-I02 (AMFA-283)",
+  "jira": "AMFA-283",
+  "phase": "Phase A — harness_ready",
+  "reviewer_verdict": "PASS",
+  "reviewer_verdict_summary": "All 7 acceptance criteria satisfied. Implementation covers 6 new RuntimeEvidenceCollector record methods, 11 WorkflowEventType entries, wired evidence hooks, 3 GET endpoints, frozen ContractModel-based DTOs, no G01–G09 duplication, and BLOCKED_INTEGRATION criteria documented. Three minor non-blocking observations noted for Phase B.",
+  "review_date": "2026-07-19",
+  "commit": "7d12323 (hermes/10-full-runtime-proof)",
+  "files_reviewed": [
+    "backend/app/domain/contracts.py",
+    "backend/app/services/runtime_evidence_collector.py",
+    "backend/app/services/acceptance_harness_service.py",
+    "backend/app/api/routes/acceptance.py",
+    "evidence/plans/t02-implementation-plan.json",
+    "goals/10-full-runtime-proof/tasks/T02-s4-f15-i02-db-api-events-artifacts.md"
+  ],
+  "criterion_results": [
+    {
+      "criterion": 1,
+      "description": "New WorkflowEventType entries exist for acceptance-suite audit events",
+      "result": "PASS",
+      "details": "11 new acceptance-suite event types added to WorkflowEventType enum (lines 358–369): ACCEPTANCE_SUITE_STARTED, ACCEPTANCE_SUITE_COMPLETED, ACCEPTANCE_SUITE_FAILED, FIXTURE_GENERATED, FIXTURE_GENERATION_FAILED, FIXTURE_EVALUATED, FIXTURE_EVALUATION_FAILED, FIXTURE_CANCELLED, FIXTURE_RESTARTED, OUTPUT_FINGERPRINT_CREATED, REPAIR_LINEAGE_RECORDED. All are proper str enum values consistent with existing naming convention.",
+      "verification": "Read backend/app/domain/contracts.py lines 358–369"
+    },
+    {
+      "criterion": 2,
+      "description": "New RuntimeEvidenceCollector methods exist (all 6 new record_* methods)",
+      "result": "PASS",
+      "details": "All 6 expected methods present in runtime_evidence_collector.py under the 'T02 / AMFA-283 — new evidence record methods' section (lines 148–278): (1) record_cancellation_evidence, (2) record_restart_evidence, (3) record_repair_lineage, (4) record_output_fingerprint, (5) record_source_integrity_proof, (6) record_acceptance_suite_evidence. All follow the existing _write_and_register pattern: atomic write through LocalFilesystemArtifactStore + ArtifactMetadataModel registration. All return ArtifactRefDto with SHA-256 checksum.",
+      "verification": "Read backend/app/services/runtime_evidence_collector.py line 148–278"
+    },
+    {
+      "criterion": 3,
+      "description": "Evidence hooks are wired into AcceptanceHarnessService.generate_fixture and evaluate_fixture",
+      "result": "PASS",
+      "details": "generate_fixture (line 185): calls record_source_integrity_proof() after fixture manifest and isolation evidence. evaluate_fixture (line 341): calls record_output_fingerprint() on successful ng build. evaluate_fixture (line 351): calls record_cancellation_evidence() on subprocess CANCELLED/TIMED_OUT. run_acceptance_suite (line 476): calls record_acceptance_suite_evidence() with aggregate summary. Each hook is wrapped in appropriate conditionals (success path vs failure/cancel path).",
+      "verification": "Read backend/app/services/acceptance_harness_service.py lines 185–196, 340–358, 476–480"
+    },
+    {
+      "criterion": 4,
+      "description": "New GET /runs, /runs/{run_id}, /runs/{run_id}/evidence endpoints work",
+      "result": "PASS",
+      "details": "Three endpoints defined in acceptance.py (lines 131–258): (1) GET /runs — queries ArtifactMetadataModel with 'harness-%' run_id prefix, returns list of unique run_ids with artifact_count and latest_event (2) GET /runs/{run_id} — returns HarnessRunStatusDto with all ArtifactRefDto entries for that run_id, 404 if not found (3) GET /runs/{run_id}/evidence — returns list[ArtifactRefDto] for the run_id, 404 if not found. All use session_scope(), stable error codes (404, 422), and proper DB queries. Router is already registered in api_router and api_v1_router.",
+      "verification": "Read backend/app/api/routes/acceptance.py lines 131–258"
+    },
+    {
+      "criterion": 5,
+      "description": "All new DTOs are frozen, extra='forbid', using ContractModel",
+      "result": "PASS",
+      "details": "HarnessRequestDto, HarnessResultDto, HarnessEvaluateRequestDto, HarnessStatusDto, and HarnessRunStatusDto all extend ContractModel (model_config = ConfigDict(extra='forbid', frozen=True)). ContractModel enforces both immutability and strict field validation. HarnessRunStatusDto correctly defines run_id, suite_id, overall_status, fixture_count, passed, failed, started_at, completed_at, and evidence_refs fields.",
+      "verification": "Read backend/app/domain/contracts.py lines 10–14, 967–1008"
+    },
+    {
+      "criterion": 6,
+      "description": "No G01–G09 production service duplication",
+      "result": "PASS",
+      "details": "AcceptanceHarnessService imports and uses only: RuntimeEvidenceCollector, LocalFilesystemArtifactStore, session_scope, CommandLogWriter, ExecutionWorker, harness profile constants. No imports from g02_application_service.py, baseline_g03_application_service.py, production_preflight_service.py, or any other G01–G09 service file. The file docstring explicitly states 'No G01–G09 production services are duplicated.' Evidence collection goes through RuntimeEvidenceCollector (owned by the harness), not through G01–G09 production persistence services. In-memory idempotency store is used instead of StateTransitionService, with documentation noting it's a Phase A placeholder.",
+      "verification": "Read backend/app/services/acceptance_harness_service.py imports (lines 20–31) and docstring (lines 1–7)"
+    },
+    {
+      "criterion": 7,
+      "description": "Phase A boundary: BLOCKED_INTEGRATION criteria documented",
+      "result": "PASS",
+      "details": "12 BLOCKED_INTEGRATION criteria documented in evidence/plans/t02-implementation-plan.json (lines 366–378) covering: real 18→21 production path, human gates, DB-backed idempotency, migration failure through G04–G09, environment failure through G05–G09, cancellation through G01/G04, restart through G01/G08, assistant evidence through G08, final assurance through G09, source/output fingerprint through G03–G05, human sign-off through complete integrated workflow, and Jira completion. Task spec T02.md line 52 also documents the Phase A boundary: 'Phase A implements only the branch-owned acceptance harness and consuming contracts. Any criterion requiring real G01–G09 production implementations is recorded as BLOCKED_INTEGRATION rather than faked.' GOAL.md and GOAL10_TWO_PHASE_PROTOCOL.md reinforce the same boundary.",
+      "verification": "Read evidence/plans/t02-implementation-plan.json lines 366–378, goals/10-full-runtime-proof/tasks/T02-s4-f15-i02-db-api-events-artifacts.md line 52"
+    }
+  ],
+  "non_blocking_observations": [
+    {
+      "severity": "LOW",
+      "description": "ArtifactType._value2member_map_ private API usage",
+      "file": "backend/app/api/routes/acceptance.py",
+      "lines": [202, 252],
+      "details": "Both get_harness_run and get_harness_run_evidence use ArtifactType._value2member_map_ to validate artifact_type string values from the database. This accesses a Pydantic v2 private internal attribute (prefixed with underscore) which could change between minor versions without deprecation. Recommendation: use try/except around ArtifactType(value) instead, or maintain an explicit mapping dict."
+    },
+    {
+      "severity": "LOW",
+      "description": "HarnessRunStatusDto route constructors leave fields at defaults",
+      "file": "backend/app/api/routes/acceptance.py",
+      "lines": [210, 215],
+      "details": "The get_harness_run endpoint creates HarnessRunStatusDto with only run_id, overall_status, fixture_count, and evidence_refs populated. Fields suite_id, passed, failed, started_at, completed_at are left at their defaults (\"\", 0, 0, None, None). This returns accurate but imprecise data to consumers. Consider tracking passed/failed counts from the evidence artifact types, or mark these as optional in Phase B."
+    },
+    {
+      "severity": "LOW",
+      "description": "Implementation plan internal inconsistency (4 vs 6 methods)",
+      "file": "evidence/plans/t02-implementation-plan.json",
+      "details": "GAP-001 section says 'Missing 4 evidence record methods' but step 3 correctly describes 6 new methods. The code implements all 6 correctly. The gap description was not updated when the plan scope expanded from 4 to 6 methods, but this has no impact on code correctness."
+    },
+    {
+      "severity": "LOW",
+      "description": "SOURCE_INTEGRITY_VERIFIED was already defined before T02",
+      "file": "backend/app/domain/contracts.py",
+      "details": "The implementation plan listed SOURCE_INTEGRITY_VERIFIED as a new T02 event type, but it was already present at line 299 (outside the T02 comment block at lines 358–369). The actual T02 code correctly did NOT duplicate it — only 11 new types were added. The code is correct; the plan was slightly inaccurate."
+    }
+  ],
+  "summary": "PASS — All 7 acceptance criteria are met. The implementation adds 6 RuntimeEvidenceCollector record methods, 11 WorkflowEventType entries for acceptance-suite audit events, evidence hooks wired into generate_fixture and evaluate_fixture, 3 GET retrieval endpoints (/runs, /runs/{run_id}, /runs/{run_id}/evidence), all DTOs as frozen ContractModel subclasses with extra='forbid', no G01–G09 service duplication, and comprehensive BLOCKED_INTEGRATION criteria documentation. Four minor non-blocking observations are recorded for Phase B consideration.",
+  "evidence_contract_sha": "dccf1f91fad2d65db31b31a2aa0df6935fe7d44a7c0029c0f5f5a6f2f4692836",
+  "completion_level": "harness_ready",
+  "jira_complete": false,
+  "integration_verified": false
+}
