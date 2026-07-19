@@ -54,6 +54,8 @@ class PlanReviewResponse(ContractModel):
     stage_plan: dict[str, Any] | None = None
     plan_checksum: str | None = None
     stage_plan_checksum: str | None = None
+    artifact_set_checksum: str | None = None
+    computed_artifact_set_checksum: str | None = None
     diff: dict[str, Any] | None = None
     package: dict[str, Any] | None = None
     artifact_ids: list[str] = Field(default_factory=list)

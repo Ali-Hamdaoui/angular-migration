@@ -289,6 +289,15 @@ class PlanningReviewEvidenceApplicationService:
             )
             if gate is None or gate.status != "pending":
                 raise PlanningReviewEvidenceError("G06_NOT_PENDING", "G06 is not available for a decision.", 409)
+            active_plan, active_stage = self._active_plan_pair(session, run_id)
+            if (
+                gate.plan_version != active_plan.version
+                or gate.plan_checksum != active_plan.checksum
+                or gate.stage_plan_checksum != active_stage.checksum
+            ):
+                self._mark_gate_stale(session, run, gate, actor, now, "G06 is not bound to the active plan")
+                session.commit()
+                raise PlanningReviewEvidenceError("STALE_G06_BINDING", "G06 is not bound to the active plan.", 409)
             if (
                 request.gate_version != gate.gate_version
                 or request.package_checksum != gate.package_checksum
@@ -374,7 +383,14 @@ class PlanningReviewEvidenceApplicationService:
                 .where(PlanningReviewModel.run_id == run_id)
                 .order_by(PlanningReviewModel.created_at.desc())
             )
-            return self._planning_response(session, review) if review else None
+            if review is None:
+                revision = session.scalar(
+                    select(PlanRevisionModel)
+                    .where(PlanRevisionModel.run_id == run_id)
+                    .order_by(PlanRevisionModel.created_at.desc())
+                )
+                return self._revision_response(session, revision) if revision else None
+            return self._planning_response(session, review)
 
     def _complete_explanation(self, run_id, request, request_checksum, package):
         now = self._now()
@@ -648,7 +664,7 @@ class PlanningReviewEvidenceApplicationService:
                 "G06",
                 session.scalar(
                     select(G06ApprovalModel)
-                    .where(G06ApprovalModel.run_id == run.id, G06ApprovalModel.status == "approved")
+                    .where(G06ApprovalModel.run_id == run.id, G06ApprovalModel.status.in_(("pending", "approved", "approved_with_comment")))
                     .order_by(G06ApprovalModel.created_at.desc())
                 ),
             ),
@@ -901,26 +917,48 @@ class PlanningReviewEvidenceApplicationService:
         )
 
     def _planning_response(self, session, row, replay=False):
+        active_plan, active_stage = self._active_plan_pair(session, row.run_id)
         gate = session.scalar(
             select(G06ApprovalModel)
             .where(G06ApprovalModel.run_id == row.run_id, G06ApprovalModel.gate_id == "G06")
             .order_by(G06ApprovalModel.state_version.desc(), G06ApprovalModel.created_at.desc())
         )
+        current_checksums = dict(row.artifact_checksums or {})
+        current_checksums.update(active_plan.artifact_checksums or {})
+        current_checksums.update(active_stage.artifact_checksums or {})
+        if gate:
+            for artifact_id in gate.artifact_ids or []:
+                current_checksums[artifact_id] = self._artifact_checksum(session, session.get(MigrationRunModel, row.run_id), artifact_id)
+            self._verify_artifacts(session, session.get(MigrationRunModel, row.run_id), gate.artifact_ids or [], current_checksums)
+        aggregate = self._aggregate_artifact_checksum(current_checksums)
         return PlanReviewResponse(
             run_id=row.run_id,
             status=row.status,
             package=row.package,
-            artifact_ids=row.artifact_ids,
-            artifact_checksums=row.artifact_checksums,
-            artifact_links={item: f"/api/v1/artifacts/{item}" for item in row.artifact_ids},
+            plan=active_plan.plan,
+            stage_plan=active_stage.stage_plan,
+            plan_checksum=active_plan.checksum,
+            stage_plan_checksum=active_stage.checksum,
+            artifact_ids=sorted(current_checksums),
+            artifact_checksums=current_checksums,
+            artifact_links={item: f"/api/v1/artifacts/{item}" for item in current_checksums},
             gate_version=gate.gate_version if gate else self.GATE_VERSION,
             gate_status=gate.status if gate else "blocked",
             gate_decision=gate.decision if gate else None,
             package_checksum=gate.package_checksum if gate else None,
+            artifact_set_checksum=gate.artifact_set_checksum if gate else None,
+            computed_artifact_set_checksum=aggregate,
             state_version=row.state_version,
             event_sequence=row.event_sequence,
             idempotent_replay=replay,
         )
+
+    @staticmethod
+    def _aggregate_artifact_checksum(checksums: dict[str, str]) -> str:
+        """Canonical checksum of the complete current artifact/checksum map."""
+        return "sha256:" + hashlib.sha256(
+            json.dumps(dict(sorted(checksums.items())), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
     @staticmethod
     def _decision_response(row, replay=False):
