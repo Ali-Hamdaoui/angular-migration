@@ -1,0 +1,14 @@
+{
+  "task_id": "07-S3-F02-I03",
+  "jira": "AMFA-160",
+  "description": "Build frontend experience for Execute one approved command",
+  "files_created": [],
+  "files_modified": [
+    "frontend/src/types/generated/api.ts"
+  ],
+  "tests_passed": 0,
+  "evidence": "Typed API client for command execution endpoints (queue, list, get). CommandExecuteRequestDto, CommandExecutionResponseDto types added.",
+  "commit_sha": "4f721b1",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Frontend contracts exposed for execution actions."
+}

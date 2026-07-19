@@ -258,6 +258,9 @@ class CommandPolicyEngineService:
             command_id=request.command_id,
             executable=request.executable,
             arguments=request.arguments,
+            cwd_alias=request.cwd_alias,
+            plan_id=request.plan_id,
+            execution_profile_id=request.execution_profile_id,
             decision=decision.value,
             reasons=reasons,
             policy_version=self.policy_version,
@@ -265,7 +268,12 @@ class CommandPolicyEngineService:
 
     def _check_shell_enforcement(self, request: CommandPolicyValidateRequestDto) -> AuthorizationCheckResult:
         """Reject any request attempting shell execution."""
-        # The DTO has no shell field — shell=false is always enforced
+        if request.shell is not False:
+            return AuthorizationCheckResult(
+                passed=False,
+                rule_name="shell_enforcement",
+                reason="Shell execution is forbidden",
+            )
         return AuthorizationCheckResult(passed=True, rule_name="shell_enforcement")
 
     def _check_network_profile(self, profile: str) -> AuthorizationCheckResult:

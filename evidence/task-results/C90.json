@@ -1,0 +1,11 @@
+{
+  "task_id": "C90",
+  "description": "Capability Contract and Integration Tests",
+  "files_created": [],
+  "files_modified": [],
+  "tests_passed": 0,
+  "evidence": "Integration tests not yet executed. Requires G02-G05 branches for full cross-goal integration. Unit/component tests pass independently.",
+  "commit_sha": "bff54c0",
+  "reviewer_verdict": "BLOCKED",
+  "verdict_notes": "Cross-goal integration requires upstream branches. Deferred to integration phase."
+}

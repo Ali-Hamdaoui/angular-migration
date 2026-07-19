@@ -1,0 +1,17 @@
+{
+  "task_id": "06-S3-F02-I02",
+  "jira": "AMFA-159",
+  "description": "Persist and expose evidence contracts for Execute one approved command",
+  "files_created": [
+    "backend/app/repositories/models/workflow.py (CommandExecutionModel)"
+  ],
+  "files_modified": [
+    "backend/app/domain/contracts.py (CommandRequestDto, CommandResultDto)",
+    "backend/app/api/routes/run_commands.py"
+  ],
+  "tests_passed": 0,
+  "evidence": "CommandExecutionModel with idempotency, status, checksum, artifact refs. POST/GET API endpoints. COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED events.",
+  "commit_sha": "debae85",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Combined with T05."
+}

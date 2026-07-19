@@ -1,0 +1,17 @@
+{
+  "task_id": "03-S3-F01-I03",
+  "jira": "AMFA-156",
+  "description": "Build frontend experience for Register structured commands",
+  "files_created": [
+    "frontend/src/api/commands.ts",
+    "frontend/src/components/CommandPolicyInspector.tsx"
+  ],
+  "files_modified": [
+    "frontend/src/types/generated/api.ts"
+  ],
+  "tests_passed": 0,
+  "evidence": "CommandPolicyInspector component with template listing and policy validation. Typed API client enforces backend contracts.",
+  "commit_sha": "4f721b1",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Frontend component integrated into AuthoritativeRunDashboard."
+}

@@ -181,18 +181,21 @@ def cancel_command(
     execution_id: str,
     body: CancelCommandRequestDto,
     request: Request,
+    executor: CommandExecutorService = Depends(get_executor),
 ):
     """Cancel a running command execution."""
     with session_scope() as session:
-        supervisor = JobSupervisorService()
         try:
-            result = supervisor.cancel_command(
+            result = executor.request_cancel(
                 session,
                 run_id=run_id,
                 execution_id=execution_id,
                 actor=body.actor,
                 idempotency_key=body.idempotency_key,
             )
+        except CommandExecutorError as error:
+            status_code = 404 if error.code == "EXECUTION_NOT_FOUND" else 409
+            return error_response(request, status_code=status_code, error_code=error.code, message=error.message)
         except JobSupervisorError as error:
             status_code = 404 if error.code == "EXECUTION_NOT_FOUND" else 409
             return error_response(request, status_code=status_code, error_code=error.code, message=error.message)

@@ -42,6 +42,8 @@ from app.domain.contracts import (
     CommandStatus,
     CancellationPolicy,
     WorkflowEventType,
+    CommandPolicyValidateRequestDto,
+    CommandPolicyValidateResponseDto,
 )
 from app.repositories.models.workflow import (
     CommandExecutionModel,
@@ -51,6 +53,7 @@ from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
+from app.services.job_supervisor_service import JobSupervisorService
 
 
 class CommandExecutorError(ValueError):
@@ -92,6 +95,7 @@ class CommandExecutorService:
         self._registry_service = registry_service or CommandRegistryService()
         self._supervisor = supervisor or WorkerSupervisor()
         self._default_timeout_seconds = default_timeout_seconds
+        self._cancel_events: dict[str, threading.Event] = {}
 
     def queue_command(
         self,
@@ -118,19 +122,53 @@ class CommandExecutorService:
         request-response cycle for diagnostic commands. Async execution
         with live log streaming is added in S3-F03.
         """
-        # Check idempotency
+        # Check idempotency — same key + identical payload returns cached result
         existing = session.scalar(
             select(CommandExecutionModel)
             .where(CommandExecutionModel.run_id == run_id)
             .where(CommandExecutionModel.idempotency_key == idempotency_key)
         )
         if existing is not None:
-            return self._response_from_model(existing, idempotent_replay=True)
+            # Verify payload identity
+            if (existing.executable == executable
+                    and (existing.arguments or []) == (arguments or [])
+                    and existing.command_id == command_id):
+                return self._response_from_model(existing, idempotent_replay=True)
+            raise CommandExecutorError(
+                "IDEMPOTENCY_KEY_CONFLICT",
+                f"Idempotency key '{idempotency_key}' already used with different payload",
+            )
 
         effective_timeout = timeout_seconds or self._default_timeout_seconds
         now = datetime.now(UTC)
 
-        # 1. Create the execution record in QUEUED state
+        # 1. Validate against policy engine
+        policy_request = CommandPolicyValidateRequestDto(
+            run_id=run_id,
+            stage_id=stage_id,
+            command_id=command_id,
+            executable=executable,
+            arguments=arguments or [],
+            cwd_alias=working_directory_alias,
+            plan_id=None,
+            working_directory_alias=working_directory_alias,
+            working_directory=working_directory,
+            execution_profile_id=runtime_profile_id,
+            network_profile=network_profile,
+            cancellation_policy=cancellation_policy,
+            timeout_seconds=effective_timeout,
+            idempotency_key=idempotency_key,
+            requested_by=requested_by,
+            shell=False,
+        )
+        policy_result = self._policy_engine.validate(session, policy_request)
+        if policy_result.decision == "rejected":
+            raise CommandExecutorError(
+                "POLICY_REJECTED",
+                f"Command rejected by policy engine: {'; '.join(policy_result.reasons)}",
+            )
+
+        # 2. Create the execution record in QUEUED state
         execution_id = f"exec-{uuid4().hex[:12]}"
         exec_model = CommandExecutionModel(
             id=execution_id,
@@ -212,8 +250,18 @@ class CommandExecutorService:
                 working_directory=working_dir,
             )
 
-            supervised = self._supervisor.run(structured)
+            # Create cancel event for this execution
+            cancel_event = threading.Event()
+            self._cancel_events[execution_id] = cancel_event
+
+            supervised = self._supervisor.run(
+                structured,
+                cancel_event=cancel_event,
+            )
             finished_at = datetime.now(UTC)
+
+            # Clean up cancel event
+            self._cancel_events.pop(execution_id, None)
 
             # 6. Update execution record
             status = self._map_supervised_status(supervised)
@@ -259,7 +307,36 @@ class CommandExecutorService:
         """Retrieve a command execution record."""
         return session.get(CommandExecutionModel, execution_id)
 
-    def list_command_executions(
+    def request_cancel(
+        self,
+        session: Session,
+        run_id: str,
+        execution_id: str,
+        actor: str,
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Cancel a running command execution.
+
+        Sets the cancel event to terminate the OS process, then updates
+        DB state and emits events via JobSupervisorService.
+        """
+        # Set the cancel event for process termination
+        cancel_event = self._cancel_events.get(execution_id)
+        if cancel_event is not None:
+            cancel_event.set()
+
+        # Delegate to supervisor for DB updates and event emission
+        supervisor = JobSupervisorService()
+        return supervisor.cancel_command(
+            session,
+            run_id=run_id,
+            execution_id=execution_id,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+
+    def get_list_command_executions(
         self,
         session: Session,
         run_id: str,

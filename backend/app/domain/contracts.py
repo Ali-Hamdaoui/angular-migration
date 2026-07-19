@@ -592,6 +592,8 @@ class CommandPolicyValidateRequestDto(ContractModel):
     command_id: str = Field(min_length=1)
     executable: str = Field(min_length=1)
     arguments: list[str] = Field(default_factory=list)
+    cwd_alias: str | None = None
+    plan_id: str | None = None
     working_directory_alias: str | None = None
     working_directory: str | None = None
     execution_profile_id: str = "source-runtime-profile"
@@ -600,6 +602,7 @@ class CommandPolicyValidateRequestDto(ContractModel):
     timeout_seconds: int = Field(default=300, gt=0, le=3600)
     idempotency_key: str = Field(min_length=1, max_length=128)
     requested_by: str | None = None
+    shell: bool = False
 
 
 class CommandPolicyValidateResponseDto(ContractModel):
@@ -607,9 +610,12 @@ class CommandPolicyValidateResponseDto(ContractModel):
     authorization_id: str
     run_id: str
     stage_id: str | None = None
+    plan_id: str | None = None
     command_id: str
     executable: str
     arguments: list[str] = Field(default_factory=list)
+    cwd_alias: str | None = None
+    execution_profile_id: str = "source-runtime-profile"
     decision: str
     reasons: list[str] = Field(default_factory=list)
     policy_version: str = "s3-f01-v1"

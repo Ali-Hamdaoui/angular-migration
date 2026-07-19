@@ -3,7 +3,7 @@
   "goal_id": "G01",
   "branch": "hermes/01-command-runtime",
   "base_sha": "d759861",
-  "head_sha": "6168913abf749e861fedce985a99b90d0e816a89",
+  "head_sha": "bff54c0c2e2a876671765ba92a256e02bebc5917",
   "goal_package_sha256": "cd16834e4c77d32a095fd7518e4f5f48c0a2057e013e014c2254d6baecd84e9a",
   "completion_level": "branch_ready",
   "jira_features": [
@@ -51,7 +51,7 @@
     "JobSupervisor cancellation operates through DB/cancel flags; real process-tree kill requires async supervisor thread",
     "Shell enforcement is structural (no shell field in DTO); additional cmd.exe wrapping detection not implemented"
   ],
-  "pushed": true,
+  "pushed": false,
   "push_remote": "origin",
   "push_branch": "hermes/01-command-runtime"
 }
