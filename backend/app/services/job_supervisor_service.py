@@ -119,7 +119,11 @@ class JobSupervisorService:
             raise JobSupervisorError("LEASE_NOT_FOUND", f"Lease {lease_id} not found")
         if lease.worker_id != worker_id:
             raise JobSupervisorError("LEASE_OWNER_MISMATCH", "Worker does not own this lease")
-        if lease.expires_at <= now:
+
+        expires = lease.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        if expires <= now:
             raise JobSupervisorError("LEASE_EXPIRED", "Lease has already expired")
 
         lease.expires_at = now + timedelta(seconds=self._lease_seconds)

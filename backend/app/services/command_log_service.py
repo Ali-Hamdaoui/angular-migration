@@ -109,36 +109,24 @@ class CommandLogService:
         stream_filter: str | None = None,
     ) -> tuple[list[LogChunkDto], int]:
         """Retrieve stored log chunks for a command execution."""
-        query = select(CommandLogChunkModel).where(
+        base_query = select(CommandLogChunkModel).where(
             CommandLogChunkModel.execution_id == execution_id
         )
 
         if stream_filter:
-            query = query.where(CommandLogChunkModel.stream == stream_filter)
+            base_query = base_query.where(CommandLogChunkModel.stream == stream_filter)
 
-        total = session.scalar(
-            select(CommandLogChunkModel).where(
-                CommandLogChunkModel.execution_id == execution_id
-            ).with_only_columns(CommandLogChunkModel.sequence)
+        # Get total count
+        count_query = select(CommandLogChunkModel).where(
+            CommandLogChunkModel.execution_id == execution_id
         )
-        total_count = 0
-        if total is not None:
-            total_count = session.scalar(
-                select(CommandLogChunkModel).where(
-                    CommandLogChunkModel.execution_id == execution_id
-                ).with_only_columns(CommandLogChunkModel.sequence)
-            ) or 0
-            if total_count == 0:
-                # Proper count
-                total_count = len(list(session.scalars(
-                    select(CommandLogChunkModel.sequence).where(
-                        CommandLogChunkModel.execution_id == execution_id
-                    )
-                )))
+        if stream_filter:
+            count_query = count_query.where(CommandLogChunkModel.stream == stream_filter)
+        total = len(list(session.scalars(count_query.with_only_columns(CommandLogChunkModel.sequence))))
 
         chunks = list(
             session.scalars(
-                query.order_by(CommandLogChunkModel.sequence)
+                base_query.order_by(CommandLogChunkModel.sequence)
                 .offset(offset)
                 .limit(limit)
             )
@@ -152,7 +140,7 @@ class CommandLogService:
                 created_at=c.created_at.isoformat() if c.created_at else "",
             )
             for c in chunks
-        ], total_count
+        ], total
 
     def get_stream_summary(
         self,
