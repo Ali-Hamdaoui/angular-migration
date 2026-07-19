@@ -179,3 +179,44 @@ def test_versioned_analysis_api_exposes_safe_contract_and_authenticated_actor(tm
     assert body["gate_status"] == "pending"
     assert all(link.startswith("/api/v1/artifacts/") for link in body["artifact_links"].values())
     assert "artifact_root" not in response.text
+
+
+def test_i04_invalid_prerequisite_checksum_fails_closed_without_analysis_events(tmp_path: Path):
+    service, payload, sessions, source = setup(tmp_path, agent=FakeAnalysisAgent())
+    invalid = AnalysisCreateRequest(
+        expected_state_version=payload.expected_state_version,
+        idempotency_key="analysis-invalid-checksum",
+        prerequisite_artifacts=[{"artifact_id": source.ref.artifact_id, "checksum": "sha256:" + "f" * 64}],
+    )
+
+    with pytest.raises(AnalysisEvidenceError) as error:
+        service.generate("run-1", invalid, "operator")
+
+    assert error.value.code == "PREREQUISITE_ARTIFACT_CHECKSUM_MISMATCH"
+    with sessions() as session:
+        assert session.query(WorkflowEventModel).count() == 0
+        assert session.query(MigrationRunModel).one().state_version == 1
+
+
+def test_i04_g04_reject_decision_is_recorded_without_becoming_approval(tmp_path: Path):
+    service, payload, sessions, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+    analysis = service.generate("run-1", payload, "operator")
+
+    result = service.decide_g04(
+        "run-1",
+        G04DecisionApiRequest(
+            expected_state_version=analysis.state_version,
+            idempotency_key="g04-reject-verification",
+            gate_version=analysis.gate_version,
+            package_artifact_set_checksum=analysis.package["artifact_set_checksum"],
+            decision=G04Decision.REJECT,
+            comment="Evidence is insufficient for acceptance.",
+        ),
+        "operator",
+    )
+
+    assert result.accepted is False
+    assert result.status == "reject"
+    with sessions() as session:
+        assert session.query(MigrationRunModel).one().state_version == 5
+        assert session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence).all()[-1].event_type == "G04_REJECTED"

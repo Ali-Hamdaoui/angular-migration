@@ -52,12 +52,12 @@ class MockEventSource {
   }
 }
 
-function makeEvent(type: MigrationEventDto["event_type"], id: string, sequence = 1): MigrationEventDto {
+function makeEvent(type: string, id: string, sequence = 1): MigrationEventDto {
   return {
     event_id: id,
     run_id: "mock-run-angular-18-to-21",
     stage_id: "angular-18-to-19",
-    event_type: type,
+    event_type: type as MigrationEventDto["event_type"],
     occurred_at: "2026-07-10T00:00:00Z",
     sequence,
     payload: { status: "RUNNING" },
@@ -165,6 +165,39 @@ describe("useMigrationEvents", () => {
 
     expect(result.current.events).toEqual([snapshotStarted, snapshotCreated]);
     expect(result.current.lastSequence).toBe(2);
+  });
+
+  it("receives Analysis and G04 events and suppresses duplicate delivery", async () => {
+    const { result, source } = renderWithSource();
+    await act(async () => {});
+
+    const started = makeEvent("ANALYSIS_AGENT_STARTED", "evt-analysis-1", 1);
+    const completed = makeEvent("ANALYSIS_AGENT_COMPLETED", "evt-analysis-2", 2);
+    const duplicate = makeEvent("ANALYSIS_AGENT_COMPLETED", "evt-analysis-2", 2);
+    const approved = makeEvent("G04_APPROVED", "evt-g04-1", 3);
+
+    act(() => {
+      source!.emit("ANALYSIS_AGENT_STARTED", started);
+      source!.emit("ANALYSIS_AGENT_COMPLETED", completed);
+      source!.emit("ANALYSIS_AGENT_COMPLETED", duplicate);
+      source!.emit("G04_APPROVED", approved);
+    });
+
+    expect(result.current.events).toEqual([started, completed, approved]);
+    expect(result.current.lastSequence).toBe(3);
+  });
+
+  it("requires snapshot recovery after a gap in Analysis events", async () => {
+    const { result, source } = renderWithSource();
+    await act(async () => {});
+
+    act(() => {
+      source!.emit("ANALYSIS_AGENT_STARTED", makeEvent("ANALYSIS_AGENT_STARTED", "evt-analysis-1", 1));
+      source!.emit("G04_CREATED", makeEvent("G04_CREATED", "evt-g04-3", 3));
+    });
+
+    expect(result.current.recoveryRequired).toBe(true);
+    expect(result.current.events).toHaveLength(1);
   });
 
   it("closes the EventSource on unmount", async () => {

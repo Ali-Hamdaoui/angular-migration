@@ -25,6 +25,13 @@ describe("AnalysisReviewPanel", () => {
     vi.mocked(getAnalysis).mockRejectedValue(new ApiClientError("failed", 500, "GET", "/analysis", JSON.stringify({ correlation_id: "corr-4" })));
     render(<AnalysisReviewPanel {...props} />); expect(await screen.findByRole("alert")).toHaveTextContent("Correlation ID: corr-4");
   });
+  it("fails closed for blocked analysis and renders narrative content as text", async () => {
+    vi.mocked(getAnalysis).mockResolvedValue({ ...response, status: "blocked", package: { ...packageData, narrative: { ...packageData.narrative, summary: "<img src=x onerror=alert(1)>" } }, error_code: "ANALYSIS_SCHEMA_INVALID" } as never);
+    render(<AnalysisReviewPanel {...props} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Analysis is blocked");
+    expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
   it("requires a comment for approval with comment", async () => {
     vi.mocked(getAnalysis).mockResolvedValue(response as never); render(<AnalysisReviewPanel {...props} />); await screen.findByText("Review the deterministic findings."); fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } }); fireEvent.click(screen.getByRole("button", { name: "Record G04 decision" })); expect(await screen.findByRole("alert")).toHaveTextContent("Add a comment"); expect(decideG04).not.toHaveBeenCalled();
   });
