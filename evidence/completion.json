@@ -46,10 +46,10 @@
     "Full Angular fixture acceptance requires Goal 10 integration harness"
   ],
   "limitations": [
-    "CommandExecutor uses Sprint 0 WorkerSupervisor with in-memory idempotency",
-    "Live log streaming uses synchronous append; async streaming (SSE) for continuous output not yet implemented",
-    "JobSupervisor cancellation operates through DB/cancel flags; real process-tree kill requires async supervisor thread",
-    "Shell enforcement is structural (no shell field in DTO); additional cmd.exe wrapping detection not implemented"
+    "CommandExecutorService has DB-backed idempotency with payload verification; Sprint 0 ExecutionWorker still has in-memory idempotency for backward compat",
+    "Live log streaming uses synchronous append; async SSE streaming for continuous output not yet implemented",
+    "Process cancellation sets cancel_event for WorkerSupervisor; basic process termination works, but async supervisor thread for hard-kill on stale leases not implemented",
+    "No CommandExecutorService.queue_command() unit tests — the main execution path relies on integration tests through WorkerSupervisor (20 tests) and policy engine (12 tests)"
   ],
   "pushed": true,
   "push_remote": "origin",
