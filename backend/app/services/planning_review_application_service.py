@@ -269,6 +269,8 @@ class PlanRevisionService:
             plan.run_id != request.run_id
             or stage.plan_version != plan.version
             or stage.checksum != request.stage_plan.get("checksum")
+            or plan.checksum != checksum_model(plan)
+            or stage.checksum != checksum_model(stage)
         ):
             raise PlanningReviewApplicationError(
                 "PLAN_BINDING_MISMATCH", "The migration and stage plans are not consistently bound.", 409
