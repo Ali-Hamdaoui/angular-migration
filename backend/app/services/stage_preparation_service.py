@@ -228,7 +228,9 @@ class StagePreparationApplicationService:
                 post_fingerprint=post_fingerprint,
             )
 
-            # Store artifacts
+            # Store artifacts — guard against None artifact_root
+            if not run.artifact_root:
+                raise StageApplicationError("ARTIFACT_ROOT_NOT_CONFIGURED", "Run artifact root is not configured.", status_code=409)
             store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
             evidence_refs = []
 
@@ -382,7 +384,7 @@ class StagePreparationApplicationService:
             )
             copy_report = WorkspaceCopyReport(
                 source_path=workspace.sandbox_path,
-                destination_path=workspace.sandbox_path,
+                destination_path=workspace.sandbox_path,  # post-copy; the original source is not stored in workspace model
                 file_count=workspace.file_count,
                 total_size_bytes=workspace.total_size_bytes,
                 destination_fingerprint=workspace.workspace_fingerprint,
@@ -460,7 +462,7 @@ class StagePreparationApplicationService:
                     idempotency_key=f"{request.idempotency_key}:sandbox_ready",
                     event_type=WorkflowEventType.STAGE_SANDBOX_READY, actor=request.actor,
                     reason="Stage sandbox ready - G07 approved", occurred_at=now,
-                    payload={"stage_id": stage_id, "decision": result.decision.value},
+                    payload={"stage_id": stage_id, "decision": result.decision.value, "workspace_alias": self.WORKSPACE_ALIAS},
                 ))
 
             session.flush()

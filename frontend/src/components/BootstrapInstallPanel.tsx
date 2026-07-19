@@ -21,9 +21,11 @@ function formattedDuration(ms: number): string {
 export function BootstrapInstallPanel({
   runId,
   stageId,
+  runStateVersion,
 }: {
   runId: string;
   stageId: string;
+  runStateVersion?: number;
 }) {
   const [step, setStep] = useState<StageBootstrapStatusResponse | null>(null);
   const [installation, setInstallation] = useState<StageBootstrapInstallResponse | null>(null);
@@ -75,7 +77,7 @@ export function BootstrapInstallPanel({
     setStale(false);
     try {
       const result = await runBootstrapInstall(runId, stageId, {
-        expected_state_version: installation?.state_version ?? 0,
+        expected_state_version: installation?.state_version ?? runStateVersion ?? 1,
         idempotency_key: `bootstrap-install-${runId}-${stageId}-${Date.now()}`,
         actor: "control-tower",
       });

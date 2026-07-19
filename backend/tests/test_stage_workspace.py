@@ -518,13 +518,13 @@ class TestStageBootstrapApplicationService(_ServiceTestBase):
         # Start bootstrap install
         req = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-status-run")
         result = bs.run_bootstrap_install("run-001", sid, req)
-        assert result.status == "RUNNING"
+        assert result.status == "QUEUED"
 
         # Check status
         status = bs.get_bootstrap_status("run-001", sid)
         assert status is not None
         assert status.run_id == "run-001"
-        assert status.status == "RUNNING"
+        assert status.status == "QUEUED"
 
 
 class TestEdgeCases:

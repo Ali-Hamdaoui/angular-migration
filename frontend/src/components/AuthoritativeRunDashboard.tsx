@@ -1,9 +1,13 @@
 "use client";
 
+import { useMemo } from "react";
+
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
 import { G02ReviewPanel } from "./G02ReviewPanel";
+import { StagePreparationPanel } from "./StagePreparationPanel";
+import { BootstrapInstallPanel } from "./BootstrapInstallPanel";
 import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
 import { BaselinePreparationPanel } from "./BaselinePreparationPanel";
 import { BaselineInstallationPanel } from "./BaselineInstallationPanel";
@@ -13,6 +17,7 @@ import { ParityBaselinePanel } from "./ParityBaselinePanel";
 import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
 import { FeasibilityPanel } from "./FeasibilityPanel";
 import { MigrationPlanPanel } from "./MigrationPlanPanel";
+import { LlmDiagnosticsPanel } from './LlmDiagnosticsPanel';
 import styles from "./ControlTowerShell.module.css";
 
 const pipelineSteps = [
@@ -25,6 +30,7 @@ const pipelineSteps = [
 
 export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
   const { state, status, error, refresh } = useAuthoritativeRun(runId, initialState);
+  const stageId = useMemo(() => `stage-${runId.slice(0, 12)}`, [runId]);
   const connectionLabel = {
     loading: "Loading authoritative state?", connecting: "Connecting to backend events?", open: "Live ? authoritative state", reconnecting: "Connection lost ? reconnecting?", recovering: "Refreshing authoritative snapshot?", failed: "Unable to refresh authoritative state",
   }[status];
@@ -61,6 +67,8 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />
       <G02ReviewPanel runId={runId} initialState={state} />
+      <StagePreparationPanel runId={runId} stageId={stageId} initialState={state} />
+      <BootstrapInstallPanel runId={runId} stageId={stageId} runStateVersion={state.state_version} />
       <ExecutionProfilePanel runId={runId} initialState={state} />
       <BaselinePreparationPanel runId={runId} initialState={state} />
       <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
@@ -76,5 +84,3 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
     </main>
   );
 }
-
-import { LlmDiagnosticsPanel } from './LlmDiagnosticsPanel';

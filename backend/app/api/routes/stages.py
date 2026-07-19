@@ -27,8 +27,8 @@ def get_bootstrap_service() -> StageBootstrapApplicationService:
     return StageBootstrapApplicationService()
 
 
-@router.post("/{run_id}/stages/{stage_id}/prepare", response_model=StagePrepareResponse)
-def prepare_stage(run_id: str, stage_id: str, request: StagePrepareRequest, service: StagePreparationApplicationService = Depends(get_stage_service)):
+@router.post("/{run_id}/stages/prepare", response_model=StagePrepareResponse)
+def prepare_stage(run_id: str, request: StagePrepareRequest, service: StagePreparationApplicationService = Depends(get_stage_service)):
     try:
         return service.prepare_stage(run_id, request)
     except StageApplicationError as e:

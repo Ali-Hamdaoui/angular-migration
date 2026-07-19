@@ -219,18 +219,20 @@ export function StagePreparationPanel({
             {TABS.map((tab) => (
               <button
                 key={tab.id}
+                id={`stage-tab-${tab.id}`}
                 role="tab"
                 className={`${styles.tab} ${activeTab === tab.id ? styles.tabActive : ""}`}
                 onClick={() => setActiveTab(tab.id)}
                 aria-selected={activeTab === tab.id}
+                aria-controls={`stage-tabpanel-${tab.id}`}
               >
                 {tab.label}
               </button>
             ))}
           </div>
-          <div className={styles.tabContent} role="tabpanel">
+          <div className={styles.tabContent}>
             {activeTab === "plan" ? (
-              <div className={styles.tabPane}>
+              <div className={styles.tabPane} id="stage-tabpanel-plan" role="tabpanel" aria-labelledby="stage-tab-plan">
                 <h3>Execution plan</h3>
                 {preparation.plan ? (
                   <pre className={styles.codeBlock}>{JSON.stringify(preparation.plan, null, 2)}</pre>
@@ -239,7 +241,7 @@ export function StagePreparationPanel({
                 )}
               </div>
             ) : activeTab === "profile" ? (
-              <div className={styles.tabPane}>
+              <div className={styles.tabPane} id="stage-tabpanel-profile" role="tabpanel" aria-labelledby="stage-tab-profile">
                 <h3>Runtime profile</h3>
                 <dl className={styles.metadataGrid}>
                   <div><dt>Source family</dt><dd>detected</dd></div>
@@ -249,7 +251,7 @@ export function StagePreparationPanel({
                 </dl>
               </div>
             ) : (
-              <div className={styles.tabPane}>
+              <div className={styles.tabPane} id="stage-tabpanel-input" role="tabpanel" aria-labelledby="stage-tab-input">
                 <h3>Stage input summary</h3>
                 <dl className={styles.metadataGrid}>
                   <div><dt>Run</dt><dd><code>{runId}</code></dd></div>

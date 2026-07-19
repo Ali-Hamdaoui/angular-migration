@@ -89,7 +89,7 @@ class StageBootstrapApplicationService:
                 if step:
                     return StageBootstrapInstallResponse(
                         run_id=run_id, stage_id=stage_id, step_id=step.id,
-                        status=existing.status, command=f"{existing.executable} {' '.join(existing.arguments)}",
+                        status="QUEUED", command=f"{existing.executable} {' '.join(existing.arguments)}",
                         exit_code=existing.exit_code, started_at=existing.started_at,
                         completed_at=existing.finished_at,
                         state_version=existing.state_version or 1,
@@ -124,7 +124,7 @@ class StageBootstrapApplicationService:
                 executable="npm",
                 arguments=["ci"],
                 working_directory_alias=self.STAGE_POLICY_VERSION,
-                status="RUNNING",
+                status="QUEUED",
                 command_id=f"npm-ci-{uuid4().hex[:8]}",
                 requester=request.actor,
                 shell=False,
@@ -144,7 +144,7 @@ class StageBootstrapApplicationService:
                 id=f"step-{uuid4().hex[:12]}",
                 run_id=run_id, stage_id=stage_id,
                 name="bootstrap_install",
-                status="RUNNING",
+                status="QUEUED",
                 component_type="StagePipelineService",
                 idempotency_key=request.idempotency_key,
                 started_at=now,
@@ -163,7 +163,7 @@ class StageBootstrapApplicationService:
 
             return StageBootstrapInstallResponse(
                 run_id=run_id, stage_id=stage_id, step_id=step.id,
-                status="RUNNING",
+                status="QUEUED",
                 command="npm ci",
                 started_at=now,
                 state_version=transition.next_state_version,

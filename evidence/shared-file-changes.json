@@ -10,6 +10,11 @@
       "file": "backend/app/api/router.py",
       "changes": "Register new stage-related routers (stages router, stages router for v1 apis)",
       "rationale": "New API endpoints for stage preparation, G07 approvals, sandbox, and bootstrap install"
+    },
+    {
+      "file": "backend/app/repositories/models/__init__.py",
+      "changes": "Import G07ApprovalModel and StageWorkspaceModel from stage_workspace_models.py",
+      "rationale": "Register new ORM models so Base.metadata picks them up for migrations and test fixtures"
     }
   ]
 }
