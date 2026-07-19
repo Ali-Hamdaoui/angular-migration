@@ -1,0 +1,229 @@
+"""Transactional persistence/API service for S2-F06-I02."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import hashlib
+import json
+from pathlib import Path
+from uuid import uuid4
+
+from pydantic import ValidationError
+from sqlalchemy import func, select
+
+from app.api.planning_contracts import PlanCreateRequest, PlanResponse
+from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
+from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.planning import PlanGenerationRequest
+from app.repositories.models import (
+    ActivePlanVersionModel,
+    ArtifactMetadataModel,
+    BuildSystemDecisionModel,
+    CompatibilityResolutionModel,
+    G05ApprovalModel,
+    MigrationPlanModel,
+    MigrationRunModel,
+    StageExecutionPlanModel,
+    WorkflowEventModel,
+)
+from app.repositories.session import session_scope
+from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService
+from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
+
+
+class PlanningEvidenceError(ValueError):
+    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+
+
+class PlanningEvidenceApplicationService:
+    """Persist plans only after Artifact Store finalization and semantic validation."""
+
+    def __init__(self, *, scope=session_scope, now_provider=None, artifact_store_factory=None) -> None:
+        self._scope = scope
+        self._now = now_provider or (lambda: datetime.now(UTC))
+        self._artifact_store_factory = artifact_store_factory or self._store_for_run
+
+    def create(self, run_id: str, payload: PlanCreateRequest, actor: str) -> PlanResponse:
+        now = self._now()
+        with self._scope() as session:
+            run = self._authorized_run(session, run_id, actor)
+            try:
+                request = self._request(run_id, payload, actor)
+            except ValidationError as error:
+                raise PlanningEvidenceError("DOMAIN_VALIDATION_FAILED", "Planning input validation failed.", 422) from error
+            request_checksum = self._checksum(request.model_dump(mode="json"))
+            existing = session.scalar(select(MigrationPlanModel).where(MigrationPlanModel.run_id == run_id, MigrationPlanModel.idempotency_key == payload.idempotency_key))
+            if existing:
+                if existing.request_checksum != request_checksum:
+                    raise PlanningEvidenceError("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key was already used with a different payload.", 409)
+                return self._response(session, existing, replay=True)
+            self._require_state(run, payload.expected_state_version)
+            self._validate_prerequisites(session, run, request)
+            self._require_approved_feasibility(session, run, request)
+            if session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration")) is not None:
+                raise PlanningEvidenceError("ACTIVE_PLAN_EXISTS", "An active migration plan already exists; use its idempotent request or explicitly replace it.", 409)
+            version = (session.scalar(select(func.max(MigrationPlanModel.version)).where(MigrationPlanModel.run_id == run_id)) or 0) + 1
+            try:
+                result = PlanningApplicationService(artifact_checksum_reader=lambda artifact_id: self._artifact_checksum(self._store_for_run(run), artifact_id)).generate(request, plan_version=version)
+            except PlanningApplicationError as error:
+                raise PlanningEvidenceError(error.code, error.message, error.status_code) from error
+            except Exception as error:
+                raise PlanningEvidenceError("PLAN_GENERATION_FAILED", "Plan generation failed closed.", 503) from error
+
+            stage = result.first_stage_plan
+            if stage is None:
+                raise PlanningEvidenceError("STAGE_PLAN_MISSING", "Plan generation did not produce the first StageExecutionPlan.", 503)
+            artifacts = self._write_artifacts(session, run, result, now)
+            plan = MigrationPlanModel(id=result.plan.plan_id, run_id=run_id, idempotency_key=payload.idempotency_key, request_checksum=request_checksum, actor=actor, correlation_id=payload.correlation_id, status="generated", version=version, plan=result.plan.model_dump(mode="json"), checksum=result.plan.checksum, artifact_ids=artifacts[0], artifact_checksums=artifacts[1], state_version=run.state_version, event_sequence=0, created_at=now, updated_at=now)
+            stage_record = StageExecutionPlanModel(id=stage.stage_plan_id, run_id=run_id, migration_plan_id=plan.id, stage_id=stage.stage_id, idempotency_key=payload.idempotency_key, request_checksum=request_checksum, actor=actor, correlation_id=payload.correlation_id, status="generated", version=version, stage_plan=stage.model_dump(mode="json"), checksum=stage.checksum, artifact_ids=artifacts[0], artifact_checksums=artifacts[1], state_version=run.state_version, event_sequence=0, created_at=now, updated_at=now)
+            session.add_all([plan, stage_record])
+            session.flush()
+            decision = BuildSystemDecisionModel(id=f"decision-{uuid4().hex[:12]}", run_id=run_id, stage_plan_id=stage_record.id, decision_id=stage.build_system_decision.decision_id, decision=stage.build_system_decision.model_dump(mode="json"), checksum=stage.build_system_decision.checksum, created_at=now)
+            session.add(decision)
+            migration_event = self._transition(session, run, payload.idempotency_key + ":migration", payload.expected_state_version, WorkflowEventType.MIGRATION_PLAN_CREATED, actor, now, {"plan_id": plan.id, "artifact_ids": artifacts[0]})
+            stage_event = self._transition(session, run, payload.idempotency_key, migration_event.next_state_version, WorkflowEventType.STAGE_PLAN_CREATED, actor, now, {"stage_id": stage.stage_id, "stage_plan_id": stage_record.id, "artifact_ids": artifacts[0]})
+            plan.state_version, plan.event_sequence = migration_event.next_state_version, migration_event.event_sequence
+            stage_record.state_version, stage_record.event_sequence = stage_event.next_state_version, stage_event.event_sequence
+            session.add(ActivePlanVersionModel(id=f"active-plan-{uuid4().hex[:12]}", run_id=run_id, scope="migration", migration_plan_id=plan.id, stage_plan_id=None, version=version, state_version=plan.state_version, updated_at=now))
+            session.add(ActivePlanVersionModel(id=f"active-stage-{uuid4().hex[:12]}", run_id=run_id, scope=stage.stage_id, migration_plan_id=plan.id, stage_plan_id=stage_record.id, version=version, state_version=stage_record.state_version, updated_at=now))
+            session.flush()
+            return self._response(session, plan)
+
+    def get_plan(self, run_id: str, actor: str) -> PlanResponse | None:
+        with self._scope() as session:
+            self._authorized_run(session, run_id, actor)
+            active = session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration"))
+            return self._response(session, session.get(MigrationPlanModel, active.migration_plan_id)) if active else None
+
+    def get_stage_plan(self, run_id: str, stage_id: str, actor: str) -> PlanResponse | None:
+        with self._scope() as session:
+            self._authorized_run(session, run_id, actor)
+            active = session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == stage_id))
+            return self._response(session, session.get(MigrationPlanModel, active.migration_plan_id)) if active else None
+
+    def _response(self, session, plan: MigrationPlanModel | None, replay=False) -> PlanResponse:
+        if plan is None:
+            raise PlanningEvidenceError("PLAN_NOT_FOUND", "The migration plan was not found.", 404)
+        stage = session.scalar(select(StageExecutionPlanModel).where(StageExecutionPlanModel.migration_plan_id == plan.id).order_by(StageExecutionPlanModel.version.desc()))
+        if stage is None:
+            raise PlanningEvidenceError("STAGE_PLAN_NOT_FOUND", "The first StageExecutionPlan was not found.", 404)
+        self._verify_artifacts(session, plan.run_id, plan.artifact_ids, plan.artifact_checksums)
+        return PlanResponse(run_id=plan.run_id, status=plan.status, plan=plan.plan, stage_plan=stage.stage_plan, plan_checksum=plan.checksum, stage_plan_checksum=stage.checksum, artifact_ids=plan.artifact_ids, artifact_checksums=plan.artifact_checksums, artifact_links={item: f"/api/v1/artifacts/{item}" for item in plan.artifact_ids}, builder_decision=stage.stage_plan["build_system_decision"], state_version=stage.state_version, event_sequence=stage.event_sequence, idempotent_replay=replay)
+
+    def _write_artifacts(self, session, run, result, now):
+        store = self._store_for_run(run)
+        stage = result.first_stage_plan
+        values = {
+            "03_planning/migration-plan.json": (result.plan.model_dump(mode="json"), None),
+            f"stages/{stage.stage_id}/stage-execution-plan.json": (stage.model_dump(mode="json"), stage.stage_id),
+            f"stages/{stage.stage_id}/builder-decision.json": (stage.build_system_decision.model_dump(mode="json"), stage.stage_id),
+            f"stages/{stage.stage_id}/command-manifest.json": ({key: [item.model_dump(mode="json") for item in refs] for key, refs in stage.commands.items()}, stage.stage_id),
+            f"stages/{stage.stage_id}/validation-matrix.json": (stage.validation_policy.model_dump(mode="json"), stage.stage_id),
+            f"stages/{stage.stage_id}/recovery-map.json": (stage.recovery_policy.model_dump(mode="json"), stage.stage_id),
+            f"stages/{stage.stage_id}/forbidden-change-policy.json": (stage.forbidden_change_policy.model_dump(mode="json"), stage.stage_id),
+        }
+        ids, checksums = [], {}
+        for path, (value, stage_id) in values.items():
+            stored = store.write_text_artifact(run.id, path, json.dumps(value, sort_keys=True, indent=2), ArtifactType.JSON, stage_id=stage_id, created_by="planning-evidence", created_at=now, input_hashes={"plan": result.plan.checksum, "stage_plan": stage.checksum}, policy_version="s2-f06-i02")
+            ids.append(stored.ref.artifact_id)
+            checksums[stored.ref.artifact_id] = stored.ref.checksum
+            session.add(ArtifactMetadataModel(id="metadata-" + stored.ref.artifact_id, run_id=run.id, stage_id=stage_id, artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, created_at=now))
+        return ids, checksums
+
+    def _validate_prerequisites(self, session, run, request):
+        store = self._store_for_run(run)
+        for artifact in request.prerequisite_artifacts:
+            row = session.get(ArtifactMetadataModel, "metadata-" + artifact.artifact_id)
+            if row is None or row.run_id != run.id or row.checksum != artifact.checksum:
+                raise PlanningEvidenceError("PREREQUISITE_ARTIFACT_CHECKSUM_MISMATCH", "A prerequisite artifact is missing or its checksum does not match.", 409)
+            try:
+                self._verify_stored(store, artifact.artifact_id, artifact.checksum)
+            except (ArtifactNotFoundError, OSError, ValueError) as error:
+                raise PlanningEvidenceError("PREREQUISITE_ARTIFACT_UNAVAILABLE", "A prerequisite artifact is unavailable.", 409) from error
+
+    def _require_approved_feasibility(self, session, run, request):
+        gate = session.scalar(select(G05ApprovalModel).where(G05ApprovalModel.run_id == run.id, G05ApprovalModel.gate_id == "G05", G05ApprovalModel.status == "approved").order_by(G05ApprovalModel.state_version.desc(), G05ApprovalModel.created_at.desc()))
+        if gate is None:
+            raise PlanningEvidenceError("G05_APPROVAL_REQUIRED", "An approved current G05 feasibility package is required before plan generation.", 409)
+        resolution = session.scalar(select(CompatibilityResolutionModel).where(CompatibilityResolutionModel.run_id == run.id, CompatibilityResolutionModel.package_checksum == gate.package_checksum).order_by(CompatibilityResolutionModel.created_at.desc()))
+        if resolution is None or resolution.package_checksum != gate.package_checksum or resolution.artifact_set_checksum != gate.artifact_set_checksum:
+            raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 feasibility package binding is stale.", 409)
+        package = resolution.package
+        if any((request.source_exact, request.source_family, request.target_family, request.catalogue_version)[i] != package.get(key) for i, key in enumerate(("source_exact", "source_family", "target_family", "catalogue_version"))):
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "Planning inputs do not match the approved feasibility package.", 409)
+        profile = package.get("selected_profile") or {}
+        if request.execution_profile_id != profile.get("profile_id"):
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning execution profile does not match the approved Stage 1 profile.", 409)
+        if request.input_fingerprint != resolution.artifact_set_checksum:
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning input fingerprint does not match the approved feasibility artifact set.", 409)
+        approved_route = package.get("route") or []
+        if len(request.stage_route) != len(approved_route):
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route does not match the approved feasibility route.", 409)
+        for index, (supplied, approved) in enumerate(zip(request.stage_route, approved_route)):
+            supplied_cli = request.target_cli_exact if index == 0 and request.target_cli_exact else (supplied[4] if len(supplied) == 5 else supplied[3])
+            if tuple(supplied[:3]) != (approved.get("source_family"), approved.get("target_family"), approved.get("stage_id")) or supplied[3] != approved.get("target_angular_exact") or supplied_cli != approved.get("target_cli_exact"):
+                raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route contains an exact target that differs from the approved feasibility package.", 409)
+        supplied_artifact_set = "sha256:" + hashlib.sha256(json.dumps([(item.artifact_id, item.checksum) for item in request.prerequisite_artifacts], separators=(",", ":")).encode()).hexdigest()
+        if supplied_artifact_set != resolution.artifact_set_checksum:
+            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "Planning prerequisite artifacts do not match the approved feasibility artifact set.", 409)
+
+    def _verify_artifacts(self, session, run_id, artifact_ids, checksums):
+        run = session.get(MigrationRunModel, run_id)
+        store = self._store_for_run(run)
+        for artifact_id in artifact_ids:
+            metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+            if metadata is None or metadata.run_id != run_id or checksums.get(artifact_id) != metadata.checksum:
+                raise PlanningEvidenceError("PLAN_ARTIFACT_INTEGRITY_FAILED", "A registered plan artifact is missing or has changed.", 409)
+            try:
+                self._verify_stored(store, artifact_id, metadata.checksum)
+            except (ArtifactNotFoundError, OSError, ValueError) as error:
+                raise PlanningEvidenceError("PLAN_ARTIFACT_INTEGRITY_FAILED", "A registered plan artifact is missing or has changed.", 409) from error
+
+    @staticmethod
+    def _verify_stored(store, artifact_id, checksum):
+        stored = store.read_artifact_by_id(artifact_id)
+        actual = "sha256:" + hashlib.sha256(stored.content.encode("utf-8")).hexdigest()
+        if stored.ref.checksum != checksum or actual != checksum:
+            raise ValueError("artifact checksum mismatch")
+
+    @staticmethod
+    def _artifact_checksum(store, artifact_id):
+        return store.read_artifact_by_id(artifact_id).ref.checksum
+
+    def _transition(self, session, run, key, expected, event_type, actor, now, payload):
+        try:
+            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=expected, idempotency_key=key, event_type=event_type, actor=actor, reason=event_type.value.lower(), occurred_at=now, payload=payload))
+        except StaleStateVersionError as error:
+            raise PlanningEvidenceError("STALE_STATE_VERSION", "The run state version is stale.", 409) from error
+        except TransitionError as error:
+            raise PlanningEvidenceError("ILLEGAL_STATE_TRANSITION", "The requested workflow transition is not legal.", 409) from error
+
+    def _authorized_run(self, session, run_id, actor):
+        run = session.get(MigrationRunModel, run_id)
+        if run is None:
+            raise PlanningEvidenceError("RUN_NOT_FOUND", "Migration run does not exist.", 404)
+        if run.actor and run.actor != actor:
+            raise PlanningEvidenceError("RUN_NOT_AUTHORIZED", "Authenticated actor is not authorized for this run.", 403)
+        return run
+
+    @staticmethod
+    def _require_state(run, expected):
+        if run.state_version != expected:
+            raise PlanningEvidenceError("STALE_STATE_VERSION", "The run state version is stale.", 409)
+
+    @staticmethod
+    def _request(run_id, payload, actor):
+        return PlanGenerationRequest(run_id=run_id, actor=actor, **payload.model_dump(mode="json"))
+
+    @staticmethod
+    def _checksum(value):
+        return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _store_for_run(run):
+        root = Path(run.artifact_root)
+        return LocalFilesystemArtifactStore(root, fixed_run_root=root)

@@ -47,6 +47,12 @@ from app.repositories.compatibility_models import (
     G05ApprovalModel,
     RegistrySnapshotModel,
 )
+from app.repositories.planning_models import (
+    ActivePlanVersionModel,
+    BuildSystemDecisionModel,
+    MigrationPlanModel,
+    StageExecutionPlanModel,
+)
 
 __all__ = [
     "AnalysisMetadataModel",
@@ -55,6 +61,10 @@ __all__ = [
     "CompatibilityResolutionModel",
     "RegistrySnapshotModel",
     "G05ApprovalModel",
+    "MigrationPlanModel",
+    "StageExecutionPlanModel",
+    "BuildSystemDecisionModel",
+    "ActivePlanVersionModel",
     'LlmInvocationModel',
     'UsageCostRecordModel',
     "AgentExecutionModel",

@@ -12,6 +12,7 @@ import { DiscoveryFindingsPanel } from "./DiscoveryFindingsPanel";
 import { ParityBaselinePanel } from "./ParityBaselinePanel";
 import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
 import { FeasibilityPanel } from "./FeasibilityPanel";
+import { MigrationPlanPanel } from "./MigrationPlanPanel";
 import styles from "./ControlTowerShell.module.css";
 
 const pipelineSteps = [
@@ -53,6 +54,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <LlmDiagnosticsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} refreshAuthoritativeState={refresh} workflowEvents={state.workflow_events} />
       <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
       <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+      <MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
       <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <div className={styles.dashboardGrid}>

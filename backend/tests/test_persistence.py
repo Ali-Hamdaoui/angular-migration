@@ -42,6 +42,14 @@ EXPECTED_TABLES = {
     "stage_steps",
     "worker_leases",
     "workflow_events",
+    "compatibility_catalogues",
+    "compatibility_registry_snapshots",
+    "compatibility_resolutions",
+    "g05_approvals",
+    "migration_plans",
+    "stage_execution_plans",
+    "build_system_decisions",
+    "active_plan_versions",
 }
 
 
@@ -94,6 +102,26 @@ def test_alembic_creates_initial_sqlite_schema(tmp_path: Path) -> None:
     assert "checksum" in artifact_columns
     assert "schema_version" in artifact_columns
     assert not {"content", "blob", "body"}.intersection(artifact_columns)
+    engine.dispose()
+
+
+def test_alembic_feature_schema_upgrades_and_rolls_back_on_temporary_sqlite(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'round-trip.db'}"
+    config = _alembic_config(database_url)
+
+    command.upgrade(config, "head")
+    engine = create_database_engine(database_url)
+    assert {"migration_plans", "stage_execution_plans", "active_plan_versions"}.issubset(inspect(engine).get_table_names())
+    engine.dispose()
+
+    command.downgrade(config, "base")
+    engine = create_database_engine(database_url)
+    assert not {"migration_plans", "stage_execution_plans", "active_plan_versions", "compatibility_resolutions"}.intersection(inspect(engine).get_table_names())
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_database_engine(database_url)
+    assert {"migration_plans", "stage_execution_plans", "active_plan_versions"}.issubset(inspect(engine).get_table_names())
     engine.dispose()
 
 

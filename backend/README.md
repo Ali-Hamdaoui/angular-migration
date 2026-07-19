@@ -83,7 +83,9 @@ Sprint 0 state tables: `migration_runs`, `migration_stages`, `stage_steps`,
 `agent_executions`, `workflow_events`, `approval_events`,
 `approval_policy_events`, `artifact_metadata`, `command_executions`,
 `worker_leases`, `repair_attempts`, `llm_usage_records`, and
-`run_assurance_statuses`.
+`run_assurance_statuses`. S2-F06 adds `migration_plans`,
+`stage_execution_plans`, `build_system_decisions`, and
+`active_plan_versions` for immutable, checksum-bound plan evidence.
 
 The schema stores run `state_version` for optimistic concurrency, ordered
 per-run workflow event `sequence` values, scoped command `idempotency_key`
@@ -243,6 +245,9 @@ Initial AMF-S0-02 route shells:
 - `GET /migrations/{run_id}/artifacts`
 - `GET /migrations/{run_id}/artifacts/{artifact_path}`
 - `GET /artifacts/{artifact_id}`
+- `POST /api/v1/runs/{run_id}/plans`
+- `GET /api/v1/runs/{run_id}/plan`
+- `GET /api/v1/runs/{run_id}/stages/{stage_id}/plan`
 - `POST /assistant/messages`
 
 Interactive OpenAPI documentation is at `/docs`. Run tests with

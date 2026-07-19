@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api.compatibility_contracts import FeasibilityResponse, G05DecisionRequest, G05DecisionResponse
@@ -55,7 +56,10 @@ class CompatibilityEvidenceApplicationService:
         now = self._now()
         with self._scope() as session:
             run = self._authorized_run(session, run_id, actor)
-            request = self._request(run_id, payload, actor, now)
+            try:
+                request = self._request(run_id, payload, actor, now)
+            except ValidationError as error:
+                raise CompatibilityEvidenceError("DOMAIN_VALIDATION_FAILED", "Feasibility input validation failed.", 422) from error
             policy = dict(run.run_policy_snapshot or {})
             policy.update({"source_angular_exact": request.source_angular_exact, "catalogue_version": request.catalogue_version, "registry_snapshot": {"snapshot_id": request.registry_snapshot_id, "checksum": request.registry_snapshot_checksum}, "runtime_candidates": [item.model_dump(mode="json") for item in request.runtime_candidates]})
             run.run_policy_snapshot = policy
@@ -89,7 +93,7 @@ class CompatibilityEvidenceApplicationService:
             evidence_package_checksum = artifact_checksums[artifact_ids[-1]]
             started = self._transition(session, run, payload.idempotency_key + ":started", payload.expected_state_version, WorkflowEventType.COMPATIBILITY_RESOLUTION_STARTED, actor, now, {"catalogue_version": catalogue.version})
             final_type = WorkflowEventType.COMPATIBILITY_RESOLUTION_BLOCKED if result.status == "blocked" else WorkflowEventType.COMPATIBILITY_RESOLUTION_COMPLETED
-            finished = self._transition(session, run, payload.idempotency_key, started.next_state_version, final_type, actor, now, {"status": result.status, "artifact_ids": json.dumps(artifact_ids)})
+            finished = self._transition(session, run, payload.idempotency_key, started.next_state_version, final_type, actor, now, {"status": result.status, "artifact_ids": artifact_ids})
             gate_expires_at = now + self.G05_TTL
             gate_created = StateTransitionService(session).append_audit_event(run_id=run.id, idempotency_key=payload.idempotency_key + ":g05-created", event_type=WorkflowEventType.G05_CREATED, actor=actor, reason="G05 created", occurred_at=now, payload={"package_checksum": evidence_package_checksum, "expires_at": gate_expires_at.isoformat()})
             resolution = CompatibilityResolutionModel(
