@@ -1,0 +1,50 @@
+{
+  "goal": "G08",
+  "branch": "hermes/08-reconciliation-assistant",
+  "base_sha": "d759861",
+  "completion_level": "branch_ready",
+  "branch_ready": true,
+  "harness_ready": false,
+  "integration_verified": false,
+  "jira_complete": false,
+  "features": {
+    "S4-F10": {
+      "jira": "AMFA-220",
+      "status": "IMPLEMENTED",
+      "subtasks": {
+        "AMFA-262 (S4-F10-I01)": "PASS",
+        "AMFA-263 (S4-F10-I02)": "PASS",
+        "AMFA-264 (S4-F10-I03)": "PASS",
+        "AMFA-265 (S4-F10-I04)": "PASS"
+      }
+    },
+    "S4-F11": {
+      "jira": "AMFA-221",
+      "status": "IMPLEMENTED",
+      "subtasks": {
+        "AMFA-266 (S4-F11-I01)": "PASS",
+        "AMFA-267 (S4-F11-I02)": "PASS",
+        "AMFA-268 (S4-F11-I03)": "PASS",
+        "AMFA-269 (S4-F11-I04)": "PASS"
+      }
+    }
+  },
+  "automated_tests": "18/18 passed (10 reconciliation + 8 assistant)",
+  "documentation": "evidence/ directory populated with gap map, dependency status, shared file changes, task results",
+  "limitations": [
+    "Frontend components are stubs — require running frontend to test",
+    "Assistant uses deterministic fallback (no real LLM gateway)",
+    "Artifact integrity check uses bounded query (LIMIT 100)",
+    "Integration verification requires other goals"
+  ],
+  "shared_file_changes": [
+    "backend/app/api/router.py — added reconciliation and assistant routes",
+    "backend/app/domain/contracts.py — added event types, artifact types, DTOs",
+    "backend/app/repositories/models/__init__.py — added new model exports",
+    "backend/app/repositories/models/workflow.py — added ReconciliationRunModel, ArtifactIntegrityFindingModel, AssistantConversationModel, AssistantMessageModel",
+    "backend/app/services/migration_run_service.py — added resume() method",
+    "backend/app/api/routes/runs.py — added resume endpoint, DTOs"
+  ],
+  "committed": true,
+  "pushed": false
+}

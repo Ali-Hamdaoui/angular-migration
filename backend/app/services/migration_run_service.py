@@ -18,7 +18,7 @@ from app.orchestration.source_intake import SourceIntakeGraph, UnconfiguredSourc
 from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
-from app.state.transition_service import StateTransitionService, TransitionRequest
+from app.state.transition_service import StateTransitionService, ResumeRejectedError, TransitionRequest
 from app.services.migration_workspace_layout_service import MigrationWorkspaceLayoutService, WorkspaceLayoutError
 
 
@@ -167,6 +167,31 @@ class MigrationRunService:
                 event_type=WorkflowEventType.RUN_STARTED, actor=actor, reason="source-intake graph started",
                 payload={"graph_thread_id": thread_id}, occurred_at=self._now()))
             return RunResult(run_id, started.status, started.next_state_version, started.event_sequence, thread_id, artifacts=tuple(self._artifacts_for_run(session, run_id)))
+
+    def resume(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str, checkpoint_valid: bool = True, workspace_valid: bool = True, policy_compatible: bool = True) -> RunResult:
+        with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            existing = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.idempotency_key == idempotency_key))
+            if existing is not None:
+                return self._result_from_event(session, existing, replay=True)
+            if run.status not in (RunStatus.DIAGNOSTIC_HOLD.value, RunStatus.RECOVERY_RUNNING.value, RunStatus.WORKER_LOST.value, RunStatus.ORPHANED.value):
+                raise MigrationRunError("RUN_NOT_RESUMABLE", "Only recoverable state runs can be resumed.")
+            try:
+                transition = StateTransitionService(session).resume_from_checkpoint(
+                    run_id=run_id,
+                    expected_state_version=expected_state_version,
+                    idempotency_key=idempotency_key,
+                    actor=actor,
+                    checkpoint_valid=checkpoint_valid,
+                    workspace_valid=workspace_valid,
+                    policy_compatible=policy_compatible,
+                    now=self._now(),
+                )
+            except ResumeRejectedError as error:
+                raise MigrationRunError("RESUME_REJECTED", str(error)) from error
+            return RunResult(run_id, transition.status, transition.next_state_version, transition.event_sequence, self._thread_id(session, run_id), artifacts=tuple(self._artifacts_for_run(session, run_id)))
 
     def get_state(self, run_id: str):
         with self._scope() as session:

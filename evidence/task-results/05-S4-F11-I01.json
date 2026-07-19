@@ -1,0 +1,16 @@
+{
+  "task": "S4-F11-I01",
+  "jira": "AMFA-266",
+  "status": "PASS",
+  "goal": "G08",
+  "commit_sha": "pending",
+  "changed_files": [
+    "backend/app/domain/contracts.py",
+    "backend/app/services/assistant_context_service.py"
+  ],
+  "tests": [
+    "backend/tests/test_assistant_context_service.py"
+  ],
+  "test_results": "All 8 assistant tests pass (18 total combined)",
+  "reviewer_verdict": "PASS"
+}

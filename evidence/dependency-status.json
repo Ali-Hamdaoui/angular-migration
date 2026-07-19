@@ -1,0 +1,37 @@
+{
+  "goal": "G08",
+  "base_sha": "d759861",
+  "dependencies": {
+    "G01": {
+      "status": "AVAILABLE_AS_BASE",
+      "notes": "Goal branch includes G01 command runtime foundation"
+    },
+    "G04": {
+      "status": "AVAILABLE_AS_BASE",
+      "notes": "Goal branch includes G04 stage validation and sealing"
+    },
+    "G07": {
+      "status": "AVAILABLE_AS_BASE",
+      "notes": "Goal branch includes G07 patch validation constructs"
+    },
+    "S2-F03": {
+      "status": "AVAILABLE_AS_BASE",
+      "notes": "Sprint 2 LLM gateway and invocation infrastructure present in goal branch"
+    },
+    "S3-F04": {
+      "status": "AVAILABLE_AS_BASE",
+      "notes": "Existing command execution and worker supervision infrastructure"
+    },
+    "S3-F14": {
+      "status": "AVAILABLE_AS_BASE",
+      "notes": "Stage sealing and copy-forward patterns in base code"
+    },
+    "S4-F09": {
+      "status": "TEST_FAKE_BOUNDARY",
+      "notes": "Test fakes acceptable for unavailable upstream dependencies"
+    }
+  },
+  "test_fake_boundaries": {
+    "S4-F09": "Consuming port/Protocol and test fake for startup prerequisites that depend on S4-F09"
+  }
+}

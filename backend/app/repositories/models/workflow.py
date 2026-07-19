@@ -413,3 +413,71 @@ class SourceSnapshotModel(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReconciliationRunModel(Base):
+    """Records each reconciliation run and its results."""
+    __tablename__ = "reconciliation_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    backend_instance_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stale_leases_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    interrupted_commands_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    artifact_mismatches_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recovered_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quarantined_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    graph_reconstructed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    errors: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+
+
+class ArtifactIntegrityFindingModel(Base):
+    """Records artifact integrity check results during reconciliation."""
+    __tablename__ = "artifact_integrity_findings"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reconciliation_id: Mapped[str] = mapped_column(ForeignKey("reconciliation_runs.id"), nullable=False, index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("migration_runs.id"), index=True)
+    artifact_id: Mapped[str | None] = mapped_column(String(128))
+    expected_checksum: Mapped[str | None] = mapped_column(String(128))
+    actual_checksum: Mapped[str | None] = mapped_column(String(128))
+    file_path: Mapped[str | None] = mapped_column(Text)
+    finding_type: Mapped[str] = mapped_column(String(64), nullable=False)  # missing, checksum_mismatch, orphan, temp
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AssistantConversationModel(Base):
+    """Tracks assistant conversations per run — metadata only, no hidden chain-of-thought."""
+    __tablename__ = "assistant_conversations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AssistantMessageModel(Base):
+    """Individual messages within an assistant conversation."""
+    __tablename__ = "assistant_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("assistant_conversations.id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)  # user, assistant
+    content_summary: Mapped[str | None] = mapped_column(Text)  # no hidden chain-of-thought
+    artifact_refs: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -1,0 +1,20 @@
+{
+  "task": "S4-F10-I02",
+  "jira": "AMFA-263",
+  "status": "PASS",
+  "goal": "G08",
+  "commit_sha": "pending",
+  "changed_files": [
+    "backend/app/repositories/models/workflow.py",
+    "backend/app/repositories/models/__init__.py",
+    "backend/app/api/routes/reconciliation.py",
+    "backend/app/api/routes/runs.py",
+    "backend/app/api/router.py",
+    "backend/alembic/versions/20260720_01_reconciliation_assistant.py"
+  ],
+  "tests": [
+    "backend/tests/test_reconciliation_service.py"
+  ],
+  "test_results": "18 passed (combined all tasks)",
+  "reviewer_verdict": "PASS"
+}

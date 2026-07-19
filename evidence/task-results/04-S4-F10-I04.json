@@ -1,0 +1,24 @@
+{
+  "task": "S4-F10-I04",
+  "jira": "AMFA-265",
+  "status": "PASS",
+  "goal": "G08",
+  "commit_sha": "pending",
+  "changed_files": [
+    "backend/tests/test_reconciliation_service.py"
+  ],
+  "tests": [
+    "test_execute_happy_path",
+    "test_execute_with_stale_leases",
+    "test_execute_with_interrupted_commands",
+    "test_idempotent_replay",
+    "test_get_latest_when_none",
+    "test_get_latest_after_execution",
+    "test_recover_runs",
+    "test_quarantine_runs",
+    "test_artifact_integrity_check",
+    "test_graph_reconstruction"
+  ],
+  "test_results": "All 10 reconciliation tests pass",
+  "reviewer_verdict": "PASS"
+}

@@ -1,0 +1,19 @@
+{
+  "goal": "G08",
+  "base_sha": "d759861",
+  "shared_files": [
+    "backend/app/api/router.py",
+    "backend/app/api/errors.py",
+    "backend/app/domain/contracts.py",
+    "backend/app/repositories/models/workflow.py",
+    "backend/app/repositories/models/__init__.py",
+    "backend/app/repositories/models/base.py",
+    "backend/app/state/transition_service.py",
+    "backend/app/core/application.py",
+    "backend/alembic/versions/20260720_01_reconciliation_assistant.py",
+    "frontend/src/api/client.ts",
+    "frontend/src/types/generated/api.ts",
+    "shared/openapi.json"
+  ],
+  "notes": "Declare all shared-file edits before writing them. Record integration notes for each edit."
+}

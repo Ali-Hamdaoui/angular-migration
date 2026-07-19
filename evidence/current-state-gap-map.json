@@ -1,0 +1,102 @@
+{
+  "goal": "G08",
+  "base_sha": "d759861",
+  "generated_at": "2026-07-19T21:00:00Z",
+  "entries": [
+    {
+      "criterion": "StartupReconciliationService for backend instance ID, stale leases/commands, mutation-category recovery, graph reconstruction from SQLite, artifact temp/orphan/missing/hash checks, workspace quarantine, and Transition Service recovery states",
+      "status": "MISSING",
+      "exact_path": "backend/app/services/reconciliation_service.py"
+    },
+    {
+      "criterion": "Reconciliation run/results, interrupted statuses, lease updates, artifact integrity findings, transitions/events persistence",
+      "status": "MISSING",
+      "exact_path": "backend/app/repositories/models/workflow.py"
+    },
+    {
+      "criterion": "RECONCILIATION_STARTED/COMPLETED, COMMAND_INTERRUPTED, ARTIFACT_INTEGRITY_FAILED, RUN_RECOVERY_READY/DIAGNOSTIC_HOLD event types",
+      "status": "MISSING",
+      "exact_path": "backend/app/domain/contracts.py"
+    },
+    {
+      "criterion": "POST /api/v1/operator/reconciliation, GET /api/v1/operator/reconciliation/latest, POST /api/v1/runs/{id}/resume API endpoints",
+      "status": "MISSING",
+      "exact_path": "backend/app/api/routes/reconciliation.py"
+    },
+    {
+      "criterion": "Startup reconciliation report, artifact mismatch list, workspace recovery decision, and graph reconstruction summary artifact types",
+      "status": "MISSING",
+      "exact_path": "backend/app/domain/contracts.py"
+    },
+    {
+      "criterion": "Operator recovery dashboard and run resume panel (frontend)",
+      "status": "MISSING",
+      "exact_path": "frontend/src/components/OperatorRecoveryDashboard.tsx"
+    },
+    {
+      "criterion": "AssistantContextService selecting authoritative state and approved artifacts, sanitized bounded prompt, structured answer with evidence refs/proof labels, LLM usage/cost, and explicit forbidden-action policy",
+      "status": "MISSING",
+      "exact_path": "backend/app/services/assistant_context_service.py"
+    },
+    {
+      "criterion": "ASSISTANT_RESPONSE_STARTED/COMPLETED/FAILED event types",
+      "status": "MISSING",
+      "exact_path": "backend/app/domain/contracts.py"
+    },
+    {
+      "criterion": "Conversation/message metadata, artifact refs, usage/cost persistence (no hidden chain-of-thought)",
+      "status": "MISSING",
+      "exact_path": "backend/app/repositories/models/workflow.py"
+    },
+    {
+      "criterion": "POST /api/v1/runs/{id}/assistant/messages, GET /api/v1/runs/{id}/assistant/messages API endpoints",
+      "status": "MISSING",
+      "exact_path": "backend/app/api/routes/assistant_routes.py"
+    },
+    {
+      "criterion": "Sanitized assistant input manifest, structured answer, evidence citations, usage record artifact types",
+      "status": "MISSING",
+      "exact_path": "backend/app/domain/contracts.py"
+    },
+    {
+      "criterion": "Chat panel with suggested questions, evidence links, proof labels, streaming/progress, empty/error/budget-blocked states, and disabled mutation/approval actions (frontend)",
+      "status": "MISSING",
+      "exact_path": "frontend/src/components/AssistantChatPanel.tsx"
+    },
+    {
+      "criterion": "Existing migration-run routes, Service, and models — reused for resume endpoint",
+      "status": "PRESENT",
+      "exact_path": "backend/app/api/routes/runs.py, backend/app/services/migration_run_service.py"
+    },
+    {
+      "criterion": "Existing WorkerLeaseModel with backend_instance_id — extended for lease reconciliation",
+      "status": "PRESENT",
+      "exact_path": "backend/app/repositories/models/workflow.py"
+    },
+    {
+      "criterion": "Existing StateTransitionService with resume_from_checkpoint — consumed by reconciliation",
+      "status": "PRESENT",
+      "exact_path": "backend/app/state/transition_service.py"
+    },
+    {
+      "criterion": "Existing ArtifactMetadataModel and LocalFilesystemArtifactStore — reused for evidence artifacts",
+      "status": "PRESENT",
+      "exact_path": "backend/app/repositories/models/workflow.py, backend/app/artifact_store"
+    },
+    {
+      "criterion": "Existing CommandExecutionModel with reconstruction_required flag — consumed for interrupted command detection",
+      "status": "PRESENT",
+      "exact_path": "backend/app/repositories/models/workflow.py"
+    },
+    {
+      "criterion": "Existing MigrationRunModel with status DIAGNOSTIC_HOLD, RECOVERY_RUNNING, ORPHANED — extended for recovery states",
+      "status": "PRESENT",
+      "exact_path": "backend/app/repositories/models/workflow.py"
+    },
+    {
+      "criterion": "Existing SSE events endpoint — reused for reconciliation events",
+      "status": "PRESENT",
+      "exact_path": "backend/app/api/routes/runs.py"
+    }
+  ]
+}
