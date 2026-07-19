@@ -124,7 +124,7 @@ def _build_evidence(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id}/commands/{command_id}/failure-evidence", status_code=201)
+@router.post("/{run_id}/commands/{command_id}/failure-evidence", status_code=201, response_model=None)
 def capture_failure_evidence(
     run_id: str,
     command_id: str,
@@ -296,12 +296,12 @@ def capture_failure_evidence(
     )
 
 
-@router.get("/{run_id}/failures/{failure_id}")
+@router.get("/failures/{failure_id}", response_model=None)
 def get_failure_evidence(
     run_id: str,
     failure_id: str,
     http_request: Request,
-) -> JSONResponse | FailureEvidenceResponse:
+):
     """Retrieve a stored failure evidence record with its diagnostics."""
     with session_scope() as session:
         persisted = _repo.get_failure(session, run_id, failure_id)

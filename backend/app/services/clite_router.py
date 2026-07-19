@@ -59,7 +59,7 @@ _DEFAULT_RULES: list[CLiteRule] = [
     CLiteRule(
         route=FailureRoute.RETRYABLE_EXTERNAL_FAILURE,
         confidence=0.9,
-        pattern=r"Connection refused|ECONNREFUSED|timeout",
+        pattern=r"Connection refused|ECONNREFUSED|timeout|timed out",
         actions=[
             "check network connectivity",
             "verify external service availability",

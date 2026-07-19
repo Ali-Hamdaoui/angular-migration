@@ -123,7 +123,11 @@ class SecretSanitizer:
 
     # Pattern: bearer / basic / token auth headers and inline values
     _BEARER_PATTERN = re.compile(
-        r"(?i)(bearer|token|api[_-]?key|apikey|secret|auth)\s*[:=]\s*\S{8,}",
+        r"(?i)(bearer|token|api[_-]?key|apikey|secret)\s*[:=]\s*\S{6,}",
+    )
+    # Pattern: "Authorization: Bearer <jwt>" style where keyword is not followed by :=
+    _BEARER_TOKEN_PATTERN = re.compile(
+        r"(?i)Authorization\s*:\s*Bearer\s+\S{10,}",
     )
     _PASSWORD_PATTERN = re.compile(
         r"(?i)(password|pass|pwd)\s*[:=]\s*\S+",
@@ -159,6 +163,13 @@ class SecretSanitizer:
         )
         redacted_count["api_keys_tokens"] = count_api
 
+        # Catch Authorization: Bearer <jwt> style
+        sanitized, count_bearer = self._BEARER_TOKEN_PATTERN.subn(
+            "Authorization: Bearer " + self.REDACTED_PLACEHOLDER,
+            sanitized,
+        )
+        redacted_count["api_keys_tokens"] += count_bearer
+
         sanitized, count_pass = self._PASSWORD_PATTERN.subn(
             lambda m: m.group(0).split("=")[0] + "=" + self.REDACTED_PLACEHOLDER,
             sanitized,
@@ -184,7 +195,12 @@ class SecretSanitizer:
         redacted_count["ip_addresses"] = count_ip
 
         any_redacted = (
-            count_api > 0 or count_pass > 0 or count_key > 0 or count_url > 0 or count_ip > 0
+            count_bearer > 0
+            or count_api > 0
+            or count_pass > 0
+            or count_key > 0
+            or count_url > 0
+            or count_ip > 0
         )
 
         report = {

@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -447,3 +448,54 @@ class FailureDiagnosticModel(Base):
     column: Mapped[int | None] = mapped_column(Integer)
     severity: Mapped[str | None] = mapped_column(String(32))
     raw_excerpt: Mapped[str | None] = mapped_column(Text)
+
+
+class FailureRouteModel(Base):
+    __tablename__ = "failure_routes"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    failure_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    route: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    actions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    risk: Mapped[str] = mapped_column(String(32), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class FailureAttemptModel(Base):
+    __tablename__ = "failure_attempts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    failure_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    route: Mapped[str] = mapped_column(String(64), nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RepairContextPackModel(Base):
+    __tablename__ = "repair_context_packs"
+    __table_args__ = (UniqueConstraint("run_id", "failure_id", "repair_attempt", name="uq_repair_context_packs_failure_attempt"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    failure_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    repair_attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    selection_policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    sanitization_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_budget: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="finalized")
+    context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

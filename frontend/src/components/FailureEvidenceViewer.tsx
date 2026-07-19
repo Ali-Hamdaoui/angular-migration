@@ -13,7 +13,7 @@ export type FailureEvidenceViewerProps = {
   /** True while evidence is being fetched. */
   loading: boolean;
   /** A user-facing error message, or null. */
-  error: string | null;
+  error?: string | null;
 };
 
 /* ------------------------------------------------------------------ */
@@ -126,7 +126,7 @@ const TAB_PANEL_NORMALIZED = "evidence-panel-normalized";
 export function FailureEvidenceViewer({
   evidence,
   loading,
-  error,
+  error = null,
 }: FailureEvidenceViewerProps) {
   /* Tab state */
   const [activeTab, setActiveTab] = useState<"raw" | "normalized">("normalized");
