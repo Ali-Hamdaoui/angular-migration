@@ -81,3 +81,64 @@ export type PlanResponse = {
   event_sequence: number;
   idempotent_replay: boolean;
 };
+
+export type PlanReviewResponse = {
+  run_id: string;
+  status: string;
+  plan: Record<string, unknown> | null;
+  stage_plan: Record<string, unknown> | null;
+  plan_checksum: string | null;
+  stage_plan_checksum: string | null;
+  diff: { from_version?: number; to_version?: number; changed_fields?: string[]; changes?: Record<string, unknown>; checksum?: string } | null;
+  package: Record<string, unknown> | null;
+  artifact_ids: string[];
+  artifact_checksums: Record<string, string>;
+  artifact_links: Record<string, string>;
+  gate_id: string;
+  gate_version: string;
+  gate_status: string;
+  gate_decision: G06Decision | null;
+  package_checksum: string | null;
+  state_version: number;
+  event_sequence: number;
+  idempotent_replay: boolean;
+};
+
+export type PlanReviewChanges = Partial<{
+  catalogue_version: string;
+  execution_profile_id: string;
+  target_cli_exact: string;
+  validation_policy_id: string;
+  recovery_policy_id: string;
+  repair_policy_id: string;
+  builder: string;
+}>;
+
+export type PlanRevisionRequest = {
+  expected_state_version: number;
+  idempotency_key: string;
+  plan: Record<string, unknown>;
+  stage_plan: Record<string, unknown>;
+  changes: PlanReviewChanges;
+  artifact_set_checksum: string;
+  prerequisite_artifacts: PlanArtifactInput[];
+  workspace_fingerprint?: string | null;
+  correlation_id?: string | null;
+};
+
+export type PlanningExplanationRequest = Omit<PlanRevisionRequest, "changes"> & { plan_version: number };
+export type G06Decision = "approve" | "approve_with_comment" | "request_modification" | "reject";
+export type G06DecisionRequest = {
+  expected_state_version: number;
+  idempotency_key: string;
+  gate_version: string;
+  package_checksum?: string | null;
+  artifact_set_checksum: string;
+  plan_checksum: string;
+  stage_plan_checksum: string;
+  workspace_fingerprint?: string | null;
+  decision: G06Decision;
+  comment?: string | null;
+  correlation_id?: string | null;
+};
+export type G06DecisionResponse = PlanReviewResponse & { decision: G06Decision; accepted: boolean };

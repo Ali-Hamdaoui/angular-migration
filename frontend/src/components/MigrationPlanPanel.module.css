@@ -13,4 +13,11 @@
 .artifact a { color: #a1c9ff; font-weight: 700; overflow-wrap: anywhere; }
 .artifact code { color: #9db0c8; font-size: .7rem; overflow-wrap: anywhere; }
 .action { margin-top: .75rem; }
+.field { display: grid; gap: .35rem; margin: .7rem 0; color: #a9b8cf; }
+.field input, .field select, .field textarea { width: 100%; border: 1px solid #30425c; border-radius: .35rem; background: #0b1424; color: #edf4ff; padding: .5rem; font: inherit; }
+.field textarea { min-height: 5rem; resize: vertical; }
+.reviewGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.stale { border-left: 3px solid #f0b429; padding: .65rem; background: #2a2110; }
 @media (max-width: 680px) { .routeItem { grid-template-columns: 2rem 1fr; }.routeItem > :last-child { grid-column: 2; } .artifact { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .reviewGrid { grid-template-columns: 1fr; } }
