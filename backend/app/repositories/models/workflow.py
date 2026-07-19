@@ -348,6 +348,95 @@ class EnvironmentDiagnosticEventModel(Base):
     actor: Mapped[str | None] = mapped_column(String(128))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+
+class ProposerResultModel(Base):
+    __tablename__ = "proposer_results"
+    __table_args__ = (UniqueConstraint("run_id", "repair_attempt_id", "idempotency_key", name="uq_proposer_results_run_attempt_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    repair_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    proposer_invocation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    diagnosis: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    candidate: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    diff_checksum: Mapped[str | None] = mapped_column(String(128))
+    changed_files: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_set_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    proposer_output_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_provenance: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    revision_of: Mapped[str | None] = mapped_column(String(64))
+    revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReviewDecisionModel(Base):
+    __tablename__ = "review_decisions"
+    __table_args__ = (UniqueConstraint("run_id", "proposal_id", "reviewer_invocation_id", name="uq_review_decisions_run_proposal_invocation"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    repair_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reviewer_invocation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    proposal_diff_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    review_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    critique: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    revision_instructions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    requested_context: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, default="repair_reviewer")
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_provenance: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    revision_of: Mapped[str | None] = mapped_column(String(64))
+    revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RepairProposalModel(Base):
+    __tablename__ = "repair_proposals"
+    __table_args__ = (UniqueConstraint("run_id", "proposal_id", name="uq_repair_proposals_run_proposal"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    repair_attempt_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    diff_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    lineage_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    g10_status: Mapped[str] = mapped_column(String(64), nullable=False, default="pending")
+    g10_decision: Mapped[str | None] = mapped_column(String(64))
+    g10_approval_id: Mapped[str | None] = mapped_column(String(64))
+    g10_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    g10_actor: Mapped[str | None] = mapped_column(String(128))
+    g10_rationale: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SourceAnalysisModel(Base):
     __tablename__ = "source_analyses"
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_source_analysis_idempotency"),)

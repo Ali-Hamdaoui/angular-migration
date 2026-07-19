@@ -1,0 +1,59 @@
+{
+  "goal": "G06",
+  "goal_folder": "06-repair-agents-g10",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "audited_at": "2026-07-19T21:30:00Z",
+  "features": {
+    "S4-F04": {
+      "title": "Generate a checksum-bound Repair Proposer candidate",
+      "status": "MISSING",
+      "criteria_map": [
+        {"criterion": "ProposerService backend domain", "status": "MISSING", "target_paths": ["backend/app/services/proposer_application_service.py", "backend/app/domain/proposer.py"]},
+        {"criterion": "POST/GET /repair-attempts/{attemptId}/proposer API", "status": "MISSING", "target_paths": ["backend/app/api/routes/repair_attempts.py"]},
+        {"criterion": "Proposer DB records", "status": "MISSING", "target_paths": ["backend/app/repositories/models/proposer.py"]},
+        {"criterion": "PROPOSER_STARTED/COMPLETED/INSUFFICIENT_CONTEXT/NOT_REPAIRABLE/FAILED events", "status": "MISSING", "target_paths": ["backend/app/domain/contracts.py WorkflowEventType enum"]},
+        {"criterion": "Proposer frontend viewer", "status": "MISSING", "target_paths": ["frontend/src/components/ProposerViewer.tsx"]},
+        {"criterion": "Alembic migration for proposer tables", "status": "MISSING"},
+        {"criterion": "Artifact store output for proposer", "status": "MISSING"},
+        {"criterion": "Proposer tests", "status": "MISSING"}
+      ]
+    },
+    "S4-F05": {
+      "title": "Review Proposer candidate with non-authoring Reviewer",
+      "status": "MISSING",
+      "criteria_map": [
+        {"criterion": "ReviewerService backend domain", "status": "MISSING", "target_paths": ["backend/app/services/reviewer_application_service.py", "backend/app/domain/reviewer.py"]},
+        {"criterion": "POST /reviewer, POST /revisions API", "status": "MISSING", "target_paths": ["backend/app/api/routes/repair_attempts.py"]},
+        {"criterion": "Reviewer DB records", "status": "MISSING", "target_paths": ["backend/app/repositories/models/reviewer.py"]},
+        {"criterion": "REVIEWER_STARTED/ACCEPTED/REQUESTED_REVISION/REJECTED/INSUFFICIENT_CONTEXT events", "status": "MISSING"},
+        {"criterion": "Reviewer frontend side-by-side view", "status": "MISSING"},
+        {"criterion": "Proposer revision lineage", "status": "MISSING"}
+      ]
+    },
+    "S4-F06": {
+      "title": "Persist reviewed proposal and decide G10 Apply or Reject",
+      "status": "MISSING",
+      "criteria_map": [
+        {"criterion": "RepairProposalService backend domain", "status": "MISSING", "target_paths": ["backend/app/services/repair_proposal_application_service.py", "backend/app/domain/repair_proposal.py"]},
+        {"criterion": "G10 gate and decisions API", "status": "MISSING", "target_paths": ["backend/app/api/routes/approvals.py"]},
+        {"criterion": "G10 package persistence", "status": "MISSING", "target_paths": ["backend/app/repositories/models/g10.py"]},
+        {"criterion": "REPAIR_PROPOSAL_READY and G10 events", "status": "MISSING"},
+        {"criterion": "G10 frontend approval page", "status": "MISSING"},
+        {"criterion": "Stale state/checksum binding", "status": "MISSING"}
+      ]
+    }
+  },
+  "existing_relevant_code": {
+    "workflow_models": "PRESENT - RepairAttemptModel, LlmInvocationModel, ApprovalEventModel already exist",
+    "llm_gateway_roles": "PRESENT - REPAIR_PROPOSER and REPAIR_REVIEWER roles exist in LlmRole",
+    "llm_gateway_tasks": "PRESENT - REPAIR_DIAGNOSIS and REPAIR_REVIEW tasks exist in LlmTaskType",
+    "analysis_application_service": "PRESENT - pattern reference for ProposerService and ReviewerService",
+    "analysis_domain": "PRESENT - pattern reference for Proposer and Reviewer domain models",
+    "route_pattern": "PRESENT - FastAPI APIRouter pattern in routes/",
+    "frozen_contract_schemas": "PRESENT - repair_proposal.schema.json, repair_review_decision.schema.json, repair_g10_package.schema.json"
+  },
+  "dependencies": {
+    "S4-F03": "BLOCKED_UPSTREAM - consumed at interface level only, will define local ports",
+    "S2-F03": "BLOCKED_UPSTREAM - consumed at interface level only, will define local ports"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "goal": "G06",
+  "planned_changes": [
+    {
+      "file": "backend/app/domain/contracts.py",
+      "change": "Add PROPOSER_STARTED/COMPLETED/INSUFFICIENT_CONTEXT/NOT_REPAIRABLE/FAILED, REVIEWER_STARTED/ACCEPTED/REQUESTED_REVISION/REJECTED/INSUFFICIENT_CONTEXT, PROPOSER_REVISION_COMPLETED, REPAIR_PROPOSAL_READY, G10_APPROVED/G10_REJECTED/G10_STALE to WorkflowEventType, add ProposerStatus, ReviewerDecision, RepairProposalStatus enums",
+      "owner": "G06",
+      "shared": true
+    },
+    {
+      "file": "backend/app/domain/contracts.py",
+      "change": "Add ArtifactType.DIFF if not already present",
+      "owner": "G06",
+      "shared": true
+    },
+    {
+      "file": "backend/app/domain/proposer.py",
+      "change": "NEW - Domain contracts for ProposerService: ProposerRequest, ProposerCandidate, ProposerResult, ProposerStatus enum",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/domain/reviewer.py",
+      "change": "NEW - Domain contracts for ReviewerService: ReviewRequest, ReviewDecision, ReviewResult, ReviewerDecision enum",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/domain/repair_proposal.py",
+      "change": "NEW - Domain contracts for RepairProposalService and G10 gate: RepairProposal, G10DecisionRequest, G10DecisionResult",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/services/proposer_application_service.py",
+      "change": "NEW - ProposerService: gateway invocation, diff parse, checksum binding, status handling",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/services/reviewer_application_service.py",
+      "change": "NEW - ReviewerService: non-authoring review, revision cycles, checksum validation",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/services/repair_proposal_application_service.py",
+      "change": "NEW - RepairProposalService: accepted proposal persistence, G10 gate decisions",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/api/routes/repair_attempts.py",
+      "change": "NEW - Routes for proposer and reviewer endpoints",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/api/routes/approvals.py",
+      "change": "MODIFY - Add G10 approval decision endpoints",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/repositories/models/workflow.py",
+      "change": "MODIFY - Add ProposerResultModel, ReviewDecisionModel, RepairProposalModel tables",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/llm_gateway/contracts.py",
+      "change": "Add REPAIR_PROPOSAL_SCHEMA, REPAIR_REVIEW_SCHEMA task types if needed",
+      "owner": "G06"
+    },
+    {
+      "file": "backend/app/llm_gateway/azure_gateway.py",
+      "change": "Register proposer/reviewer prompt schemas in PromptRegistry.defaults()",
+      "owner": "G06"
+    },
+    {
+      "file": "frontend/src/components/ProposerViewer.tsx",
+      "change": "NEW - Proposer viewer with diff display",
+      "owner": "G06"
+    },
+    {
+      "file": "frontend/src/components/ReviewerPanel.tsx",
+      "change": "NEW - Side-by-side proposer/reviewer panel",
+      "owner": "G06"
+    },
+    {
+      "file": "frontend/src/components/G10ApprovalPanel.tsx",
+      "change": "NEW - G10 apply/reject panel",
+      "owner": "G06"
+    }
+  ]
+}

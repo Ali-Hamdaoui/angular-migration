@@ -1,0 +1,28 @@
+{
+  "goal": "G06",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "consumed": {
+    "S4-F03": {
+      "type": "upstream_dependency",
+      "status": "BLOCKED_UPSTREAM",
+      "approach": "Define local Protocol ports and test fakes; do not implement upstream production code"
+    },
+    "S2-F03": {
+      "type": "upstream_dependency",
+      "status": "BLOCKED_UPSTREAM",
+      "approach": "Define local Protocol ports and test fakes; do not implement upstream production code"
+    }
+  },
+  "consumed_frozen_schemas": {
+    "failure_evidence.schema.json": "PRESENT at goals/shared/contracts/",
+    "failure_route.schema.json": "PRESENT at goals/shared/contracts/",
+    "repair_context_pack.schema.json": "PRESENT at goals/shared/contracts/",
+    "artifact_ref.schema.json": "PRESENT at goals/shared/contracts/",
+    "durable_event_envelope.schema.json": "PRESENT at goals/shared/contracts/"
+  },
+  "provided_frozen_schemas": {
+    "repair_proposal.schema.json": "PROVIDED by G06 - must implement conformance",
+    "repair_review_decision.schema.json": "PROVIDED by G06 - must implement conformance",
+    "repair_g10_package.schema.json": "PROVIDED by G06 - must implement conformance"
+  }
+}
