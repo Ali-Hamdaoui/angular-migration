@@ -1,0 +1,37 @@
+{
+  "goal_id": "G05",
+  "dependencies": [
+    {
+      "id": "G01",
+      "status": "FROZEN_CONTRACT_ONLY",
+      "evidence": ["goals/shared/contracts/command_execution_record.schema.json exists"],
+      "notes": "Consuming command_execution_record schema. G01 implementation assumed available at integration."
+    },
+    {
+      "id": "G04",
+      "status": "FROZEN_CONTRACT_ONLY",
+      "evidence": [
+        "goals/shared/contracts/stage_validation_summary.schema.json exists",
+        "goals/shared/contracts/artifact_ref.schema.json exists",
+        "goals/shared/contracts/durable_event_envelope.schema.json exists"
+      ],
+      "notes": "Consuming stage_validation_summary, artifact_ref, durable_event_envelope schemas. G04 implementation assumed available at integration. Using shared contracts as frozen boundary."
+    }
+  ],
+  "consumed_contracts": [
+    "command_execution_record",
+    "stage_validation_summary",
+    "artifact_ref",
+    "durable_event_envelope"
+  ],
+  "provided_contracts": [
+    "failure_evidence",
+    "failure_route",
+    "repair_context_pack"
+  ],
+  "upstream_boundary_notes": [
+    "S3-F02 and S3-F12 are dependencies per the backlog but owned by Sprint 2/earlier goals. Creating local consuming ports and test fakes where upstream service is unavailable.",
+    "Existing CommandExecutionModel table has command_id, stdout_artifact_id, stderr_artifact_id fields usable by failure evidence.",
+    "Existing RepairAttemptModel table provides structure but will be extended with context-pack metadata."
+  ]
+}

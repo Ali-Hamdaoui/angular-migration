@@ -1,0 +1,81 @@
+{
+  "goal_id": "G05",
+  "files": [
+    {
+      "path": "backend/app/domain/contracts.py",
+      "nature": "ADD_ENUMS_EVENTS",
+      "scope": "Add FailureRoute enum, FailureOrigin enum, FailureStatus enum, FailureDiagnosticType enum, RepairContextStatus enum. Add WorkflowEventType entries: FAILURE_CAPTURED, FAILURE_DIAGNOSTICS_PARSED, FAILURE_CLASSIFIED, ENVIRONMENT_ACTION_REQUIRED, EXTERNAL_RETRY_SCHEDULED, DIAGNOSTIC_HOLD_ENTERED, REPAIR_CONTEXT_CREATED, REPAIR_CONTEXT_BLOCKED.",
+      "owner": "G05"
+    },
+    {
+      "path": "backend/app/api/router.py",
+      "nature": "REGISTER_ROUTES",
+      "scope": "Register new failure and repair-context route modules.",
+      "owner": "G05"
+    },
+    {
+      "path": "backend/app/core/application.py",
+      "nature": "DEPENDENCY_WIRING",
+      "scope": "Register new services/repositories for failure evidence, C-Lite routing, and repair context.",
+      "owner": "G05"
+    },
+    {
+      "path": "backend/app/orchestration/state.py",
+      "nature": "ADD_STATE_ENUMS",
+      "scope": "Add DIAGNOSTIC_HOLD state handling and failure-context state projections.",
+      "owner": "G05"
+    },
+    {
+      "path": "backend/app/repositories/models/workflow.py",
+      "nature": "ADD_TABLES",
+      "scope": "Add FailureModel, FailureDiagnosticModel, FailureRouteModel, FailureAttemptModel, RepairContextPackModel tables.",
+      "owner": "G05"
+    },
+    {
+      "path": "backend/app/state/transition_service.py",
+      "nature": "ADD_TRANSITIONS",
+      "scope": "Add transition validation for failure evidence capture, C-Lite classification, diagnostic hold, and repair context creation.",
+      "owner": "G05"
+    },
+    {
+      "path": "backend/alembic/versions/**",
+      "nature": "NEW_MIGRATION",
+      "scope": "New Alembic migration for G05 tables (failures, failure_diagnostics, failure_routes, failure_attempts, repair_context_packs).",
+      "owner": "G05"
+    },
+    {
+      "path": "frontend/src/components/AuthoritativeRunDashboard.tsx",
+      "nature": "MODIFY",
+      "scope": "Integrate FailureEvidenceViewer, FailureRouteCard, ContextInspector components into the run dashboard.",
+      "owner": "G05"
+    },
+    {
+      "path": "frontend/src/hooks/useMigrationEvents.ts",
+      "nature": "MODIFY",
+      "scope": "Add SSE handlers for new failure/routing/repair-context event types.",
+      "owner": "G05"
+    },
+    {
+      "path": "frontend/src/hooks/applyEventToRun.ts",
+      "nature": "MODIFY",
+      "scope": "Add event-to-state projection for failure/routing/repair-context events.",
+      "owner": "G05"
+    },
+    {
+      "path": "frontend/src/types/generated/api.ts",
+      "nature": "MODIFY",
+      "scope": "Add TypeScript types for failure evidence, C-Lite routing, and repair context API contracts.",
+      "owner": "G05"
+    },
+    {
+      "path": "shared/openapi.json",
+      "nature": "REGENERATE",
+      "scope": "Update with new failure-evidence, classify, route, retry, and repair-context endpoints.",
+      "owner": "G05"
+    }
+  ],
+  "integration_notes": [
+    "Shared file edits are declared before production edits. Aggregate generated contracts (OpenAPI, generated TypeScript) are integration-coordinator owned per OWNERSHIP.yaml but documented here for shared awareness.",
+    "Alembic migration must be a new head, not a modification of prior migration chain heads."
+  ]
+}

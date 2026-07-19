@@ -1,0 +1,123 @@
+{
+  "goal_id": "G05",
+  "branch": "hermes/05-failure-diagnostics-context",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "criteria": [
+    {
+      "acceptance_id": "S4-F01-HAPPY_PATH",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No FailureEvidenceBuilder, parser registry, or failure evidence domain exists yet."
+    },
+    {
+      "acceptance_id": "S4-F01-INVALID_INPUT",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No failure evidence API or validation exists."
+    },
+    {
+      "acceptance_id": "S4-F01-STALE_STATE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No failure evidence aggregate with state version exists."
+    },
+    {
+      "acceptance_id": "S4-F01-PERSISTENCE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No failure/failure_diagnostics tables or models."
+    },
+    {
+      "acceptance_id": "S4-F01-EVIDENCE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No FailureEvidence artifact store integration."
+    },
+    {
+      "acceptance_id": "S4-F01-FRONTEND",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No FailureEvidence viewer component."
+    },
+    {
+      "acceptance_id": "S4-F01-BACKEND_FAILURE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No partial evidence preservation logic."
+    },
+    {
+      "acceptance_id": "S4-F02-HAPPY_PATH",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No CLiteRouter, failure route domain, or C-Lite classification exists."
+    },
+    {
+      "acceptance_id": "S4-F02-INVALID_INPUT",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No failure routing API or validation."
+    },
+    {
+      "acceptance_id": "S4-F02-STALE_STATE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No failure routing aggregate exists."
+    },
+    {
+      "acceptance_id": "S4-F02-PERSISTENCE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No failure_route tables or models."
+    },
+    {
+      "acceptance_id": "S4-F02-FRONTEND",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No FailureRouteCard component."
+    },
+    {
+      "acceptance_id": "S4-F03-HAPPY_PATH",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No RepairContextPackBuilder, sanitizer, or context budget logic."
+    },
+    {
+      "acceptance_id": "S4-F03-INVALID_INPUT",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No repair context API or validation."
+    },
+    {
+      "acceptance_id": "S4-F03-STALE_STATE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No repair context aggregate exists."
+    },
+    {
+      "acceptance_id": "S4-F03-PERSISTENCE",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No repair_context_pack tables or models."
+    },
+    {
+      "acceptance_id": "S4-F03-FRONTEND",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No ContextInspector component."
+    },
+    {
+      "acceptance_id": "S4-F03-EXECUTION_AUTHORITY",
+      "status": "MISSING",
+      "evidence": [],
+      "notes": "No execution bypass rejection for repair context."
+    }
+  ],
+  "duplicate_authority_check": [
+    "No existing FailureEvidence, CLiteRouter, or RepairContextPack implementation found in any existing domain/service file. All three features must be built from scratch."
+  ],
+  "notes": [
+    "Existing RepairAttemptModel in workflow.py covers repair_attempts table but lacks context_pack metadata, selection reasons, checksums, sanitizer record.",
+    "Existing CommandExecutionModel in workflow.py provides command_id and stdout/stderr artifact references needed for failure evidence linkage.",
+    "S3-F02 and S3-F12 dependencies: assumed available via integration; using frozen contracts."
+  ]
+}

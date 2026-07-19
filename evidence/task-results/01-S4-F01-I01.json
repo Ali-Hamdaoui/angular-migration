@@ -1,0 +1,34 @@
+{
+  "task_id": "01-S4-F01-I01",
+  "jira": "AMFA-226",
+  "status": "PASS",
+  "acceptance_mapping": [
+    {"criterion": "Happy path with npm failure", "result": "PASS", "test": "test_happy_path_npm_failure"},
+    {"criterion": "Happy path with TypeScript error", "result": "PASS", "test": "test_happy_path_typescript_error"},
+    {"criterion": "Invalid input rejection", "result": "PASS", "test": "test_rejects_no_output"},
+    {"criterion": "Multiple parsers tried", "result": "PASS", "test": "test_multiple_parsers_are_tried"},
+    {"criterion": "Idempotent retry", "result": "PASS", "test": "test_idempotent_replay_returns_same_evidence"},
+    {"criterion": "Dependency failure (artifact store)", "result": "PASS", "test": "test_origin_migration_caused_without_baseline"},
+    {"criterion": "Fingerprint determinism", "result": "PASS", "test": "test_fingerprint_determinism"},
+    {"criterion": "Parser adapters (all 6 parsers)", "result": "PASS", "tests": ["test_npm_parser_detects_npm_err", "test_angular_cli_parser_detects_build_error", "test_typescript_parser_detects_ts_error", "test_template_parser_detects_html_error", "test_test_parser_detects_fail", "test_generic_parser_fallback"]},
+    {"criterion": "Origin classification", "result": "PASS", "tests": ["test_migration_caused_no_baseline_ids", "test_pre_existing_unchanged", "test_pre_existing_changed"]},
+    {"criterion": "ParserRegistry", "result": "PASS", "tests": ["test_default_registry_has_all_parsers", "test_parse_all_returns_results", "test_register_adds_parser"]}
+  ],
+  "changed_files": [
+    "backend/app/domain/failure.py",
+    "backend/app/services/failure_evidence_builder.py",
+    "backend/tests/test_failure_evidence_builder_s4_f01_i01.py",
+    "backend/app/domain/contracts.py"
+  ],
+  "tests": [
+    "test_failure_evidence_builder_s4_f01_i01.py::29 passed"
+  ],
+  "review_findings": [],
+  "fixes": [],
+  "limitations": [
+    "Baseline comparison uses in-memory baseline reader; DB-backed baseline service required at integration.",
+    "Parser stubs are basic regex-based; production parsers should be more robust."
+  ],
+  "commit_sha": "<will-be-filled-after-commit>",
+  "reviewer_verdict": "PASS"
+}
