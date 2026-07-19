@@ -40,8 +40,11 @@ from app.repositories.models.workflow import (
     WorkflowEventModel,
     WorkerLeaseModel,
 )
+from app.repositories.analysis_models import AnalysisMetadataModel, G04ApprovalModel
 
 __all__ = [
+    "AnalysisMetadataModel",
+    "G04ApprovalModel",
     'LlmInvocationModel',
     'UsageCostRecordModel',
     "AgentExecutionModel",

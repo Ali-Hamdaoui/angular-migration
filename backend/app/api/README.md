@@ -22,3 +22,20 @@ The router only maps DTOs and stable domain errors. Run creation, leases,
 artifact evidence, transitions, and graph handoff belong to
 `MigrationRunService`; an unconfigured graph fails closed rather than falling
 back to a mock.
+
+## S2-F04 Analysis and G04 evidence
+
+The versioned Analysis routes expose only registered artifact IDs and checksums:
+
+- `POST /api/v1/runs/{runId}/analysis` persists the sanitized input manifest,
+  validated structured response, human-readable analysis, usage/cost record,
+  G04 package, invocation provenance, and a pending checksum-bound G04 gate.
+- `GET /api/v1/runs/{runId}/analysis` returns the authoritative analysis and
+  gate snapshot.
+- `POST /api/v1/runs/{runId}/approvals/G04/decisions` appends a decision bound
+  to the active state version, gate version, artifact-set checksum, plan
+  version, and workspace fingerprint.
+
+Analysis and G04 state changes use the Transition Service and emit durable
+`ANALYSIS_AGENT_*` and `G04_*` events. Raw model input, repository content,
+provider errors, and unsafe filesystem paths are not exposed by these routes.

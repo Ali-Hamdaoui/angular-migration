@@ -46,7 +46,7 @@ class AnalysisArtifact:
     content: str
 
 
-class _GatewayNarrative(BaseModel):
+class AnalysisGatewayNarrative(BaseModel):
     summary: str = Field(min_length=1, max_length=12000)
     risk_groups: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
     unresolved_questions: list[str] = Field(default_factory=list, max_length=64)
@@ -55,7 +55,7 @@ class _GatewayNarrative(BaseModel):
     deterministic_input_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
     @model_validator(mode="after")
-    def reject_authoritative_fields(self) -> "_GatewayNarrative":
+    def reject_authoritative_fields(self) -> "AnalysisGatewayNarrative":
         # The schema is intentionally narrow. These names are rejected here as
         # a defence-in-depth check if a future schema becomes less restrictive.
         forbidden = {"support_level", "target_version", "exact_version", "commands", "patches"}
@@ -84,7 +84,7 @@ class AnalysisAgentService:
         self.read_state_version = state_version_reader
         self.max_context_bytes = max_context_bytes
         self.registry = PromptSchemaRegistry(version="analysis-schema-registry-v1")
-        self.registry.register(self.schema_name, _GatewayNarrative, semantic_validator=self._validate_semantics)
+        self.registry.register(self.schema_name, AnalysisGatewayNarrative, semantic_validator=self._validate_semantics)
 
     def generate(self, request: AnalysisRequest) -> AnalysisPackage:
         if self.read_state_version is not None:
@@ -164,4 +164,3 @@ class AnalysisAgentService:
             raise ValueError("analysis summary must not be empty")
         if value.get("recommended_next_action") in {"approve", "reject", "apply", "execute"}:
             raise ValueError("analysis cannot make an approval or execution decision")
-
