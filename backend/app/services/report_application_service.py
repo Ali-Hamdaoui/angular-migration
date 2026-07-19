@@ -123,13 +123,16 @@ class ReportApplicationService:
                 return self._dto(record)
             package = G15ApprovalPackage.model_validate(record.package)
             result: G15ApprovalResult = G15ApprovalService().decide(package, request.decision, comment=request.comment)
-            event_type = (
-                WorkflowEventType.G15_APPROVED
-                if result.decision in {G15Decision.APPROVED, G15Decision.APPROVED_WITH_COMMENT}
-                else WorkflowEventType.G15_REJECTED
-            )
             if result.stale:
                 event_type = WorkflowEventType.G15_STALE
+            elif result.decision == G15Decision.APPROVED_WITH_COMMENT:
+                event_type = WorkflowEventType.G15_APPROVED
+            elif result.decision == G15Decision.APPROVED:
+                event_type = WorkflowEventType.G15_APPROVED
+            elif result.decision == G15Decision.MODIFICATION_REQUESTED:
+                event_type = WorkflowEventType.G15_MODIFICATION_REQUESTED
+            else:
+                event_type = WorkflowEventType.G15_REJECTED
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id, expected_state_version=run.state_version,

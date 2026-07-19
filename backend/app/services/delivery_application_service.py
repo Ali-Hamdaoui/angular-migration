@@ -94,9 +94,16 @@ class DeliveryApplicationService:
                 record, candidate = self._create_candidate(session, run, request.actor, f"{request.idempotency_key}:create", destination, now)
             package = G14ApprovalPackage.model_validate(record.package)
             result = G14ApprovalService().decide(package, request.decision, comment=request.comment)
-            event_type = WorkflowEventType.G14_APPROVED if result.decision in {G14Decision.APPROVED, G14Decision.APPROVED_WITH_COMMENT} else WorkflowEventType.G14_REJECTED
             if result.stale:
                 event_type = WorkflowEventType.G14_STALE
+            elif result.decision == G14Decision.APPROVED_WITH_COMMENT:
+                event_type = WorkflowEventType.G14_APPROVED
+            elif result.decision == G14Decision.APPROVED:
+                event_type = WorkflowEventType.G14_APPROVED
+            elif result.decision == G14Decision.MODIFICATION_REQUESTED:
+                event_type = WorkflowEventType.G14_MODIFICATION_REQUESTED
+            else:
+                event_type = WorkflowEventType.G14_REJECTED
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id, expected_state_version=run.state_version,

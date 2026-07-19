@@ -1,0 +1,313 @@
+{
+  "meta": {
+    "target": "G09 — Final Assurance (G13), Delivery (G14), Reporting (G15)",
+    "repo_sha": "38d9a47",
+    "branch": "hermes/09-assurance-delivery-report",
+    "worktree": "/home/ubuntu/amfa-worktrees/09-assurance-delivery-report",
+    "audited_at": "2026-07-19",
+    "audit_type": "product/runtime layer deep audit",
+    "summary": "30 findings: 5 BLOCKER, 8 CRITICAL, 9 MAJOR, 5 MINOR, 3 OBSERVATION"
+  },
+  "findings": [
+    {
+      "id": "F001",
+      "file": "frontend/src/types/generated/api.ts",
+      "line": 21,
+      "severity": "BLOCKER",
+      "category": "FRONTEND_TYPES",
+      "description": "Frontend WorkflowEventType union is MISSING all G09 events. The type ends at BASELINE_LINT_COMPLETED and does not include: FINAL_ASSURANCE_STARTED/STEP_COMPLETED/COMPLETED/FAILED, G13_CREATED/APPROVED/MODIFICATION_REQUESTED/REJECTED/STALE, G14_CREATED/APPROVED/MODIFICATION_REQUESTED/REJECTED/STALE, G15_CREATED/APPROVED/MODIFICATION_REQUESTED/REJECTED/STALE, DELIVERY_CANDIDATE_READY/FAILED, REPORT_GENERATION_STARTED/COMPLETED/FAILED.",
+      "fix": "Add all G09 workflow event type literals to the WorkflowEventType union in frontend/src/types/generated/api.ts to match backend/app/domain/contracts.py lines 358-386.",
+      "backed_enum_complete": false
+    },
+    {
+      "id": "F002",
+      "file": "frontend/src/api/",
+      "line": 0,
+      "severity": "BLOCKER",
+      "category": "FRONTEND_API_CLIENTS",
+      "description": "No frontend API client files exist for G09 routes. Directory frontend/src/api/ has 30 files but none for finalAssurance, delivery, or reports. The G09 routes (POST /final-assurance, GET /approvals/G13, POST /decisions/G13, POST /delivery-candidate, GET /approvals/G14, POST /decisions/G14, POST /reports, GET /approvals/G15, POST /decisions/G15) are not callable from the frontend.",
+      "fix": "Create frontend/src/api/finalAssurance.ts, frontend/src/api/delivery.ts, and frontend/src/api/reports.ts with typed API client functions for all 9 G09 routes, following the pattern of g02.ts or baseline.ts.",
+      "missing_frontend_api_clients": true
+    },
+    {
+      "id": "F003",
+      "file": "frontend/src/types/generated/api.ts",
+      "line": 0,
+      "severity": "BLOCKER",
+      "category": "FRONTEND_TYPES",
+      "description": "No G09-specific TypeScript types exist in the frontend. Types like FinalAssuranceResponse, DeliveryResponse, ReportResponse, G13DecisionRequest, G14DecisionRequest, G15DecisionRequest, G13ApprovalPackage, G14ApprovalPackage, G15ApprovalPackage are absent. The existing DeliveryManifestDto and DeliveryStatus are legacy DTOs unrelated to the new G14 gate.",
+      "fix": "Add TypeScript types for all G09 API contracts: FinalAssuranceResponse, FinalAssuranceRequest, G13DecisionRequest, DeliveryResponse, DeliveryRequest, G14DecisionRequest, ReportResponse, ReportRequest, G15DecisionRequest to frontend/src/types/generated/api.ts.",
+      "missing_frontend_types": true
+    },
+    {
+      "id": "F004",
+      "file": "frontend/src/components/ReportPanel.tsx",
+      "line": 4,
+      "severity": "BLOCKER",
+      "category": "FRONTEND_COMPONENT_STUB",
+      "description": "ReportPanel.tsx is a 5-line placeholder stub: it says 'Mock report and diff viewers are scheduled for AMF-S0-15.' No G13 FinalAssurancePanel, G14 DeliveryPanel, or G15 proper ReportPanel implementations exist. G09 has zero frontend feature surface.",
+      "fix": "Implement FinalAssurancePanel.tsx, DeliveryPanel.tsx, and a functional ReportPanel.tsx with loading, empty, running, success, blocked, stale, error states referencing the new API client functions.",
+      "frontend_component_missing": true
+    },
+    {
+      "id": "F005",
+      "file": "frontend/vitest.config.ts",
+      "line": 1,
+      "severity": "BLOCKER",
+      "category": "FRONTEND_TEST_INFRASTRUCTURE",
+      "description": "Frontend vitest is completely broken. Module 'vitest/config' and '@vitejs/plugin-react' are not resolvable from npx. Cannot run any frontend tests. The package.json has 'test': 'vitest run' but dependencies are not installed or node_modules is missing.",
+      "fix": "Run npm install (or pnpm install) to restore dependencies, or update vitest.config.ts to resolve correct module paths.",
+      "vitest_broken": true
+    },
+    {
+      "id": "F006",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 143,
+      "severity": "CRITICAL",
+      "category": "EVENT_MISCLASSIFICATION",
+      "description": "G13_MODIFICATION_REQUESTED decision is mapped to G13_REJECTED event instead of G13_MODIFICATION_REQUESTED. Lines 143-149: if decision is MODIFICATION_REQUESTED, event_type is set to G13_REJECTED because only APPROVED/APPROVED_WITH_COMMENT are checked. Same issue exists in g14 (delivery_application_service.py line 97) and g15 (report_application_service.py line 127).",
+      "fix": "Add G13_MODIFICATION_REQUESTED, G14_MODIFICATION_REQUESTED, G15_MODIFICATION_REQUESTED as distinct event_type values in the ternary. Currently only APPROVED/APPROVED_WITH_COMMENT maps to *_APPROVED; everything else (including MODIFICATION_REQUESTED) maps to *_REJECTED.",
+      "event_misclassification": true
+    },
+    {
+      "id": "F007",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 85,
+      "severity": "CRITICAL",
+      "category": "AUTHENTICATION",
+      "description": "G09 routes use a trivial authentication mechanism. The `authenticated_actor` dependency (authentication.py line 6) defaults to 'local-operator' when no X-Authenticated-Actor header is set. None of the G09 routes actually use this dependency -- the routes use service.get_service() which instantiates services directly with no auth checks. Any unauthenticated request can access all G13/G14/G15 endpoints.",
+      "fix": "Add Depends(authenticated_actor) to all G09 route handlers. Validate actor authorization against the run's access control policy.",
+      "auth_missing": true
+    },
+    {
+      "id": "F008",
+      "file": "backend/app/services/delivery_application_service.py",
+      "line": 92,
+      "severity": "CRITICAL",
+      "category": "STALE_DETECTION_INCONSISTENCY",
+      "description": "Delivery decide() method (line 92) sets `destination = getattr(request, 'destination', None) or 'migrated-app'` when auto-creating a candidate during decision. This silently uses a default destination instead of failing when destination is missing. Also the _create_candidate uses a hardcoded comment 'looks good' pattern but actually this is the G14ApprovalService comment.",
+      "fix": "Require destination in G14DecisionRequest or explicitly reject decisions without a pre-created delivery candidate.",
+      "auto_create_fallback": true
+    },
+    {
+      "id": "F009",
+      "file": "backend/app/services/delivery_application_service.py",
+      "line": 117,
+      "severity": "CRITICAL",
+      "category": "SUPERSET_ISSUE",
+      "description": "Delivery _create_candidate method writes artifacts using uuid4().hex[:8] in path prefix (`delivery/{uuid4().hex[:8]}/{name}`) which means artifact paths are non-deterministic and non-reproducible. While content is checksummed, the path changes on every invocation making it harder to locate specific evidence.",
+      "fix": "Use a deterministic path component (e.g., based on candidate_fingerprint hex prefix) instead of a random uuid for artifact paths.",
+      "non_deterministic_path": true
+    },
+    {
+      "id": "F010",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 254,
+      "severity": "CRITICAL",
+      "category": "PATH_TRAVERSAL_RISK",
+      "description": "LocalFilesystemArtifactStore is used with Path(run.artifact_root) without explicit sanitization of run.artifact_root. If artifact_root is attacker-controlled or contains path traversal sequences, it could read/write outside the intended root. The store's write_text_artifact and read_artifact_by_id methods do resolve paths relative to the root, but if artifact_root itself is malicious (e.g., '/etc/../tmp') the confinement is bypassed.",
+      "fix": "Use Path.resolve() and os.path.realpath() on artifact_root before constructing the store. Validate the resolved path is under the expected root directory.",
+      "path_traversal": true
+    },
+    {
+      "id": "F011",
+      "file": "backend/app/delivery/services.py",
+      "line": 58,
+      "severity": "CRITICAL",
+      "category": "SYMLINK_TRAVERSAL",
+      "description": "DeliveryService.publish_mock_delivery() uses shutil.copytree(workspace_repository, temp_path) and os.replace(temp_path, final_path) without resolving symlinks first. If workspace_repository contains symlinks pointing outside the workspace tree, copytree will follow them and copy external content into the delivery output.",
+      "fix": "Use shutil.copytree with symlinks='follow' or perform a symlink audit before delivery. Ensure copytree does not leak files from outside the workspace.",
+      "symlink_traversal": true
+    },
+    {
+      "id": "F012",
+      "file": "frontend/src/components/ReportPanel.tsx",
+      "line": 4,
+      "severity": "CRITICAL",
+      "category": "ACCESSIBILITY",
+      "description": "ReportPanel has zero accessibility attributes: no aria-label, no aria-labelledby, no role, no keyboard event handlers. Compare this with G01ReviewPanel, AnalysisReviewPanel, and other panels that use aria-labelledby, aria-label, role='status', role='tablist', etc.",
+      "fix": "Add aria-labelledby to the section element, proper heading hierarchy, and ensure all interactive elements are keyboard-accessible. Follow the pattern established by existing panels like FeasibilityPanel or G02ReviewPanel.",
+      "accessibility_missing": true
+    },
+    {
+      "id": "F013",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 303,
+      "severity": "MAJOR",
+      "category": "PERFORMANCE",
+      "description": "_revalidate_record in all three services (G13: line 303, G14: line 168, G15: line 273) reads and re-decodes every artifact from disk to verify checksums. This is O(n) I/O on every GET request. For large runs with hundreds of artifacts this will be extremely slow.",
+      "fix": "Consider caching artifact checksums, using a lazy verification that only checks the metadata DB checksum instead of full disk re-read, or adding a staleness timestamp with TTL.",
+      "revalidation_overhead": true
+    },
+    {
+      "id": "F014",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 356,
+      "severity": "MAJOR",
+      "category": "STALE_IDEMPOTENCY_COLLISION",
+      "description": "_mark_stale methods in all three services (G13: line 362, G14: line 196, G15: line 313) construct idempotency_key as f'g13-stale-{record.id}' (or g14/g15 respectively). If a record is marked stale, then un-staled (which doesn't happen currently), then re-staled, the idempotency_key would collide with the first stale marking causing an idempotent replay. More critically, if two concurrent requests both detect staleness, the SECOND apply_transition will find the key from the first and return stale state without emitting a second event.",
+      "fix": "Include a counter or timestamp in the stale idempotency_key: f'g13-stale-{record.id}-{datetime.now(UTC).isoformat()}'",
+      "stale_idempotency_collision": true
+    },
+    {
+      "id": "F015",
+      "file": "backend/app/services/report_application_service.py",
+      "line": 232,
+      "severity": "MAJOR",
+      "category": "EXTRA_EVENT",
+      "description": "Report generation emits 3 events: REPORT_GENERATION_STARTED, REPORT_GENERATION_COMPLETED, AND G15_CREATED. Per the contract, the expected events are REPORT_GENERATION_STARTED/READY/FAILED (see ACCEPTANCE.md line 68). There's no 'REPORT_GENERATION_READY' event — COMPLETED is used instead, which may not match the documented event contract.",
+      "fix": "Either add REPORT_GENERATION_READY to the WorkflowEventType enum and emit it, or update the contract documentation to reflect REPORT_GENERATION_COMPLETED.",
+      "event_name_mismatch": true
+    },
+    {
+      "id": "F016",
+      "file": "backend/app/domain/final_assurance.py",
+      "line": 103,
+      "severity": "MAJOR",
+      "category": "DOMAIN_RULE",
+      "description": "G13ApprovalService.decide() does not validate the state_version, gate_version, actor, or run_id against any policy. Any caller can approve any package regardless of its content. The service should verify that the package state_version matches a known valid state before accepting the decision.",
+      "fix": "Add state version validation to the decide method: verify the package state_version is within an acceptable range or matches the current run state_version.",
+      "domain_validation_gap": true
+    },
+    {
+      "id": "F017",
+      "file": "backend/app/domain/final_assurance.py",
+      "line": 118,
+      "severity": "MAJOR",
+      "category": "TYPE_SIGNATURE",
+      "description": "_artifact_set_checksum functions in final_assurance (line 118), delivery (line 116), and report (line 116) have inconsistent parameter types. G13 and G15 accept list[ArtifactRefDto] | tuple, while G14 accepts only tuple[ArtifactRefDto, ...]. This is a minor API inconsistency.",
+      "fix": "Harmonize all three functions to accept both list and tuple (same as G13/G15 version) for consistency.",
+      "type_inconsistency": true
+    },
+    {
+      "id": "F018",
+      "file": "backend/app/repositories/final_assurance_models.py",
+      "line": 29,
+      "severity": "MAJOR",
+      "category": "DB_SCHEMA",
+      "description": "FinalAssuranceRecordModel has artifact_ids but no published_fingerprint column (present in DeliveryRecordModel). DeliveryRecordModel has destination and published_fingerprint columns not present in FinalAssuranceRecordModel. The `FinalAssurance` model also lacks a `narrative_generated` flag that ReportRecordModel has. These differences are intentional per domain but should be documented.",
+      "fix": "Verify the schema differences are intentional and document them. Add a comment in each model explaining the domain-specific columns.",
+      "schema_documentation_gap": true
+    },
+    {
+      "id": "F019",
+      "file": "backend/alembic/versions/20260719_09_final_assurance_delivery_report.py",
+      "line": 7,
+      "severity": "MAJOR",
+      "category": "MIGRATION_CHAIN",
+      "description": "Migration 20260719_09 has down_revision='20260719_06' but the migrations listed in the versions directory go up to some later number. The chain from 06 to 09 jumps over 20260719_07 and _08. If those revisions don't exist or are skipped, this migration could break when upgrading from a clean database.",
+      "fix": "Verify the complete migration chain exists and test upgrade/downgrade from the earliest revision.",
+      "migration_chain_gap": true
+    },
+    {
+      "id": "F020",
+      "file": "backend/tests/test_g09_api.py",
+      "line": 105,
+      "severity": "MAJOR",
+      "category": "TEST_QUALITY",
+      "description": "API integration tests use overly permissive assertions like `assert response.status_code in (201, 409, 500)` (line 105) and `assert resp.status_code in (200, 201, 404, 409)` (line 233). This allows the tests to pass even when the endpoint returns 500 internal server errors or unexpected 404s. The tests do not validate response body structure, event emissions, or state changes.",
+      "fix": "Tighten assertions to expect specific status codes per test case. Add response body shape validation, event emission checks, and state version verification.",
+      "permissive_test_assertions": true
+    },
+    {
+      "id": "F021",
+      "file": "backend/tests/test_g09_api.py",
+      "line": 94,
+      "severity": "MAJOR",
+      "category": "TEST_COVERAGE",
+      "description": "API test test_initialize_and_get (line 94) expects status code 201, 409, or 500. The 201 success path may actually fail silently because the test fixture sets artifact_root='/tmp/artifacts' which likely doesn't exist on the system. The LocalFilesystemArtifactStore will fail trying to write artifacts to a non-existent directory, resulting in 500. But the test accepts 500 as pass.",
+      "fix": "Create the artifact_root directory in the test fixture or use tempfile.mkdtemp(). Assert specific expected status codes.",
+      "test_silent_failure": true
+    },
+    {
+      "id": "F022",
+      "file": "backend/tests/test_g09_domain.py",
+      "line": 124,
+      "severity": "MAJOR",
+      "category": "TEST_COVERAGE",
+      "description": "Domain tests have no test for G13 MODIFICATION_REQUESTED decision, no test for stale result from G13ApprovalService, no test for G14 rejected decision, and no edge case coverage for empty artifacts list, extremely long comments, or unicode paths in ArtifactRefDto.",
+      "fix": "Add tests for: MODIFICATION_REQUESTED decision path, stale result handling, empty artifact list, malformed checksums, and boundary values on fields (max-length comments, unicode paths).",
+      "missing_domain_test_coverage": true
+    },
+    {
+      "id": "F023",
+      "file": "backend/tests/test_workspace_delivery.py",
+      "line": 41,
+      "severity": "MAJOR",
+      "category": "TEST_FAILURE",
+      "description": "test_fixture_manifest_snapshot_workspace_and_delivery_flow FAILS with an OSError when trying to write to the workspace repository path. The WorkspaceService.create_workspace_from_snapshot apparently doesn't actually create the workspace directory, causing the test to fail at line 41 (workspace.repository_path / 'MIGRATED.md').write_text.",
+      "fix": "Investigate why WorkspaceService.create_workspace_from_snapshot doesn't create the file tree. Either fix the service or adjust the test expectations.",
+      "test_failure": true
+    },
+    {
+      "id": "F024",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 67,
+      "severity": "MINOR",
+      "category": "ERROR_MESSAGE",
+      "description": "Error messages returned to the client include human-readable text like 'The run state version is stale.' and 'G13 evidence or run assurance status is stale.' These could leak internal state information. Consider using opaque error codes with localized messages.",
+      "fix": "Change error detail to stable error codes only (e.g., {'error_code': 'STALE_STATE_VERSION'}) and keep human-readable messages in server logs only.",
+      "error_info_leakage": true
+    },
+    {
+      "id": "F025",
+      "file": "backend/app/delivery/services.py",
+      "line": 40,
+      "severity": "MINOR",
+      "category": "SECURITY",
+      "description": "DeliveryService does not validate or sanitize the destination path. The destination parameter in DeliveryRequest (delivery_contracts.py line 24, Field(min_length=1)) is just a string with no path traversal validation. Although current usage passes 'migrated-app' fixed, this could be exploited if destination is ever user-controlled.",
+      "fix": "Add path validation: ensure destination does not contain '..', start with '/', or match system directories. Use allowlist of known safe destinations.",
+      "destination_path_santization": true
+    },
+    {
+      "id": "F026",
+      "file": "frontend/src/components/ReportPanel.tsx",
+      "line": 4,
+      "severity": "MINOR",
+      "category": "FRONTEND_TEST_COVERAGE",
+      "description": "No frontend component tests exist for G09. The __tests__ directory has tests for AnalysisReviewPanel, ArtifactViewers, BaselineInstallationPanel, BaselineParityPanel, etc. but nothing for ReportPanel or any G09 component (because none exist).",
+      "fix": "Create component tests once ReportPanel, FinalAssurancePanel, and DeliveryPanel are implemented. Start with snapshot tests and accessibility checks.",
+      "no_component_tests": true
+    },
+    {
+      "id": "F027",
+      "file": "docs/capabilities/09-assurance-delivery-report/AS_BUILT.md",
+      "line": 103,
+      "severity": "MINOR",
+      "category": "DOCUMENTATION",
+      "description": "AS_BUILT.md documents 'Limitations' correctly noting 'Frontend pages require separate implementation' but does not document the missing frontend API client functions or types. The doc also doesn't note that the tests are overly permissive.",
+      "fix": "Update AS_BUILT.md Limitations section to reflect the missing frontend API clients, types, and permissive test assertions.",
+      "doc_gap": true
+    },
+    {
+      "id": "F028",
+      "file": "docs/capabilities/09-assurance-delivery-report/AS_BUILT.md",
+      "line": 55,
+      "severity": "MINOR",
+      "category": "DOCUMENTATION",
+      "description": "AS_BUILT.md line 57 documents G13_MODIFICATION_REQUESTED event type, but the application service never actually emits it (see F006). The documentation lists events that don't fire.",
+      "fix": "Either fix the event emission to include MODIFICATION_REQUESTED events, or update AS_BUILT.md to reflect that MODIFICATION_REQUESTED maps to REJECTED at the event level.",
+      "doc_event_mismatch": true
+    },
+    {
+      "id": "F029",
+      "file": "backend/app/services/final_assurance_application_service.py",
+      "line": 377,
+      "severity": "OBSERVATION",
+      "category": "IMPORT_LOCATION",
+      "description": "_find_event uses a lazy import (from app.repositories.models import WorkflowEventModel) inside the method rather than at the module top level. This is an unusual pattern that could be optimized.",
+      "fix": "Move the import to module level for clarity and minor performance improvement.",
+      "lazy_import": true
+    },
+    {
+      "id": "F030",
+      "file": "backend/app/domain/contracts.py",
+      "line": 358,
+      "severity": "OBSERVATION",
+      "category": "EVENT_CONTRACT",
+      "description": "The backend G09 event types are well-defined (lines 358-386) with expected events for all three gates. However, the application services only emit a subset of these. Specifically: G13_MODIFICATION_REQUESTED, G14_MODIFICATION_REQUESTED, G15_MODIFICATION_REQUESTED are defined but never emitted. Also, FINAL_ASSURANCE_STEP_COMPLETED, FINAL_ASSURANCE_COMPLETED, FINAL_ASSURANCE_FAILED, DELIVERY_CANDIDATE_FAILED, REPORT_GENERATION_FAILED are defined but currently unused.",
+      "fix": "Either implement the missing event emissions for completeness, or document the intentionally unused event types as reserved for future use.",
+      "unused_events": true
+    }
+  ]
+}

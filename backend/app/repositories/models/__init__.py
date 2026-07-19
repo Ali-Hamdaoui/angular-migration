@@ -59,6 +59,9 @@ from app.repositories.planning_review_models import (
     PlanRevisionModel,
     PlanningReviewModel,
 )
+from app.repositories.final_assurance_models import FinalAssuranceRecordModel
+from app.repositories.delivery_models import DeliveryRecordModel
+from app.repositories.report_models import ReportRecordModel
 
 __all__ = [
     "AnalysisMetadataModel",
@@ -112,4 +115,7 @@ __all__ = [
     "PreflightEventModel",
     "PreflightModel",
     "UserDecisionModel",
+    "FinalAssuranceRecordModel",
+    "DeliveryRecordModel",
+    "ReportRecordModel",
 ]

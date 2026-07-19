@@ -140,13 +140,16 @@ class FinalAssuranceApplicationService:
                 return self._dto(record)
             package = G13ApprovalPackage.model_validate(record.package)
             result: G13ApprovalResult = G13ApprovalService().decide(package, request.decision, comment=request.comment)
-            event_type = (
-                WorkflowEventType.G13_APPROVED
-                if result.decision in {G13Decision.APPROVED, G13Decision.APPROVED_WITH_COMMENT}
-                else WorkflowEventType.G13_REJECTED
-            )
             if result.stale:
                 event_type = WorkflowEventType.G13_STALE
+            elif result.decision == G13Decision.APPROVED_WITH_COMMENT:
+                event_type = WorkflowEventType.G13_APPROVED
+            elif result.decision == G13Decision.APPROVED:
+                event_type = WorkflowEventType.G13_APPROVED
+            elif result.decision == G13Decision.MODIFICATION_REQUESTED:
+                event_type = WorkflowEventType.G13_MODIFICATION_REQUESTED
+            else:
+                event_type = WorkflowEventType.G13_REJECTED
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id, expected_state_version=run.state_version,
