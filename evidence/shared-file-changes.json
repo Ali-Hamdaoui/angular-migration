@@ -1,0 +1,16 @@
+{
+  "goal": "G07",
+  "shared_files_changed": [
+    {
+      "file": "backend/app/api/router.py",
+      "change": "Registered patches_router for G07 routes",
+      "type": "registration"
+    },
+    {
+      "file": "backend/app/domain/contracts.py",
+      "change": "Added G07 event types (REPAIR_APPLY_*, PATCH_PREFLIGHT_*, REPAIR_VALIDATION_*, G11_*, DUPLICATE_PATCH_*, NO_PROGRESS_*, REPAIR_ROLLED_BACK, STAGE_RECONSTRUCTED, ATTEMPT_LIMIT_REACHED)",
+      "type": "contract_extension"
+    }
+  ],
+  "integration_notes": "G07 is a leaf goal with no downstream goals consuming its direct output. The patch_apply_ledger.schema.json contract is provided for integration testing."
+}

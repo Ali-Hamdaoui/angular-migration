@@ -25,6 +25,8 @@ from app.api.routes.analysis import router as analysis_router
 from app.api.routes.compatibility import router as compatibility_router
 from app.api.routes.plans import router as plans_router
 from app.api.routes.planning_review import router as planning_review_router
+# G07 — Patch validation loop routes
+from app.api.routes.patches import router as patches_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -53,6 +55,8 @@ api_router.include_router(discovery_router)
 api_router.include_router(parity_baseline_router)
 api_router.include_router(analysis_router)
 api_router.include_router(draft_approval_router)
+# G07 — Patch validation loop routes
+api_router.include_router(patches_router)
 
 # Versioned production surface; legacy unversioned paths remain compatibility aliases.
 api_v1_router.include_router(health_router)
@@ -80,4 +84,6 @@ api_v1_router.include_router(baseline_matrix_router)
 api_v1_router.include_router(discovery_router)
 api_v1_router.include_router(parity_baseline_router)
 api_v1_router.include_router(analysis_router)
+# G07 — Patch validation loop routes
+api_v1_router.include_router(patches_router)
 api_router.include_router(api_v1_router)

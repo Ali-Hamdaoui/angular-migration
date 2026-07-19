@@ -1,0 +1,531 @@
+.panel {
+  margin-top: 1.5rem;
+  padding: 1.25rem;
+  border: 1px solid #2b4770;
+  border-radius: 0.75rem;
+  background: rgba(12, 28, 51, 0.82);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: #88b8ff;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.7rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.chainMeta {
+  margin: 0.25rem 0 0;
+  color: #9db2d2;
+  font-size: 0.78rem;
+}
+
+.chainMeta strong {
+  color: #b8c9e6;
+}
+
+/* ---- Status bar ---- */
+
+.statusBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1rem;
+  padding: 0.7rem 1rem;
+  border-radius: 0.45rem;
+  font-weight: 600;
+  gap: 0.75rem;
+}
+
+.statusRunning {
+  composes: statusBar;
+  background: #123d32;
+  color: #8ff0c3;
+}
+
+.statusSuccess {
+  composes: statusBar;
+  background: #123d32;
+  color: #8ff0c3;
+}
+
+.statusBlocked {
+  composes: statusBar;
+  background: #4d1d25;
+  color: #ffb2ad;
+}
+
+.statusStale {
+  composes: statusBar;
+  background: #493816;
+  color: #ffd78a;
+}
+
+.statusFailure {
+  composes: statusBar;
+  background: #4d1d25;
+  color: #ffb2ad;
+}
+
+.statusIdle {
+  composes: statusBar;
+  background: #1e2d47;
+  color: #9db2d2;
+}
+
+.statusEmpty {
+  composes: statusBar;
+  background: #1e2d47;
+  color: #88b8ff;
+}
+
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #8ff0c3;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Sections ---- */
+
+.section {
+  margin-top: 1.25rem;
+}
+
+.sectionTitle {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+  color: #88b8ff;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ---- Attempt table ---- */
+
+.tableWrap {
+  overflow-x: auto;
+  margin-top: 0.5rem;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.table th {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #294262;
+  color: #88b8ff;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid #1e2d47;
+  color: #b8c9e6;
+}
+
+.table tbody tr:hover td {
+  background: rgba(90, 140, 255, 0.07);
+}
+
+.attemptNum {
+  font-weight: 700;
+  color: #e4edff;
+  text-align: center;
+}
+
+.outcomePill {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.outcomeSuccess {
+  composes: outcomePill;
+  background: rgba(143, 240, 195, 0.18);
+  color: #8ff0c3;
+}
+
+.outcomeFailure {
+  composes: outcomePill;
+  background: rgba(255, 178, 173, 0.18);
+  color: #ffb2ad;
+}
+
+.outcomeSkipped {
+  composes: outcomePill;
+  background: rgba(136, 184, 255, 0.15);
+  color: #88b8ff;
+}
+
+.outcomeRunning {
+  composes: outcomePill;
+  background: rgba(143, 240, 195, 0.12);
+  color: #8ff0c3;
+  position: relative;
+  padding-left: 1.2rem;
+}
+
+.outcomeRunning::before {
+  content: "";
+  position: absolute;
+  left: 0.35rem;
+  top: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: -0.25rem;
+  border: 2px solid #8ff0c3;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.outcomeUnknown {
+  composes: outcomePill;
+  background: rgba(157, 178, 210, 0.12);
+  color: #9db2d2;
+}
+
+.fingerprint {
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.75rem;
+  color: #7a96b8;
+  word-break: break-all;
+}
+
+.emptyFingerprint {
+  composes: fingerprint;
+  color: #4a6380;
+  font-style: italic;
+}
+
+/* ---- No-progress detection ---- */
+
+.noProgressBlock {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #6b4f20;
+  border-radius: 0.45rem;
+  background: rgba(73, 56, 22, 0.35);
+}
+
+.noProgressReason {
+  margin: 0;
+  color: #ffd78a;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.noProgressDetail {
+  margin: 0.35rem 0 0;
+  color: #c9b07a;
+  font-size: 0.8rem;
+}
+
+.noProgressList {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.noProgressList li {
+  position: relative;
+  padding: 0.2rem 0 0.2rem 1.2rem;
+  color: #c9b07a;
+  font-size: 0.8rem;
+}
+
+.noProgressList li::before {
+  content: "⚠";
+  position: absolute;
+  left: 0;
+  color: #ffd78a;
+}
+
+/* ---- Diagnostic hold ---- */
+
+.holdBanner {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #8f3a3a;
+  border-radius: 0.45rem;
+  background: rgba(77, 29, 37, 0.5);
+}
+
+.holdTitle {
+  margin: 0;
+  color: #ffb2ad;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.holdReason {
+  margin: 0.35rem 0 0;
+  color: #ffb2ad;
+  font-size: 0.85rem;
+}
+
+.holdStats {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: #d49c9c;
+}
+
+.holdStats li {
+  padding: 0.15rem 0;
+}
+
+/* ---- Recovery actions ---- */
+
+.recoveryActions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.recoveryButton {
+  border: 0;
+  border-radius: 0.45rem;
+  padding: 0.55rem 1rem;
+  font-weight: 700;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.recoveryButton:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.recoveryRollback {
+  composes: recoveryButton;
+  background: #6b3a3a;
+  color: #ffb2ad;
+}
+
+.recoveryRollback:hover:not(:disabled) {
+  background: #8a4a4a;
+}
+
+.recoveryReconstruct {
+  composes: recoveryButton;
+  background: #3a5a6b;
+  color: #8fe0ff;
+}
+
+.recoveryReconstruct:hover:not(:disabled) {
+  background: #4a7a8a;
+}
+
+.recoveryDefault {
+  composes: recoveryButton;
+  background: #5a8cff;
+  color: #06101f;
+}
+
+.recoveryDefault:hover:not(:disabled) {
+  background: #7aa6ff;
+}
+
+.recoveryResult {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.recoveryOk {
+  composes: recoveryResult;
+  background: rgba(143, 240, 195, 0.12);
+  color: #8ff0c3;
+  border: 1px solid rgba(143, 240, 195, 0.25);
+}
+
+.recoveryError {
+  composes: recoveryResult;
+  background: rgba(255, 178, 173, 0.12);
+  color: #ffb2ad;
+  border: 1px solid rgba(255, 178, 173, 0.25);
+}
+
+/* ---- Artifact links ---- */
+
+.artifactLinks {
+  margin-top: 0.5rem;
+}
+
+.artifactLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  margin: 0.25rem 0.35rem 0.25rem 0;
+  border: 1px solid #294262;
+  border-radius: 0.35rem;
+  background: rgba(41, 66, 98, 0.3);
+  color: #88b8ff;
+  font-size: 0.78rem;
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.artifactLink:hover {
+  border-color: #5a8cff;
+  background: rgba(90, 140, 255, 0.12);
+}
+
+.artifactLinkDisabled {
+  composes: artifactLink;
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- Stale banner ---- */
+
+.staleBanner {
+  margin-top: 0.75rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid #6b4f20;
+  border-radius: 0.45rem;
+  background: rgba(73, 56, 22, 0.4);
+  color: #ffd78a;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.staleBanner button {
+  flex-shrink: 0;
+}
+
+/* ---- Reconnect / error banners ---- */
+
+.reconnectBanner {
+  margin-top: 0.75rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid #3a5a8a;
+  border-radius: 0.45rem;
+  background: rgba(58, 90, 138, 0.25);
+  color: #88b8ff;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.errorBanner {
+  margin-top: 0.75rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid #8f3a3a;
+  border-radius: 0.45rem;
+  background: rgba(77, 29, 37, 0.4);
+  color: #ffb2ad;
+  font-size: 0.8rem;
+}
+
+/* ---- Refresh button ---- */
+
+.refreshBtn {
+  border: 0;
+  border-radius: 0.45rem;
+  padding: 0.5rem 0.8rem;
+  background: #5a8cff;
+  color: #06101f;
+  font-weight: 700;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.refreshBtn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.refreshBtn:hover:not(:disabled) {
+  background: #7aa6ff;
+}
+
+.refreshSmall {
+  composes: refreshBtn;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.72rem;
+}
+
+/* ---- Empty state ---- */
+
+.emptyState {
+  margin-top: 1rem;
+  text-align: center;
+  padding: 2rem 1rem;
+  color: #7a96b8;
+  font-size: 0.85rem;
+}
+
+/* ---- Loading ---- */
+
+.loadingState {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem 1rem;
+  color: #88b8ff;
+  font-size: 0.85rem;
+}
+
+/* ---- Note / warning / error text ---- */
+
+.note {
+  color: #9db2d2;
+  font-size: 0.82rem;
+}
+
+.warning {
+  color: #ffd78a;
+}
+
+.errorText {
+  color: #ffb2ad;
+}

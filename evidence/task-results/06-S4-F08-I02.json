@@ -1,0 +1,16 @@
+{
+  "task_id": "06-S4-F08-I02",
+  "feature": "S4-F08",
+  "title": "Persist and expose evidence contracts for Run patch preflight, resume normal validation, and decide G11",
+  "status": "completed",
+  "files_changed": [
+    "backend/app/api/patch_contracts.py",
+    "backend/app/api/routes/patches.py",
+    "backend/app/domain/contracts.py"
+  ],
+  "tests": [],
+  "artifacts_events": ["PATCH_PREFLIGHT_COMPLETED", "REPAIR_VALIDATION_STARTED", "REPAIR_VALIDATION_COMPLETED", "REPAIR_VALIDATION_FAILED", "G11_CREATED", "G11_APPROVED", "G11_REJECTED", "G11_MODIFICATION_REQUESTED", "G11_STALE", "G11_EXPIRED"],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

@@ -1,0 +1,14 @@
+{
+  "task_id": "09-S4-F09-I01",
+  "feature": "S4-F09",
+  "title": "Implement backend application contract for Stop no-progress repair loops and reconstruct or roll back safely",
+  "status": "completed",
+  "files_changed": [
+    "backend/app/domain/repair_progress.py",
+    "backend/app/services/repair_progress_service.py"
+  ],
+  "tests": [],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

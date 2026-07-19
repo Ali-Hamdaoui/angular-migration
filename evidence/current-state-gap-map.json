@@ -1,0 +1,91 @@
+{
+  "schema_version": "3.0.0",
+  "goal_id": "G07",
+  "worktree": "/home/ubuntu/amfa-worktrees/07-patch-validation-loop",
+  "current_state": {
+    "branch": "hermes/07-patch-validation-loop",
+    "base_sha": "709495c",
+    "head_sha": ""
+  },
+  "gaps": [
+    {
+      "id": "G07-GAP-01",
+      "description": "Missing adversarial test coverage for path traversal, symlink escape, malformed diffs, CRLF handling, duplicate patches, stale approvals",
+      "status": "CLOSED",
+      "resolution": "Added 16+ adversarial tests in TestAdversarialPatchSecurity, plus 15+ adversarial tests for validation loop and progress detection across all three test files. All 176 tests pass."
+    },
+    {
+      "id": "G07-GAP-02",
+      "description": "Security: Windows absolute path (C:\\, D:\\) not blocked in FORBIDDEN_PATTERNS",
+      "status": "CLOSED",
+      "resolution": "Added r\"^[A-Za-z]:\" pattern to FORBIDDEN_PATTERNS. Added test_windows_absolute_path_rejected, test_windows_drive_letter_rejected."
+    },
+    {
+      "id": "G07-GAP-03",
+      "description": "Security: Windows ..\\..\\ traversal not blocked in FORBIDDEN_PATTERNS",
+      "status": "CLOSED",
+      "resolution": "Added r\"\\.\\.[\\\\/]\" pattern to FORBIDDEN_PATTERNS. Added symlink escape checks for backslash paths. Added test_windows_backslash_traversal_rejected."
+    },
+    {
+      "id": "G07-GAP-04",
+      "description": "Security: ^/ pattern in FORBIDDEN_PATTERNS was dead code — lstrip('/') removed leading / before checking",
+      "status": "CLOSED",
+      "resolution": "Restructured _check_path_confinement to check original path (before lstrip) first, then clean path. Now /etc/passwd and /etc/shadow are caught by ^/ pattern."
+    },
+    {
+      "id": "G07-GAP-05",
+      "description": "Bug: _check_line_endings never fired for mixed CRLF+LF content because has_lf_only was always False when CRLF present",
+      "status": "CLOSED",
+      "resolution": "Replaced with count-based logic: crlf_count > 0 and lf_only_count > 0 triggers the warning."
+    },
+    {
+      "id": "G07-GAP-06",
+      "description": "Security: parse_unified_diff had no null byte rejection — binary content could bypass safety checks",
+      "status": "CLOSED",
+      "resolution": "Added null byte check (\\x00) returning None from parse_unified_diff."
+    },
+    {
+      "id": "G07-GAP-07",
+      "description": "Security: Malformed @@ hunk headers (non-numeric ranges, missing second range, corrupt markers) could crash parser via int()",
+      "status": "CLOSED",
+      "resolution": "Wrapped @@ parsing in try/except (ValueError, IndexError). Added 'len(parts) >= 2' guard for missing ranges."
+    },
+    {
+      "id": "G07-GAP-08",
+      "description": "Ledger entry_checksum was not computed (defaulted to \"\")",
+      "status": "CLOSED",
+      "resolution": "Compute SHA-256 of serialized ledger fields in apply_patch. Verified by test_ledger_entry_checksum_is_computed."
+    },
+    {
+      "id": "G07-GAP-09",
+      "description": "Missing G11 TTL (time-based expiry) protection — approved gates never auto-expired",
+      "status": "CLOSED",
+      "resolution": "Added G11_GATE_TTL_SECONDS=86400 and TTL check in verify_gate_for_transition. Added test_verify_expired_gate_with_ttl_check."
+    },
+    {
+      "id": "G07-GAP-10",
+      "description": "G07 event types and route registration not present in contracts/router",
+      "status": "CLOSED",
+      "resolution": "Added G07 WorkflowEventType entries and patches_router registration."
+    }
+  ],
+  "planned_files": {
+    "backend/app/domain/patch.py": "Patch domain models and unified diff parser (fixed: null bytes, malformed @@ parsing)",
+    "backend/app/domain/repair_validation.py": "Repair validation, preflight and G11 domain models",
+    "backend/app/domain/repair_progress.py": "No-progress loop detection domain models",
+    "backend/app/domain/contracts.py": "Added G07 event types",
+    "backend/app/services/patch_apply_service.py": "PatchSafetyService and PatchApplyService (fixed: path confinement, line endings, entry checksum)",
+    "backend/app/services/repair_validation_service.py": "Preflight validator, G11 gate (added TTL), validation orchestrator",
+    "backend/app/services/repair_progress_service.py": "RepairProgressService with loop detection",
+    "backend/app/api/patch_contracts.py": "G07 API request/response models",
+    "backend/app/api/routes/patches.py": "G07 API routes for apply, validate, G11, chain recovery",
+    "backend/app/api/router.py": "Registered G07 routes",
+    "frontend/src/api/patches.ts": "Frontend API client for G07 endpoints",
+    "frontend/src/components/RepairApplyPanel.tsx": "Apply progress/results panel",
+    "frontend/src/components/RepairApplyPanel.module.css": "Apply panel styles",
+    "frontend/src/components/RepairValidationTimeline.tsx": "Repair validation timeline component",
+    "frontend/src/components/RepairValidationTimeline.module.css": "Validation timeline styles",
+    "frontend/src/components/RepairHistoryView.tsx": "Repair history view component",
+    "frontend/src/components/RepairHistoryView.module.css": "Repair history styles"
+  }
+}

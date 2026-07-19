@@ -1,0 +1,15 @@
+{
+  "task_id": "01-S4-F07-I01",
+  "feature": "S4-F07",
+  "title": "Implement backend application contract for Validate and apply only the exact persisted repair diff",
+  "status": "completed",
+  "files_changed": [
+    "backend/app/domain/patch.py",
+    "backend/app/services/patch_apply_service.py"
+  ],
+  "tests": [],
+  "artifacts_events": [],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

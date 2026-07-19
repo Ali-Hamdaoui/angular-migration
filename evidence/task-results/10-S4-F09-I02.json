@@ -1,0 +1,16 @@
+{
+  "task_id": "10-S4-F09-I02",
+  "feature": "S4-F09",
+  "title": "Persist and expose evidence contracts for Stop no-progress repair loops and reconstruct or roll back safely",
+  "status": "completed",
+  "files_changed": [
+    "backend/app/api/patch_contracts.py",
+    "backend/app/api/routes/patches.py",
+    "backend/app/domain/contracts.py"
+  ],
+  "tests": [],
+  "artifacts_events": ["DUPLICATE_PATCH_REJECTED", "NO_PROGRESS_DETECTED", "REPAIR_ROLLED_BACK", "STAGE_RECONSTRUCTED", "ATTEMPT_LIMIT_REACHED"],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

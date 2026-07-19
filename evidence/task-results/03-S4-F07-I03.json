@@ -1,0 +1,15 @@
+{
+  "task_id": "03-S4-F07-I03",
+  "feature": "S4-F07",
+  "title": "Build frontend experience for Validate and apply only the exact persisted repair diff",
+  "status": "completed",
+  "files_changed": [
+    "frontend/src/api/patches.ts",
+    "frontend/src/components/RepairApplyPanel.tsx",
+    "frontend/src/components/RepairApplyPanel.module.css"
+  ],
+  "tests": [],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

@@ -1,0 +1,14 @@
+{
+  "task_id": "07-S4-F08-I03",
+  "feature": "S4-F08",
+  "title": "Build frontend experience for Run patch preflight, resume normal validation, and decide G11",
+  "status": "completed",
+  "files_changed": [
+    "frontend/src/components/RepairValidationTimeline.tsx",
+    "frontend/src/components/RepairValidationTimeline.module.css"
+  ],
+  "tests": [],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

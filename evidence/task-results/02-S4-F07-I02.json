@@ -1,0 +1,18 @@
+{
+  "task_id": "02-S4-F07-I02",
+  "feature": "S4-F07",
+  "title": "Persist and expose evidence contracts for Validate and apply only the exact persisted repair diff",
+  "status": "completed",
+  "files_changed": [
+    "backend/app/api/patch_contracts.py",
+    "backend/app/api/routes/patches.py",
+    "backend/app/api/router.py",
+    "backend/app/domain/contracts.py",
+    "goals/shared/contracts/patch_apply_ledger.schema.json"
+  ],
+  "tests": [],
+  "artifacts_events": ["REPAIR_APPLY_STARTED", "REPAIR_APPLY_APPLIED", "REPAIR_APPLY_REJECTED_STALE", "REPAIR_APPLY_REJECTED_UNSAFE", "REPAIR_APPLY_FAILED"],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

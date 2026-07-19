@@ -1,0 +1,15 @@
+{
+  "task_id": "05-S4-F08-I01",
+  "feature": "S4-F08",
+  "title": "Implement backend application contract for Run patch preflight, resume normal validation, and decide G11",
+  "status": "completed",
+  "files_changed": [
+    "backend/app/domain/repair_validation.py",
+    "backend/app/services/repair_validation_service.py"
+  ],
+  "tests": [],
+  "artifacts_events": [],
+  "limitations": [],
+  "reviewer_verdict": "PASS",
+  "commit_sha": ""
+}

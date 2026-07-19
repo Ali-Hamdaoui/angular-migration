@@ -1,60 +1,24 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://amfa.local/contracts/patch_apply_ledger.schema.json",
-  "title": "patch_apply_ledger",
-  "description": "Exact backend patch apply result and fingerprint ledger.",
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "PatchApplyLedger",
+  "description": "Immutable ledger entry for an exact patch application in the AMFA repair pipeline.",
   "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "apply_id",
-    "proposal_id",
-    "diff_checksum",
-    "pre_fingerprint",
-    "post_fingerprint",
-    "status",
-    "changed_files"
-  ],
+  "required": ["entry_id", "patch_apply_id", "applied_at", "proposal_id", "run_id", "checksum_before", "checksum_after", "fingerprint_before", "fingerprint_after", "diff_reference", "state_version", "actor", "idempotency_key"],
   "properties": {
-    "apply_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "proposal_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "diff_checksum": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "pre_fingerprint": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "post_fingerprint": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "status": {
-      "enum": [
-        "applied",
-        "rejected_preflight",
-        "failed",
-        "rolled_back",
-        "reconstructed"
-      ]
-    },
-    "changed_files": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "artifact_refs": {
-      "type": "array",
-      "items": {
-        "$ref": "artifact_ref.schema.json"
-      }
-    }
-  }
+    "entry_id": {"type": "string", "description": "Unique ledger entry identifier"},
+    "patch_apply_id": {"type": "string", "description": "The patch apply operation identifier"},
+    "applied_at": {"type": "string", "format": "date-time", "description": "ISO 8601 timestamp of the apply operation"},
+    "proposal_id": {"type": "string", "description": "The repair proposal identifier"},
+    "run_id": {"type": "string", "description": "The migration run identifier"},
+    "checksum_before": {"type": "string", "description": "SHA-256 of the diff before apply"},
+    "checksum_after": {"type": "string", "description": "SHA-256 of the workspace after apply"},
+    "fingerprint_before": {"type": "string", "description": "Workspace fingerprint before apply"},
+    "fingerprint_after": {"type": "string", "description": "Workspace fingerprint after apply"},
+    "diff_reference": {"type": "string", "description": "Artifact reference to the exact applied diff"},
+    "state_version": {"type": "integer", "description": "The state version after this apply"},
+    "actor": {"type": "string", "description": "The actor who performed the operation"},
+    "idempotency_key": {"type": "string", "description": "Idempotency key for the operation"},
+    "entry_checksum": {"type": "string", "description": "Checksum of this ledger entry for immutability"}
+  },
+  "additionalProperties": false
 }

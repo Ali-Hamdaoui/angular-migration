@@ -1,0 +1,28 @@
+{
+  "goal": "G07",
+  "dependencies": ["G04", "G06"],
+  "status": {
+    "G04": {
+      "status": "available",
+      "location": "goal branch",
+      "contracts_consumed": ["stage_validation_summary.schema.json"]
+    },
+    "G06": {
+      "status": "available",
+      "location": "goal branch",
+      "contracts_consumed": ["repair_proposal.schema.json", "repair_review_decision.schema.json", "repair_g10_package.schema.json"]
+    }
+  },
+  "consumed_schemas": [
+    "goals/shared/contracts/repair_proposal.schema.json",
+    "goals/shared/contracts/repair_review_decision.schema.json",
+    "goals/shared/contracts/repair_g10_package.schema.json",
+    "goals/shared/contracts/stage_validation_summary.schema.json",
+    "goals/shared/contracts/artifact_ref.schema.json",
+    "goals/shared/contracts/durable_event_envelope.schema.json"
+  ],
+  "provided_schemas": [
+    "goals/shared/contracts/patch_apply_ledger.schema.json",
+    "goals/shared/contracts/stage_validation_summary.schema.json"
+  ]
+}
