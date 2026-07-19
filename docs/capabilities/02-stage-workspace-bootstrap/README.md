@@ -49,7 +49,7 @@ Pure domain models with no side effects:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/runs/{id}/stages/{stageId}/prepare` | Create stage and lock plan |
+| POST | `/runs/{id}/stages/prepare` | Create stage and lock plan (stage_key in body) |
 | POST | `/runs/{id}/stages/{stageId}/sandbox` | Create isolated sandbox |
 | GET | `/runs/{id}/approvals/G07?stage_id=` | Get G07 gate status |
 | POST | `/runs/{id}/approvals/G07/decisions` | Submit G07 decision |

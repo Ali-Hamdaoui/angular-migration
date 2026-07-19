@@ -1,4 +1,5 @@
 # Local configuration and Python runtime artifacts
+/.venv/
 backend/.env
 backend/.venv/
 backend/.pytest_cache/

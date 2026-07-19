@@ -195,6 +195,11 @@
   background: rgba(85, 167, 255, 0.06);
 }
 
+.tab:focus-visible {
+  outline: 2px solid #d2e4ff;
+  outline-offset: -2px;
+}
+
 .tabActive {
   color: #a1c9ff;
   background: rgba(85, 167, 255, 0.1);

@@ -106,8 +106,9 @@ export function prepareStage(
   request: StagePrepareRequest,
   client: ApiClient = apiClient,
 ): Promise<StagePrepareResponse> {
+  // Note: stage_key is in the request body; the backend route is /stages/prepare (no stage_id in URL)
   return client.post<StagePrepareResponse>(
-    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/prepare`,
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/prepare`,
     request,
   );
 }

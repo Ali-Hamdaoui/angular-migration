@@ -30,7 +30,7 @@ A reviewer can inspect the current stage input fingerprint, exact resolved plan/
 
     **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
-    **Expected database/API result:** Records described by `migration_stages, active stage plan, workspace/fingerprint records, gate decisions.` are retrievable through `POST /api/v1/runs/{id}/stages/{stageId}/prepare; POST /api/v1/runs/{id}/approvals/G07/decisions; POST /api/v1/runs/{id}/stages/{stageId}/sandbox` and include idempotency and correlation metadata where the operation is mutating.
+    **Expected database/API result:** Records described by `migration_stages, active stage plan, workspace/fingerprint records, gate decisions.` are retrievable through `POST /api/v1/runs/{id}/stages/prepare; POST /api/v1/runs/{id}/approvals/G07/decisions; POST /api/v1/runs/{id}/stages/{stageId}/sandbox` and include idempotency and correlation metadata where the operation is mutating.
 
     **Expected artifact:** Stage-start package, exact plan/profile, copy report, input manifest, input fingerprint, and sandbox verification.
 
