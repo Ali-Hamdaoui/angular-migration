@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.api.routes.failures import router as failures_router
 from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.preflights import draft_approval_router, router as preflights_router
 from app.api.routes.environment import router as environment_router
@@ -52,6 +53,7 @@ api_router.include_router(baseline_matrix_router)
 api_router.include_router(discovery_router)
 api_router.include_router(parity_baseline_router)
 api_router.include_router(analysis_router)
+api_router.include_router(failures_router)
 api_router.include_router(draft_approval_router)
 
 # Versioned production surface; legacy unversioned paths remain compatibility aliases.
@@ -80,4 +82,5 @@ api_v1_router.include_router(baseline_matrix_router)
 api_v1_router.include_router(discovery_router)
 api_v1_router.include_router(parity_baseline_router)
 api_v1_router.include_router(analysis_router)
+api_v1_router.include_router(failures_router)
 api_router.include_router(api_v1_router)

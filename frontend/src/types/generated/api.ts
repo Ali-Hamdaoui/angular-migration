@@ -18,7 +18,70 @@ export type AssuranceStatus = "passed" | "failed" | "conditional" | "manual_requ
 export type DeliveryStatus = "not_published" | "published" | "published_with_manual_items" | "blocked";
 export type ArtifactType = "json" | "yaml" | "markdown" | "text_log" | "command_log" | "patch" | "diff" | "report";
 export type CommandStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "REJECTED" | "TIMED_OUT" | "CANCELLED";
-export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED" | "SNAPSHOT_PROGRESS_UPDATED" | "SNAPSHOT_QUARANTINED" | "SOURCE_INTEGRITY_VERIFIED" | "SOURCE_INTEGRITY_FAILED" | "G02_CREATED" | "G02_APPROVED" | "G02_REJECTED" | "G02_STALE" | "ANALYSIS_AGENT_STARTED" | "ANALYSIS_AGENT_COMPLETED" | "ANALYSIS_AGENT_FAILED" | "ANALYSIS_REVIEWER_STARTED" | "ANALYSIS_REVIEWER_COMPLETED" | "ANALYSIS_REVIEWER_FAILED" | "G04_CREATED" | "G04_APPROVED" | "G04_MODIFICATION_REQUESTED" | "G04_REJECTED" | "G04_STALE" | "EXECUTION_PROFILE_RESOLUTION_STARTED" | "EXECUTION_PROFILE_RESOLVED" | "EXECUTION_PROFILE_BLOCKED" | "EXECUTION_PROFILE_SELECTED" | "COMMAND_QUEUED" | "COMMAND_STARTED" | "COMMAND_OUTPUT_AVAILABLE" | "COMMAND_OUTPUT_CHUNK" | "BASELINE_INSTALL_SUCCEEDED" | "BASELINE_INSTALL_FAILED" | "COMMAND_CANCELLED" | "COMMAND_INTERRUPTED" | "BASELINE_TARGETS_DISCOVERED" | "BASELINE_BUILD_STARTED" | "BASELINE_BUILD_COMPLETED" | "BASELINE_TESTS_STARTED" | "BASELINE_TESTS_COMPLETED" | "BASELINE_LINT_STARTED" | "BASELINE_LINT_COMPLETED";
+export type WorkflowEventType = "STATE_CONTRACT_MIGRATED" | "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION" | "run_state_changed" | "stage_state_changed" | "step_state_changed" | "component_state_changed" | "agent_state_changed" | "validation_gate_changed" | "artifact_created" | "approval_required" | "workflow_completed" | "RUN_CREATED" | "RUN_START_ACCEPTED" | "RUN_STARTED" | "RUN_START_REJECTED" | "RUN_RECONSTRUCTED" | "SNAPSHOT_STARTED" | "SNAPSHOT_CREATED" | "SNAPSHOT_FAILED" | "SNAPSHOT_PROGRESS_UPDATED" | "SNAPSHOT_QUARANTINED" | "SOURCE_INTEGRITY_VERIFIED" | "SOURCE_INTEGRITY_FAILED" | "G02_CREATED" | "G02_APPROVED" | "G02_REJECTED" | "G02_STALE" | "ANALYSIS_AGENT_STARTED" | "ANALYSIS_AGENT_COMPLETED" | "ANALYSIS_AGENT_FAILED" | "ANALYSIS_REVIEWER_STARTED" | "ANALYSIS_REVIEWER_COMPLETED" | "ANALYSIS_REVIEWER_FAILED" | "G04_CREATED" | "G04_APPROVED" | "G04_MODIFICATION_REQUESTED" | "G04_REJECTED" | "G04_STALE" | "EXECUTION_PROFILE_RESOLUTION_STARTED" | "EXECUTION_PROFILE_RESOLVED" | "EXECUTION_PROFILE_BLOCKED" | "EXECUTION_PROFILE_SELECTED" | "COMMAND_QUEUED" | "COMMAND_STARTED" | "COMMAND_OUTPUT_AVAILABLE" | "COMMAND_OUTPUT_CHUNK" | "BASELINE_INSTALL_SUCCEEDED" | "BASELINE_INSTALL_FAILED" | "COMMAND_CANCELLED" | "COMMAND_INTERRUPTED" | "BASELINE_TARGETS_DISCOVERED" | "BASELINE_BUILD_STARTED" | "BASELINE_BUILD_COMPLETED" | "BASELINE_TESTS_STARTED" | "BASELINE_TESTS_COMPLETED" | "BASELINE_LINT_STARTED" | "BASELINE_LINT_COMPLETED" | "FAILURE_CAPTURED" | "FAILURE_DIAGNOSTICS_PARSED" | "FAILURE_CLASSIFIED" | "ENVIRONMENT_ACTION_REQUIRED" | "EXTERNAL_RETRY_SCHEDULED" | "DIAGNOSTIC_HOLD_ENTERED" | "REPAIR_CONTEXT_CREATED" | "REPAIR_CONTEXT_BLOCKED";
+
+// G05 — Failure evidence, C-Lite routing, and repair context types
+export type FailureStatus = "finalized" | "invalid" | "stale";
+export type FailureOrigin = "pre_existing_unchanged" | "pre_existing_changed" | "migration_caused" | "resolved_pre_existing" | "unknown_origin";
+export type FailureRoute = "CODE_OR_CONFIG_REPAIR" | "DEPENDENCY_REPAIR" | "ENVIRONMENT_OR_USER_ACTION" | "RETRYABLE_EXTERNAL_FAILURE" | "UNKNOWN_DIAGNOSIS";
+export type DiagnosticParserType = "npm" | "angular_cli" | "typescript" | "template" | "test" | "generic";
+
+export interface FailureDiagnosticDto {
+  parser_type: DiagnosticParserType;
+  parser_confidence: number;
+  message: string;
+  code?: string;
+  file_path?: string;
+  line_number?: number;
+  column?: number;
+  severity?: string;
+  raw_excerpt?: string;
+  source_line?: string;
+}
+
+export interface RawLogArtifactDto {
+  artifact_id: string;
+  checksum: string;
+  content_type: string;
+}
+
+export interface FailureEvidenceDto {
+  failure_id: string;
+  run_id: string;
+  stage_id: string;
+  execution_id: string;
+  failure_fingerprint: string;
+  origin: FailureOrigin;
+  diagnostics: FailureDiagnosticDto[];
+  workspace_fingerprint: string;
+  status: FailureStatus;
+  raw_log_artifacts: RawLogArtifactDto[];
+  state_version: number;
+  created_at?: string;
+}
+
+export interface FailureRouteDto {
+  failure_id: string;
+  route: FailureRoute;
+  policy_version: string;
+  decision_checksum: string;
+  actions?: string[];
+  risk?: string;
+}
+
+export interface RepairContextPackDto {
+  context_pack_id: string;
+  failure_id: string;
+  stage_id: string;
+  repair_attempt: number;
+  workspace_fingerprint: string;
+  selection_policy_version: string;
+  sanitization_checksum: string;
+  content_checksum: string;
+  segments: object[];
+  token_budget?: number;
+  status: "finalized" | "insufficient" | "stale";
+}
 
 export type HealthResponse = { status: string };
 export type VersionResponse = { name: string; version: string; environment: string };
