@@ -50,6 +50,12 @@ describe("FeasibilityPanel", () => {
     expect(screen.getByText("G05 is blocked until the feasibility evidence is renewed.")).toBeInTheDocument();
   });
 
+  it("renders backend failure guidance with the correlation ID", async () => {
+    vi.mocked(getFeasibility).mockRejectedValue(new ApiClientError("failed", 503, "GET", "/feasibility", JSON.stringify({ correlation_id: "corr-failure" })));
+    render(<FeasibilityPanel {...props} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Correlation ID: corr-failure");
+  });
+
   it("requires a comment before approval with comment", async () => {
     vi.mocked(getFeasibility).mockResolvedValue(response);
     render(<FeasibilityPanel {...props} />);

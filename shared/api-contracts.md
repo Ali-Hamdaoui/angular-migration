@@ -166,3 +166,9 @@ Resolution and G05 transitions are persisted through the Transition Service and
 replayed as `COMPATIBILITY_RESOLUTION_*` and `G05_*` events. G05 decisions are
 append-only; stale bindings, tampered evidence, unauthorized actors, and
 idempotency payload reuse fail with stable error codes.
+
+Verification coverage for this contract is recorded in
+`docs/features/s2-f05/verification.md`. The I04 suite exercises malformed
+input, unauthorized/stale requests, blocked and pending G05 protection,
+idempotent replay, tampered package checksums, backend failure redaction, and
+the authoritative frontend failure/stale states.

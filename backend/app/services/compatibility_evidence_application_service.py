@@ -177,7 +177,9 @@ class CompatibilityEvidenceApplicationService:
         try:
             store = self._artifact_store_factory(run)
             package_id = gate.artifact_ids[-1]
-            if store.read_artifact_by_id(package_id).ref.checksum != gate.package_checksum:
+            stored = store.read_artifact_by_id(package_id)
+            content_checksum = "sha256:" + hashlib.sha256(stored.content.encode("utf-8")).hexdigest()
+            if stored.ref.checksum != gate.package_checksum or content_checksum != gate.package_checksum:
                 raise CompatibilityEvidenceError("G05_PACKAGE_INTEGRITY_FAILED", "The G05 package checksum no longer matches stored evidence.", 409)
         except CompatibilityEvidenceError:
             raise
