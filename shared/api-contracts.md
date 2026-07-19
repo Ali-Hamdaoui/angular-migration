@@ -142,3 +142,27 @@ and event sequence. Durable `ANALYSIS_AGENT_*`, `ANALYSIS_REVIEWER_*`, and
 `G04_*` events are replayed through the run SSE stream. A downstream protected
 transition must call the G04 guard and is rejected unless the latest approved
 gate still matches its package, workspace, plan, and state bindings.
+
+## S2-F05 Feasibility and G05
+
+The deterministic compatibility evidence surface is exposed under
+`/api/v1/runs/{run_id}`:
+
+- `POST /feasibility` accepts the observed state version, idempotency key,
+  source Angular version, catalogue and registry snapshot IDs/checksums,
+  registered prerequisite artifact IDs/checksums, and observed runtime
+  candidates.
+- `GET /feasibility` returns the persisted route, support classification,
+  exact Stage 1 profile, warnings/blockers, immutable artifact IDs/checksums,
+  and current G05 state.
+- `POST /approvals/G05/decisions` requires the current state/gate version,
+  finalized package checksum, artifact-set checksum, workspace/plan bindings,
+  decision, and idempotency key.
+
+The backend finalizes catalogue snapshot, route, support-level, registry
+snapshot, Stage 1 profile, and feasibility-package artifacts before recording
+`COMPATIBILITY_RESOLUTION_COMPLETED` or `COMPATIBILITY_RESOLUTION_BLOCKED`.
+Resolution and G05 transitions are persisted through the Transition Service and
+replayed as `COMPATIBILITY_RESOLUTION_*` and `G05_*` events. G05 decisions are
+append-only; stale bindings, tampered evidence, unauthorized actors, and
+idempotency payload reuse fail with stable error codes.

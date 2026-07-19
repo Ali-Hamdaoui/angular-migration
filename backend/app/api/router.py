@@ -22,6 +22,7 @@ from app.api.routes.runs import router as runs_router
 from app.api.routes.llm import router as llm_router
 from app.api.routes.parity_baseline import router as parity_baseline_router
 from app.api.routes.analysis import router as analysis_router
+from app.api.routes.compatibility import router as compatibility_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -32,6 +33,7 @@ api_router.include_router(version_router)
 api_router.include_router(runs_router)
 api_router.include_router(llm_router)
 api_router.include_router(snapshots_router)
+api_router.include_router(compatibility_router)
 api_router.include_router(g02_router)
 api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
@@ -56,6 +58,7 @@ api_v1_router.include_router(version_router)
 api_v1_router.include_router(runs_router)
 api_v1_router.include_router(llm_router)
 api_v1_router.include_router(snapshots_router)
+api_v1_router.include_router(compatibility_router)
 api_v1_router.include_router(g02_router)
 api_v1_router.include_router(migrations_router)
 api_v1_router.include_router(assistant_router)

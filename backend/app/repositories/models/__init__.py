@@ -41,10 +41,20 @@ from app.repositories.models.workflow import (
     WorkerLeaseModel,
 )
 from app.repositories.analysis_models import AnalysisMetadataModel, G04ApprovalModel
+from app.repositories.compatibility_models import (
+    CompatibilityCatalogueModel,
+    CompatibilityResolutionModel,
+    G05ApprovalModel,
+    RegistrySnapshotModel,
+)
 
 __all__ = [
     "AnalysisMetadataModel",
     "G04ApprovalModel",
+    "CompatibilityCatalogueModel",
+    "CompatibilityResolutionModel",
+    "RegistrySnapshotModel",
+    "G05ApprovalModel",
     'LlmInvocationModel',
     'UsageCostRecordModel',
     "AgentExecutionModel",

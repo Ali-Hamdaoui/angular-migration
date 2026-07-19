@@ -102,6 +102,8 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     source_angular_exact: str = Field(min_length=1)
     target_family: str = Field(default="angular-21.x", pattern=r"^angular-21\.x$")
     catalogue_version: str = Field(min_length=1)
+    registry_snapshot_id: str = Field(default="registry-snapshot-v1", min_length=1, max_length=128)
+    registry_snapshot_checksum: str = Field(default="sha256:" + "0" * 64, pattern=r"^sha256:[0-9a-f]{64}$")
     prerequisite_artifacts: tuple[CompatibilityArtifact, ...] = ()
     runtime_candidates: tuple[RuntimeCandidate, ...] = ()
     workspace_topology: str = Field(default="single_application_cli_workspace", min_length=1)
