@@ -418,6 +418,7 @@ class SourceSnapshotModel(Base):
 class ReconciliationRunModel(Base):
     """Records each reconciliation run and its results."""
     __tablename__ = "reconciliation_runs"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_reconciliation_runs_idempotency"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     backend_instance_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

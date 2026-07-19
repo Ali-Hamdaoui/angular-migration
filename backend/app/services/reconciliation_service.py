@@ -93,6 +93,30 @@ class StartupReconciliationService:
 
             errors: list[str] = []
 
+            # Track event sequence across all events for this run
+            _seq = [1]  # mutable counter
+            def _next_seq() -> int:
+                s = _seq[0]
+                _seq[0] = s + 1
+                return s
+
+            # Emit RECONCILIATION_STARTED event (use derived key to avoid conflict with COMPLETED)
+            start_event = WorkflowEventModel(
+                id=f"event-{uuid4().hex[:12]}",
+                run_id=run_id,
+                event_type=WorkflowEventType.RECONCILIATION_STARTED.value,
+                idempotency_key=f"{request.idempotency_key}:started",
+                actor=request.actor,
+                reason="startup reconciliation started",
+                sequence=_next_seq(),
+                payload={
+                    "backend_instance_id": backend_instance_id,
+                    "started_at": now.isoformat(),
+                },
+                occurred_at=now,
+            )
+            session.add(start_event)
+
             # 1. Detect stale leases
             stale_leases = self._find_stale_leases(session, now)
             for lease in stale_leases:
@@ -146,6 +170,44 @@ class StartupReconciliationService:
             rec.completed_at = self._now()
             rec.errors = errors
 
+            # Emit COMMAND_INTERRUPTED events for each interrupted command
+            for cmd in interrupted:
+                interrupt_event = WorkflowEventModel(
+                    id=f"event-{uuid4().hex[:12]}",
+                    run_id=cmd.run_id,
+                    event_type=WorkflowEventType.COMMAND_INTERRUPTED.value,
+                    idempotency_key=f"{request.idempotency_key}:interrupt:{cmd.id}",
+                    actor=request.actor,
+                    reason="interrupted command detected during reconciliation",
+                    sequence=_next_seq(),
+                    payload={
+                        "command_id": cmd.id,
+                        "executable": cmd.executable,
+                        "status_before": "RUNNING",
+                    },
+                    occurred_at=now,
+                )
+                session.add(interrupt_event)
+
+            # Emit ARTIFACT_INTEGRITY_FAILED events for each finding
+            for finding_data in mismatches:
+                integrity_event = WorkflowEventModel(
+                    id=f"event-{uuid4().hex[:12]}",
+                    run_id=run_id,
+                    event_type=WorkflowEventType.ARTIFACT_INTEGRITY_FAILED.value,
+                    idempotency_key=f"{request.idempotency_key}:integrity:{run_id}:{finding_data.get('artifact_id', 'unknown')}",
+                    actor=request.actor,
+                    reason=f"artifact integrity finding: {finding_data.get('finding_type')}",
+                    sequence=_next_seq(),
+                    payload={
+                        "finding_type": finding_data.get("finding_type"),
+                        "artifact_id": finding_data.get("artifact_id"),
+                        "run_id": finding_data.get("run_id"),
+                    },
+                    occurred_at=now,
+                )
+                session.add(integrity_event)
+
             # Emit durable event
             event = WorkflowEventModel(
                 id=f"event-{uuid4().hex[:12]}",
@@ -154,7 +216,7 @@ class StartupReconciliationService:
                 idempotency_key=request.idempotency_key,
                 actor=request.actor,
                 reason="startup reconciliation completed",
-                sequence=1,
+                sequence=_next_seq(),
                 payload={
                     "backend_instance_id": backend_instance_id,
                     "stale_leases": len(stale_leases),

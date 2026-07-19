@@ -100,6 +100,10 @@ class AssistantContextService:
             if run is None:
                 raise AssistantError("RUN_NOT_FOUND", "Migration run does not exist.")
 
+            # Verify state version — detect stale state
+            if request.expected_state_version is not None and run.state_version != request.expected_state_version:
+                raise AssistantError("STALE_STATE_VERSION", f"Expected state version {request.expected_state_version}, but run is at version {run.state_version}.")
+
             # Get or create conversation
             conv = session.scalar(
                 select(AssistantConversationModel).where(
@@ -126,17 +130,60 @@ class AssistantContextService:
             now = self._now()
             is_fallback = True  # Deterministic fallback for initial implementation
 
-            if is_fallback:
-                response = self._deterministic_response(state_context, request.message, request.suggested_questions)
-                input_tokens = 0
-                output_tokens = 0
-                cost_usd = 0.0
-            else:
-                # Real LLM path would go through the gateway here
-                response = "LLM gateway not configured; using fallback explanation."
-                input_tokens = 0
-                output_tokens = 0
-                cost_usd = 0.0
+            # Emit ASSISTANT_RESPONSE_STARTED event
+            latest_seq = session.scalar(
+                select(WorkflowEventModel.sequence)
+                .where(WorkflowEventModel.run_id == request.run_id)
+                .order_by(WorkflowEventModel.sequence.desc()).limit(1)
+            )
+            seq_start = (latest_seq or 0) + 1
+            start_event = WorkflowEventModel(
+                id=f"event-{uuid4().hex[:12]}",
+                run_id=request.run_id,
+                event_type=WorkflowEventType.ASSISTANT_RESPONSE_STARTED.value,
+                idempotency_key=f"{request.idempotency_key}:started",
+                actor=request.actor,
+                reason="assistant response started",
+                sequence=seq_start,
+                payload={"conversation_id": conv.id},
+                occurred_at=now,
+            )
+            session.add(start_event)
+            session.flush()
+
+            try:
+                if is_fallback:
+                    response = self._deterministic_response(state_context, request.message, request.suggested_questions)
+                    input_tokens = 0
+                    output_tokens = 0
+                    cost_usd = 0.0
+                else:
+                    # Real LLM path would go through the gateway here
+                    response = "LLM gateway not configured; using fallback explanation."
+                    input_tokens = 0
+                    output_tokens = 0
+                    cost_usd = 0.0
+            except Exception as exc:
+                # Emit ASSISTANT_RESPONSE_FAILED event
+                fail_seq = session.scalar(
+                    select(WorkflowEventModel.sequence)
+                    .where(WorkflowEventModel.run_id == request.run_id)
+                    .order_by(WorkflowEventModel.sequence.desc()).limit(1)
+                )
+                fail_event = WorkflowEventModel(
+                    id=f"event-{uuid4().hex[:12]}",
+                    run_id=request.run_id,
+                    event_type=WorkflowEventType.ASSISTANT_RESPONSE_FAILED.value,
+                    idempotency_key=request.idempotency_key,
+                    actor=request.actor,
+                    reason=f"assistant response failed: {exc}",
+                    sequence=(fail_seq or 0) + 1,
+                    payload={"conversation_id": conv.id, "error": str(exc)[:200]},
+                    occurred_at=self._now(),
+                )
+                session.add(fail_event)
+                session.flush()
+                raise AssistantError("ASSISTANT_FAILED", str(exc)) from exc
 
             # Persist message metadata (no hidden chain-of-thought)
             msg = AssistantMessageModel(
