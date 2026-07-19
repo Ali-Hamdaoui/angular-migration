@@ -16,6 +16,7 @@ from app.domain.transformation import (
     G08EvidencePackage,
     G08EvidencePackageBuilder,
     PackageChangeSummary,
+    RiskLevel,
     TargetVersionStatus,
     TargetVersionEvidence,
     TransformationEvidenceResult,
@@ -111,6 +112,30 @@ class TestChangedFileClassification:
             is_binary=True,
         )
         assert entry.classification == ChangedFileClassification.BINARY
+
+    def test_forbidden_cicd_file(self):
+        entry = ChangedFileEntry(
+            file_path=".github/workflows/ci.yml",
+            change_type="modified",
+            classification=ChangedFileClassification.FORBIDDEN,
+        )
+        assert entry.classification == ChangedFileClassification.FORBIDDEN
+
+    def test_forbidden_credential_file(self):
+        entry = ChangedFileEntry(
+            file_path="config/.env",
+            change_type="added",
+            classification=ChangedFileClassification.FORBIDDEN,
+        )
+        assert entry.classification == ChangedFileClassification.FORBIDDEN
+
+    def test_forbidden_security_policy_file(self):
+        entry = ChangedFileEntry(
+            file_path="security/policy.yaml",
+            change_type="modified",
+            classification=ChangedFileClassification.FORBIDDEN,
+        )
+        assert entry.classification == ChangedFileClassification.FORBIDDEN
 
 
 class TestDiffSummary:

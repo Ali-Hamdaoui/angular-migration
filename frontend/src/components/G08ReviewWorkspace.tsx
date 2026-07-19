@@ -10,7 +10,7 @@ import { decideG08, getG08Approval, initializeG08 } from "@/api/transformations"
 import type { G08Decision, G08ReviewResponse } from "@/types/transformation";
 import { StatusPill } from "@/components/StatusPill";
 
-type ViewState = "loading" | "empty" | "success" | "blocked" | "stale" | "failure";
+type ViewState = "loading" | "empty" | "success" | "blocked" | "stale" | "reconnecting" | "failure";
 
 interface Props {
   runId: string;
@@ -43,7 +43,7 @@ export function G08ReviewWorkspace({
 
   const fetchReview = useCallback(async () => {
     try {
-      setViewState("reconnecting" as ViewState);
+      setViewState("reconnecting");
       const result = await getG08Approval(runId, stageId, gateId);
       setReview(result);
       if (result.status === "approved" || result.status === "approved_with_comment") {

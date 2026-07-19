@@ -1,5 +1,6 @@
 /** API client for G03 transformation endpoints. */
 
+import { apiClient, type createApiClient } from "./client";
 import type {
   AngularUpdateRequest,
   AngularUpdateResponse,
@@ -8,59 +9,72 @@ import type {
   TransformationEvidenceRequest,
   TransformationEvidenceResponse,
 } from "@/types/transformation";
-import { apiClient } from "./client";
 
-const BASE = "/api/v1/runs";
+type ApiClient = ReturnType<typeof createApiClient>;
 
 export async function startAngularUpdate(
   runId: string,
   stageId: string,
   request: AngularUpdateRequest,
+  client: ApiClient = apiClient,
 ): Promise<AngularUpdateResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/angular-update`, {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+  return client.post<AngularUpdateResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/angular-update`,
+    request,
+  );
 }
 
 export async function getAngularUpdate(
   runId: string,
   stageId: string,
+  client: ApiClient = apiClient,
 ): Promise<AngularUpdateResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/angular-update`);
+  return client.get<AngularUpdateResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/angular-update`,
+  );
 }
 
 export async function getTargetVersion(
   runId: string,
   stageId: string,
+  client: ApiClient = apiClient,
 ): Promise<AngularUpdateResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/target-version`);
+  return client.get<AngularUpdateResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/target-version`,
+  );
 }
 
 export async function generateTransformationEvidence(
   runId: string,
   stageId: string,
   request: TransformationEvidenceRequest,
+  client: ApiClient = apiClient,
 ): Promise<TransformationEvidenceResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/transformation-evidence`, {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+  return client.post<TransformationEvidenceResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/transformation-evidence`,
+    request,
+  );
 }
 
 export async function getTransformationEvidence(
   runId: string,
   stageId: string,
+  client: ApiClient = apiClient,
 ): Promise<TransformationEvidenceResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/transformation-evidence`);
+  return client.get<TransformationEvidenceResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/transformation-evidence`,
+  );
 }
 
 export async function getG08Approval(
   runId: string,
   stageId: string,
   gateId: string,
+  client: ApiClient = apiClient,
 ): Promise<G08ReviewResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/approvals/${gateId}`);
+  return client.get<G08ReviewResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/approvals/${encodeURIComponent(gateId)}`,
+  );
 }
 
 export async function decideG08(
@@ -68,11 +82,12 @@ export async function decideG08(
   stageId: string,
   gateId: string,
   request: G08DecisionRequest,
+  client: ApiClient = apiClient,
 ): Promise<G08ReviewResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/approvals/${gateId}/decisions`, {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+  return client.post<G08ReviewResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/approvals/${encodeURIComponent(gateId)}/decisions`,
+    request,
+  );
 }
 
 export async function initializeG08(
@@ -80,9 +95,10 @@ export async function initializeG08(
   stageId: string,
   gateId: string,
   request: G08DecisionRequest,
+  client: ApiClient = apiClient,
 ): Promise<G08ReviewResponse> {
-  return apiClient(`${BASE}/${runId}/stages/${stageId}/approvals/${gateId}/package`, {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+  return client.post<G08ReviewResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/approvals/${encodeURIComponent(gateId)}/package`,
+    request,
+  );
 }

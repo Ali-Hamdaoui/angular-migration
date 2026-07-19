@@ -123,7 +123,7 @@ export function AngularUpdatePanel({
     <div className="angular-update-panel p-4 border rounded-lg space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Angular Update</h3>
-        <StatusPill status={viewState === "success" ? "PASSED" : viewState === "failure" ? "FAILED" : "RUNNING"} />
+        <StatusPill value={viewState === "success" ? "PASSED" : viewState === "failure" ? "FAILED" : "RUNNING"} />
       </div>
 
       {/* Version matrix */}

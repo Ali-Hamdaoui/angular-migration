@@ -61,7 +61,7 @@ All G03 logic follows the existing domain → service → API pattern establishe
 
 ## Test Coverage
 
-- **Domain unit tests**: 18 tests covering all domain models, builders, and decision rules
+|- **Domain unit tests**: 21 tests covering all domain models, builders, and decision rules
 - **API integration tests**: 9 tests covering happy paths, stale state, 404s, G08 approve/reject flows
 - **Regression**: 33 existing tests continue to pass with no changes required
 

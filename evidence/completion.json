@@ -27,7 +27,7 @@
     }
   },
   "tests_passed": {
-    "domain_tests": 18,
+    "domain_tests": 21,
     "api_integration_tests": 9,
     "regression_tests_passed": 33
   },

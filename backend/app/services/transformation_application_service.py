@@ -145,11 +145,11 @@ class AngularUpdateApplicationService:
                 arguments=[
                     "ng",
                     "update",
-                    f"@{request.source_version}",
-                    f"@{request.target_version}",
+                    f"@angular/core@{request.target_version}",
+                    f"@angular/cli@{request.target_version}",
                     "--migrate-only",
-                    "--from=11",
-                    "--to=21",
+                    f"--from={request.source_version}",
+                    f"--to={request.target_version}",
                 ]
             )
 
@@ -582,6 +582,41 @@ class TransformationEvidenceApplicationService:
 
     def _classify_file(self, path: str) -> ChangedFileClassification:
         path_lower = path.lower()
+
+        # Forbidden: CI/CD pipeline configs
+        if any(
+            ci in path_lower
+            for ci in [
+                ".github/workflows/", ".github/actions/",
+                ".gitlab-ci.yml", ".circleci/", "azure-pipelines",
+                "jenkinsfile", "bitbucket-pipelines",
+            ]
+        ):
+            return ChangedFileClassification.FORBIDDEN
+
+        # Forbidden: Credential and secret files
+        if any(
+            cred in path_lower
+            for cred in [
+                ".env", ".envrc",
+                "credentials", "secrets",
+                ".pem", ".key", ".cert", "id_rsa",
+                "service-account", "kubeconfig",
+                ".netrc", ".pgpass",
+            ]
+        ):
+            return ChangedFileClassification.FORBIDDEN
+
+        # Forbidden: Security policy configs
+        if any(
+            sec in path_lower
+            for sec in [
+                "security", ".htaccess", ".htpasswd",
+                "allowed_signers", "snyk", "codeql",
+            ]
+        ):
+            return ChangedFileClassification.FORBIDDEN
+
         if any(ext in path_lower for ext in [".bin", ".exe", ".dll", ".so", ".dylib", ".png", ".jpg", ".gif", ".ico"]):
             return ChangedFileClassification.BINARY
         if any(gen in path_lower for gen in ["/dist/", "/build/", "/.angular/", "node_modules", "/coverage/"]):
@@ -593,7 +628,7 @@ class TransformationEvidenceApplicationService:
             return ChangedFileClassification.SENSITIVE
         if path_lower.endswith("package-lock.json") or path_lower.endswith("yarn.lock"):
             return ChangedFileClassification.MEDIUM_RISK
-        if path_lower.endswith((".ts", ".js", ".html", ".css", ".scss", ".json", ".py")):
+        if path_lower.endswith(( ".ts", ".js", ".html", ".css", ".scss", ".json", ".py")):
             return ChangedFileClassification.LOW_RISK
         return ChangedFileClassification.MEDIUM_RISK
 
@@ -673,7 +708,7 @@ class TransformationEvidenceApplicationService:
                     ForbiddenChangeEntry(
                         file_path=cf.file_path,
                         reason="Sensitive file change detected (auth/security/credentials)",
-                        risk_level=RiskLevel.HIGH,
+                        risk_level=RiskLevel.CRITICAL,
                         suggestion="Review manually before approving transformation",
                     )
                 )

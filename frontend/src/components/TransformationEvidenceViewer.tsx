@@ -101,7 +101,7 @@ export function TransformationEvidenceViewer({
     <div className="tev-panel p-4 border rounded-lg space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Transformation Evidence</h3>
-        <StatusPill status={viewState === "success" ? "PASSED" : viewState === "blocked" ? "BLOCKED" : "RUNNING"} />
+        <StatusPill value={viewState === "success" ? "PASSED" : viewState === "blocked" ? "BLOCKED" : "RUNNING"} />
       </div>
 
       {/* Summary bar */}
