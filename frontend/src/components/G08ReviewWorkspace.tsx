@@ -140,7 +140,7 @@ export function G08ReviewWorkspace({
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">G08 — Transformation Acceptance</h3>
         <StatusPill
-          status={
+          value={
             viewState === "success" ? "PASSED"
             : viewState === "stale" ? "BLOCKED"
             : viewState === "failure" ? "FAILED"

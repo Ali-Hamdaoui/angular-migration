@@ -233,19 +233,19 @@ export function TransformationEvidenceViewer({
             <div>
               <h4 className="font-medium mb-1">Dependencies</h4>
               <p className="text-gray-600">
-                Added: {(evidence.package_change as Record<string, unknown>).dependencies_added?.length ?? 0}
+                Added: {(evidence.package_change as any)?.dependencies_added?.length ?? 0}
               </p>
               <p className="text-gray-600">
-                Removed: {(evidence.package_change as Record<string, unknown>).dependencies_removed?.length ?? 0}
+                Removed: {(evidence.package_change as any)?.dependencies_removed?.length ?? 0}
               </p>
             </div>
             <div>
               <h4 className="font-medium mb-1">Angular</h4>
               <p className="text-gray-600">
-                Before: {(evidence.package_change as Record<string, unknown>).angular_version_before ?? "—"}
+                Before: {(evidence.package_change as any)?.angular_version_before ?? "—"}
               </p>
               <p className="text-gray-600">
-                After: {(evidence.package_change as Record<string, unknown>).angular_version_after ?? "—"}
+                After: {(evidence.package_change as any)?.angular_version_after ?? "—"}
               </p>
             </div>
           </div>
@@ -258,14 +258,14 @@ export function TransformationEvidenceViewer({
             evidence.forbidden_changes.map((fc, idx) => (
               <div key={idx} className="p-2 bg-red-50 border border-red-200 rounded">
                 <p className="font-medium text-red-700">
-                  {(fc as Record<string, unknown>).file_path as string}
+                  {(fc as any).file_path as string}
                 </p>
-                <p className="text-red-600">{(fc as Record<string, unknown>).reason as string}</p>
-                {(fc as Record<string, unknown>).suggestion && (
+                <p className="text-red-600">{(fc as any).reason as string}</p>
+                {(fc as any).suggestion ? (
                   <p className="text-amber-700 text-xs mt-1">
-                    Suggestion: {(fc as Record<string, unknown>).suggestion as string}
+                    Suggestion: {(fc as any).suggestion as string}
                   </p>
-                )}
+                ) : null}
               </div>
             ))
           ) : (

@@ -182,7 +182,7 @@ export function AngularUpdatePanel({
       {logs.length > 0 && (
         <div>
           <h4 className="text-sm font-medium mb-1">Logs</h4>
-          <LogViewer lines={logs} maxHeight={200} />
+          <LogViewer content={logs.join("\n")} maxLines={200} />
         </div>
       )}
 
