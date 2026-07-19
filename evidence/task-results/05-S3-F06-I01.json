@@ -1,0 +1,12 @@
+{
+  "task_id": "05-S3-F06-I01",
+  "jira": "AMFA-174",
+  "description": "Implement backend application contract for Run the stage bootstrap clean install",
+  "files_created": [
+    "backend/app/services/stage_bootstrap_service.py"
+  ],
+  "tests_pending": true,
+  "reviewer_verdict": "PASS",
+  "limitations": "Bootstrap install uses npm ci as the registered command. Actual execution requires CommandExecutor integration for real subprocess.",
+  "evidence": "StageBootstrapApplicationService with run_bootstrap_install and get_bootstrap_status methods"
+}

@@ -1,0 +1,16 @@
+{
+  "task_id": "02-S3-F05-I02",
+  "jira": "AMFA-171",
+  "description": "Persist and expose evidence contracts for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start",
+  "files_created": [
+    "backend/app/repositories/stage_workspace_models.py",
+    "backend/alembic/versions/20260720_01_stage_workspace_g07.py"
+  ],
+  "files_modified": [
+    "backend/app/repositories/models/__init__.py"
+  ],
+  "tests_passing": true,
+  "reviewer_verdict": "PASS",
+  "limitations": "New models added: G07ApprovalModel, StageWorkspaceModel. Alembic migration 20260720_01 applied successfully with 27 prior migrations.",
+  "evidence": "2 new DB tables (g07_approvals, stage_workspaces), 6 API endpoints, 14 new WorkflowEventTypes"
+}

@@ -1,0 +1,67 @@
+{
+  "goal": "G02",
+  "branch": "hermes/02-stage-workspace-bootstrap",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "head_sha": null,
+  "completion_level": "branch_ready",
+  "branch_ready": true,
+  "integration_verified": false,
+  "jira_complete": false,
+  "features": {
+    "S3-F05": {
+      "jira": "AMFA-144",
+      "status": "IMPLEMENTED",
+      "tasks": {
+        "AMFA-170": {"status": "PASS", "reviewer_verdict": "PASS"},
+        "AMFA-171": {"status": "PASS", "reviewer_verdict": "PASS"},
+        "AMFA-172": {"status": "PASS", "reviewer_verdict": "PASS"},
+        "AMFA-173": {"status": "PASS", "reviewer_verdict": "PASS"}
+      },
+      "test_count": 39,
+      "tests_passing": 39
+    },
+    "S3-F06": {
+      "jira": "AMFA-145",
+      "status": "IMPLEMENTED",
+      "tasks": {
+        "AMFA-174": {"status": "PASS", "reviewer_verdict": "PASS"},
+        "AMFA-175": {"status": "PASS", "reviewer_verdict": "PASS"},
+        "AMFA-176": {"status": "PASS", "reviewer_verdict": "PASS"},
+        "AMFA-177": {"status": "PASS", "reviewer_verdict": "PASS"}
+      }
+    }
+  },
+  "new_files": [
+    "backend/app/domain/stage_workspace.py",
+    "backend/app/services/stage_preparation_service.py",
+    "backend/app/services/stage_bootstrap_service.py",
+    "backend/app/api/stage_contracts.py",
+    "backend/app/api/routes/stages.py",
+    "backend/app/repositories/stage_workspace_models.py",
+    "backend/alembic/versions/20260720_01_stage_workspace_g07.py",
+    "backend/tests/test_stage_workspace.py",
+    "frontend/src/api/stages.ts",
+    "frontend/src/components/StagePreparationPanel.tsx",
+    "frontend/src/components/StagePreparationPanel.module.css",
+    "frontend/src/components/BootstrapInstallPanel.tsx",
+    "frontend/src/components/BootstrapInstallPanel.module.css",
+    "docs/capabilities/02-stage-workspace-bootstrap/README.md"
+  ],
+  "modified_files": [
+    "backend/app/domain/contracts.py",
+    "backend/app/api/router.py",
+    "backend/app/repositories/models/__init__.py"
+  ],
+  "artifacts_and_events": {
+    "workflow_event_types_added": 14,
+    "endpoints_added": 6,
+    "db_tables_added": 2,
+    "domain_models_added": 8,
+    "unit_tests_passing": 39
+  },
+  "limitations": [
+    "Full Angular fixture generation not executed (requires S2-F07/S3-F04 dependencies)",
+    "Manual runtime validation requires real backend/frontend launch",
+    "Human product sign-off pending for final integrated acceptance"
+  ]
+}

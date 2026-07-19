@@ -1,0 +1,15 @@
+{
+  "goal": "G02",
+  "shared_file_changes": [
+    {
+      "file": "backend/app/domain/contracts.py",
+      "changes": "Add WorkflowEventType values: STAGE_CREATED, PREPARING, PLAN_LOCKED, WAITING_APPROVAL, SANDBOX_READY, STAGE_BOOTSTRAP_INSTALL_STARTED, STAGE_BOOTSTRAP_INSTALL_COMPLETED, STAGE_BOOTSTRAP_INSTALL_FAILED, G07_CREATED, G07_APPROVED, G07_REJECTED, G07_STALE",
+      "rationale": "New durable event types required by S3-F05 and S3-F06 features"
+    },
+    {
+      "file": "backend/app/api/router.py",
+      "changes": "Register new stage-related routers (stages router, stages router for v1 apis)",
+      "rationale": "New API endpoints for stage preparation, G07 approvals, sandbox, and bootstrap install"
+    }
+  ]
+}

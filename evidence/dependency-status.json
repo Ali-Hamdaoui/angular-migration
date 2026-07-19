@@ -1,0 +1,22 @@
+{
+  "goal": "G02",
+  "base_branch": "goal",
+  "dependencies": {
+    "S2-F07": {
+      "status": "PRESENT",
+      "detail": "Planning review G06 implementation exists in goal branch",
+      "integrated_sha": "goal branch HEAD"
+    },
+    "S3-F04": {
+      "status": "PRESENT",
+      "detail": "Preceding Sprint 3 feature - existing infrastructure available",
+      "integrated_sha": "goal branch HEAD"
+    }
+  },
+  "test_fake_boundaries": {
+    "command_executor": "Use existing CommandExecution infrastructure for npm-ci fakes",
+    "artifact_store": "Use existing LocalFilesystemArtifactStore",
+    "transition_service": "Use existing StateTransitionService"
+  },
+  "notes": "All dependencies exist on the goal branch. No Sprint 2 absorption needed."
+}

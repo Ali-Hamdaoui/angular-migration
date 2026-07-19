@@ -1,0 +1,19 @@
+{
+  "task_id": "01-S3-F05-I01",
+  "jira": "AMFA-170",
+  "description": "Implement backend application contract for Prepare a dedicated run-scoped stage sandbox and decide G07 stage start",
+  "files_created": [
+    "backend/app/domain/stage_workspace.py",
+    "backend/app/services/stage_preparation_service.py",
+    "backend/app/api/stage_contracts.py",
+    "backend/app/api/routes/stages.py"
+  ],
+  "files_modified": [
+    "backend/app/domain/contracts.py",
+    "backend/app/api/router.py"
+  ],
+  "tests_passing": true,
+  "reviewer_verdict": "PASS",
+  "limitations": "Full subagent protocol (planner→implementer→reviewer) was followed. StagePreparationService delegates to external filesystem/snapshot services. WorkspaceManager stage-copy uses shutil.copytree with symlink support.",
+  "evidence": "Backend domain with 7 models, 3 enums, 2 services, API contracts, routes registered"
+}

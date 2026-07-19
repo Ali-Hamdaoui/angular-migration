@@ -1,0 +1,105 @@
+{
+  "goal": "G02",
+  "base_branch": "goal",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "features": {
+    "S3-F05": {
+      "jira": "AMFA-144",
+      "title": "Prepare a dedicated run-scoped stage sandbox and decide G07 stage start",
+      "acceptance_criteria": {
+        "backend_domain_service": {
+          "status": "MISSING",
+          "detail": "Need StagePreparationService, WorkspaceManager stage-copy, fingerprint validation, lease checks"
+        },
+        "g07_gate": {
+          "status": "MISSING",
+          "detail": "Need G07 approval gate, decision binding to state/artifact/plan/workspace fingerprint"
+        },
+        "stage_execution_plan_lock": {
+          "status": "MISSING",
+          "detail": "Need StageExecutionPlan lock mechanism"
+        },
+        "persistence": {
+          "status": "MISSING",
+          "detail": "Need migration_stages extended, active stage plan, workspace/fingerprint records, gate decisions tables"
+        },
+        "api_endpoints": {
+          "status": "MISSING",
+          "detail": "POST /runs/{id}/stages/{stageId}/prepare, POST /approvals/G07/decisions, POST /stages/{stageId}/sandbox"
+        },
+        "durable_events": {
+          "status": "MISSING",
+          "detail": "STAGE_CREATED, PREPARING, PLAN_LOCKED, WAITING_APPROVAL, SANDBOX_READY"
+        },
+        "artifacts": {
+          "status": "MISSING",
+          "detail": "Stage-start package, plan/profile, copy report, input manifest, input fingerprint, sandbox verification"
+        },
+        "frontend_ui": {
+          "status": "MISSING",
+          "detail": "Stage-start review page with plan/profile/input tabs, G07 controls, copy progress"
+        },
+        "automated_tests": {
+          "status": "MISSING",
+          "detail": "Unit, API, frontend, SSE, security tests for S3-F05"
+        }
+      },
+      "dependencies": [
+        "S2-F07",
+        "S3-F04"
+      ]
+    },
+    "S3-F06": {
+      "jira": "AMFA-145",
+      "title": "Run the stage bootstrap clean install",
+      "acceptance_criteria": {
+        "backend_domain_service": {
+          "status": "MISSING",
+          "detail": "Need StagePipelineService bootstrap step, command authorization, npm-ci execution"
+        },
+        "persistence": {
+          "status": "PRESENT",
+          "detail": "CommandExecutionModel exists, StageStepModel exists, but need wiring for bootstrap-install step"
+        },
+        "api_endpoints": {
+          "status": "MISSING",
+          "detail": "POST /runs/{id}/stages/{stageId}/bootstrap-install, GET /stages/{stageId}/steps/bootstrap-install"
+        },
+        "durable_events": {
+          "status": "PARTIAL",
+          "detail": "Add STAGE_BOOTSTRAP_INSTALL_STARTED/COMPLETED/FAILED event types to WorkflowEventType"
+        },
+        "artifacts": {
+          "status": "MISSING",
+          "detail": "Install command/logs/result, pre/post workspace fingerprints, package-manager debug artifacts"
+        },
+        "frontend_ui": {
+          "status": "MISSING",
+          "detail": "Stage pipeline step card with command, progress/log, result, environment blocker"
+        },
+        "automated_tests": {
+          "status": "MISSING",
+          "detail": "Unit, API, frontend, SSE tests for S3-F06"
+        }
+      },
+      "dependencies": [
+        "S3-F05"
+      ]
+    }
+  },
+  "reusable_existing_modules": [
+    "backend/app/domain/g02.py \u2014 G02 domain pattern for G07",
+    "backend/app/api/g02_contracts.py \u2014 API contract pattern for G07",
+    "backend/app/api/routes/g02.py \u2014 Route pattern for G07",
+    "backend/app/services/g02_application_service.py \u2014 Service pattern for G07 + stage prep",
+    "backend/app/repositories/g02_models.py \u2014 DB model pattern",
+    "backend/app/repositories/models/workflow.py \u2014 MigrationStageModel, StageStepModel, CommandExecutionModel exist",
+    "backend/app/state/transition_service.py \u2014 Transition service pattern",
+    "backend/app/domain/contracts.py \u2014 Shared enums and contracts (RunStatus, StageStatus, ArtifactType, WorkflowEventType)"
+  ],
+  "shared_files_to_change": [
+    "backend/app/domain/contracts.py \u2014 Add G07 event types, G07 event types for bootstrap install",
+    "backend/app/api/router.py \u2014 Register new stage routes",
+    "backend/app/repositories/models/workflow.py \u2014 Add workspace/fingerprint/gate models if needed"
+  ]
+}
