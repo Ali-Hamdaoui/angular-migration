@@ -616,6 +616,34 @@ class CommandPolicyValidateResponseDto(ContractModel):
     idempotent_replay: bool = False
 
 
+class CommandExecuteRequestDto(ContractModel):
+    """Request body for POST /api/v1/runs/{run_id}/commands."""
+    command_id: str = Field(min_length=1)
+    executable: str = Field(min_length=1)
+    arguments: list[str] = Field(default_factory=list)
+    stage_id: str | None = None
+    working_directory_alias: str | None = None
+    working_directory: str | None = None
+    runtime_profile_id: str = "source-runtime-profile"
+    timeout_seconds: int = Field(default=300, gt=0, le=3600)
+    network_profile: str = "none"
+    cancellation_policy: str = "terminate_process_tree"
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    requested_by: str | None = None
+    requester: str | None = None
+
+
+class CommandExecutionResponseDto(ContractModel):
+    """Response body for command execution endpoints."""
+    execution_id: str
+    run_id: str
+    command_id: str
+    status: str
+    state_version: int = 1
+    event_sequence: int = 1
+    idempotent_replay: bool = False
+
+
 class WorkerLeaseDto(ContractModel):
     lease_id: str
     run_id: str
