@@ -1,0 +1,25 @@
+{
+  "schema": "dependency-status-v1",
+  "goal": "G09",
+  "dependencies": {
+    "G04": "UPSTREAM_UNAVAILABLE - stage_validation_summary/sealed_stage_output consumed via frozen contracts",
+    "G07": "UPSTREAM_UNAVAILABLE - patch_apply_ledger consumed via frozen contracts",
+    "G08": "UPSTREAM_UNAVAILABLE - recovery_decision/assistant_answer consumed via frozen contracts",
+    "S4-F11": "UPSTREAM_UNAVAILABLE - consumed via frozen final_report_record contract"
+  },
+  "strategy": "Implement consuming ports and test fakes for unavailable upstream dependencies. Do not create second production authorities.",
+  "blocked_integrated_criteria": [
+    "Cross-goal integration test with G04 sealed stage output",
+    "Cross-goal integration test with G07 patch apply ledger",
+    "Cross-goal integration test with G08 recovery decisions",
+    "Cross-goal integration test with S4-F11 report prerequisites"
+  ],
+  "local_test_strategy": "Use local test fakes for unavailable upstream contracts. Full integration requires all goal branches to be pushed and merged.",
+  "frozen_contracts_verified": {
+    "final_assurance_summary.schema.json": "PRESENT in shared/contracts",
+    "delivery_record.schema.json": "PRESENT in shared/contracts",
+    "final_report_record.schema.json": "PRESENT in shared/contracts",
+    "artifact_ref.schema.json": "PRESENT in shared/contracts",
+    "durable_event_envelope.schema.json": "PRESENT in shared/contracts"
+  }
+}

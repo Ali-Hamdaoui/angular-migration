@@ -7,7 +7,6 @@ from app.api.routes.preflights import draft_approval_router, router as preflight
 from app.api.routes.environment import router as environment_router
 from app.api.routes.execution_profiles import router as execution_profiles_router
 from app.api.routes.health import router as health_router
-from app.api.routes.g02 import router as g02_router
 from app.api.routes.sources import router as sources_router
 from app.api.routes.source_analysis import router as source_analysis_router
 from app.api.routes.snapshots import router as snapshots_router
@@ -25,6 +24,10 @@ from app.api.routes.analysis import router as analysis_router
 from app.api.routes.compatibility import router as compatibility_router
 from app.api.routes.plans import router as plans_router
 from app.api.routes.planning_review import router as planning_review_router
+from app.api.routes.g02 import router as g02_router
+from app.api.routes.final_assurance import router as final_assurance_router
+from app.api.routes.delivery import router as delivery_router
+from app.api.routes.reports import router as reports_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -38,7 +41,6 @@ api_router.include_router(snapshots_router)
 api_router.include_router(compatibility_router)
 api_router.include_router(plans_router)
 api_router.include_router(planning_review_router)
-api_router.include_router(g02_router)
 api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
 api_router.include_router(artifacts_router)
@@ -53,6 +55,13 @@ api_router.include_router(discovery_router)
 api_router.include_router(parity_baseline_router)
 api_router.include_router(analysis_router)
 api_router.include_router(draft_approval_router)
+# Register gate-specific routers BEFORE the generic G02 router
+# so exact paths like /approvals/G13/decisions match before
+# the generic /approvals/{gate_id}/decisions catch-all.
+api_router.include_router(final_assurance_router)
+api_router.include_router(delivery_router)
+api_router.include_router(reports_router)
+api_router.include_router(g02_router)
 
 # Versioned production surface; legacy unversioned paths remain compatibility aliases.
 api_v1_router.include_router(health_router)
@@ -65,7 +74,6 @@ api_v1_router.include_router(snapshots_router)
 api_v1_router.include_router(compatibility_router)
 api_v1_router.include_router(plans_router)
 api_v1_router.include_router(planning_review_router)
-api_v1_router.include_router(g02_router)
 api_v1_router.include_router(migrations_router)
 api_v1_router.include_router(assistant_router)
 api_v1_router.include_router(artifacts_router)
@@ -80,4 +88,9 @@ api_v1_router.include_router(baseline_matrix_router)
 api_v1_router.include_router(discovery_router)
 api_v1_router.include_router(parity_baseline_router)
 api_v1_router.include_router(analysis_router)
+# Register gate-specific v1 routers before generic G02.
+api_v1_router.include_router(final_assurance_router)
+api_v1_router.include_router(delivery_router)
+api_v1_router.include_router(reports_router)
+api_v1_router.include_router(g02_router)
 api_router.include_router(api_v1_router)

@@ -1,0 +1,37 @@
+{
+  "schema_version": "3.0.0",
+  "goal_id": "G09",
+  "branch": "hermes/09-assurance-delivery-report",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "head_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "goal_package_sha256": "39992175495c4d17ff54b06f49523de8d1379b79fe1a8eb08159ce066df4caf5",
+  "completion_level": "branch_ready",
+  "jira_features": ["AMFA-222", "AMFA-223", "AMFA-224"],
+  "jira_subtasks": ["AMFA-270", "AMFA-271", "AMFA-272", "AMFA-273", "AMFA-274", "AMFA-275", "AMFA-276", "AMFA-277", "AMFA-278", "AMFA-279", "AMFA-280", "AMFA-281"],
+  "branch_ready": true,
+  "harness_ready": false,
+  "integration_verified": false,
+  "jira_complete": true,
+  "automated_tests": "PASS",
+  "manual_tests": "BLOCKED",
+  "documentation": "PASS",
+  "architecture_audit": "PASS",
+  "product_audit": "PASS",
+  "human_product_signoff": "not_required",
+  "blocked_integrated_criteria": [
+    "Cross-goal integration test with G04 sealed stage output",
+    "Cross-goal integration test with G07 patch apply ledger",
+    "Cross-goal integration test with G08 recovery decisions",
+    "Cross-goal integration test with S4-F11 report prerequisites",
+    "Manual runtime validation against full Angular fixtures"
+  ],
+  "limitations": [
+    "Upstream G04/G07/G08/S4-F11 unavailable - consuming ports via frozen contracts only",
+    "Manual runtime validation requires full Angular fixtures generated outside Git",
+    "Integration verification requires all Sprint 3/4 branches to be merged",
+    "Frontend UI requires separate implementation"
+  ],
+  "pushed": true,
+  "push_remote": "origin",
+  "push_branch": "hermes/09-assurance-delivery-report"
+}

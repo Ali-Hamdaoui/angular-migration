@@ -1,0 +1,169 @@
+{
+  "schema": "current-state-gap-map-v1",
+  "goal": "G09",
+  "worktree": "/home/ubuntu/amfa-worktrees/09-assurance-delivery-report",
+  "analysis": [
+    {
+      "criterion": "G13 gate (Final Assurance) - domain models",
+      "status": "MISSING",
+      "required": "FinalAssurance domain models, G13Decision enum, FinalAssuranceSummary, G13ApprovalPackage",
+      "target": "backend/app/domain/final_assurance.py"
+    },
+    {
+      "criterion": "G13 gate - application service",
+      "status": "MISSING",
+      "required": "FinalAssuranceApplicationService with initialize/decide/get",
+      "target": "backend/app/services/final_assurance_application_service.py"
+    },
+    {
+      "criterion": "G13 gate - API contracts",
+      "status": "MISSING",
+      "required": "G13DecisionRequest, G13ReviewResponse",
+      "target": "backend/app/api/final_assurance_contracts.py"
+    },
+    {
+      "criterion": "G13 gate - routes",
+      "status": "MISSING",
+      "required": "POST /runs/{id}/final-assurance, GET, POST approvals/G13/decisions",
+      "target": "backend/app/api/routes/final_assurance.py"
+    },
+    {
+      "criterion": "G13 gate - DB model",
+      "status": "MISSING",
+      "required": "FinalAssuranceRecordModel",
+      "target": "backend/app/repositories/final_assurance_models.py"
+    },
+    {
+      "criterion": "G13 gate - alembic migration",
+      "status": "MISSING",
+      "required": "Schema migration for final assurance records",
+      "target": "backend/alembic/versions/"
+    },
+    {
+      "criterion": "G13 gate - event types",
+      "status": "MISSING",
+      "required": "FINAL_ASSURANCE_STARTED, _STEP_COMPLETED, _COMPLETED, _FAILED, G13_CREATED, _APPROVED, _REJECTED, _STALE",
+      "target": "backend/app/domain/contracts.py"
+    },
+    {
+      "criterion": "G14 gate (Delivery) - domain models",
+      "status": "MISSING",
+      "required": "DeliveryCandidate domain models, G14Decision enum, DeliveryRecord, G14ApprovalPackage",
+      "target": "backend/app/domain/delivery.py"
+    },
+    {
+      "criterion": "G14 gate - application service",
+      "status": "MISSING",
+      "required": "DeliveryApplicationService with initialize/decide/get",
+      "target": "backend/app/services/delivery_application_service.py"
+    },
+    {
+      "criterion": "G14 gate - API contracts",
+      "status": "MISSING",
+      "required": "G14DecisionRequest, DeliveryResponse",
+      "target": "backend/app/api/delivery_contracts.py"
+    },
+    {
+      "criterion": "G14 gate - routes",
+      "status": "MISSING",
+      "required": "POST /runs/{id}/delivery-candidate, GET, POST approvals/G14/decisions",
+      "target": "backend/app/api/routes/delivery.py"
+    },
+    {
+      "criterion": "G14 gate - DB model",
+      "status": "MISSING",
+      "required": "DeliveryRecordModel",
+      "target": "backend/app/repositories/delivery_models.py"
+    },
+    {
+      "criterion": "G15 gate (Report) - domain models",
+      "status": "MISSING",
+      "required": "FinalReport domain models, G15Decision enum, FinalReportRecord, G15ApprovalPackage",
+      "target": "backend/app/domain/report.py"
+    },
+    {
+      "criterion": "G15 gate - application service",
+      "status": "MISSING",
+      "required": "ReportApplicationService with initialize/decide/get",
+      "target": "backend/app/services/report_application_service.py"
+    },
+    {
+      "criterion": "G15 gate - API contracts",
+      "status": "MISSING",
+      "required": "G15DecisionRequest, ReportResponse",
+      "target": "backend/app/api/report_contracts.py"
+    },
+    {
+      "criterion": "G15 gate - routes",
+      "status": "MISSING",
+      "required": "POST /runs/{id}/reports, GET, POST approvals/G15/decisions",
+      "target": "backend/app/api/routes/reports.py"
+    },
+    {
+      "criterion": "G15 gate - DB model",
+      "status": "MISSING",
+      "required": "ReportRecordModel",
+      "target": "backend/app/repositories/report_models.py"
+    },
+    {
+      "criterion": "Route registration - api_v1_router",
+      "status": "MISSING",
+      "required": "Register all new routers in api_v1_router",
+      "target": "backend/app/api/router.py"
+    },
+    {
+      "criterion": "Event types - contracts.py",
+      "status": "MISSING",
+      "required": "Add G13/G14/G15 event types to WorkflowEventType",
+      "target": "backend/app/domain/contracts.py"
+    },
+    {
+      "criterion": "Model registration - models/__init__.py",
+      "status": "MISSING",
+      "required": "Import new models in __init__.py",
+      "target": "backend/app/repositories/models/__init__.py"
+    },
+    {
+      "criterion": "DeliveryService - already exists",
+      "status": "PRESENT",
+      "required": "backend/app/delivery/services.py exists with DeliveryService",
+      "target": "backend/app/delivery/services.py"
+    },
+    {
+      "criterion": "Frontend - FinalAssurance page",
+      "status": "MISSING",
+      "required": "Final Assurance frontend page and components",
+      "target": "frontend/src/"
+    },
+    {
+      "criterion": "Frontend - Delivery page",
+      "status": "MISSING",
+      "required": "Delivery frontend page and components",
+      "target": "frontend/src/"
+    },
+    {
+      "criterion": "Frontend - Report page",
+      "status": "MISSING",
+      "required": "Report frontend page and components",
+      "target": "frontend/src/"
+    },
+    {
+      "criterion": "Tests - domain unit tests",
+      "status": "MISSING",
+      "required": "Unit tests for all new domain models",
+      "target": "backend/tests/"
+    },
+    {
+      "criterion": "Tests - API integration tests",
+      "status": "MISSING",
+      "required": "API integration tests with temp SQLite",
+      "target": "backend/tests/"
+    },
+    {
+      "criterion": "Alembic migration - merge if needed",
+      "status": "PRESENT",
+      "required": "Check if merge is needed, then create migration",
+      "target": "backend/alembic/versions/"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "schema": "shared-file-changes-v1",
+  "goal": "G09",
+  "changes": [
+    {
+      "file": "backend/app/domain/contracts.py",
+      "change": "Add FINAL_ASSURANCE_STARTED, FINAL_ASSURANCE_STEP_COMPLETED, FINAL_ASSURANCE_COMPLETED, FINAL_ASSURANCE_FAILED, G13_CREATED, G13_APPROVED, G13_REJECTED, G13_STALE, DELIVERY_CANDIDATE_READY, DELIVERY_CANDIDATE_FAILED, G14_CREATED, G14_APPROVED, G14_REJECTED, G14_STALE, REPORT_GENERATION_STARTED, REPORT_READY, REPORT_FAILED, G15_CREATED, G15_APPROVED, G15_REJECTED, G15_STALE event types",
+      "owner": "G09",
+      "impact": "Adds new event types to WorkflowEventType enum"
+    },
+    {
+      "file": "backend/app/api/router.py",
+      "change": "Register new routers: final_assurance_router, delivery_router, reports_router",
+      "owner": "G09",
+      "impact": "Adds new API routes"
+    },
+    {
+      "file": "backend/app/repositories/models/__init__.py",
+      "change": "Import new models: FinalAssuranceRecordModel, DeliveryRecordModel, ReportRecordModel, G13ApprovalModel, G14ApprovalModel, G15ApprovalModel",
+      "owner": "G09",
+      "impact": "Registers new ORM models"
+    },
+    {
+      "file": "backend/alembic/versions/",
+      "change": "Create migration for new tables",
+      "owner": "G09",
+      "impact": "Schema migration"
+    }
+  ],
+  "estimated_new_files": {
+    "backend/app/domain/final_assurance.py": true,
+    "backend/app/domain/delivery.py": true,
+    "backend/app/domain/report.py": true,
+    "backend/app/api/final_assurance_contracts.py": true,
+    "backend/app/api/delivery_contracts.py": true,
+    "backend/app/api/report_contracts.py": true,
+    "backend/app/api/routes/final_assurance.py": true,
+    "backend/app/api/routes/delivery.py": true,
+    "backend/app/api/routes/reports.py": true,
+    "backend/app/services/final_assurance_application_service.py": true,
+    "backend/app/services/delivery_application_service.py": true,
+    "backend/app/services/report_application_service.py": true,
+    "backend/app/repositories/final_assurance_models.py": true,
+    "backend/app/repositories/delivery_models.py": true,
+    "backend/app/repositories/report_models.py": true,
+    "backend/alembic/versions/20260719_09_final_assurance_delivery_report.py": true
+  }
+}
