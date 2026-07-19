@@ -1,7 +1,8 @@
+import json
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from app.artifact_store.local_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
@@ -12,6 +13,11 @@ from app.llm_gateway import (
     LlmContextSegment,
     LlmRequest,
     LlmTaskType,
+    LlmRole,
+    AzureGatewayError,
+    AzureOpenAILLMGateway,
+    LlmFailureCode,
+    PromptSchemaRegistry,
     MockLlmGateway,
     build_usage_record,
     decide_budget,
@@ -33,6 +39,108 @@ def _settings(tmp_path: Path, *, token_budget: int = 0, cost_budget: float = 0.0
         llm_token_budget=token_budget,
         llm_cost_budget_usd=cost_budget,
     )
+
+
+def _azure_settings(tmp_path: Path, *, retries: int = 2, token_budget: int = 0) -> Settings:
+    return Settings(
+        _env_file=None,
+        artifact_root=tmp_path / 'runs',
+        workspace_root=tmp_path / 'workspaces',
+        snapshot_root=tmp_path / 'snapshots',
+        delivery_root=tmp_path / 'delivery',
+        sandbox_root=tmp_path / 'sandboxes',
+        llm_enabled=True,
+        azure_openai_endpoint='https://example.openai.azure.com',
+        azure_openai_deployment='gpt-5-mini-private',
+        azure_openai_api_version='2025-04-01-preview',
+        azure_openai_api_key=SecretStr('super-secret-api-key'),
+        llm_input_price_per_million_tokens=0.25,
+        llm_output_price_per_million_tokens=2.0,
+        llm_max_transport_retries=retries,
+        llm_token_budget=token_budget,
+    )
+
+
+class _StructuredResponse(BaseModel):
+    answer: str
+
+
+class _FakeAzureTransport:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, object]] = []
+
+    def request(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _azure_request() -> LlmRequest:
+    return LlmRequest(
+        request_id='azure-request-001',
+        run_id='run-azure-001',
+        agent_kind=AgentKind.ANALYSIS,
+        task_type=LlmTaskType.ANALYSIS_SUMMARY,
+        role=LlmRole.PHASE_PROPOSER,
+        system_policy='Trusted policy only.',
+        response_schema='analysis_v1',
+        context=[LlmContextSegment(segment_id='log-1', label='repository build log', untrusted=True, content='API_KEY=secret-value-1234567890')],
+    )
+
+
+def _registry() -> PromptSchemaRegistry:
+    registry = PromptSchemaRegistry()
+    registry.register('analysis_v1', _StructuredResponse)
+    return registry
+
+
+def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp_path: Path) -> None:
+    transport = _FakeAzureTransport([{
+        'output': [{'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'validated'})}]}],
+        'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120},
+    }])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    response = gateway.complete(_azure_request())
+
+    assert response.status == 'completed'
+    assert response.structured_output == {'answer': 'validated'}
+    assert response.usage.total_tokens == 120
+    assert response.usage.total_cost_usd == pytest.approx(0.000065)
+    assert response.role == LlmRole.PHASE_PROPOSER
+    assert response.pricing_version == 'mvp-pricing-2026-01'
+    assert transport.calls[0]['payload']['store'] is False
+    assert 'secret-value-1234567890' not in str(transport.calls[0]['payload'])
+    assert transport.calls[0]['api_key'] == 'super-secret-api-key'
+
+
+def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) -> None:
+    transport = _FakeAzureTransport([
+        AzureGatewayError(LlmFailureCode.NETWORK, 'network failure', retryable=True),
+        {'output': [{'content': [{'text': json.dumps({'answer': 'ok'})}]}], 'usage': {'prompt_tokens': 5, 'completion_tokens': 3}},
+    ])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path, retries=1), transport=transport, registry=_registry())
+
+    response = gateway.complete(_azure_request())
+
+    assert response.usage.retry_count == 1
+    assert len(transport.calls) == 2
+
+
+def test_azure_gateway_fails_closed_for_missing_configuration_and_unregistered_schema(tmp_path: Path) -> None:
+    disabled = _settings(tmp_path)
+    with pytest.raises(AzureGatewayError) as config_error:
+        AzureOpenAILLMGateway(settings=disabled)
+    assert config_error.value.code == LlmFailureCode.CONFIGURATION
+
+    transport = _FakeAzureTransport([{'output': [{'content': [{'text': json.dumps({'answer': 'ok'})}]}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport)
+    with pytest.raises(AzureGatewayError) as schema_error:
+        gateway.complete(_azure_request())
+    assert schema_error.value.code == LlmFailureCode.SCHEMA
 
 
 def _request() -> LlmRequest:

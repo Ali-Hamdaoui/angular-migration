@@ -19,6 +19,7 @@ from app.api.routes.baseline_matrix import router as baseline_matrix_router
 from app.api.routes.discovery import router as discovery_router
 from app.api.routes.baseline_parity import router as baseline_parity_router
 from app.api.routes.runs import router as runs_router
+from app.api.routes.llm import router as llm_router
 from app.api.routes.parity_baseline import router as parity_baseline_router
 
 api_router = APIRouter()
@@ -28,6 +29,7 @@ api_router.include_router(sources_router)
 api_router.include_router(source_analysis_router)
 api_router.include_router(version_router)
 api_router.include_router(runs_router)
+api_router.include_router(llm_router)
 api_router.include_router(snapshots_router)
 api_router.include_router(g02_router)
 api_router.include_router(migrations_router)
@@ -50,6 +52,7 @@ api_v1_router.include_router(sources_router)
 api_v1_router.include_router(source_analysis_router)
 api_v1_router.include_router(version_router)
 api_v1_router.include_router(runs_router)
+api_v1_router.include_router(llm_router)
 api_v1_router.include_router(snapshots_router)
 api_v1_router.include_router(g02_router)
 api_v1_router.include_router(migrations_router)

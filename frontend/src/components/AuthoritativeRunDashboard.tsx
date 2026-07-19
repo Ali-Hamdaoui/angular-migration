@@ -21,7 +21,7 @@ const pipelineSteps = [
 ];
 
 export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
-  const { state, status, error } = useAuthoritativeRun(runId, initialState);
+  const { state, status, error, refresh } = useAuthoritativeRun(runId, initialState);
   const connectionLabel = {
     loading: "Loading authoritative state?", connecting: "Connecting to backend events?", open: "Live ? authoritative state", reconnecting: "Connection lost ? reconnecting?", recovering: "Refreshing authoritative snapshot?", failed: "Unable to refresh authoritative state",
   }[status];
@@ -48,6 +48,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
         })}</ol>
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
+      <LlmDiagnosticsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} refreshAuthoritativeState={refresh} workflowEvents={state.workflow_events} />
       <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
       <div className={styles.dashboardGrid}>
@@ -70,3 +71,4 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
   );
 }
 
+import { LlmDiagnosticsPanel } from './LlmDiagnosticsPanel';

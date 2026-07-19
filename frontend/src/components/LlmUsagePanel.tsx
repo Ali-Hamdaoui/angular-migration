@@ -2,6 +2,7 @@ import type { MigrationRunDto as MigrationRun } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
 
 export function LlmUsagePanel({ run }: { run: MigrationRun }) {
+  const stateVersion = Math.max(1, ...run.workflow_events.map((event) => Number(event.payload.next_state_version ?? 1)));
   const totals = run.llm_usage.reduce(
     (acc, usage) => ({
       inputTokens: acc.inputTokens + usage.input_tokens,
@@ -12,7 +13,7 @@ export function LlmUsagePanel({ run }: { run: MigrationRun }) {
     { inputTokens: 0, outputTokens: 0, totalTokens: 0, totalCost: 0 },
   );
 
-  return (
+  return (<>
     <section className={styles.panel}>
       <h2>LLM usage</h2>
       <ul className={styles.metricList}>
@@ -22,5 +23,8 @@ export function LlmUsagePanel({ run }: { run: MigrationRun }) {
         <li><span>Estimated cost</span><strong>${totals.totalCost.toFixed(6)}</strong></li>
       </ul>
     </section>
+    <LlmDiagnosticsPanel runId={run.run_id} stateVersion={stateVersion} workflowEvents={run.workflow_events} />
+    </>
   );
 }
+import { LlmDiagnosticsPanel } from './LlmDiagnosticsPanel';
