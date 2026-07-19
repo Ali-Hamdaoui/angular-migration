@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/repair_context_pack.schema.json",
+  "title": "repair_context_pack",
+  "description": "Bounded sanitized model-visible repair input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "context_pack_id",
+    "failure_id",
+    "stage_id",
+    "repair_attempt",
+    "workspace_fingerprint",
+    "selection_policy_version",
+    "sanitization_checksum",
+    "content_checksum",
+    "segments"
+  ],
+  "properties": {
+    "context_pack_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "failure_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repair_attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "workspace_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "selection_policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sanitization_checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "content_checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "token_budget": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "finalized",
+        "insufficient",
+        "stale"
+      ]
+    }
+  }
+}

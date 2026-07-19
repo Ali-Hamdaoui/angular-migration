@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/stage_bootstrap_result.schema.json",
+  "title": "stage_bootstrap_result",
+  "description": "Stage sandbox clean-install/bootstrap evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "stage_id",
+    "sandbox_fingerprint",
+    "execution_profile_id",
+    "install_status",
+    "artifact_refs"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sandbox_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "execution_profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "install_status": {
+      "enum": [
+        "passed",
+        "failed",
+        "blocked",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "package_manifest_checksum": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "lockfile_checksum": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "command_execution_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "artifact_ref.schema.json"
+      }
+    }
+  }
+}

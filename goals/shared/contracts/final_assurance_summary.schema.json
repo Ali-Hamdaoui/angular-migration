@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/final_assurance_summary.schema.json",
+  "title": "final_assurance_summary",
+  "description": "Independent clean assurance result before delivery.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "candidate_fingerprint",
+    "technical_status",
+    "parity_status",
+    "source_integrity_status",
+    "g13_status",
+    "artifact_refs"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "technical_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parity_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_integrity_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "security_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "quality_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "g13_status": {
+      "enum": [
+        "pending",
+        "approved",
+        "approved_with_comment",
+        "modification_requested",
+        "rejected",
+        "stale"
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "artifact_ref.schema.json"
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "goal_id": "G09",
+  "dependencies": [
+    {
+      "id": "G04",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G07",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G08",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    }
+  ],
+  "consumed_contracts": [
+    "sealed_stage_output",
+    "stage_validation_summary",
+    "patch_apply_ledger",
+    "recovery_decision",
+    "assistant_answer",
+    "artifact_ref",
+    "durable_event_envelope"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "goal_id": "G10",
+  "head_sha": "<sha>",
+  "status": "PASS|FAIL|BLOCKED",
+  "documents": [],
+  "verified_references": [],
+  "mismatches": [],
+  "limitations": [],
+  "ready_for_final_audit": false
+}

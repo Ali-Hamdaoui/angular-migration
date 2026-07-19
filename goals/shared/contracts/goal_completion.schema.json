@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/goal_completion.schema.json",
+  "title": "goal_completion",
+  "description": "Evidence contract for branch, harness, and integrated completion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "goal_id",
+    "branch",
+    "base_sha",
+    "head_sha",
+    "goal_package_sha256",
+    "completion_level",
+    "jira_features",
+    "jira_subtasks",
+    "branch_ready",
+    "harness_ready",
+    "integration_verified",
+    "jira_complete",
+    "automated_tests",
+    "manual_tests",
+    "documentation",
+    "architecture_audit",
+    "product_audit",
+    "human_product_signoff",
+    "blocked_integrated_criteria",
+    "pushed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "3.0.0"
+    },
+    "goal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "goal_package_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "completion_level": {
+      "enum": [
+        "branch_ready",
+        "harness_ready",
+        "integration_verified"
+      ]
+    },
+    "jira_features": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "jira_subtasks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "branch_ready": {
+      "type": "boolean"
+    },
+    "harness_ready": {
+      "type": "boolean"
+    },
+    "integration_verified": {
+      "type": "boolean"
+    },
+    "jira_complete": {
+      "type": "boolean"
+    },
+    "automated_tests": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "manual_tests": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "documentation": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "architecture_audit": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "product_audit": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "human_product_signoff": {
+      "enum": [
+        "not_required",
+        "pending",
+        "approved",
+        "rejected"
+      ]
+    },
+    "blocked_integrated_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pushed": {
+      "type": "boolean"
+    },
+    "push_remote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "push_branch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "completion_level": {
+            "const": "integration_verified"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "integration_verified": {
+            "const": true
+          },
+          "jira_complete": {
+            "const": true
+          },
+          "human_product_signoff": {
+            "const": "approved"
+          },
+          "blocked_integrated_criteria": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "goal_id": {
+            "const": "G10"
+          },
+          "completion_level": {
+            "const": "harness_ready"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "harness_ready": {
+            "const": true
+          },
+          "integration_verified": {
+            "const": false
+          },
+          "jira_complete": {
+            "const": false
+          }
+        },
+        "required": [
+          "harness_ready"
+        ]
+      }
+    }
+  ]
+}

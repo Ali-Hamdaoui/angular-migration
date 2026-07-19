@@ -1,0 +1,17 @@
+{
+  "goal_id": "G03",
+  "dependencies": [
+    {
+      "id": "G02",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    }
+  ],
+  "consumed_contracts": [
+    "approved_stage_plan",
+    "stage_sandbox_ready",
+    "command_execution_record",
+    "artifact_ref",
+    "durable_event_envelope"
+  ]
+}

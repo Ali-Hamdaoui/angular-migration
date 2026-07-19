@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/command_authorization.schema.json",
+  "title": "command_authorization",
+  "description": "Structured shell-free authorization decision before process creation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authorization_id",
+    "run_id",
+    "stage_id",
+    "plan_id",
+    "command_id",
+    "executable",
+    "arguments",
+    "cwd_alias",
+    "execution_profile_id",
+    "decision",
+    "policy_version"
+  ],
+  "properties": {
+    "authorization_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "plan_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "command_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "executable": {
+      "type": "string",
+      "minLength": 1
+    },
+    "arguments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cwd_alias": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision": {
+      "enum": [
+        "accepted",
+        "rejected"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

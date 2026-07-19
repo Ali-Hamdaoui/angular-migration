@@ -1,0 +1,37 @@
+goal: G04
+base_branch: goal
+assigned_branch: hermes/04-stage-validation-seal
+worktree: /home/ubuntu/amfa-worktrees/04-stage-validation-seal
+runtime_root: /home/ubuntu/amfa-runtime/04-stage-validation-seal
+primary_or_new_paths:
+  - backend/app/services/stage_validation*.py
+  - backend/app/services/stage_seal*.py
+  - backend/app/domain/stage_validation*.py
+  - backend/app/api/routes/stage_validation*.py
+  - frontend/src/api/stageValidation*.ts
+  - frontend/src/components/StageValidation*.tsx
+shared_requires_declaration:
+  - backend/app/api/router.py
+  - backend/app/core/application.py
+  - backend/app/domain/contracts.py
+  - backend/app/orchestration/state.py
+  - backend/app/repositories/models/workflow.py
+  - backend/app/state/transition_service.py
+  - frontend/src/components/AuthoritativeRunDashboard.tsx
+  - frontend/src/hooks/useMigrationEvents.ts
+  - frontend/src/hooks/applyEventToRun.ts
+  - frontend/src/types/generated/api.ts
+  - shared/openapi.json
+  - frontend/package-lock.json
+  - backend/pyproject.toml
+  - backend/alembic/versions/**
+forbidden:
+  - another worktree or branch
+  - external Angular source
+  - repository-local runtime databases/artifacts/sandboxes/full Angular fixtures
+  - another goal implementation merely to satisfy a dependency
+rules:
+  - one writer at a time
+  - declare shared files before editing
+  - aggregate generated contracts are integration-coordinator owned
+  - record all shared edits and integration notes
