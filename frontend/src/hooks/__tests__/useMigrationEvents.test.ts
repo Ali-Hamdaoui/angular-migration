@@ -187,6 +187,23 @@ describe("useMigrationEvents", () => {
     expect(result.current.lastSequence).toBe(3);
   });
 
+  it("receives ordered plan events and suppresses duplicate plan delivery", async () => {
+    const { result, source } = renderWithSource();
+    await act(async () => {});
+
+    const migrationPlan = makeEvent("MIGRATION_PLAN_CREATED", "evt-plan-1", 1);
+    const stagePlan = makeEvent("STAGE_PLAN_CREATED", "evt-plan-2", 2);
+
+    act(() => {
+      source!.emit("MIGRATION_PLAN_CREATED", migrationPlan);
+      source!.emit("MIGRATION_PLAN_CREATED", migrationPlan);
+      source!.emit("STAGE_PLAN_CREATED", stagePlan);
+    });
+
+    expect(result.current.events).toEqual([migrationPlan, stagePlan]);
+    expect(result.current.lastSequence).toBe(2);
+  });
+
   it("requires snapshot recovery after a gap in Analysis events", async () => {
     const { result, source } = renderWithSource();
     await act(async () => {});

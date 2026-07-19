@@ -39,3 +39,21 @@ The versioned Analysis routes expose only registered artifact IDs and checksums:
 Analysis and G04 state changes use the Transition Service and emit durable
 `ANALYSIS_AGENT_*` and `G04_*` events. Raw model input, repository content,
 provider errors, and unsafe filesystem paths are not exposed by these routes.
+
+## S2-F06 MigrationPlan and StageExecutionPlan evidence
+
+The versioned planning routes expose immutable, checksum-bound plan evidence:
+
+- `POST /api/v1/runs/{runId}/plans` generates the family route and exact first
+  StageExecutionPlan from validated inputs, with the observed state version,
+  idempotency key, actor, and correlation metadata.
+- `GET /api/v1/runs/{runId}/plan` and
+  `GET /api/v1/runs/{runId}/stages/{stageId}/plan` return the registered plan,
+  stage contract, artifact IDs/checksums, and ordered event metadata.
+
+The service persists artifacts before the state transitions and emits
+`MIGRATION_PLAN_CREATED` followed by `STAGE_PLAN_CREATED`. Reads re-check
+artifact registration and content checksums; authorization, stale versions,
+unsupported builders, malformed structured commands, and provider failures
+fail closed with stable error codes and correlation IDs. No route executes a
+command, approves a plan, or accepts arbitrary artifact paths.
