@@ -3,8 +3,8 @@
   "goal_id": "G04",
   "branch": "hermes/04-stage-validation-seal",
   "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
-  "head_sha": "dcb96b3",
-  "goal_package_sha256": "<64-hex-sha256>",
+  "head_sha": "d28d6bb",
+  "goal_package_sha256": "skip-local-computation",
   "completion_level": "branch_ready",
   "jira_features": [
     "AMFA-149",
@@ -39,7 +39,8 @@
     "SSE event stream projection not wired in this branch",
     "Frontend components not compiled/tested (no Node.js runtime in this VM)"
   ],
-  "pushed": false,
+  "pushed": true,
   "push_remote": "origin",
-  "push_branch": "hermes/04-stage-validation-seal"
+  "push_branch": "hermes/04-stage-validation-seal",
+  "push_sha": "d28d6bb"
 }
