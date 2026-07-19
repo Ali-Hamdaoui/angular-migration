@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.api.stage_tests_contracts import StageTestRequest, StageTestResponse
 from app.services.stage_tests_application_service import (
-    StageTestApplicationError,
+    StageTestError,
     StageTestApplicationService,
 )
 
@@ -13,7 +13,7 @@ def get_service() -> StageTestApplicationService:
     return StageTestApplicationService()
 
 
-def _raise(error: StageTestApplicationError):
+def _raise(error: StageTestError):
     raise HTTPException(status_code=error.status_code, detail={"error_code": error.code, "message": error.message})
 
 
@@ -26,7 +26,7 @@ def execute_tests(
 ):
     try:
         return service.execute_tests(run_id, stage_id, request)
-    except StageTestApplicationError as error:
+    except StageTestError as error:
         _raise(error)
 
 

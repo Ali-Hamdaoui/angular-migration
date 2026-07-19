@@ -16,7 +16,7 @@ from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
 
 
-class StageTestApplicationError(ValueError):
+class StageTestError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 422):
         super().__init__(message)
         self.code = code
@@ -191,10 +191,10 @@ class StageTestApplicationService:
     def _run_and_stage(self, session, run_id, stage_id):
         run = session.get(MigrationRunModel, run_id)
         if run is None:
-            raise StageTestApplicationError("RUN_NOT_FOUND", "Migration run was not found.", 404)
+            raise StageTestError("RUN_NOT_FOUND", "Migration run was not found.", 404)
         stage = session.get(MigrationStageModel, stage_id)
         if stage is None:
-            raise StageTestApplicationError("STAGE_NOT_FOUND", "Migration stage was not found.", 404)
+            raise StageTestError("STAGE_NOT_FOUND", "Migration stage was not found.", 404)
         return run, stage
 
     def _transition(self, session, run, request, event_type, reason, payload, expected_state_version=None):
@@ -212,12 +212,12 @@ class StageTestApplicationService:
                 )
             )
         except StaleStateVersionError as error:
-            raise StageTestApplicationError("STALE_STATE_VERSION", str(error), 409) from error
+            raise StageTestError("STALE_STATE_VERSION", str(error), 409) from error
 
     @staticmethod
     def _require_state(run, expected):
         if run.state_version != expected:
-            raise StageTestApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
+            raise StageTestError("STALE_STATE_VERSION", "The run state version is stale.", 409)
 
     @staticmethod
     def _test_result_dict(result):

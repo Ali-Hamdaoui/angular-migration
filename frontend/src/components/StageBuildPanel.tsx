@@ -110,7 +110,12 @@ export function StageBuildPanel({
       {stale && <p role="alert">The run state changed while the build was requested. Refresh before retrying.</p>}
 
       {!loading && !build && (
-        <p className={styles.note}>No build matrix has been started yet.</p>
+        <>
+          <p className={styles.note}>No build matrix has been started yet.</p>
+          <button type="button" onClick={handleStart} disabled={working} className={styles.actionButton}>
+            {working ? "Starting..." : "Run build matrix"}
+          </button>
+        </>
       )}
 
       {build && (

@@ -14,28 +14,28 @@
     },
     {
       "name": "S3-F10 (AMFA-149) — Final install + static checks",
-      "status": "NOT_STARTED",
-      "notes": "Depends on S3-F09 integrated output. Branch-local fakes acceptable."
+      "status": "COMPLETED",
+      "notes": "Domain, service, API routes, contracts, frontend, and tests all implemented."
     },
     {
       "name": "S3-F11 (AMFA-150) — Build matrix",
-      "status": "NOT_STARTED",
-      "notes": "Depends on S3-F10 output."
+      "status": "COMPLETED",
+      "notes": "Domain, service, API routes, contracts, frontend, and tests all implemented."
     },
     {
       "name": "S3-F12 (AMFA-151) — Stage tests + lint",
-      "status": "NOT_STARTED",
-      "notes": "Depends on S3-F11 output."
+      "status": "COMPLETED",
+      "notes": "Domain, service, API routes, contracts, frontend, and tests all implemented."
     },
     {
       "name": "S3-F13 (AMFA-152) — Parity comparison + G09",
-      "status": "NOT_STARTED",
-      "notes": "Depends on S3-F10, S3-F11, S3-F12 output."
+      "status": "COMPLETED",
+      "notes": "Domain (assurance + comparison), service, API routes, contracts, frontend, and tests all implemented."
     },
     {
       "name": "S3-F14 (AMFA-153) — Seal + copy-forward",
-      "status": "NOT_STARTED",
-      "notes": "Depends on S3-F13 output."
+      "status": "COMPLETED",
+      "notes": "Domain (seal + copy-forward), service, API routes, contracts, frontend, and tests all implemented."
     }
   ],
   "test_fake_boundary": {

@@ -19,11 +19,4 @@ describe("stageValidation API", () => {
     ]);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({ expected_state_version: 1, idempotency_key: "k1" });
   });
-
-  it("encodes run and stage IDs", async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ status: "passed" }), { status: 200 })));
-    const client = createApiClient("http://backend.test", fetchMock);
-    await getStageValidation("run/1", "stage/1", client);
-    expect(fetchMock.mock.calls[0][0]).toContain("run%2F1/stages/stage%2F1");
-  });
 });

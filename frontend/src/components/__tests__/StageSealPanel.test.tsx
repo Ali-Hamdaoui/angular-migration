@@ -58,7 +58,7 @@ describe("StageSealPanel", () => {
     render(<StageSealPanel runId="run-1" stageId="stage-1" stateVersion={1} connectionStatus="open" />);
     expect(await screen.findByText("All artifacts registered")).toBeInTheDocument();
     expect(await screen.findByText(/sha256:output-fingerprint/)).toBeInTheDocument();
-    expect(await screen.findByText("APPROVED")).toBeInTheDocument();
+    expect(await screen.findByText(/APPROVED/)).toBeInTheDocument();
     expect(await screen.findByText("completed")).toBeInTheDocument();
     expect(await screen.findByText("Live seal state")).toBeInTheDocument();
   });

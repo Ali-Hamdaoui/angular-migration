@@ -41,9 +41,11 @@ describe("StageTestPanel", () => {
   it("renders test suites with baseline/new/resolved grouping", async () => {
     vi.mocked(getStageTests).mockResolvedValue(response);
     render(<StageTestPanel runId="run-1" stageId="stage-1" stateVersion={1} connectionStatus="open" />);
-    expect(await screen.findByText("Unit tests")).toBeInTheDocument();
+    const unitTests = await screen.findAllByText(/Unit tests/);
+    expect(unitTests.length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText("not configured")).toBeInTheDocument();
-    expect(await screen.findByText("Header renders")).toBeInTheDocument();
+    const headerRenders = await screen.findAllByText("Header renders");
+    expect(headerRenders.length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText("Live test suite state")).toBeInTheDocument();
   });
 

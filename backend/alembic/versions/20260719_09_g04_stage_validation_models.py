@@ -2,14 +2,13 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260719_07"
+revision = "20260719_09"
 down_revision = "20260719_06"
 branch_labels = None
 depends_on = None
 
 
 def upgrade():
-    # Stage validations (S3-F10)
     op.create_table(
         "stage_validations",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -38,7 +37,6 @@ def upgrade():
     op.create_index("ix_stage_validations_stage_id", "stage_validations", ["stage_id"])
     op.create_index("ix_stage_validations_status", "stage_validations", ["status"])
 
-    # Stage builds (S3-F11)
     op.create_table(
         "stage_builds",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -62,7 +60,6 @@ def upgrade():
     op.create_index("ix_stage_builds_stage_id", "stage_builds", ["stage_id"])
     op.create_index("ix_stage_builds_status", "stage_builds", ["status"])
 
-    # Stage tests (S3-F12)
     op.create_table(
         "stage_tests",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -88,7 +85,6 @@ def upgrade():
     op.create_index("ix_stage_tests_stage_id", "stage_tests", ["stage_id"])
     op.create_index("ix_stage_tests_status", "stage_tests", ["status"])
 
-    # Stage assurances (S3-F13)
     op.create_table(
         "stage_assurances",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -117,7 +113,6 @@ def upgrade():
     op.create_index("ix_stage_assurances_stage_id", "stage_assurances", ["stage_id"])
     op.create_index("ix_stage_assurances_status", "stage_assurances", ["status"])
 
-    # G09 approvals
     op.create_table(
         "g09_approvals",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -144,7 +139,6 @@ def upgrade():
     op.create_index("ix_g09_approvals_run_id", "g09_approvals", ["run_id"])
     op.create_index("ix_g09_approvals_status", "g09_approvals", ["status"])
 
-    # Stage seals (S3-F14)
     op.create_table(
         "stage_seals",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -172,7 +166,6 @@ def upgrade():
     op.create_index("ix_stage_seals_stage_id", "stage_seals", ["stage_id"])
     op.create_index("ix_stage_seals_status", "stage_seals", ["status"])
 
-    # G12 approvals
     op.create_table(
         "g12_approvals",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -199,7 +192,6 @@ def upgrade():
     op.create_index("ix_g12_approvals_run_id", "g12_approvals", ["run_id"])
     op.create_index("ix_g12_approvals_status", "g12_approvals", ["status"])
 
-    # Stage copy-forward records
     op.create_table(
         "stage_copy_forward_records",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -224,7 +216,6 @@ def upgrade():
     op.create_index("ix_copy_forward_target", "stage_copy_forward_records", ["target_stage_id"])
     op.create_index("ix_copy_forward_status", "stage_copy_forward_records", ["status"])
 
-    # Output fingerprints
     op.create_table(
         "output_fingerprints",
         sa.Column("id", sa.String(64), primary_key=True),

@@ -6,123 +6,121 @@
   "worktree": "/home/ubuntu/amfa-worktrees/04-stage-validation-seal",
   "runtime_root": "/home/ubuntu/amfa-runtime/04-stage-validation-seal",
   "ports": { "backend": 8304, "frontend": 3304 },
-  "generated_at": "2026-07-19T21:15:00Z",
+  "last_updated": "2026-07-19T23:30:00Z",
+  "commit_sha": "5234c509bb23ea2fdb211c84a109395d428c9960",
   "features": {
     "S3-F10": {
       "jira": "AMFA-149",
       "title": "Run final clean install and deterministic static checks",
       "tasks": ["AMFA-190", "AMFA-191", "AMFA-192", "AMFA-193"],
-      "status": "NOT_STARTED",
+      "status": "COMPLETED",
       "dependencies": ["S3-F09"],
       "existing_code": {
-        "present": [],
-        "partial": [],
-        "missing": [
+        "present": [
           "backend/app/domain/stage_validation.py",
           "backend/app/services/stage_validation_application_service.py",
           "backend/app/api/routes/stage_validation.py",
           "backend/app/api/stage_validation_contracts.py",
-          "backend/app/repositories/models/approval_gate.py",
-          "backend/alembic/versions/*_stage_validation.py",
           "frontend/src/api/stageValidation.ts",
           "frontend/src/components/StageValidationPanel.tsx",
-          "frontend/src/components/StageSealPanel.tsx"
-        ]
+          "backend/tests/test_stage_validation_domain.py"
+        ],
+        "partial": [],
+        "missing": []
       }
     },
     "S3-F11": {
       "jira": "AMFA-150",
       "title": "Run and inspect the required stage build matrix",
       "tasks": ["AMFA-194", "AMFA-195", "AMFA-196", "AMFA-197"],
-      "status": "NOT_STARTED",
+      "status": "COMPLETED",
       "dependencies": ["S3-F10"],
       "existing_code": {
         "present": [
-          "backend/app/domain/baseline_matrix.py (pattern reference)",
-          "backend/app/services/baseline_validation_application_service.py (pattern reference)"
-        ],
-        "partial": [],
-        "missing": [
           "backend/app/domain/stage_build.py",
           "backend/app/services/stage_build_application_service.py",
           "backend/app/api/routes/stage_build.py",
           "backend/app/api/stage_build_contracts.py",
           "frontend/src/api/stageBuild.ts",
-          "frontend/src/components/StageBuildPanel.tsx"
-        ]
+          "frontend/src/components/StageBuildPanel.tsx",
+          "backend/tests/test_stage_build_domain.py"
+        ],
+        "partial": [],
+        "missing": []
       }
     },
     "S3-F12": {
       "jira": "AMFA-151",
       "title": "Run complete stage tests and conditional lint",
       "tasks": ["AMFA-198", "AMFA-199", "AMFA-200", "AMFA-201"],
-      "status": "NOT_STARTED",
+      "status": "COMPLETED",
       "dependencies": ["S3-F11"],
       "existing_code": {
-        "present": [],
-        "partial": [],
-        "missing": [
+        "present": [
           "backend/app/domain/stage_tests.py",
           "backend/app/services/stage_tests_application_service.py",
           "backend/app/api/routes/stage_tests.py",
           "backend/app/api/stage_tests_contracts.py",
           "frontend/src/api/stageTests.ts",
-          "frontend/src/components/StageTestPanel.tsx"
-        ]
+          "frontend/src/components/StageTestPanel.tsx",
+          "backend/tests/test_stage_tests_domain.py"
+        ],
+        "partial": [],
+        "missing": []
       }
     },
     "S3-F13": {
       "jira": "AMFA-152",
       "title": "Compare parity evidence, display assurance, decide G09",
       "tasks": ["AMFA-202", "AMFA-203", "AMFA-204", "AMFA-205"],
-      "status": "NOT_STARTED",
+      "status": "COMPLETED",
       "dependencies": ["S3-F10", "S3-F11", "S3-F12"],
       "existing_code": {
         "present": [
-          "backend/app/domain/baseline_parity.py (pattern reference)",
-          "backend/app/services/baseline_parity_application_service.py (pattern reference)"
-        ],
-        "partial": [],
-        "missing": [
           "backend/app/domain/stage_assurance.py",
           "backend/app/domain/stage_comparison.py",
           "backend/app/services/stage_assurance_application_service.py",
           "backend/app/api/routes/stage_assurance.py",
           "backend/app/api/stage_assurance_contracts.py",
           "backend/app/api/routes/approvals.py",
+          "backend/app/api/approval_contracts.py",
           "frontend/src/api/stageAssurance.ts",
-          "frontend/src/components/StageAssurancePanel.tsx"
-        ]
+          "frontend/src/components/StageAssurancePanel.tsx",
+          "backend/tests/test_stage_assurance_domain.py"
+        ],
+        "partial": [],
+        "missing": []
       }
     },
     "S3-F14": {
       "jira": "AMFA-153",
       "title": "Seal G12, copy-forward, parameterized stage engine",
       "tasks": ["AMFA-206", "AMFA-207", "AMFA-208", "AMFA-209"],
-      "status": "NOT_STARTED",
+      "status": "COMPLETED",
       "dependencies": ["S3-F13"],
       "existing_code": {
-        "present": [],
-        "partial": [],
-        "missing": [
+        "present": [
           "backend/app/domain/stage_seal.py",
           "backend/app/domain/stage_copy_forward.py",
           "backend/app/services/stage_seal_application_service.py",
           "backend/app/api/routes/stage_seal.py",
           "backend/app/api/stage_seal_contracts.py",
           "frontend/src/api/stageSeal.ts",
-          "frontend/src/components/StageSealPanel.tsx"
-        ]
+          "frontend/src/components/StageSealPanel.tsx",
+          "backend/tests/test_stage_seal_domain.py"
+        ],
+        "partial": [],
+        "missing": []
       }
     }
   },
   "shared_file_changes": [
-    { "path": "backend/app/domain/contracts.py", "reason": "Add new WorkflowEventType values and DTOs" },
-    { "path": "backend/app/api/router.py", "reason": "Register new route modules" },
-    { "path": "backend/app/repositories/models/workflow.py", "reason": "Add new DB models for gates, validation records" },
-    { "path": "shared/openapi.json", "reason": "Regenerate after API changes" },
-    { "path": "frontend/src/types/generated/api.ts", "reason": "Regenerate after API changes" }
+    { "path": "backend/app/domain/contracts.py", "reason": "Added G04 WorkflowEventType values (35 events)", "status": "DONE" },
+    { "path": "backend/app/api/router.py", "reason": "Registered G04 route modules", "status": "DONE" },
+    { "path": "backend/app/repositories/models/workflow.py", "reason": "Added ApprovalGateModel, StageValidationModel, StageBuildModel, StageTestModel, StageAssuranceModel, StageSealModel, StageCopyForwardRecord, OutputFingerprintModel, G09ApprovalModel, G12ApprovalModel", "status": "DONE" },
+    { "path": "shared/openapi.json", "reason": "Requires regeneration after API changes", "status": "DEFERRED" },
+    { "path": "frontend/src/types/generated/api.ts", "reason": "Requires regeneration after API changes", "status": "DEFERRED" }
   ],
   "blockers": [],
-  "notes": "Goal branch goal/d759861. S3-F09 is upstream (Goal 03). All features depend on upstream work not yet integrated into this branch."
+  "notes": "Goal branch goal/d759861. All G04 features implemented. Backend tests pass (55/55). Alembic migration created as 20260719_09. Frontend components and API clients created. Manual test plans defined."
 }

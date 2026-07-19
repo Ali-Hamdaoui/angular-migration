@@ -136,7 +136,12 @@ export function StageValidationPanel({
       {stale && <p role="alert">The run state changed while validation was requested. Refresh before retrying.</p>}
 
       {!loading && !validation && (
-        <p className={styles.note}>No stage validation has been started yet.</p>
+        <>
+          <p className={styles.note}>No stage validation has been started yet.</p>
+          <button type="button" onClick={handleStart} disabled={working} className={styles.actionButton}>
+            {working ? "Starting..." : "Run validation"}
+          </button>
+        </>
       )}
 
       {validation && (
