@@ -51,7 +51,7 @@
     "JobSupervisor cancellation operates through DB/cancel flags; real process-tree kill requires async supervisor thread",
     "Shell enforcement is structural (no shell field in DTO); additional cmd.exe wrapping detection not implemented"
   ],
-  "pushed": false,
-  "push_remote": null,
-  "push_branch": null
+  "pushed": true,
+  "push_remote": "origin",
+  "push_branch": "hermes/01-command-runtime"
 }
