@@ -413,3 +413,244 @@ class SourceSnapshotModel(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ApprovalGateModel(Base):
+    """Persist approval gate decisions bound to a run."""
+    __tablename__ = "workflow_approval_gates"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_workflow_approval_gates_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    gate_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    decision: Mapped[str | None] = mapped_column(String(64))
+    package_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_set_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    comment: Mapped[str | None] = mapped_column(Text)
+    stale_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageValidationModel(Base):
+    """Persist final install and static checks results for a stage validation run."""
+    __tablename__ = "stage_validations"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", name="uq_stage_validations_run_stage"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    step_config: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    install_succeeded: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    all_checks_passed: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    check_results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    install_log_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    static_checks_report_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    dependency_tree_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    validation_summary_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageBuildModel(Base):
+    """Persist per-target build results for a stage."""
+    __tablename__ = "stage_builds"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", name="uq_stage_builds_run_stage"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    per_target_statuses: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    parser_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageTestModel(Base):
+    """Persist test and conditional lint results for a stage."""
+    __tablename__ = "stage_tests"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", name="uq_stage_tests_run_stage"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    test_status: Mapped[str | None] = mapped_column(String(32))
+    lint_status: Mapped[str | None] = mapped_column(String(32))
+    test_results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    lint_results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    failure_comparison: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageAssuranceModel(Base):
+    """Persist parity comparison and assurance dimensions for a stage."""
+    __tablename__ = "stage_assurances"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", name="uq_stage_assurances_run_stage"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    comparison_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    assurance_dimensions: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    route_comparison_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    backend_comparison_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    risk_rollup_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    parity_checklist_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    assurance_summary_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    g09_package_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageSealModel(Base):
+    """Persist stage seal output fingerprint and completeness report."""
+    __tablename__ = "stage_seals"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", name="uq_stage_seals_run_stage"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    output_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    completeness_report: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    cleanup_report_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    cleanliness_report_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    output_manifest_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    stage_evidence_index_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    g12_package_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageCopyForwardRecord(Base):
+    """Persist copy-forward between stages."""
+    __tablename__ = "stage_copy_forward_records"
+    __table_args__ = (UniqueConstraint("run_id", "source_stage_id", name="uq_copy_forward_run_source"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    source_stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    target_stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    next_stage_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sandbox_ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OutputFingerprintModel(Base):
+    """Persist output fingerprint snapshot for a stage."""
+    __tablename__ = "output_fingerprints"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", name="uq_output_fingerprints_run_stage"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    fingerprint: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class G09ApprovalModel(Base):
+    """Persist G09 validation gate approval records."""
+    __tablename__ = "g09_approvals"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_g09_approvals_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    gate_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    decision: Mapped[str | None] = mapped_column(String(64))
+    package_checksum: Mapped[str | None] = mapped_column(String(128))
+    artifact_set_checksum: Mapped[str | None] = mapped_column(String(128))
+    workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    plan_version: Mapped[str | None] = mapped_column(String(128))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    comment: Mapped[str | None] = mapped_column(Text)
+    stale_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class G12ApprovalModel(Base):
+    """Persist G12 seal gate approval records."""
+    __tablename__ = "g12_approvals"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_g12_approvals_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    gate_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    decision: Mapped[str | None] = mapped_column(String(64))
+    package_checksum: Mapped[str | None] = mapped_column(String(128))
+    artifact_set_checksum: Mapped[str | None] = mapped_column(String(128))
+    workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    comment: Mapped[str | None] = mapped_column(Text)
+    stale_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

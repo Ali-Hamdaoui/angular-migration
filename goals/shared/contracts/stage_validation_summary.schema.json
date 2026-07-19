@@ -1,67 +1,29 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://amfa.local/contracts/stage_validation_summary.schema.json",
-  "title": "stage_validation_summary",
-  "description": "Normal stage validation evidence; repair validation returns here.",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://amfa.nousresearch.com/contracts/stage_validation_summary.schema.json",
+  "title": "StageValidationSummary",
+  "description": "Aggregated validation summary for a single migration stage across all S3-F10/F11/F12/F13 results.",
   "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "run_id",
-    "stage_id",
-    "workspace_fingerprint",
-    "technical_status",
-    "parity_status",
-    "core_gates",
-    "g09_status"
-  ],
   "properties": {
-    "run_id": {
+    "run_id": {"type": "string", "description": "Migration run identifier"},
+    "stage_id": {"type": "string", "description": "Stage identifier"},
+    "validation_status": {"type": ["string", "null"], "description": "Status of final install + static checks (S3-F10)"},
+    "build_status": {"type": ["string", "null"], "description": "Status of build matrix (S3-F11)"},
+    "test_status": {"type": ["string", "null"], "description": "Status of test suite (S3-F12)"},
+    "lint_status": {"type": ["string", "null"], "description": "Status of lint checks (S3-F12)"},
+    "assurance_status": {"type": ["string", "null"], "description": "Status of parity comparison / assurance (S3-F13)"},
+    "aggregate_status": {
       "type": "string",
-      "minLength": 1
+      "enum": ["not_started", "running", "passed", "failed", "blocked", "completed"],
+      "description": "Aggregated status across all validation dimensions"
     },
-    "stage_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "workspace_fingerprint": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "technical_status": {
-      "type": "string",
-      "minLength": 1
-    },
-    "parity_status": {
-      "type": "string",
-      "minLength": 1
-    },
-    "core_gates": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      }
-    },
-    "manual_items": {
+    "artifact_ids": {
       "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "items": {"type": "string"},
+      "description": "All artifact IDs produced across validation"
     },
-    "g09_status": {
-      "enum": [
-        "pending",
-        "approved",
-        "approved_with_comment",
-        "modification_requested",
-        "rejected",
-        "stale"
-      ]
-    },
-    "artifact_refs": {
-      "type": "array",
-      "items": {
-        "$ref": "artifact_ref.schema.json"
-      }
-    }
-  }
+    "state_version": {"type": "integer", "description": "Optimistic concurrency version"},
+    "event_sequence": {"type": "integer", "description": "Last workflow event sequence number"}
+  },
+  "required": ["run_id", "stage_id", "aggregate_status", "state_version", "event_sequence"]
 }

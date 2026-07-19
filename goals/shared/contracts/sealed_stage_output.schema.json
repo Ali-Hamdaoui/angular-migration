@@ -1,53 +1,60 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://amfa.local/contracts/sealed_stage_output.schema.json",
-  "title": "sealed_stage_output",
-  "description": "Clean approved stage output and copy-forward boundary.",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://amfa.nousresearch.com/contracts/sealed_stage_output.schema.json",
+  "title": "SealedStageOutput",
+  "description": "Fingerprint and completeness report for a sealed stage (S3-F14).",
   "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "run_id",
-    "stage_id",
-    "output_fingerprint",
-    "g12_approval_id",
-    "next_stage_input_status",
-    "artifact_index"
-  ],
   "properties": {
-    "run_id": {
+    "run_id": {"type": "string", "description": "Migration run identifier"},
+    "stage_id": {"type": "string", "description": "Stage identifier"},
+    "seal_status": {
       "type": "string",
-      "minLength": 1
-    },
-    "stage_id": {
-      "type": "string",
-      "minLength": 1
+      "enum": ["pending", "cleanup_in_progress", "cleanup_completed", "waiting_approval", "sealed", "failed"],
+      "description": "Current seal status"
     },
     "output_fingerprint": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
+      "type": "object",
+      "properties": {
+        "file_count": {"type": "integer", "description": "Number of output files"},
+        "total_size_bytes": {"type": "integer", "description": "Total size of output files in bytes"},
+        "checksum": {"type": "string", "description": "SHA-256 checksum of output manifest"},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {"type": "string"},
+              "size_bytes": {"type": "integer"},
+              "checksum": {"type": "string"}
+            }
+          },
+          "description": "List of output files with metadata"
+        }
+      },
+      "description": "Stable fingerprint of stage output"
     },
-    "g12_approval_id": {
-      "type": "string",
-      "minLength": 1
+    "completeness_report": {
+      "type": "object",
+      "properties": {
+        "all_steps_completed": {"type": "boolean"},
+        "validation_passed": {"type": "boolean"},
+        "build_passed": {"type": "boolean"},
+        "tests_passed": {"type": "boolean"},
+        "assurance_completed": {"type": "boolean"},
+        "artifact_count": {"type": "integer"},
+        "evidence_count": {"type": "integer"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      },
+      "description": "Detailed completeness report"
     },
-    "next_stage_input_status": {
-      "enum": [
-        "ready",
-        "final_stage",
-        "blocked"
-      ]
-    },
-    "next_stage_id": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "artifact_index": {
+    "artifact_ids": {
       "type": "array",
-      "items": {
-        "$ref": "artifact_ref.schema.json"
-      }
-    }
-  }
+      "items": {"type": "string"},
+      "description": "Artifact IDs for seal evidence"
+    },
+    "state_version": {"type": "integer", "description": "Optimistic concurrency version"},
+    "event_sequence": {"type": "integer", "description": "Last workflow event sequence number"}
+  },
+  "required": ["run_id", "stage_id", "seal_status", "state_version", "event_sequence"]
 }

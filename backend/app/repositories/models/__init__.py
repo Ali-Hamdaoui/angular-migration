@@ -39,7 +39,16 @@ from app.repositories.models.workflow import (
     SourceSnapshotModel,
     WorkflowEventModel,
     WorkerLeaseModel,
+    ApprovalGateModel,
+    StageValidationModel,
+    StageBuildModel,
+    StageTestModel,
+    StageAssuranceModel,
+    StageSealModel,
+    StageCopyForwardRecord,
+    OutputFingerprintModel,
 )
+
 from app.repositories.analysis_models import AnalysisMetadataModel, G04ApprovalModel
 from app.repositories.compatibility_models import (
     CompatibilityCatalogueModel,
@@ -112,4 +121,14 @@ __all__ = [
     "PreflightEventModel",
     "PreflightModel",
     "UserDecisionModel",
+    "ApprovalGateModel",
+    "StageValidationModel",
+    "StageBuildModel",
+    "StageTestModel",
+    "StageAssuranceModel",
+    "StageSealModel",
+    "StageCopyForwardRecord",
+    "OutputFingerprintModel",
+    "G09ApprovalModel",
+    "G12ApprovalModel",
 ]

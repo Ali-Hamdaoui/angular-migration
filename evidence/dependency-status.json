@@ -1,0 +1,44 @@
+{
+  "goal": "G04",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "dependencies": [
+    {
+      "name": "Sprint 2 (S2-F01 through S2-F09)",
+      "status": "INTEGRATED_IN_BASE",
+      "notes": "All Sprint 2 features are merged into the goal branch. Read-only dependency."
+    },
+    {
+      "name": "S3-F09 / G03 (Angular Transform Review)",
+      "status": "NOT_INTEGRATED",
+      "notes": "Upstream dependency for S3-F10. Goal 03 runs in parallel worktree. Branch-local implementation uses test fakes / consuming ports. Full integration after merge."
+    },
+    {
+      "name": "S3-F10 (AMFA-149) — Final install + static checks",
+      "status": "NOT_STARTED",
+      "notes": "Depends on S3-F09 integrated output. Branch-local fakes acceptable."
+    },
+    {
+      "name": "S3-F11 (AMFA-150) — Build matrix",
+      "status": "NOT_STARTED",
+      "notes": "Depends on S3-F10 output."
+    },
+    {
+      "name": "S3-F12 (AMFA-151) — Stage tests + lint",
+      "status": "NOT_STARTED",
+      "notes": "Depends on S3-F11 output."
+    },
+    {
+      "name": "S3-F13 (AMFA-152) — Parity comparison + G09",
+      "status": "NOT_STARTED",
+      "notes": "Depends on S3-F10, S3-F11, S3-F12 output."
+    },
+    {
+      "name": "S3-F14 (AMFA-153) — Seal + copy-forward",
+      "status": "NOT_STARTED",
+      "notes": "Depends on S3-F13 output."
+    }
+  ],
+  "test_fake_boundary": {
+    "upstream_s3_f09": "Define local Python Protocol/port for transformation result intake. Use a test fake that returns plausible final install/static-check targets. Never implement the upstream production service."
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "goal": "G04",
+  "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "shared_file_changes_declared": [
+    {
+      "path": "backend/app/domain/contracts.py",
+      "reason": "Add WorkflowEventType values for G04 (VALIDATION_FINAL_INSTALL_*, STATIC_CHECKS_*, STAGE_BUILD_*, STAGE_TESTS_*, STAGE_LINT_*, PARITY_COMPARISON_*, STAGE_CLEANUP_*, STAGE_WAITING_APPROVAL, STAGE_COMPLETED, STAGE_SEALED, NEXT_STAGE_*, COPY_FORWARD_*, G09_*, G12_*)",
+      "owner": "G04",
+      "status": "DONE"
+    },
+    {
+      "path": "backend/app/repositories/models/workflow.py",
+      "reason": "Add ApprovalGateModel, StageValidationModel, StageBuildModel, StageTestModel, StageAssuranceModel, StageSealModel, StageCopyForwardRecord, OutputFingerprintModel",
+      "owner": "G04",
+      "status": "PLANNED"
+    },
+    {
+      "path": "backend/app/api/router.py",
+      "reason": "Register new route modules: stage_validation, stage_build, stage_tests, stage_assurance, stage_seal, approvals (if separate)",
+      "owner": "G04",
+      "status": "PLANNED"
+    },
+    {
+      "path": "backend/alembic/versions/",
+      "reason": "New migration for G04 models (stage validation, build, test, assurance, seal, gates, copy-forward)",
+      "owner": "G04",
+      "status": "PLANNED"
+    }
+  ],
+  "owned_new_paths": [
+    "backend/app/domain/stage_validation.py",
+    "backend/app/domain/stage_build.py",
+    "backend/app/domain/stage_tests.py",
+    "backend/app/domain/stage_assurance.py",
+    "backend/app/domain/stage_comparison.py",
+    "backend/app/domain/stage_seal.py",
+    "backend/app/domain/stage_copy_forward.py",
+    "backend/app/services/stage_validation_application_service.py",
+    "backend/app/services/stage_build_application_service.py",
+    "backend/app/services/stage_tests_application_service.py",
+    "backend/app/services/stage_assurance_application_service.py",
+    "backend/app/services/stage_seal_application_service.py",
+    "backend/app/api/routes/stage_validation.py",
+    "backend/app/api/routes/stage_build.py",
+    "backend/app/api/routes/stage_tests.py",
+    "backend/app/api/routes/stage_assurance.py",
+    "backend/app/api/routes/stage_seal.py",
+    "backend/app/api/routes/approvals.py",
+    "backend/app/api/stage_validation_contracts.py",
+    "backend/app/api/stage_build_contracts.py",
+    "backend/app/api/stage_tests_contracts.py",
+    "backend/app/api/stage_assurance_contracts.py",
+    "backend/app/api/stage_seal_contracts.py",
+    "backend/app/api/approval_contracts.py",
+    "frontend/src/api/stageValidation.ts",
+    "frontend/src/api/stageBuild.ts",
+    "frontend/src/api/stageTests.ts",
+    "frontend/src/api/stageAssurance.ts",
+    "frontend/src/api/stageSeal.ts",
+    "frontend/src/components/StageValidationPanel.tsx",
+    "frontend/src/components/StageBuildPanel.tsx",
+    "frontend/src/components/StageTestPanel.tsx",
+    "frontend/src/components/StageAssurancePanel.tsx",
+    "frontend/src/components/StageSealPanel.tsx",
+    "backend/tests/test_stage_validation_domain.py",
+    "backend/tests/test_stage_build_domain.py",
+    "backend/tests/test_stage_tests_domain.py",
+    "backend/tests/test_stage_assurance_domain.py",
+    "backend/tests/test_stage_seal_domain.py"
+  ]
+}
