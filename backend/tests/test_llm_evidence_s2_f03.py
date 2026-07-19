@@ -50,7 +50,7 @@ def fixture(tmp_path: Path):
 
 
 def request(key='smoke-1', version=1):
-    return LlmSmokeRequest(run_id='run-1', expected_state_version=version, idempotency_key=key, actor='operator', correlation_id='corr-1')
+    return LlmSmokeRequest(run_id='run-1', expected_state_version=version, idempotency_key=key, correlation_id='corr-1')
 
 
 def test_smoke_persists_immutable_artifacts_usage_and_ordered_events(tmp_path):
@@ -82,7 +82,7 @@ def test_smoke_rejects_stale_and_idempotency_conflict_before_duplicate_side_effe
     assert stale.value.code == 'STALE_STATE_VERSION'
     service.smoke(request())
     with pytest.raises(Exception) as conflict:
-        service.smoke(LlmSmokeRequest(run_id='run-1', expected_state_version=1, idempotency_key='smoke-1', actor='operator', correlation_id='different'))
+        service.smoke(LlmSmokeRequest(run_id='run-1', expected_state_version=1, idempotency_key='smoke-1', correlation_id='different'))
     assert conflict.value.code == 'IDEMPOTENCY_KEY_REUSED'
     engine.dispose()
 

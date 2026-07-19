@@ -16,12 +16,16 @@ class LlmGatewayModel(BaseModel):
 
 class LlmTaskType(str, Enum):
     ANALYSIS_SUMMARY = "analysis_summary"
+    ANALYSIS_REVIEW = "analysis_review"
     PLAN_RATIONALE = "plan_rationale"
+    PLANNING_REVIEW = "planning_review"
     TRANSFORMATION_EXPLANATION = "transformation_explanation"
     VALIDATION_CLASSIFICATION = "validation_classification"
     REPAIR_DIAGNOSIS = "repair_diagnosis"
+    REPAIR_REVIEW = "repair_review"
     REPORT_SUMMARY = "report_summary"
     ASSISTANT_RESPONSE = "assistant_response"
+    SMOKE_CHECK = "smoke_check"
 
 
 class LlmRole(str, Enum):
@@ -62,6 +66,7 @@ class LlmRequest(LlmGatewayModel):
     response_schema: str = Field(min_length=1)
     max_output_tokens: int = Field(default=512, gt=0)
     role: LlmRole = LlmRole.ASSISTANT
+    prompt_name: str | None = None
 
     @model_validator(mode="after")
     def require_untrusted_labels_for_repository_context(self) -> "LlmRequest":

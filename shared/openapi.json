@@ -734,6 +734,133 @@
         "title": "AuthoritativeRunStateDto",
         "type": "object"
       },
+      "BaselineAssessmentResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "assessment_id": {
+            "title": "Assessment Id",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "evidence_confidence": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Evidence Confidence",
+            "type": "object"
+          },
+          "evidence_set_checksum": {
+            "title": "Evidence Set Checksum",
+            "type": "string"
+          },
+          "execution_profile_checksum": {
+            "title": "Execution Profile Checksum",
+            "type": "string"
+          },
+          "g03_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "G03 Decision"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "known_failures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Known Failures",
+            "type": "array"
+          },
+          "package_checksum": {
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sandbox_fingerprint": {
+            "title": "Sandbox Fingerprint",
+            "type": "string"
+          },
+          "stale_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Reason"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "assessment_id",
+          "status",
+          "policy",
+          "policy_version",
+          "evidence_set_checksum",
+          "sandbox_fingerprint",
+          "execution_profile_checksum",
+          "package_checksum",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "BaselineAssessmentResponse",
+        "type": "object"
+      },
       "BaselineInstallAuthorizationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1023,6 +1150,191 @@
         "title": "BaselineInstallResponse",
         "type": "object"
       },
+      "BaselineParityCaptureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "prerequisite_artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Checksums",
+            "type": "object"
+          },
+          "prerequisite_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "BaselineParityCaptureRequest",
+        "type": "object"
+      },
+      "BaselineParityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "anchors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Anchors",
+            "type": "array"
+          },
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "backend_integration": {
+            "additionalProperties": true,
+            "title": "Backend Integration",
+            "type": "object"
+          },
+          "baseline_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Checksum"
+          },
+          "confidence": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Confidence",
+            "type": "object"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "failures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Failures",
+            "type": "array"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "parser_version": {
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "routes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "runtime_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Checksum"
+          },
+          "runtime_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Profile Id"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Artifact Ids",
+            "type": "array"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "evidence_id",
+          "status",
+          "schema_version",
+          "parser_version",
+          "baseline_checksum",
+          "runtime_profile_id",
+          "runtime_checksum",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "BaselineParityResponse",
+        "type": "object"
+      },
       "BaselinePrequalifyRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1055,6 +1367,60 @@
           "actor"
         ],
         "title": "BaselinePrequalifyRequest",
+        "type": "object"
+      },
+      "BaselineQualifyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "company_policy_allows_known_failures": {
+            "default": false,
+            "title": "Company Policy Allows Known Failures",
+            "type": "boolean"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "policy": {
+            "default": "strict_clean",
+            "pattern": "^(strict_clean|qualified_known_failures)$",
+            "title": "Policy",
+            "type": "string"
+          },
+          "prerequisite_artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Checksums",
+            "type": "object"
+          },
+          "prerequisite_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "BaselineQualifyRequest",
         "type": "object"
       },
       "BaselineResponse": {
@@ -1953,6 +2319,63 @@
         "title": "DeliveryStatus",
         "type": "string"
       },
+      "DetectedVersion": {
+        "properties": {
+          "confidence": {
+            "default": "unknown",
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "unknown"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "declared": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declared"
+          },
+          "family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family"
+          },
+          "package": {
+            "title": "Package",
+            "type": "string"
+          },
+          "resolved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved"
+          }
+        },
+        "required": [
+          "package"
+        ],
+        "title": "DetectedVersion",
+        "type": "object"
+      },
       "DeterministicComponentType": {
         "enum": [
           "SourceIntakeValidator",
@@ -2022,6 +2445,134 @@
           "generated_at"
         ],
         "title": "DiagnosticsSummaryDto",
+        "type": "object"
+      },
+      "DiscoveryCaptureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "prerequisite_artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Checksums",
+            "type": "object"
+          },
+          "prerequisite_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Prerequisite Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "actor",
+          "prerequisite_artifact_ids"
+        ],
+        "title": "DiscoveryCaptureRequest",
+        "type": "object"
+      },
+      "DiscoveryEvidenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "discovery_id": {
+            "title": "Discovery Id",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "prerequisite_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Ids",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "scanner_results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Scanner Results",
+            "type": "array"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "discovery_id",
+          "status",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "DiscoveryEvidenceResponse",
         "type": "object"
       },
       "EnvironmentCapabilityResult": {
@@ -2788,6 +3339,53 @@
         "title": "G02ReviewResponse",
         "type": "object"
       },
+      "G03DecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decision": {
+            "pattern": "^(approved|modification_requested|rejected)$",
+            "title": "Decision",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "actor",
+          "decision"
+        ],
+        "title": "G03DecisionRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2812,6 +3410,332 @@
           "status"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "LlmActivityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "invocations": {
+            "items": {
+              "$ref": "#/components/schemas/LlmInvocationResponse"
+            },
+            "title": "Invocations",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "LlmActivityResponse",
+        "type": "object"
+      },
+      "LlmInvocationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "artifact_links": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Links",
+            "type": "object"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "deployment_alias": {
+            "title": "Deployment Alias",
+            "type": "string"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "input_cost_usd": {
+            "default": 0.0,
+            "title": "Input Cost Usd",
+            "type": "number"
+          },
+          "input_hashes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Hashes",
+            "type": "array"
+          },
+          "input_tokens": {
+            "default": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "invocation_id": {
+            "title": "Invocation Id",
+            "type": "string"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "model_capability": {
+            "default": "responses_json_schema",
+            "title": "Model Capability",
+            "type": "string"
+          },
+          "output_cost_usd": {
+            "default": 0.0,
+            "title": "Output Cost Usd",
+            "type": "number"
+          },
+          "output_tokens": {
+            "default": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "pricing_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Version"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "redacted_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redacted Summary"
+          },
+          "retries": {
+            "default": 0,
+            "title": "Retries",
+            "type": "integer"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "in_progress",
+              "completed",
+              "failed",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "task_type": {
+            "title": "Task Type",
+            "type": "string"
+          },
+          "total_cost_usd": {
+            "default": 0.0,
+            "title": "Total Cost Usd",
+            "type": "number"
+          },
+          "total_tokens": {
+            "default": 0,
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "invocation_id",
+          "run_id",
+          "status",
+          "role",
+          "task_type",
+          "provider",
+          "deployment_alias",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "LlmInvocationResponse",
+        "type": "object"
+      },
+      "LlmReadinessResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment_configured": {
+            "title": "Deployment Configured",
+            "type": "boolean"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "model_capability": {
+            "title": "Model Capability",
+            "type": "string"
+          },
+          "provider": {
+            "default": "azure_openai",
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "deployment_configured",
+          "model_capability"
+        ],
+        "title": "LlmReadinessResponse",
+        "type": "object"
+      },
+      "LlmSmokeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "expected_state_version",
+          "idempotency_key"
+        ],
+        "title": "LlmSmokeRequest",
         "type": "object"
       },
       "LlmUsageRecordDto": {
@@ -2878,6 +3802,70 @@
           "created_at"
         ],
         "title": "LlmUsageRecordDto",
+        "type": "object"
+      },
+      "LlmUsageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "input_cost_usd": {
+            "title": "Input Cost Usd",
+            "type": "number"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "invocation_count": {
+            "title": "Invocation Count",
+            "type": "integer"
+          },
+          "output_cost_usd": {
+            "title": "Output Cost Usd",
+            "type": "number"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "pricing_versions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pricing Versions",
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "total_cost_usd": {
+            "title": "Total Cost Usd",
+            "type": "number"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "invocation_count",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "input_cost_usd",
+          "output_cost_usd",
+          "total_cost_usd"
+        ],
+        "title": "LlmUsageResponse",
         "type": "object"
       },
       "LocalStorageReadiness": {
@@ -3344,6 +4332,124 @@
           "message"
         ],
         "title": "OperationResultDto",
+        "type": "object"
+      },
+      "ParityBaselineCaptureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "prerequisite_artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Checksums",
+            "type": "object"
+          },
+          "prerequisite_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Prerequisite Artifact Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "prerequisite_artifact_ids"
+        ],
+        "title": "ParityBaselineCaptureRequest",
+        "type": "object"
+      },
+      "ParityBaselineResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "prerequisite_artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Prerequisite Artifact Ids",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "evidence_id",
+          "status",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "ParityBaselineResponse",
         "type": "object"
       },
       "PatchLedgerEntryDto": {
@@ -4330,6 +5436,17 @@
       },
       "RuntimeInventoryEntry": {
         "properties": {
+          "attempted_executable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempted Executable"
+          },
           "executable": {
             "anyOf": [
               {
@@ -4362,6 +5479,28 @@
             ],
             "title": "Name",
             "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
           },
           "status": {
             "enum": [
@@ -4399,6 +5538,130 @@
         ],
         "title": "SnapshotStatus",
         "type": "string"
+      },
+      "SourceAnalysisRequest": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "idempotency_key": {
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "source_path": {
+            "minLength": 1,
+            "title": "Source Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_path",
+          "idempotency_key"
+        ],
+        "title": "SourceAnalysisRequest",
+        "type": "object"
+      },
+      "SourceAnalysisResult": {
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/SourceAnalysisSnapshot"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "SourceAnalysisResult",
+        "type": "object"
+      },
+      "SourceAnalysisSnapshot": {
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "lockfile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lockfile"
+          },
+          "package_manager": {
+            "title": "Package Manager",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "review_required",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "topology": {
+            "$ref": "#/components/schemas/WorkspaceTopology"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/DetectedVersion"
+            },
+            "title": "Versions",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "analysis_id",
+          "policy_version",
+          "status",
+          "source_path",
+          "package_manager",
+          "lockfile",
+          "versions",
+          "topology",
+          "checksum"
+        ],
+        "title": "SourceAnalysisSnapshot",
+        "type": "object"
       },
       "SourceSnapshotDto": {
         "additionalProperties": false,
@@ -4964,6 +6227,41 @@
         ],
         "title": "WorkflowEventDto",
         "type": "object"
+      },
+      "WorkspaceTopology": {
+        "properties": {
+          "classification": {
+            "default": "unknown",
+            "title": "Classification",
+            "type": "string"
+          },
+          "has_custom_builder": {
+            "default": false,
+            "title": "Has Custom Builder",
+            "type": "boolean"
+          },
+          "is_nx": {
+            "default": false,
+            "title": "Is Nx",
+            "type": "boolean"
+          },
+          "libraries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Libraries",
+            "type": "array"
+          },
+          "projects": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Projects",
+            "type": "array"
+          }
+        },
+        "title": "WorkspaceTopology",
+        "type": "object"
       }
     }
   },
@@ -4985,6 +6283,22 @@
             "schema": {
               "title": "Artifact Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -5137,6 +6451,86 @@
         "summary": "Read service health",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/llm/readiness": {
+      "get": {
+        "operationId": "readiness_api_v1_llm_readiness_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "llm"
+        ]
+      }
+    },
+    "/api/v1/llm/smoke": {
+      "post": {
+        "operationId": "smoke_api_v1_llm_smoke_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmSmokeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmInvocationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Smoke",
+        "tags": [
+          "llm"
         ]
       }
     },
@@ -5359,6 +6753,22 @@
               "title": "Run Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
           }
         ],
         "responses": {
@@ -5413,6 +6823,22 @@
             "schema": {
               "title": "Artifact Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -5945,6 +7371,58 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/approvals/G03/decisions": {
+      "post": {
+        "operationId": "decide_api_v1_runs__run_id__approvals_G03_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G03DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineAssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide",
+        "tags": [
+          "baseline-g03"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/approvals/{gate_id}": {
       "get": {
         "operationId": "inspect_g02_api_v1_runs__run_id__approvals__gate_id__get",
@@ -6160,6 +7638,90 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/baseline/anchors": {
+      "get": {
+        "operationId": "anchors_api_v1_runs__run_id__baseline_anchors_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Anchors",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/baseline/backend-integration": {
+      "get": {
+        "operationId": "backend_integration_api_v1_runs__run_id__baseline_backend_integration_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backend Integration",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/baseline/builds": {
       "post": {
         "operationId": "execute_builds_api_v1_runs__run_id__baseline_builds_post",
@@ -6209,6 +7771,48 @@
         "summary": "Execute Builds",
         "tags": [
           "baseline-validation"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/baseline/failures": {
+      "get": {
+        "operationId": "failures_api_v1_runs__run_id__baseline_failures_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Failures",
+        "tags": [
+          "baseline-parity"
         ]
       }
     },
@@ -6368,6 +7972,58 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/baseline/parity": {
+      "post": {
+        "operationId": "capture_api_v1_runs__run_id__baseline_parity_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BaselineParityCaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/baseline/prequalify": {
       "post": {
         "operationId": "prequalify_baseline_api_v1_runs__run_id__baseline_prequalify_post",
@@ -6417,6 +8073,142 @@
         "summary": "Prequalify Baseline",
         "tags": [
           "baseline"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/baseline/qualify": {
+      "post": {
+        "operationId": "qualify_api_v1_runs__run_id__baseline_qualify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BaselineQualifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineAssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Qualify",
+        "tags": [
+          "baseline-g03"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/baseline/routes": {
+      "get": {
+        "operationId": "routes_api_v1_runs__run_id__baseline_routes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Routes",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/baseline/summary": {
+      "get": {
+        "operationId": "summary_api_v1_runs__run_id__baseline_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineAssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summary",
+        "tags": [
+          "baseline-g03"
         ]
       }
     },
@@ -6790,6 +8582,206 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/discovery": {
+      "get": {
+        "operationId": "get_api_v1_runs__run_id__discovery_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get",
+        "tags": [
+          "discovery"
+        ]
+      },
+      "post": {
+        "operationId": "capture_api_v1_runs__run_id__discovery_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveryCaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/discovery/parity-baseline": {
+      "get": {
+        "operationId": "get_api_v1_runs__run_id__discovery_parity_baseline_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParityBaselineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get",
+        "tags": [
+          "parity-baseline"
+        ]
+      },
+      "post": {
+        "operationId": "capture_api_v1_runs__run_id__discovery_parity_baseline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParityBaselineCaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParityBaselineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "parity-baseline"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/events": {
       "get": {
         "operationId": "stream_run_events_api_v1_runs__run_id__events_get",
@@ -6982,6 +8974,64 @@
         "summary": "Select Execution Profile",
         "tags": [
           "execution-profiles"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/llm/activity": {
+      "get": {
+        "operationId": "activity_api_v1_runs__run_id__llm_activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmActivityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activity",
+        "tags": [
+          "llm"
         ]
       }
     },
@@ -7182,6 +9232,147 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/usage": {
+      "get": {
+        "operationId": "usage_api_v1_runs__run_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmUsageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage",
+        "tags": [
+          "llm"
+        ]
+      }
+    },
+    "/api/v1/sources/analyses/{analysis_id}": {
+      "get": {
+        "operationId": "get_source_analysis_api_v1_sources_analyses__analysis_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceAnalysisResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Source Analysis",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/api/v1/sources/analyze": {
+      "post": {
+        "operationId": "analyze_source_api_v1_sources_analyze_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceAnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceAnalysisResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyze Source",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
     "/api/v1/sources/path-validations/{validation_id}": {
       "get": {
         "operationId": "get_path_validation_api_v1_sources_path_validations__validation_id__get",
@@ -7297,6 +9488,22 @@
             "schema": {
               "title": "Artifact Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -7449,6 +9656,86 @@
         "summary": "Read service health",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/llm/readiness": {
+      "get": {
+        "operationId": "readiness_llm_readiness_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "llm"
+        ]
+      }
+    },
+    "/llm/smoke": {
+      "post": {
+        "operationId": "smoke_llm_smoke_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmSmokeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmInvocationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Smoke",
+        "tags": [
+          "llm"
         ]
       }
     },
@@ -7671,6 +9958,22 @@
               "title": "Run Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
           }
         ],
         "responses": {
@@ -7725,6 +10028,22 @@
             "schema": {
               "title": "Artifact Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -8257,6 +10576,58 @@
         ]
       }
     },
+    "/runs/{run_id}/approvals/G03/decisions": {
+      "post": {
+        "operationId": "decide_runs__run_id__approvals_G03_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G03DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineAssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide",
+        "tags": [
+          "baseline-g03"
+        ]
+      }
+    },
     "/runs/{run_id}/approvals/{gate_id}": {
       "get": {
         "operationId": "inspect_g02_runs__run_id__approvals__gate_id__get",
@@ -8472,6 +10843,90 @@
         ]
       }
     },
+    "/runs/{run_id}/baseline/anchors": {
+      "get": {
+        "operationId": "anchors_runs__run_id__baseline_anchors_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Anchors",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
+    "/runs/{run_id}/baseline/backend-integration": {
+      "get": {
+        "operationId": "backend_integration_runs__run_id__baseline_backend_integration_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backend Integration",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
     "/runs/{run_id}/baseline/builds": {
       "post": {
         "operationId": "execute_builds_runs__run_id__baseline_builds_post",
@@ -8521,6 +10976,48 @@
         "summary": "Execute Builds",
         "tags": [
           "baseline-validation"
+        ]
+      }
+    },
+    "/runs/{run_id}/baseline/failures": {
+      "get": {
+        "operationId": "failures_runs__run_id__baseline_failures_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Failures",
+        "tags": [
+          "baseline-parity"
         ]
       }
     },
@@ -8680,6 +11177,58 @@
         ]
       }
     },
+    "/runs/{run_id}/baseline/parity": {
+      "post": {
+        "operationId": "capture_runs__run_id__baseline_parity_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BaselineParityCaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
     "/runs/{run_id}/baseline/prequalify": {
       "post": {
         "operationId": "prequalify_baseline_runs__run_id__baseline_prequalify_post",
@@ -8729,6 +11278,142 @@
         "summary": "Prequalify Baseline",
         "tags": [
           "baseline"
+        ]
+      }
+    },
+    "/runs/{run_id}/baseline/qualify": {
+      "post": {
+        "operationId": "qualify_runs__run_id__baseline_qualify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BaselineQualifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineAssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Qualify",
+        "tags": [
+          "baseline-g03"
+        ]
+      }
+    },
+    "/runs/{run_id}/baseline/routes": {
+      "get": {
+        "operationId": "routes_runs__run_id__baseline_routes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineParityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Routes",
+        "tags": [
+          "baseline-parity"
+        ]
+      }
+    },
+    "/runs/{run_id}/baseline/summary": {
+      "get": {
+        "operationId": "summary_runs__run_id__baseline_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaselineAssessmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summary",
+        "tags": [
+          "baseline-g03"
         ]
       }
     },
@@ -9102,6 +11787,206 @@
         ]
       }
     },
+    "/runs/{run_id}/discovery": {
+      "get": {
+        "operationId": "get_runs__run_id__discovery_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get",
+        "tags": [
+          "discovery"
+        ]
+      },
+      "post": {
+        "operationId": "capture_runs__run_id__discovery_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveryCaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryEvidenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/runs/{run_id}/discovery/parity-baseline": {
+      "get": {
+        "operationId": "get_runs__run_id__discovery_parity_baseline_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParityBaselineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get",
+        "tags": [
+          "parity-baseline"
+        ]
+      },
+      "post": {
+        "operationId": "capture_runs__run_id__discovery_parity_baseline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParityBaselineCaptureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParityBaselineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture",
+        "tags": [
+          "parity-baseline"
+        ]
+      }
+    },
     "/runs/{run_id}/events": {
       "get": {
         "operationId": "stream_run_events_runs__run_id__events_get",
@@ -9294,6 +12179,64 @@
         "summary": "Select Execution Profile",
         "tags": [
           "execution-profiles"
+        ]
+      }
+    },
+    "/runs/{run_id}/llm/activity": {
+      "get": {
+        "operationId": "activity_runs__run_id__llm_activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmActivityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activity",
+        "tags": [
+          "llm"
         ]
       }
     },
@@ -9491,6 +12434,147 @@
         "summary": "Read Run State",
         "tags": [
           "runs"
+        ]
+      }
+    },
+    "/runs/{run_id}/usage": {
+      "get": {
+        "operationId": "usage_runs__run_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmUsageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage",
+        "tags": [
+          "llm"
+        ]
+      }
+    },
+    "/sources/analyses/{analysis_id}": {
+      "get": {
+        "operationId": "get_source_analysis_sources_analyses__analysis_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceAnalysisResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Source Analysis",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/sources/analyze": {
+      "post": {
+        "operationId": "analyze_source_sources_analyze_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceAnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceAnalysisResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyze Source",
+        "tags": [
+          "sources"
         ]
       }
     },

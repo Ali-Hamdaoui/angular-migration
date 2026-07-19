@@ -2,7 +2,7 @@ export type LlmReadinessResponse = {
   status: "ready" | "blocked";
   provider: string;
   deployment_configured: boolean;
-  model_capability: string;
+  model_capability?: string;
   error_code: string | null;
 };
 
@@ -10,7 +10,6 @@ export type LlmSmokeRequest = {
   run_id: string;
   expected_state_version: number;
   idempotency_key: string;
-  actor: string;
   correlation_id?: string | null;
 };
 
@@ -22,8 +21,17 @@ export type LlmInvocationResponse = {
   task_type: string;
   provider: string;
   deployment_alias: string;
+  model_capability?: string;
   artifact_ids: string[];
   artifact_checksums: Record<string, string>;
+  artifact_links?: Record<string, string>;
+  correlation_id?: string | null;
+  prompt_version?: string | null;
+  schema_version?: string | null;
+  pricing_version?: string | null;
+  stage?: string | null;
+  input_hashes?: string[];
+  redacted_summary?: string | null;
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;

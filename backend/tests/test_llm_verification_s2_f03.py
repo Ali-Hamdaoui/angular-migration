@@ -34,7 +34,7 @@ def test_llm_api_contract_exposes_readiness_smoke_activity_and_usage() -> None:
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             assert client.get("/api/v1/llm/readiness").json()["status"] == "ready"
-            smoke = client.post("/api/v1/llm/smoke", json={"run_id": "run-1", "expected_state_version": 1, "idempotency_key": "smoke-1", "actor": "operator"})
+            smoke = client.post("/api/v1/llm/smoke", json={"run_id": "run-1", "expected_state_version": 1, "idempotency_key": "smoke-1"})
             assert smoke.status_code == 200
             assert smoke.json()["total_cost_usd"] == 0.0000125
             assert client.get("/api/v1/runs/run-1/llm/activity").json()["invocations"][0]["invocation_id"] == "llm-invocation-1"
@@ -53,7 +53,7 @@ def test_llm_api_returns_stable_correlation_safe_errors_for_invalid_and_stale_re
             assert invalid.json()["correlation_id"] == "corr-invalid"
             assert "api_key" not in invalid.text.lower()
 
-            stale = client.post("/api/v1/llm/smoke", headers={"x-correlation-id": "corr-stale"}, json={"run_id": "run-1", "expected_state_version": 1, "idempotency_key": "stale-1", "actor": "operator"})
+            stale = client.post("/api/v1/llm/smoke", headers={"x-correlation-id": "corr-stale"}, json={"run_id": "run-1", "expected_state_version": 1, "idempotency_key": "stale-1"})
             assert stale.status_code == 409
             assert stale.json()["error_code"] == "STALE_STATE_VERSION"
             assert stale.headers["x-correlation-id"] == "corr-stale"

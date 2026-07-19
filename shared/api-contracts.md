@@ -106,3 +106,14 @@ The backend captures checksum-bound baseline parity evidence through `POST /api/
 Responses include parser/schema versions, confidence labels, source and evidence artifact references, SHA-256 checksums, state version, and event sequence. Capture emits `BASELINE_FAILURES_FINGERPRINTED`, `BASELINE_ROUTE_ANCHOR_CREATED`, and `BASELINE_BACKEND_ANCHOR_CREATED` through the authoritative Transition Service.
 
 Feature 13 capture requests may include prerequisite_artifact_checksums, an artifact-ID-to-SHA-256 map. When prerequisite IDs are supplied, every ID must have an expected checksum and the registered checksum must match before capture proceeds.
+
+
+## S2-F03 governed LLM gateway
+
+The governed LLM surface is exposed under `/api/v1/llm` and `/api/v1/runs/{run_id}/llm`:
+
+- `GET /llm/readiness` reports Azure configuration and the registered strict structured-output capability.
+- `POST /llm/smoke` accepts only `run_id`, `expected_state_version`, `idempotency_key`, and optional correlation metadata. Actor identity is derived from authentication (`X-Authenticated-Actor` in the local control-plane adapter), never from JSON.
+- `GET /runs/{run_id}/llm/activity` and `GET /runs/{run_id}/usage` return durable invocation and pricing evidence.
+
+Invocation responses expose prompt, schema, model capability/deployment, pricing, stage, input hashes, redacted failure summary, correlation ID, authorized artifact links, state version, and event sequence. Provider failures retain the correlation ID and a redacted failure artifact.

@@ -18,6 +18,7 @@ type Props = {
 function formatCost(value: number) { return `$${value.toFixed(6)}`; }
 function formatLabel(value: string) { return value.replaceAll("_", " "); }
 function operationKey(runId: string) { return `llm-smoke-${runId}-${Date.now()}`; }
+function correlationFrom(error: ApiClientError) { try { return (JSON.parse(error.responseBody ?? '{}') as { correlation_id?: string }).correlation_id ?? null; } catch { return null; } }
 
 function connectionLabel(status: Props["connectionStatus"]) {
   if (status === "open") return "Live authoritative LLM state";
@@ -49,6 +50,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
       if (reason instanceof ApiClientError) {
         setError('The LLM diagnostics request failed. Review the backend error code and correlation evidence.');
         if (reason.status === 409) setStale(true);
+        setCorrelationId(correlationFrom(reason));
         return;
       }
       setError(reason instanceof ApiClientError && reason.responseBody ? `LLM diagnostics could not be loaded. ${reason.responseBody}` : "LLM diagnostics could not be loaded.");
@@ -73,13 +75,13 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   async function invoke() {
     setWorking(true); setError(null); setStale(false); setCorrelationId(null);
     try {
-      const result = await invokeLlmSmoke({ run_id: runId, expected_state_version: stateVersion, idempotency_key: operationKey(runId), actor: "control-tower" });
-      setCorrelationId(result.invocation_id);
+      const result = await invokeLlmSmoke({ run_id: runId, expected_state_version: stateVersion, idempotency_key: operationKey(runId) });
+      setCorrelationId(result.correlation_id ?? result.invocation_id);
       await refreshAuthoritativeState?.();
       await refresh();
     } catch (reason: unknown) {
-      if (reason instanceof ApiClientError && reason.status === 409) setStale(true);
-      else if (reason instanceof ApiClientError && reason.responseBody) setError(`The governed Azure OpenAI invocation failed. ${reason.responseBody}`);
+      if (reason instanceof ApiClientError && reason.status === 409) { setStale(true); setCorrelationId(correlationFrom(reason)); }
+      else if (reason instanceof ApiClientError) { setCorrelationId(correlationFrom(reason)); setError('The governed Azure OpenAI invocation failed. Review the correlation ID and backend evidence.'); }
       else setError("The governed Azure OpenAI invocation failed.");
     } finally {
       setWorking(false);
@@ -96,10 +98,10 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
     {!loading && !error && !activity?.invocations.length ? <p className={styles.note}>No governed LLM invocations have been recorded.</p> : null}
     <div className={styles.metadataGrid} aria-label="LLM provenance">
       <div><dt>Provider</dt><dd>{latest?.provider ?? readiness?.provider ?? "unknown"}</dd></div>
-      <div><dt>Deployment</dt><dd>{latest?.deployment_alias ?? "unknown"}</dd></div>
+      <div><dt>Deployment</dt><dd>{latest?.deployment_alias ?? "unknown"}</dd></div><div><dt>Capability</dt><dd>{latest?.model_capability ?? readiness?.model_capability ?? "unknown"}</dd></div>
       <div><dt>Role</dt><dd>{latest?.role ?? "phase_proposer"}</dd></div>
-      <div><dt>Task</dt><dd>{latest?.task_type ?? "assistant_response"}</dd></div>
-      <div><dt>Prompt/schema evidence</dt><dd>{latest?.artifact_ids.length ? `${latest.artifact_ids.length} registered artifacts` : "not available"}</dd></div>
+      <div><dt>Task</dt><dd>{latest?.task_type ?? "smoke_check"}</dd></div>
+      <div><dt>Prompt</dt><dd>{latest?.prompt_version ?? "unknown"}</dd></div><div><dt>Schema</dt><dd>{latest?.schema_version ?? "unknown"}</dd></div><div><dt>Pricing</dt><dd>{latest?.pricing_version ?? "unknown"}</dd></div>
       <div><dt>Budget</dt><dd>{budgetStatus}</dd></div>
     </div>
     <ul className={styles.metricList} aria-label="LLM usage totals">
@@ -110,7 +112,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
       <li><span>Estimated output cost</span><strong>{formatCost(usage?.output_cost_usd ?? latest?.output_cost_usd ?? 0)}</strong></li>
       <li><span>Estimated total cost</span><strong>{formatCost(usage?.total_cost_usd ?? latest?.total_cost_usd ?? 0)}</strong></li>
     </ul>
-    {latest ? <div className={styles.previewPanel}><p className={styles.note}>Status: {formatLabel(latest.status)} · retries: {latest.retries} · latency: {latest.latency_ms ?? "not available"} ms · state version: {latest.state_version} · event sequence: {latest.event_sequence}</p>{latest.failure_code ? <p role="alert">Failure code: {latest.failure_code}</p> : null}<p className={styles.note}>Artifact IDs: {latest.artifact_ids.length ? latest.artifact_ids.join(", ") : "none"}</p></div> : null}
+    {latest ? <div className={styles.previewPanel}><p className={styles.note}>Status: {formatLabel(latest.status)} · retries: {latest.retries} · latency: {latest.latency_ms ?? "not available"} ms · state version: {latest.state_version} · event sequence: {latest.event_sequence}</p>{latest.failure_code ? <p role="alert">Failure code: {latest.failure_code}</p> : null}<p className={styles.note}>Correlation ID: <code>{latest.correlation_id ?? "none"}</code></p><p className={styles.note}>Artifacts: {latest.artifact_ids.length ? latest.artifact_ids.map((id) => <a key={id} href={latest.artifact_links?.[id] ?? `/api/v1/artifacts/${id}`} target="_blank" rel="noreferrer">{id}</a>) : "none"}</p></div> : null}
     {correlationId ? <p className={styles.note}>Correlation/invocation ID: <code>{correlationId}</code></p> : null}
     <div className={styles.previewHeader}><span className={styles.note}>Evidence is read from the backend snapshot and durable events.</span><button type="button" onClick={() => void invoke()} disabled={working || loading || readiness?.status !== "ready"}>{running ? "Invoking..." : "Run governed smoke check"}</button></div>
   </section>;

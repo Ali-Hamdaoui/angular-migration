@@ -17,7 +17,6 @@ class LlmSmokeRequest(ContractModel):
     run_id: str = Field(min_length=1)
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
 
 
@@ -29,8 +28,17 @@ class LlmInvocationResponse(ContractModel):
     task_type: str
     provider: str
     deployment_alias: str
+    model_capability: str = 'responses_json_schema'
     artifact_ids: list[str] = Field(default_factory=list)
     artifact_checksums: dict[str, str] = Field(default_factory=dict)
+    artifact_links: dict[str, str] = Field(default_factory=dict)
+    correlation_id: str | None = None
+    prompt_version: str | None = None
+    schema_version: str | None = None
+    pricing_version: str | None = None
+    stage: str | None = None
+    input_hashes: list[str] = Field(default_factory=list)
+    redacted_summary: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
