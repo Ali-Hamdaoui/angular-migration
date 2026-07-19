@@ -3,7 +3,7 @@
   "goal_id": "G10",
   "branch": "hermes/10-full-runtime-proof",
   "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
-  "head_sha": "7d12323577e9017283e4050baec21404c95f7881",
+  "head_sha": "aaf61a4b9c8bef10374ab3d44abc38739d3f98b1",
   "goal_package_sha256": "d34a17ba6337a91d5ab4d855801753ee9df3c5da54a904943cac91ae73fe12ac",
   "completion_level": "harness_ready",
   "jira_features": ["AMFA-225"],
@@ -38,7 +38,7 @@
     "Frontend acceptance checklist is a minimal polling-based UI; full SSE integration in Phase B.",
     "Manual validation and documentation deferred to Phase B."
   ],
-  "pushed": false,
-  "push_remote": null,
-  "push_branch": null
+  "pushed": true,
+  "push_remote": "origin",
+  "push_branch": "hermes/10-full-runtime-proof"
 }
