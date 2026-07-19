@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import hashlib
+import json
+
+import pytest
+
+from app.domain.contracts import AgentKind
+from app.domain.planning import PlanGenerationRequest
+from app.domain.planning_review import (
+    G06Decision,
+    G06DecisionRequest,
+    G06Gate,
+    PlanRevisionChanges,
+    PlanRevisionRequest,
+    PlanningExplanationRequest,
+    PlanningReviewDecision,
+)
+from app.llm_gateway import LlmRole, LlmTaskType, LlmResponse, PromptRedactionResult
+from app.llm_gateway.mock_gateway import build_usage_record
+from app.services.planning_application_service import PlanningApplicationService
+from app.services.planning_review_application_service import (
+    PlanRevisionService,
+    PlanningAgentService,
+    PlanningReviewApplicationError,
+)
+
+
+def _generation():
+    request = PlanGenerationRequest(
+        run_id="run-1",
+        expected_state_version=4,
+        idempotency_key="plan-1",
+        actor="operator",
+        source_exact="18.2.13",
+        source_family="angular-18.x",
+        target_family="angular-21.x",
+        catalogue_version="catalog-v1",
+        input_fingerprint="sha256:" + "1" * 64,
+        execution_profile_id="profile-node22-npm10",
+        builder="@angular-devkit/build-angular:application",
+        target_cli_exact="19.2.0",
+        stage_route=(
+            ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"),
+            ("angular-19.x", "angular-20.x", "stage-19-to-20", "20.0.0"),
+            ("angular-20.x", "angular-21.x", "stage-20-to-21", "21.0.0"),
+        ),
+    )
+    return PlanningApplicationService().generate(request)
+
+
+def _revision_request(result, **changes):
+    return PlanRevisionRequest(
+        run_id="run-1",
+        expected_state_version=4,
+        idempotency_key="revision-1",
+        actor="operator",
+        plan=result.plan.model_dump(mode="json"),
+        stage_plan=result.first_stage_plan.model_dump(mode="json"),
+        changes=PlanRevisionChanges(**changes),
+        artifact_set_checksum="sha256:" + "2" * 64,
+    )
+
+
+def test_revision_rebuilds_immutable_version_and_marks_dependents_stale():
+    result = _generation()
+    marked = []
+    service = PlanRevisionService(
+        stale_approval_marker=lambda run_id, version, reason: marked.append((run_id, version, reason)) or ("g06-1",)
+    )
+
+    revised = service.revise(_revision_request(result, execution_profile_id="profile-node23-npm10"))
+
+    assert revised.plan["version"] == 2
+    assert revised.plan_checksum != result.plan.checksum
+    assert revised.stage_plan["execution_profile_id"] == "profile-node23-npm10"
+    assert revised.diff.changed_fields == ("execution_profile_id",)
+    assert revised.stale_approval_ids == ("g06-1",)
+    assert marked[0][1] == 1
+
+
+def test_revision_is_idempotent_and_rejects_payload_reuse():
+    result = _generation()
+    service = PlanRevisionService()
+    request = _revision_request(result, catalogue_version="catalog-v2")
+
+    first = service.revise(request)
+    replay = service.revise(request)
+    assert replay.idempotent_replay is True
+    assert replay.plan_checksum == first.plan_checksum
+
+    with pytest.raises(PlanningReviewApplicationError) as error:
+        service.revise(request.model_copy(update={"changes": PlanRevisionChanges(recovery_policy_id="recovery-v2")}))
+    assert error.value.code == "IDEMPOTENCY_PAYLOAD_MISMATCH"
+
+
+class _PlanningGateway:
+    def complete(self, request):
+        plan = json.loads(request.context[0].content)
+        stage = json.loads(request.context[1].content)
+        checksum = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps({"plan": plan, "stage_plan": stage}, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        )
+        usage = build_usage_record(
+            run_id=request.run_id,
+            stage_id=None,
+            agent_kind=AgentKind.PLANNING,
+            task_type=request.task_type,
+            model_deployment_alias="test",
+            input_tokens=10,
+            output_tokens=10,
+            input_price_per_million=1,
+            output_price_per_million=1,
+        )
+        if request.task_type is LlmTaskType.PLAN_RATIONALE:
+            output = {
+                "summary": "The approved plan follows the deterministic adjacent-major route.",
+                "rationale": ["Exact versions are retained."],
+                "risks": [],
+                "unresolved_questions": [],
+                "deterministic_plan_checksum": checksum,
+            }
+        else:
+            proposer = json.loads(request.context[-1].content)
+            output = {
+                "decision": PlanningReviewDecision.ACCEPT.value,
+                "notes": [],
+                "policy_concerns": [],
+                "confidence": "high",
+                "deterministic_plan_checksum": checksum,
+                "proposer_output_checksum": "sha256:"
+                + hashlib.sha256(json.dumps(proposer, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            }
+        return LlmResponse(
+            response_id="response-1",
+            request_id=request.request_id,
+            run_id=request.run_id,
+            agent_kind=AgentKind.PLANNING,
+            task_type=request.task_type,
+            model_deployment_alias="test",
+            status="completed",
+            summary="ok",
+            structured_output=output,
+            usage=usage,
+            redaction=PromptRedactionResult(redacted_text="", redaction_count=0),
+            role=request.role,
+        )
+
+
+def test_planning_explanation_is_checksum_bound_and_reviewed():
+    result = _generation()
+    service = PlanningAgentService(gateway=_PlanningGateway())
+    package = service.explain(
+        PlanningExplanationRequest(
+            run_id="run-1",
+            expected_state_version=4,
+            idempotency_key="explain-1",
+            actor="operator",
+            plan=result.plan.model_dump(mode="json"),
+            stage_plan=result.first_stage_plan.model_dump(mode="json"),
+            artifact_set_checksum="sha256:" + "3" * 64,
+            plan_version=1,
+        )
+    )
+    assert package.review_status == "accepted"
+    assert package.reviewer.decision is PlanningReviewDecision.ACCEPT
+    assert package.plan_checksum == result.plan.checksum
+
+
+def test_g06_rejects_stale_binding_and_stage_start_without_approval():
+    result = _generation()
+    service = PlanRevisionService()
+    gate = G06Gate(
+        run_id="run-1",
+        gate_version="g06-v1",
+        status="pending",
+        artifact_set_checksum="sha256:" + "3" * 64,
+        plan_checksum=result.plan.checksum,
+        stage_plan_checksum=result.first_stage_plan.checksum,
+        state_version=4,
+    )
+    with pytest.raises(PlanningReviewApplicationError) as error:
+        service.require_approved_g06(
+            gate,
+            state_version=4,
+            artifact_set_checksum=gate.artifact_set_checksum,
+            plan_checksum=gate.plan_checksum,
+            stage_plan_checksum=gate.stage_plan_checksum,
+            workspace_fingerprint=None,
+        )
+    assert error.value.code == "G06_APPROVAL_REQUIRED"
+
+
+def test_g06_accepts_only_the_current_reviewed_plan_binding():
+    result = _generation()
+    package = PlanningAgentService(gateway=_PlanningGateway()).explain(
+        PlanningExplanationRequest(
+            run_id="run-1",
+            expected_state_version=4,
+            idempotency_key="explain-2",
+            actor="operator",
+            plan=result.plan.model_dump(mode="json"),
+            stage_plan=result.first_stage_plan.model_dump(mode="json"),
+            artifact_set_checksum="sha256:" + "3" * 64,
+            plan_version=1,
+        )
+    )
+    gate = G06Gate(
+        run_id="run-1",
+        gate_version="g06-v1",
+        status="pending",
+        artifact_set_checksum=package.artifact_set_checksum,
+        plan_checksum=result.plan.checksum,
+        stage_plan_checksum=result.first_stage_plan.checksum,
+        state_version=4,
+    )
+    service = PlanRevisionService()
+    decision = service.decide_g06(
+        gate,
+        package,
+        G06DecisionRequest(
+            expected_state_version=4,
+            idempotency_key="g06-1",
+            gate_version="g06-v1",
+            artifact_set_checksum=package.artifact_set_checksum,
+            plan_checksum=result.plan.checksum,
+            stage_plan_checksum=result.first_stage_plan.checksum,
+            decision=G06Decision.APPROVE,
+        ),
+    )
+    assert decision.accepted is True
+    assert decision.status == "approved"
+
+    with pytest.raises(PlanningReviewApplicationError) as stale:
+        service.decide_g06(
+            gate,
+            package,
+            G06DecisionRequest(
+                expected_state_version=4,
+                idempotency_key="g06-2",
+                gate_version="g06-v1",
+                artifact_set_checksum=package.artifact_set_checksum,
+                plan_checksum="sha256:" + "f" * 64,
+                stage_plan_checksum=result.first_stage_plan.checksum,
+                decision=G06Decision.APPROVE,
+            ),
+        )
+    assert stale.value.code == "STALE_G06_BINDING"

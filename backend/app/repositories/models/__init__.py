@@ -53,6 +53,12 @@ from app.repositories.planning_models import (
     MigrationPlanModel,
     StageExecutionPlanModel,
 )
+from app.repositories.planning_review_models import (
+    G06ApprovalModel,
+    PlanApprovalStaleModel,
+    PlanRevisionModel,
+    PlanningReviewModel,
+)
 
 __all__ = [
     "AnalysisMetadataModel",
@@ -65,6 +71,10 @@ __all__ = [
     "StageExecutionPlanModel",
     "BuildSystemDecisionModel",
     "ActivePlanVersionModel",
+    "PlanRevisionModel",
+    "PlanningReviewModel",
+    "PlanApprovalStaleModel",
+    "G06ApprovalModel",
     'LlmInvocationModel',
     'UsageCostRecordModel',
     "AgentExecutionModel",
