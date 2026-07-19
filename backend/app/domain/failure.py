@@ -31,6 +31,19 @@ class FailureOrigin(str, Enum):
     UNKNOWN_ORIGIN = "unknown_origin"
 
 
+class FailureRoute(str, Enum):
+    """C-Lite classification route for failure diagnostics.
+
+    Maps a failure to the type of repair or action that should be taken.
+    """
+
+    CODE_OR_CONFIG_REPAIR = "CODE_OR_CONFIG_REPAIR"
+    DEPENDENCY_REPAIR = "DEPENDENCY_REPAIR"
+    ENVIRONMENT_OR_USER_ACTION = "ENVIRONMENT_OR_USER_ACTION"
+    RETRYABLE_EXTERNAL_FAILURE = "RETRYABLE_EXTERNAL_FAILURE"
+    UNKNOWN_DIAGNOSIS = "UNKNOWN_DIAGNOSIS"
+
+
 class DiagnosticParserType(str, Enum):
     """Recognised diagnostic parser kinds for structured failure extraction."""
 

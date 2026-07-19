@@ -19,14 +19,16 @@ from app.domain.failure import (
     FailureBuilderInput,
     FailureDiagnostic,
     FailureEvidence,
-    FailureEvidenceBuilder,
     FailureFingerprintService,
     OriginComparator,
 )
 from app.repositories.failure_repository import FailureRepository
 from app.repositories.models.workflow import MigrationRunModel
 from app.repositories.session import session_scope
-from app.services.failure_evidence_builder import DEFAULT_PARSER_REGISTRY
+from app.services.failure_evidence_builder import (
+    DEFAULT_PARSER_REGISTRY,
+    FailureEvidenceBuilder,
+)
 from app.state.transition_service import (
     StateTransitionService,
     TransitionError,

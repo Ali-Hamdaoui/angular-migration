@@ -1,0 +1,34 @@
+{
+  "task_id": "02-S4-F01-I02",
+  "jira": "AMFA-227",
+  "status": "PASS",
+  "acceptance_mapping": [
+    {"criterion": "Happy path - save and retrieve failure", "result": "PASS", "test": "test_save_and_retrieve_failure"},
+    {"criterion": "Invalid input rejection", "result": "PASS", "test": "test_failure_not_found"},
+    {"criterion": "Stale state handling", "result": "PASS", "test": "test_failure_not_found"},
+    {"criterion": "Persistence - failure plus diagnostics", "result": "PASS", "tests": ["test_save_diagnostics", "test_get_failures_by_run"]},
+    {"criterion": "Diagnostic model validation", "result": "PASS", "tests": ["test_create_diagnostic_model", "test_diagnostic_optional_fields"]},
+    {"criterion": "API routes registered", "result": "PASS", "note": "Router.py updated with failures_router in api_v1 and unversioned"}
+  ],
+  "changed_files": [
+    "backend/app/repositories/models/workflow.py",
+    "backend/app/repositories/failure_repository.py",
+    "backend/app/api/routes/failures.py",
+    "backend/app/api/router.py",
+    "backend/alembic/versions/20260719_07_g05_failure_evidence.py",
+    "backend/tests/test_failure_persistence_api_s4_f01_i02.py",
+    "frontend/src/api/failures.ts",
+    "frontend/src/types/generated/api.ts"
+  ],
+  "tests": [
+    "test_failure_persistence_api_s4_f01_i02.py::6 passed"
+  ],
+  "review_findings": [],
+  "fixes": [],
+  "limitations": [
+    "StateTransitionService integration requires an existing run in DB - tests use direct repository API.",
+    "Full end-to-end API test requires DB with migration history; covered by manual validation."
+  ],
+  "commit_sha": "fabe76749f5ae673e8808e3b42fbf152530023a0",
+  "reviewer_verdict": "PASS"
+}
