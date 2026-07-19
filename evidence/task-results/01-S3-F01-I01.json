@@ -1,0 +1,23 @@
+{
+  "task_id": "01-S3-F01-I01",
+  "jira": "AMFA-154",
+  "description": "Implement backend application contract for Register structured commands and reject arbitrary shell execution",
+  "files_created": [
+    "backend/app/domain/command.py",
+    "backend/app/services/command_registry_service.py",
+    "backend/app/api/routes/commands.py",
+    "backend/tests/test_command_registry_service.py",
+    "backend/alembic/versions/20260719_07_command_templates_and_authorization.py"
+  ],
+  "files_modified": [
+    "backend/app/domain/contracts.py",
+    "backend/app/api/router.py",
+    "backend/app/repositories/models/workflow.py",
+    "backend/app/repositories/models/__init__.py"
+  ],
+  "tests_passed": 22,
+  "evidence": "All 22 tests pass: TestCommandRegistryService (10) + TestCommandPolicyEngineService (12)",
+  "commit_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "T01 (domain) + T02 (DB/API/events) combined. Full feature acceptance verified: happy path, invalid input, stale state, persistence, evidence, execution authority"
+}

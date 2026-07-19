@@ -1,0 +1,68 @@
+{
+  "goal_id": "G01",
+  "branch": "hermes/01-command-runtime",
+  "created_at": "2026-07-19T21:00:00Z",
+  "base_sha": "d759861",
+  "dependencies": [
+    {
+      "id": "S2-F07",
+      "name": "Planning Review (G06 approval gate)",
+      "status": "AVAILABLE",
+      "evidence": [
+        "Existing planning_review routes, services, models in backend/app",
+        "ApprovalStagePlan schema frozen in shared/contracts/approved_stage_plan.schema.json",
+        "MigrationPlanPanel.tsx and G06ReviewPanel.tsx exist in frontend"
+      ]
+    }
+  ],
+  "consumed_contracts": [
+    {
+      "id": "approved_stage_plan",
+      "file": "goals/shared/contracts/approved_stage_plan.schema.json",
+      "status": "FROZEN",
+      "notes": "Sprint 2 upstream - consumed but not implemented here"
+    },
+    {
+      "id": "artifact_ref",
+      "file": "goals/shared/contracts/artifact_ref.schema.json",
+      "status": "FROZEN",
+      "notes": "Cross-goal frozen contract"
+    },
+    {
+      "id": "durable_event_envelope",
+      "file": "goals/shared/contracts/durable_event_envelope.schema.json",
+      "status": "FROZEN",
+      "notes": "Cross-goal frozen contract"
+    }
+  ],
+  "provided_contracts": [
+    {
+      "id": "command_authorization",
+      "file": "goals/shared/contracts/command_authorization.schema.json",
+      "status": "FROZEN",
+      "notes": "Already frozen in shared/contracts/ - G01 owns this schema"
+    },
+    {
+      "id": "command_execution_record",
+      "file": "goals/shared/contracts/command_execution_record.schema.json",
+      "status": "FROZEN",
+      "notes": "Already frozen in shared/contracts/ - G01 owns this schema"
+    },
+    {
+      "id": "worker_lease",
+      "file": "goals/shared/contracts/worker_lease.schema.json",
+      "status": "FROZEN",
+      "notes": "Already frozen in shared/contracts/ - G01 owns this schema"
+    },
+    {
+      "id": "command_log_event",
+      "file": "goals/shared/contracts/command_log_event.schema.json",
+      "status": "FROZEN",
+      "notes": "Already frozen in shared/contracts/ - G01 owns this schema"
+    }
+  ],
+  "blocked_integrated_criteria": [
+    "S2-F07 integrated approval bindings require real upstream branch",
+    "Integration test for full run lifecycle requires G02, G03, G04, G05 branches"
+  ]
+}

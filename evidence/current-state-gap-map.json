@@ -1,0 +1,174 @@
+{
+  "goal_id": "G01",
+  "branch": "hermes/01-command-runtime",
+  "base_sha": "d759861",
+  "created_at": "2026-07-19T21:00:00Z",
+  "criteria": [
+    {
+      "acceptance_id": "S3-F01-01",
+      "description": "StructuredCommandRegistry with executable/argument schemas",
+      "status": "PARTIAL",
+      "evidence": [
+        "backend/app/command_execution/worker.py has Sprint 0 CommandRegistry with 6 command definitions, no DB persistence",
+        "Need Sprint 3 StructuredCommandRegistry with DB-backed template persistence, versioning, full schema validation"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F01-02",
+      "description": "CommandPolicyEngine with plan membership, env/network/cwd policy, shell=false",
+      "status": "PARTIAL",
+      "evidence": [
+        "backend/app/command_execution/worker.py has Sprint 0 CommandPolicy with basic validation (shell=false, idempotency key, timeout, runtime/network profile, cancellation policy)",
+        "Need Sprint 3 CommandPolicyEngine with plan membership checks, DB-backed policy versioning, authoritative approval stage plan consumption"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F01-03",
+      "description": "GET /api/v1/operator/command-templates endpoint",
+      "status": "MISSING",
+      "evidence": ["No operator/command-templates route exists in router.py"]
+    },
+    {
+      "acceptance_id": "S3-F01-04",
+      "description": "POST /api/v1/operator/command-policy/validate endpoint",
+      "status": "MISSING",
+      "evidence": ["No operator/command-policy/validate route exists"]
+    },
+    {
+      "acceptance_id": "S3-F01-05",
+      "description": "Versioned command-template metadata and authorization audit records",
+      "status": "MISSING",
+      "evidence": [
+        "CommandExecutionModel exists in models/workflow.py with command metadata fields",
+        "No dedicated CommandTemplateModel or AuthorizationAuditModel exists"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F01-06",
+      "description": "COMMAND_AUTHORIZATION_ACCEPTED/REJECTED durable events",
+      "status": "MISSING",
+      "evidence": [
+        "WorkflowEventType enum exists in domain/contracts.py with many event types",
+        "COMMAND_AUTHORIZATION_ACCEPTED/REJECTED event types are not defined yet"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F01-07",
+      "description": "Sanitized command authorization decision artifact",
+      "status": "MISSING",
+      "evidence": [
+        "ArtifactStore and LocalFilesystemArtifactStore exist",
+        "No authorization decision artifact template exists for S3-F01"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F01-08",
+      "description": "Command policy inspector frontend component showing template, argv preview, policy checks",
+      "status": "MISSING",
+      "evidence": [
+        "Frontend has AuthoritativeRunDashboard.tsx, LogViewer.tsx, EventStreamPanel.tsx",
+        "No command template inspector or policy validation form exists"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F02-01",
+      "description": "CommandExecutor application service for executing approved commands",
+      "status": "PARTIAL",
+      "evidence": [
+        "backend/app/command_execution/worker.py has ExecutionWorker with run() method",
+        "Needs Sprint 3 CommandExecutor as DB-backed service with full lifecycle management"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F02-02",
+      "description": "POST /api/v1/runs/{id}/commands and GET /api/v1/runs/{id}/commands/{commandId}",
+      "status": "MISSING",
+      "evidence": ["No command execution API routes exist"]
+    },
+    {
+      "acceptance_id": "S3-F02-03",
+      "description": "COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED events",
+      "status": "PARTIAL",
+      "evidence": [
+        "COMMAND_QUEUED, COMMAND_STARTED exist in WorkflowEventType",
+        "Need to add COMMAND_SUCCEEDED/FAILED enums and full event wiring"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F02-04",
+      "description": "Command manifest, stdout/stderr artifacts",
+      "status": "PARTIAL",
+      "evidence": [
+        "CommandLogWriter in worker.py writes command logs and stdout/stderr artifacts",
+        "Needs refactoring to use Sprint 3 artifact service contracts"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F03-01",
+      "description": "Bounded live log chunk publisher and SSE command events",
+      "status": "MISSING",
+      "evidence": [
+        "WorkerSupervisor in worker.py has output_callback mechanism",
+        "No live log chunk publisher or SSE log endpoint exists"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F03-02",
+      "description": "GET /api/v1/runs/{id}/commands/{commandId}/logs endpoint",
+      "status": "MISSING",
+      "evidence": ["No log retrieval endpoint exists"]
+    },
+    {
+      "acceptance_id": "S3-F03-03",
+      "description": "Custom log viewer with stdout/stderr filter, tail/pause, reconnect",
+      "status": "MISSING",
+      "evidence": [
+        "LogViewer.tsx exists but is a generic component",
+        "Need custom command log viewer with live tail, filters, reconnect"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F04-01",
+      "description": "JobSupervisor with active command ownership and WorkerLease",
+      "status": "PARTIAL",
+      "evidence": [
+        "WorkerLeaseModel exists in models/workflow.py",
+        "WorkerSupervisor.terminate_process_tree exists in worker.py",
+        "Need JobSupervisor service with lease management, heartbeat, timeout, cancellation"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F04-02",
+      "description": "POST /api/v1/runs/{id}/cancel and GET /api/v1/runs/{id}/active-command",
+      "status": "MISSING",
+      "evidence": ["No cancellation or active-command API routes"]
+    },
+    {
+      "acceptance_id": "S3-F04-03",
+      "description": "RUN_CANCEL_REQUESTED, COMMAND_CANCELLED/INTERRUPTED, RUN_CANCELLED events",
+      "status": "PARTIAL",
+      "evidence": [
+        "RUN_CANCEL_REQUESTED enum not in WorkflowEventType",
+        "COMMAND_CANCELLED, COMMAND_INTERRUPTED exist",
+        "RUN_CANCELLED may need to be added"
+      ]
+    },
+    {
+      "acceptance_id": "S3-F04-04",
+      "description": "Cancel action with confirmation, cancelling status, partial evidence links",
+      "status": "MISSING",
+      "evidence": ["No cancellation UI component exists"]
+    }
+  ],
+  "duplicate_authority_check": [
+    "backend/app/command_execution/worker.py is the sole process authority - no duplicate",
+    "CommandExecutionModel is the sole command persistence model - no duplicate"
+  ],
+  "notes": [
+    "Sprint 2 has built substantial foundations that S3 features build upon",
+    "Sprint 0/2 CommandRegistry, CommandPolicy, ExecutionWorker need formalization into Sprint 3 services",
+    "Existing WorkflowEventType needs COMMAND_AUTHORIZATION_ACCEPTED/REJECTED, COMMAND_SUCCEEDED/FAILED, etc.",
+    "Existing router.py needs operator/command routes added",
+    "Existing WorkerLeaseModel needs formal JobSupervisor service"
+  ]
+}

@@ -155,6 +155,46 @@ class ArtifactMetadataModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CommandTemplateModel(Base):
+    """One registered command template in the structured registry."""
+    __tablename__ = "command_templates"
+    __table_args__ = (UniqueConstraint("command_id", name="uq_command_templates_command_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    executable: Mapped[str] = mapped_column(String(128), nullable=False)
+    arguments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    executable_aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    description: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    allowed_env_vars: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    max_output_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CommandAuthorizationAuditModel(Base):
+    """Authorization audit record for every policy engine decision."""
+    __tablename__ = "command_authorization_audits"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_cmd_auth_audit_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    executable: Mapped[str] = mapped_column(String(128), nullable=False)
+    arguments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class CommandExecutionModel(Base):
     __tablename__ = "command_executions"
     __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_command_executions_run_idempotency"),)

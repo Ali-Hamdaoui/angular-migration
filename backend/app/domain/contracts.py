@@ -354,6 +354,12 @@ class WorkflowEventType(str, Enum):
     G06_REJECTED = "G06_REJECTED"
     G06_STALE = "G06_STALE"
     SPRINT1_BOUNDARY_REACHED = "SPRINT1_BOUNDARY_REACHED"
+    COMMAND_AUTHORIZATION_ACCEPTED = "COMMAND_AUTHORIZATION_ACCEPTED"
+    COMMAND_AUTHORIZATION_REJECTED = "COMMAND_AUTHORIZATION_REJECTED"
+    COMMAND_SUCCEEDED = "COMMAND_SUCCEEDED"
+    COMMAND_FAILED = "COMMAND_FAILED"
+    RUN_CANCEL_REQUESTED = "RUN_CANCEL_REQUESTED"
+    RUN_CANCELLED = "RUN_CANCELLED"
 
 
 class ErrorEnvelope(ContractModel):
@@ -555,6 +561,59 @@ class CommandResultDto(ContractModel):
     exit_code: int | None = None
     stdout_artifact: ArtifactRefDto | None = None
     stderr_artifact: ArtifactRefDto | None = None
+
+
+class CommandTemplateDto(ContractModel):
+    """One registered command template in the structured registry."""
+    template_id: str
+    command_id: str
+    executable: str
+    arguments: list[str] = Field(default_factory=list)
+    executable_aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    status: str = "active"
+    version: int = 1
+    allowed_env_vars: list[str] = Field(default_factory=list)
+    max_output_bytes: int | None = 1_000_000
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CommandTemplateListDto(ContractModel):
+    """Response wrapper for GET /api/v1/operator/command-templates."""
+    templates: list[CommandTemplateDto] = Field(default_factory=list)
+    total: int = 0
+
+
+class CommandPolicyValidateRequestDto(ContractModel):
+    """Request body for POST /api/v1/operator/command-policy/validate."""
+    run_id: str = Field(min_length=1)
+    stage_id: str | None = None
+    command_id: str = Field(min_length=1)
+    executable: str = Field(min_length=1)
+    arguments: list[str] = Field(default_factory=list)
+    working_directory_alias: str | None = None
+    working_directory: str | None = None
+    execution_profile_id: str = "source-runtime-profile"
+    network_profile: str = "none"
+    cancellation_policy: str = "terminate_process_tree"
+    timeout_seconds: int = Field(default=300, gt=0, le=3600)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    requested_by: str | None = None
+
+
+class CommandPolicyValidateResponseDto(ContractModel):
+    """Response body for POST /api/v1/operator/command-policy/validate."""
+    authorization_id: str
+    run_id: str
+    stage_id: str | None = None
+    command_id: str
+    executable: str
+    arguments: list[str] = Field(default_factory=list)
+    decision: str
+    reasons: list[str] = Field(default_factory=list)
+    policy_version: str = "s3-f01-v1"
+    idempotent_replay: bool = False
 
 
 class WorkerLeaseDto(ContractModel):
