@@ -19,6 +19,13 @@ class G04Decision(str, Enum):
     REJECT = "reject"
 
 
+class AnalysisReviewDecision(str, Enum):
+    ACCEPT = "accept"
+    REQUEST_REVISION = "request_revision"
+    REJECT = "reject"
+    INSUFFICIENT_CONTEXT = "insufficient_context"
+
+
 class AnalysisArtifactInput(ContractModel):
     """A registered deterministic artifact allowed into an analysis request."""
 
@@ -63,6 +70,18 @@ class AnalysisNarrative(ContractModel):
     deterministic_input_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class AnalysisReview(ContractModel):
+    """Non-authoring phase-review result bound to one proposer output."""
+
+    decision: AnalysisReviewDecision
+    notes: list[str] = Field(default_factory=list, max_length=64)
+    risks: list[str] = Field(default_factory=list, max_length=64)
+    policy_concerns: list[str] = Field(default_factory=list, max_length=64)
+    confidence: str = Field(min_length=1, max_length=64)
+    deterministic_input_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    proposer_output_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class AnalysisPackage(ContractModel):
     """The reviewable, unpersisted application result consumed by I02."""
 
@@ -70,19 +89,29 @@ class AnalysisPackage(ContractModel):
     artifact_set_checksum: str
     deterministic_input_artifacts: list[AnalysisArtifactInput]
     narrative: AnalysisNarrative
+    proposer_output_checksum: str
     model_provenance: dict[str, str]
     usage: dict[str, Any]
     prompt_version: str
     schema_version: str
+    reviewer: AnalysisReview
+    reviewer_output_checksum: str
+    reviewer_provenance: dict[str, str]
+    reviewer_usage: dict[str, Any]
+    reviewer_prompt_version: str
+    reviewer_schema_version: str
+    revision_count: int = Field(default=0, ge=0, le=2)
     workspace_fingerprint: str | None = None
     plan_version: str | None = None
-    review_status: str = "pending"
+    review_status: str = "accepted"
 
 
 class G04DecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     gate_version: str = Field(min_length=1, max_length=128)
-    package_artifact_set_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    package_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    plan_version: str | None = Field(default=None, max_length=128)
     decision: G04Decision
     comment: str | None = Field(default=None, max_length=4000)
 
@@ -95,4 +124,3 @@ class G04DecisionResult(ContractModel):
     gate_version: str
     artifact_set_checksum: str
     review_status: str
-

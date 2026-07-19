@@ -131,6 +131,8 @@ class BaselineInstallApplicationService:
             worker = self._worker(self._run_by_id(run_id), request.runtime_profile_id)
             command_request = command.request(run_id=run_id, runtime_profile_id=request.runtime_profile_id, timeout_seconds=request.timeout_seconds, idempotency_key=request.idempotency_key, actor=request.actor, requested_at=self._now())
             result = BaselineInstallationService(worker).execute(command_request, sandbox=sandbox, prerequisites=BaselineInstallPrerequisites(True, True, True, True, True), cancel_event=cancel_event, output_callback=lambda stream, chunk: self._output_chunk(run_id, execution_id, request, stream, chunk))
+            if result.command.result.status is CommandStatus.FAILED and result.command.result.exit_code is None:
+                return self._finalize_failure(run_id, execution_id, request, before, sandbox, "BASELINE_INSTALL_ENVIRONMENT_BLOCKED", environment_blocker="PROCESS_START_FAILED")
             return self._finalize(run_id, execution_id, request, before, result)
         except BaselineInstallationError as error: return self._finalize_failure(run_id, execution_id, request, before, sandbox, error.code)
         except OSError: return self._finalize_failure(run_id, execution_id, request, before, sandbox, "BASELINE_INSTALL_ENVIRONMENT_BLOCKED", environment_blocker="PROCESS_START_FAILED")

@@ -71,12 +71,23 @@ def test_generate_is_bound_to_registered_deterministic_artifact_and_preserves_fa
         "evidence_confidence": "high",
         "recommended_next_action": "Review compatibility evidence",
         "deterministic_input_checksum": request.artifact_set_checksum,
+    } if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY else {
+        "decision": "accept", "notes": ["Evidence is bounded."], "risks": [], "policy_concerns": [], "confidence": "high", "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": "sha256:" + "0" * 64,
     })
     service = AnalysisAgentService(
         gateway=gateway,
         artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, content),
     )
 
+    # Supply the reviewer checksum after observing the proposer payload.
+    original = gateway.output_factory
+    def output(request_to_gateway):
+        value = original(request_to_gateway)
+        if request_to_gateway.task_type is LlmTaskType.ANALYSIS_REVIEW:
+            proposer = request_to_gateway.context[-1].content
+            value["proposer_output_checksum"] = "sha256:" + __import__("hashlib").sha256(proposer.encode()).hexdigest() if False else service._checksum(__import__("json").loads(proposer))
+        return value
+    gateway.output_factory = output
     package = service.generate(request)
 
     assert package.artifact_set_checksum == request.artifact_set_checksum
@@ -103,13 +114,15 @@ def test_generate_rejects_checksum_mismatch_before_provider_call():
 def test_g04_decision_rejects_stale_package_and_accepts_only_allowed_approval():
     checksum = "sha256:" + "a" * 64
     request = _request(checksum)
-    gateway = FakeGateway(lambda _: {
+    gateway = FakeGateway(lambda gateway_request: {
         "summary": "Review is required.",
         "risk_groups": [],
         "unresolved_questions": ["Confirm private package support"],
         "evidence_confidence": "medium",
         "recommended_next_action": "Review unresolved questions",
         "deterministic_input_checksum": request.artifact_set_checksum,
+    } if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY else {
+        "decision": "accept", "notes": [], "risks": [], "policy_concerns": [], "confidence": "high", "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": service._checksum(__import__("json").loads(gateway_request.context[-1].content)),
     })
     service = AnalysisAgentService(gateway=gateway, artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"))
     package = service.generate(request)
@@ -120,7 +133,8 @@ def test_g04_decision_rejects_stale_package_and_accepts_only_allowed_approval():
         G04DecisionRequest(
             expected_state_version=1,
             gate_version="g04-v1",
-            package_artifact_set_checksum=package.artifact_set_checksum,
+            package_checksum="sha256:" + "b" * 64,
+            workspace_fingerprint=request.workspace_fingerprint,
             decision=G04Decision.APPROVE_WITH_COMMENT,
             comment="Proceed with the documented risk.",
         ),
@@ -135,11 +149,12 @@ def test_g04_decision_rejects_stale_package_and_accepts_only_allowed_approval():
             G04DecisionRequest(
                 expected_state_version=1,
                 gate_version="g04-v1",
-                package_artifact_set_checksum="sha256:" + "c" * 64,
+                package_checksum="sha256:" + "c" * 64,
+                workspace_fingerprint="sha256:" + "9" * 64,
                 decision=G04Decision.APPROVE,
             ),
         )
-    assert error.value.code == "STALE_ANALYSIS_PACKAGE"
+    assert error.value.code == "STALE_ANALYSIS_BINDING"
 
 
 def test_generate_fails_closed_on_provider_failure_and_stale_state():
@@ -151,7 +166,7 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
     )
     with pytest.raises(AnalysisApplicationError) as provider_error:
         provider.generate(request)
-    assert provider_error.value.code == "ANALYSIS_DEPENDENCY_FAILED"
+    assert provider_error.value.code == "ANALYSIS_PROPOSER_FAILED"
 
     stale = AnalysisAgentService(
         gateway=FakeGateway(lambda _: {}),
@@ -161,3 +176,39 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
     with pytest.raises(AnalysisApplicationError) as stale_error:
         stale.generate(request)
     assert stale_error.value.code == "STALE_STATE_VERSION"
+
+
+def test_reviewer_requests_one_bounded_revision_before_accepting():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    service: AnalysisAgentService
+    reviews = 0
+
+    def output(gateway_request):
+        nonlocal reviews
+        if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY:
+            return {"summary": f"Revision {reviews}", "risk_groups": [], "unresolved_questions": [], "evidence_confidence": "high", "recommended_next_action": "Review evidence", "deterministic_input_checksum": request.artifact_set_checksum}
+        reviews += 1
+        return {"decision": "request_revision" if reviews == 1 else "accept", "notes": ["Clarify evidence."] if reviews == 1 else [], "risks": [], "policy_concerns": [], "confidence": "high", "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": service._checksum(__import__("json").loads(gateway_request.context[-1].content))}
+
+    service = AnalysisAgentService(gateway=FakeGateway(output), artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"), max_revisions=1)
+    package = service.generate(request)
+
+    assert package.revision_count == 1
+    assert package.reviewer.decision.value == "accept"
+
+
+def test_reviewer_authoring_field_fails_closed():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    service: AnalysisAgentService
+
+    def output(gateway_request):
+        if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY:
+            return {"summary": "Bounded evidence.", "risk_groups": [], "unresolved_questions": [], "evidence_confidence": "high", "recommended_next_action": "Review evidence", "deterministic_input_checksum": request.artifact_set_checksum}
+        return {"decision": "accept", "confidence": "high", "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": service._checksum(__import__("json").loads(gateway_request.context[-1].content)), "patch": "forbidden"}
+
+    service = AnalysisAgentService(gateway=FakeGateway(output), artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"))
+    with pytest.raises(AnalysisApplicationError) as error:
+        service.generate(request)
+    assert error.value.code == "ANALYSIS_REVIEW_FAILED"

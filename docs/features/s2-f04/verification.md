@@ -14,9 +14,10 @@ support-level determination by AI, or workflow advancement from the browser.
 | Requirement | Verification |
 | --- | --- |
 | Deterministic facts remain authoritative | Analysis application tests bind the narrative to registered artifact IDs/checksums and reject mismatches before provider calls. |
-| Evidence is persisted and immutable | I02 integration tests assert five registered artifacts, SHA-256 checksums, safe artifact links, no raw content, and state/event versions. |
-| Durable event chain | Frontend SSE tests cover `ANALYSIS_AGENT_STARTED`, `ANALYSIS_AGENT_COMPLETED`, `G04_CREATED`, and `G04_APPROVED`, including duplicate suppression and sequence-gap recovery. Backend tests assert ordered Analysis/G04 events. |
-| G04 decisions are bound and append-only | Backend tests cover approval, approval-with-comment, rejection, idempotent replay, stale state, and stale package checksum. |
+| Proposer/Reviewer review chain | Tests require a checksum-bound phase Proposer result, a non-authoring phase Reviewer result, one bounded revision, and Reviewer acceptance before G04 can be created. |
+| Evidence is persisted and immutable | I02 integration tests assert registered input, Proposer, Reviewer, final-reviewed-analysis, human-readable, usage, and G04 package artifacts with SHA-256 checksums and safe links. |
+| Durable event chain | Frontend and backend tests cover `ANALYSIS_AGENT_*`, `ANALYSIS_REVIEWER_*`, and `G04_*`, including duplicate suppression and sequence-gap recovery. |
+| G04 decisions are bound and append-only | Backend tests cover approval, rejection, idempotent replay, state/package/workspace/plan binding, package-integrity failure, stale records, and protected-transition blocking. |
 | Failure and security behavior | Provider failure is redacted and fails closed; invalid prerequisite checksums create no Analysis events; blocked/schema-invalid UI content is rendered as text and never as HTML. |
 | Authoritative frontend projection | Component tests cover empty, completed split-view, backend failure/correlation ID, stale conflict, blocked analysis, artifact links, provenance, usage/cost, and required-comment validation. |
 
@@ -26,6 +27,7 @@ Executed from the repository root or the `frontend` directory as shown:
 
 ```powershell
 python -m pytest backend/tests/test_analysis_application_service_s2_f04_i01.py backend/tests/test_analysis_evidence_persistence_api_s2_f04_i02.py -q
+python -m pytest -q
 cd frontend
 npm test
 npm run lint
@@ -35,10 +37,14 @@ npm run build
 
 Expected results for the current implementation:
 
-- Feature 4 backend regression suite passes.
+- Feature 4 backend regression suite passes, including Review-chain, integrity,
+  and protected-progression coverage.
+- Full backend suite passes: 370 passed, 2 skipped.
 - Full frontend suite passes.
 - Typecheck and production build pass.
 - Lint has one pre-existing warning in `BaselinePreparationPanel.tsx`.
+- An isolated Alembic upgrade → downgrade → upgrade round trip passes through
+  revision `20260719_03`.
 
 ## Manual verification scenario
 
@@ -62,9 +68,22 @@ Expected results for the current implementation:
 - Correlation ID for any failure or authorization rejection.
 - Screenshots or screen recording of the split view and one negative path.
 
-## Known limitations
+## Executed manual-environment check
 
-The automated suite uses fake gateways and temporary SQLite/artifact stores as
-required by the sprint testing boundary. Live Azure OpenAI behavior and browser
-screenshots require the local manual scenario and are not claimed by automated
-tests. The existing unrelated lint warning remains unchanged.
+On 2026-07-19 the local environment was inspected before attempting the live
+scenario. `LLM_ENABLED` was `false`, Azure endpoint/deployment/API-key settings
+were absent, and no backend or frontend server was running. A live authenticated
+Azure OpenAI/browser run was therefore not attempted: it would only fail at the
+configured provider boundary and could not produce valid evidence.
+
+The automated FastAPI + temporary SQLite + Artifact Store seam was executed
+instead. It exercised an authenticated actor, G03 prerequisite, Proposer and
+Reviewer chain, immutable artifacts, G04 decisions, stale integrity rejection,
+and protected-transition guard. Retain this record with the command output when
+an operator executes the live scenario below.
+
+## Remaining environment prerequisite
+
+The live Azure/browser scenario remains blocked until an authorized operator
+provides a configured Azure deployment and starts the authenticated backend and
+frontend. The existing unrelated lint warning remains unchanged.

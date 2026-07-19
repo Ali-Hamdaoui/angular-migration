@@ -117,3 +117,28 @@ The governed LLM surface is exposed under `/api/v1/llm` and `/api/v1/runs/{run_i
 - `GET /runs/{run_id}/llm/activity` and `GET /runs/{run_id}/usage` return durable invocation and pricing evidence.
 
 Invocation responses expose prompt, schema, model capability/deployment, pricing, stage, input hashes, redacted failure summary, correlation ID, authorized artifact links, state version, and event sequence. Provider failures retain the correlation ID and a redacted failure artifact.
+
+## S2-F04 Analysis Reviewer chain and G04
+
+The Analysis phase is exposed through `/api/v1/runs/{run_id}`:
+
+- `POST /analysis` accepts registered deterministic artifact IDs/checksums,
+  observed state version, and an idempotency key.
+- `GET /analysis` returns the authoritative package and G04 state.
+- `POST /approvals/G04/decisions` requires the current state/gate version,
+  final immutable G04 package checksum, workspace fingerprint, plan version,
+  decision, and idempotency key.
+
+Generation is checksum-bound: deterministic input → phase Proposer → immutable
+Proposer checksum → phase Reviewer → immutable Reviewer checksum → final reviewed
+analysis artifact → G04. The Reviewer returns only an accept, revision request,
+rejection, or insufficient-context decision and cannot replace the Proposer
+narrative. At most one governed Proposer revision is attempted. If review fails
+or is not accepted, the API fails closed and does not create G04.
+
+Responses include both roles' provenance, prompt/schema versions, usage/cost,
+revision count, registered artifact links, final package checksum, state version,
+and event sequence. Durable `ANALYSIS_AGENT_*`, `ANALYSIS_REVIEWER_*`, and
+`G04_*` events are replayed through the run SSE stream. A downstream protected
+transition must call the G04 guard and is rejected unless the latest approved
+gate still matches its package, workspace, plan, and state bindings.

@@ -40,6 +40,10 @@ describe("useAuthoritativeRun Feature 13 SSE", () => {
       "SCANNER_COMPLETED",
       "DISCOVERY_COMPLETED",
       "DISCOVERY_BLOCKED",
+      "ANALYSIS_AGENT_STARTED",
+      "ANALYSIS_REVIEWER_COMPLETED",
+      "G04_CREATED",
+      "G04_APPROVED",
     ]));
     act(() => {
       source!.emit("BASELINE_BACKEND_ANCHOR_CREATED", { event_id: "e3", event_type: "BASELINE_BACKEND_ANCHOR_CREATED", sequence: 3, occurred_at: "3" });

@@ -19,7 +19,9 @@ class G04DecisionApiRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
     gate_version: str = Field(min_length=1, max_length=128)
-    package_artifact_set_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    package_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    plan_version: str | None = Field(default=None, max_length=128)
     decision: G04Decision
     comment: str | None = Field(default=None, max_length=4000)
 
@@ -32,6 +34,7 @@ class AnalysisResponse(ContractModel):
     artifact_ids: list[str] = Field(default_factory=list)
     artifact_checksums: dict[str, str] = Field(default_factory=dict)
     artifact_links: dict[str, str] = Field(default_factory=dict)
+    package_checksum: str | None = None
     gate_id: str = "G04"
     gate_version: str = "g04-v1"
     gate_status: str
@@ -49,7 +52,7 @@ class G04DecisionResponse(ContractModel):
     decision: G04Decision
     status: str
     accepted: bool
-    package_artifact_set_checksum: str
+    package_checksum: str
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False

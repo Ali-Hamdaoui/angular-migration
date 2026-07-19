@@ -120,11 +120,20 @@ class AnalysisEvidenceApplicationService:
             if run.state_version != payload.expected_state_version:
                 raise AnalysisEvidenceError("STALE_STATE_VERSION", "The G04 decision state version is stale.", 409)
             analysis = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == run_id, AnalysisMetadataModel.status == "completed").order_by(AnalysisMetadataModel.created_at.desc()))
-            gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == run_id, G04ApprovalModel.gate_id == "G04").order_by(G04ApprovalModel.created_at.desc()))
+            gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == run_id, G04ApprovalModel.gate_id == "G04").order_by(G04ApprovalModel.state_version.desc(), G04ApprovalModel.created_at.desc()))
             if analysis is None or gate is None or gate.status != "pending":
                 raise AnalysisEvidenceError("G04_NOT_PENDING", "G04 is not available for a decision.", 409)
-            if payload.gate_version != gate.gate_version or payload.package_artifact_set_checksum != analysis.artifact_set_checksum:
+            if payload.gate_version != gate.gate_version or payload.package_checksum != gate.package_checksum:
+                self._record_stale_gate(session, run, gate, payload, actor, "package_checksum_changed")
                 raise AnalysisEvidenceError("STALE_ANALYSIS_PACKAGE", "The G04 package binding is stale.", 409)
+            if payload.workspace_fingerprint != gate.workspace_fingerprint or payload.plan_version != gate.plan_version:
+                self._record_stale_gate(session, run, gate, payload, actor, "workspace_or_plan_binding_changed")
+                raise AnalysisEvidenceError("STALE_ANALYSIS_BINDING", "The G04 workspace or plan binding is stale.", 409)
+            try:
+                self._verify_package_integrity(run, gate)
+            except AnalysisEvidenceError:
+                self._record_stale_gate(session, run, gate, payload, actor, "package_integrity_failed")
+                raise
             package = analysis.package or {}
             domain_request = AnalysisRequest(
                 run_id=run_id, expected_state_version=payload.expected_state_version,
@@ -134,7 +143,9 @@ class AnalysisEvidenceApplicationService:
             )
             decision = G04DecisionRequest(
                 expected_state_version=payload.expected_state_version, gate_version=payload.gate_version,
-                package_artifact_set_checksum=payload.package_artifact_set_checksum,
+                package_checksum=payload.package_checksum,
+                workspace_fingerprint=payload.workspace_fingerprint,
+                plan_version=payload.plan_version,
                 decision=payload.decision, comment=payload.comment,
             )
             try:
@@ -163,7 +174,7 @@ class AnalysisEvidenceApplicationService:
             return self.analysis_agent
         from app.core.config import get_settings
         from app.llm_gateway.azure_gateway import AzureOpenAILLMGateway
-        from app.services.analysis_application_service import AnalysisGatewayNarrative
+        from app.services.analysis_application_service import AnalysisGatewayNarrative, AnalysisGatewayReview
         from app.artifact_store import LocalFilesystemArtifactStore
         with self.scope() as session:
             run = session.get(MigrationRunModel, run_id)
@@ -171,6 +182,7 @@ class AnalysisEvidenceApplicationService:
         from app.llm_gateway.azure_gateway import PromptSchemaRegistry
         registry = PromptSchemaRegistry(version=get_settings().llm_schema_registry_version)
         registry.register("analysis_narrative_v1", AnalysisGatewayNarrative)
+        registry.register("analysis_review_v1", AnalysisGatewayReview)
         return AnalysisAgentService(gateway=AzureOpenAILLMGateway(settings=get_settings(), registry=registry), artifact_reader=lambda artifact_id: self._read_artifact(store, artifact_id))
 
     @staticmethod
@@ -189,22 +201,34 @@ class AnalysisEvidenceApplicationService:
             narrative_json = json.dumps(package.narrative.model_dump(mode="json"), sort_keys=True)
             markdown = "# Analysis\n\n" + package.narrative.summary + "\n"
             usage_json = json.dumps(package.usage, sort_keys=True)
-            package_json_text = json.dumps({"package": package_json, "gate_id": "G04", "gate_version": "g04-v1", "artifact_set_checksum": package.artifact_set_checksum}, sort_keys=True)
+            proposer_json = json.dumps({"narrative": package.narrative.model_dump(mode="json"), "proposer_output_checksum": package.proposer_output_checksum}, sort_keys=True)
+            reviewer_json = json.dumps({"review": package.reviewer.model_dump(mode="json"), "reviewer_output_checksum": package.reviewer_output_checksum}, sort_keys=True)
+            final_json = json.dumps({"narrative": package.narrative.model_dump(mode="json"), "review": package.reviewer.model_dump(mode="json"), "proposer_output_checksum": package.proposer_output_checksum, "reviewer_output_checksum": package.reviewer_output_checksum, "revision_count": package.revision_count}, sort_keys=True)
+            package_json_text = json.dumps({"package": package_json, "gate_id": "G04", "gate_version": "g04-v1", "artifact_set_checksum": package.artifact_set_checksum, "final_reviewed_analysis_checksum": self._checksum(json.loads(final_json))}, sort_keys=True)
             artifacts = [
                 self._artifact(session, store, run_id, "02_analysis/model_input_manifest.json", input_manifest, ArtifactType.JSON),
                 self._artifact(session, store, run_id, "02_analysis/structured_response.json", narrative_json, ArtifactType.JSON),
+                self._artifact(session, store, run_id, "02_analysis/proposer_output.json", proposer_json, ArtifactType.JSON),
+                self._artifact(session, store, run_id, "02_analysis/reviewer_output.json", reviewer_json, ArtifactType.JSON),
+                self._artifact(session, store, run_id, "02_analysis/final_reviewed_analysis.json", final_json, ArtifactType.JSON),
                 self._artifact(session, store, run_id, "02_analysis/human_analysis.md", markdown, ArtifactType.MARKDOWN),
                 self._artifact(session, store, run_id, "02_analysis/usage_cost.json", usage_json, ArtifactType.JSON),
                 self._artifact(session, store, run_id, "02_analysis/g04_package.json", package_json_text, ArtifactType.JSON),
             ]
             ids = [item.ref.artifact_id for item in artifacts]
             checks = {item.ref.artifact_id: item.ref.checksum for item in artifacts}
-            completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_COMPLETED, "analysis agent completed", {"artifact_ids": json.dumps(ids)})
-            gate_event = self._transition(session, run, request, WorkflowEventType.G04_CREATED, "G04 created", {"artifact_ids": json.dumps(ids), "artifact_set_checksum": package.artifact_set_checksum})
+            completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_COMPLETED, "analysis proposer completed", {"artifact_ids": json.dumps(ids), "proposer_output_checksum": package.proposer_output_checksum})
+            reviewer_started = self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_STARTED, "analysis reviewer started", {"proposer_output_checksum": package.proposer_output_checksum})
+            reviewer_completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_COMPLETED, "analysis reviewer accepted", {"reviewer_output_checksum": package.reviewer_output_checksum, "revision_count": package.revision_count})
+            gate_event = self._transition(session, run, request, WorkflowEventType.G04_CREATED, "G04 created", {"artifact_ids": json.dumps(ids), "artifact_set_checksum": package.artifact_set_checksum, "package_checksum": checks[ids[-1]]})
             now = self.now()
             invocation.status = "completed"; invocation.deployment_alias = package.model_provenance.get("provider", "azure-openai"); invocation.prompt_version = package.prompt_version; invocation.schema_version = package.schema_version; invocation.pricing_version = package.usage.get("pricing_version", "unknown"); invocation.artifact_ids = ids; invocation.artifact_checksums = checks; invocation.state_version = completed.next_state_version; invocation.event_sequence = completed.event_sequence; invocation.completed_at = now
             usage = package.usage
             session.add(UsageCostRecordModel(id="usage-cost-" + uuid4().hex[:12], invocation_id=invocation.id, run_id=run_id, stage_id=None, pricing_version=package.usage.get("pricing_version", "unknown"), input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0), total_tokens=usage.get("total_tokens", 0), input_price_per_million=usage.get("input_price_per_million", 0), output_price_per_million=usage.get("output_price_per_million", 0), input_cost_usd=usage.get("input_cost_usd", 0), output_cost_usd=usage.get("output_cost_usd", 0), total_cost_usd=usage.get("total_cost_usd", 0), created_at=now))
+            reviewer_invocation = LlmInvocationModel(id="llm-invocation-" + uuid4().hex[:12], run_id=run_id, stage_id=None, idempotency_key=request.idempotency_key + ":reviewer", request_checksum=package.proposer_output_checksum, input_hashes=[package.artifact_set_checksum, package.proposer_output_checksum], correlation_id=request.correlation_id or uuid4().hex, actor=request.actor, role="phase_reviewer", task_type="analysis_review", provider="azure_openai", deployment_alias=package.reviewer_provenance.get("provider", "azure-openai"), prompt_version=package.reviewer_prompt_version, schema_version=package.reviewer_schema_version, pricing_version=package.reviewer_usage.get("pricing_version", "unknown"), stage="analysis", redacted_summary=None, status="completed", failure_code=None, artifact_ids=ids, artifact_checksums=checks, state_version=reviewer_completed.next_state_version, event_sequence=reviewer_completed.event_sequence, retries=package.reviewer_usage.get("retry_count", 0), latency_ms=None, started_at=now, completed_at=now, created_at=now)
+            session.add(reviewer_invocation)
+            reviewer_usage = package.reviewer_usage
+            session.add(UsageCostRecordModel(id="usage-cost-" + uuid4().hex[:12], invocation_id=reviewer_invocation.id, run_id=run_id, stage_id=None, pricing_version=reviewer_usage.get("pricing_version", "unknown"), input_tokens=reviewer_usage.get("input_tokens", 0), output_tokens=reviewer_usage.get("output_tokens", 0), total_tokens=reviewer_usage.get("total_tokens", 0), input_price_per_million=reviewer_usage.get("input_price_per_million", 0), output_price_per_million=reviewer_usage.get("output_price_per_million", 0), input_cost_usd=reviewer_usage.get("input_cost_usd", 0), output_cost_usd=reviewer_usage.get("output_cost_usd", 0), total_cost_usd=reviewer_usage.get("total_cost_usd", 0), created_at=now))
             row.status = "completed"; row.artifact_ids = ids; row.artifact_checksums = checks; row.package = package_json; row.state_version = gate_event.next_state_version; row.event_sequence = gate_event.event_sequence; row.updated_at = now
             gate = G04ApprovalModel(id="g04-" + uuid4().hex[:12], run_id=run_id, gate_id="G04", gate_version="g04-v1", idempotency_key="gate:" + request.idempotency_key, actor=request.actor, status="pending", decision=None, package_checksum=checks[ids[-1]], artifact_set_checksum=package.artifact_set_checksum, workspace_fingerprint=request.workspace_fingerprint, plan_version=request.plan_version, state_version=gate_event.next_state_version, event_sequence=gate_event.event_sequence, artifact_ids=ids, comment=None, stale_reason=None, created_at=now, updated_at=now)
             session.add(gate); session.flush()
@@ -214,6 +238,8 @@ class AnalysisEvidenceApplicationService:
         with self.scope() as session:
             run = session.get(MigrationRunModel, run_id); row = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == run_id, AnalysisMetadataModel.idempotency_key == request.idempotency_key)); invocation = session.get(LlmInvocationModel, row.invocation_id); store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
             artifact = self._artifact(session, store, run_id, "02_analysis/analysis_error_redacted.json", json.dumps({"error_code": error_code, "raw_provider_error_stored": False}, sort_keys=True), ArtifactType.JSON)
+            if error_code.startswith("ANALYSIS_REVIEW"):
+                self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_FAILED, "analysis reviewer failed", {"error_code": error_code, "artifact_id": artifact.ref.artifact_id})
             transition = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_FAILED, "analysis agent failed", {"error_code": error_code, "artifact_id": artifact.ref.artifact_id})
             now = self.now(); row.status = "failed"; row.error_code = error_code; row.artifact_ids = [artifact.ref.artifact_id]; row.artifact_checksums = {artifact.ref.artifact_id: artifact.ref.checksum}; row.state_version = transition.next_state_version; row.event_sequence = transition.event_sequence; row.updated_at = now; invocation.status = "failed"; invocation.failure_code = error_code; invocation.artifact_ids = row.artifact_ids; invocation.artifact_checksums = row.artifact_checksums; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence; invocation.completed_at = now
             session.flush(); return self._analysis_dto(session, row)
@@ -222,6 +248,40 @@ class AnalysisEvidenceApplicationService:
         artifact = store.write_text_artifact(run_id, path, content, artifact_type, created_by="analysis-evidence", input_hashes={"artifact_set": "analysis"}, policy_version="s2-f04-i02")
         session.add(ArtifactMetadataModel(id="metadata-" + artifact.ref.artifact_id, run_id=run_id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at))
         return artifact
+
+    def _verify_package_integrity(self, run, gate) -> None:
+        try:
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+            package_id = gate.artifact_ids[-1]
+            if store.read_artifact_by_id(package_id).ref.checksum != gate.package_checksum:
+                raise AnalysisEvidenceError("G04_PACKAGE_INTEGRITY_FAILED", "The G04 package checksum no longer matches stored evidence.", 409)
+        except AnalysisEvidenceError:
+            raise
+        except Exception as error:
+            raise AnalysisEvidenceError("G04_PACKAGE_INTEGRITY_FAILED", "The G04 package evidence is unavailable or invalid.", 409) from error
+
+    def _record_stale_gate(self, session, run, gate, payload, actor, reason) -> None:
+        """Append a stale record and durable event; never mutate the old decision."""
+        request = AnalysisRequest(run_id=run.id, expected_state_version=run.state_version, idempotency_key=payload.idempotency_key + ":stale", actor=actor, prerequisite_artifacts=[{"artifact_id": "stale-marker", "checksum": "sha256:" + "0" * 64}])
+        transition = self._transition(session, run, request, WorkflowEventType.G04_STALE, "G04 binding marked stale", {"reason": reason, "gate_version": gate.gate_version})
+        now = self.now()
+        session.add(G04ApprovalModel(id="g04-" + uuid4().hex[:12], run_id=run.id, gate_id="G04", gate_version=gate.gate_version, idempotency_key="stale:" + payload.idempotency_key, actor=actor, status="stale", decision="stale", package_checksum=gate.package_checksum, artifact_set_checksum=gate.artifact_set_checksum, workspace_fingerprint=gate.workspace_fingerprint, plan_version=gate.plan_version, state_version=transition.next_state_version, event_sequence=transition.event_sequence, artifact_ids=gate.artifact_ids, comment=None, stale_reason=reason, created_at=now, updated_at=now))
+        session.flush()
+        session.commit()
+
+    def require_approved_g04(self, run_id: str, *, expected_state_version: int, workspace_fingerprint: str | None, plan_version: str | None, actor: str) -> G04ApprovalModel:
+        """Guard any downstream protected transition with the active G04 package bindings."""
+        with self.scope() as session:
+            run = self._authorized_run(session, run_id, actor)
+            if run.state_version != expected_state_version:
+                raise AnalysisEvidenceError("STALE_STATE_VERSION", "The protected transition state version is stale.", 409)
+            gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == run_id, G04ApprovalModel.gate_id == "G04").order_by(G04ApprovalModel.state_version.desc(), G04ApprovalModel.created_at.desc()))
+            if gate is None or gate.status != "approved":
+                raise AnalysisEvidenceError("G04_APPROVAL_REQUIRED", "An approved current G04 gate is required before protected progression.", 409)
+            if gate.workspace_fingerprint != workspace_fingerprint or gate.plan_version != plan_version:
+                raise AnalysisEvidenceError("G04_STALE", "The approved G04 bindings no longer match protected progression.", 409)
+            self._verify_package_integrity(run, gate)
+            return gate
 
     def _authorized_run(self, session, run_id, actor):
         run = session.get(MigrationRunModel, run_id)
@@ -251,9 +311,9 @@ class AnalysisEvidenceApplicationService:
         return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def _analysis_dto(self, session, row, replay=False):
-        gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == row.run_id).order_by(G04ApprovalModel.created_at.desc()))
-        return AnalysisResponse(run_id=row.run_id, analysis_id=row.id, status=row.status, package=row.package, artifact_ids=row.artifact_ids, artifact_checksums=row.artifact_checksums, artifact_links={item: f"/api/v1/artifacts/{item}" for item in row.artifact_ids}, gate_status=gate.status if gate else "blocked", gate_decision=gate.decision if gate else None, error_code=row.error_code, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)
+        gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == row.run_id).order_by(G04ApprovalModel.state_version.desc(), G04ApprovalModel.created_at.desc()))
+        return AnalysisResponse(run_id=row.run_id, analysis_id=row.id, status=row.status, package=row.package, artifact_ids=row.artifact_ids, artifact_checksums=row.artifact_checksums, artifact_links={item: f"/api/v1/artifacts/{item}" for item in row.artifact_ids}, package_checksum=gate.package_checksum if gate else None, gate_status=gate.status if gate else "blocked", gate_decision=gate.decision if gate else None, error_code=row.error_code, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)
 
     @staticmethod
     def _decision_dto(row, replay=False):
-        return G04DecisionResponse(run_id=row.run_id, gate_version=row.gate_version, decision=G04Decision(row.decision), status=row.status, accepted=row.status == "approved", package_artifact_set_checksum=row.artifact_set_checksum, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)
+        return G04DecisionResponse(run_id=row.run_id, gate_version=row.gate_version, decision=G04Decision(row.decision), status=row.status, accepted=row.status == "approved", package_checksum=row.package_checksum, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)

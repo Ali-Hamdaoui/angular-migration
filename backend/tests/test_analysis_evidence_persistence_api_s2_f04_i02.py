@@ -5,7 +5,7 @@ import pytest
 
 from app.api.analysis_contracts import AnalysisCreateRequest, G04DecisionApiRequest
 from app.artifact_store import LocalFilesystemArtifactStore
-from app.domain.analysis import AnalysisPackage, AnalysisNarrative, G04Decision, G04DecisionResult
+from app.domain.analysis import AnalysisPackage, AnalysisNarrative, AnalysisReview, G04Decision, G04DecisionResult
 from app.domain.contracts import ArtifactType
 from app.repositories.models import ArtifactMetadataModel, Base, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
@@ -40,10 +40,17 @@ class FakeAnalysisAgent:
                 recommended_next_action="Review compatibility evidence",
                 deterministic_input_checksum=request.artifact_set_checksum,
             ),
+            proposer_output_checksum="sha256:" + "6" * 64,
             model_provenance={"provider": "azure-openai", "role": "phase_proposer", "response_id": "response-1"},
             usage={"input_tokens": 10, "output_tokens": 15, "total_tokens": 25, "input_price_per_million": 0.25, "output_price_per_million": 2.0, "input_cost_usd": 0.0000025, "output_cost_usd": 0.00003, "total_cost_usd": 0.0000325, "pricing_version": "test-pricing-v1"},
             prompt_version="analysis_agent_v1",
             schema_version="analysis-schema-registry-v1",
+            reviewer=AnalysisReview(decision="accept", notes=["Evidence is bounded."], risks=[], policy_concerns=[], confidence="high", deterministic_input_checksum=request.artifact_set_checksum, proposer_output_checksum="sha256:" + "6" * 64),
+            reviewer_output_checksum="sha256:" + "7" * 64,
+            reviewer_provenance={"provider": "azure-openai", "role": "phase_reviewer", "response_id": "response-2"},
+            reviewer_usage={"input_tokens": 5, "output_tokens": 8, "total_tokens": 13, "input_price_per_million": 0.25, "output_price_per_million": 2.0, "input_cost_usd": 0.00000125, "output_cost_usd": 0.000016, "total_cost_usd": 0.00001725, "pricing_version": "test-pricing-v1"},
+            reviewer_prompt_version="analysis_reviewer_v1",
+            reviewer_schema_version="analysis-schema-registry-v1",
             workspace_fingerprint=request.workspace_fingerprint,
             plan_version=request.plan_version,
         )
@@ -92,13 +99,13 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
 
     assert result.status == "completed"
     assert result.gate_status == "pending"
-    assert len(result.artifact_ids) == 5
+    assert len(result.artifact_ids) == 8
     assert all(checksum.startswith("sha256:") for checksum in result.artifact_checksums.values())
     with sessions() as session:
         events = list(session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence))
-        assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "G04_CREATED"]
-        assert session.query(ArtifactMetadataModel).filter(ArtifactMetadataModel.run_id == "run-1").count() == 6
-        assert session.query(MigrationRunModel).one().state_version == 4
+        assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "ANALYSIS_REVIEWER_STARTED", "ANALYSIS_REVIEWER_COMPLETED", "G04_CREATED"]
+        assert session.query(ArtifactMetadataModel).filter(ArtifactMetadataModel.run_id == "run-1").count() == 9
+        assert session.query(MigrationRunModel).one().state_version == 6
     store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
     package = store.read_artifact_by_id(result.artifact_ids[-1])
     assert package.ref.checksum == result.artifact_checksums[result.artifact_ids[-1]]
@@ -135,7 +142,7 @@ def test_analysis_rejects_stale_or_tampered_prerequisite_before_provider(tmp_pat
 def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     service, payload, sessions, _ = setup(tmp_path)
     analysis = service.generate("run-1", payload, "operator")
-    decision = G04DecisionApiRequest(expected_state_version=4, idempotency_key="g04-decision-1", gate_version="g04-v1", package_artifact_set_checksum=analysis.package["artifact_set_checksum"], decision=G04Decision.APPROVE_WITH_COMMENT, comment="Proceed with documented risks.")
+    decision = G04DecisionApiRequest(expected_state_version=6, idempotency_key="g04-decision-1", gate_version="g04-v1", package_checksum=analysis.package_checksum, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE_WITH_COMMENT, comment="Proceed with documented risks.")
 
     result = service.decide_g04("run-1", decision, "operator")
     replay = service.decide_g04("run-1", decision, "operator")
@@ -143,8 +150,8 @@ def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     assert result.accepted is True
     assert replay.idempotent_replay is True
     with sessions() as session:
-        assert session.query(WorkflowEventModel).count() == 4
-        assert session.query(MigrationRunModel).one().state_version == 5
+        assert session.query(WorkflowEventModel).count() == 6
+        assert session.query(MigrationRunModel).one().state_version == 7
     with pytest.raises(AnalysisEvidenceError) as stale:
         service.decide_g04("run-1", decision.model_copy(update={"idempotency_key": "g04-decision-2", "package_artifact_set_checksum": "sha256:" + "a" * 64}), "operator")
     assert stale.value.code == "STALE_STATE_VERSION"
@@ -208,7 +215,9 @@ def test_i04_g04_reject_decision_is_recorded_without_becoming_approval(tmp_path:
             expected_state_version=analysis.state_version,
             idempotency_key="g04-reject-verification",
             gate_version=analysis.gate_version,
-            package_artifact_set_checksum=analysis.package["artifact_set_checksum"],
+            package_checksum=analysis.package_checksum,
+            workspace_fingerprint=analysis.package["workspace_fingerprint"],
+            plan_version=analysis.package["plan_version"],
             decision=G04Decision.REJECT,
             comment="Evidence is insufficient for acceptance.",
         ),
@@ -218,5 +227,36 @@ def test_i04_g04_reject_decision_is_recorded_without_becoming_approval(tmp_path:
     assert result.accepted is False
     assert result.status == "reject"
     with sessions() as session:
-        assert session.query(MigrationRunModel).one().state_version == 5
+        assert session.query(MigrationRunModel).one().state_version == 7
         assert session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence).all()[-1].event_type == "G04_REJECTED"
+
+
+def test_protected_progression_requires_current_approved_g04_and_rejects_stale_bindings(tmp_path: Path):
+    service, payload, _, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+    analysis = service.generate("run-1", payload, "operator")
+
+    with pytest.raises(AnalysisEvidenceError) as pending:
+        service.require_approved_g04("run-1", expected_state_version=analysis.state_version, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], actor="operator")
+    assert pending.value.code == "G04_APPROVAL_REQUIRED"
+
+    decision = G04DecisionApiRequest(expected_state_version=analysis.state_version, idempotency_key="g04-progression", gate_version="g04-v1", package_checksum=analysis.package_checksum, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE)
+    approved = service.decide_g04("run-1", decision, "operator")
+    gate = service.require_approved_g04("run-1", expected_state_version=approved.state_version, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], actor="operator")
+    assert gate.status == "approved"
+
+    with pytest.raises(AnalysisEvidenceError) as stale:
+        service.require_approved_g04("run-1", expected_state_version=approved.state_version, workspace_fingerprint="sha256:" + "9" * 64, plan_version=analysis.package["plan_version"], actor="operator")
+    assert stale.value.code == "G04_STALE"
+
+
+def test_tampered_g04_package_is_recorded_stale_and_cannot_be_decided(tmp_path: Path):
+    service, payload, sessions, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+    analysis = service.generate("run-1", payload, "operator")
+    with sessions() as session:
+        gate = session.query(__import__("app.repositories.analysis_models", fromlist=["G04ApprovalModel"]).G04ApprovalModel).filter_by(run_id="run-1", status="pending").one()
+        gate.package_checksum = "sha256:" + "f" * 64
+        session.commit()
+
+    with pytest.raises(AnalysisEvidenceError) as error:
+        service.decide_g04("run-1", G04DecisionApiRequest(expected_state_version=analysis.state_version, idempotency_key="g04-tampered", gate_version="g04-v1", package_checksum="sha256:" + "f" * 64, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE), "operator")
+    assert error.value.code == "G04_PACKAGE_INTEGRITY_FAILED"

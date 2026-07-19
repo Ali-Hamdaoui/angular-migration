@@ -188,6 +188,217 @@
         "title": "AlertType",
         "type": "string"
       },
+      "AnalysisArtifactInput": {
+        "additionalProperties": false,
+        "description": "A registered deterministic artifact allowed into an analysis request.",
+        "properties": {
+          "artifact_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Checksum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "checksum"
+        ],
+        "title": "AnalysisArtifactInput",
+        "type": "object"
+      },
+      "AnalysisCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "plan_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Version"
+          },
+          "prerequisite_artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/AnalysisArtifactInput"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Prerequisite Artifacts",
+            "type": "array"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "prerequisite_artifacts"
+        ],
+        "title": "AnalysisCreateRequest",
+        "type": "object"
+      },
+      "AnalysisResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "artifact_links": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Links",
+            "type": "object"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "gate_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Decision"
+          },
+          "gate_id": {
+            "default": "G04",
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_status": {
+            "title": "Gate Status",
+            "type": "string"
+          },
+          "gate_version": {
+            "default": "g04-v1",
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "package": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package"
+          },
+          "package_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Checksum"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "analysis_id",
+          "status",
+          "gate_status",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "AnalysisResponse",
+        "type": "object"
+      },
       "ApprovalDecision": {
         "enum": [
           "PENDING",
@@ -3384,6 +3595,149 @@
           "decision"
         ],
         "title": "G03DecisionRequest",
+        "type": "object"
+      },
+      "G04Decision": {
+        "enum": [
+          "approve",
+          "approve_with_comment",
+          "request_modification",
+          "reject"
+        ],
+        "title": "G04Decision",
+        "type": "string"
+      },
+      "G04DecisionApiRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/G04Decision"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "gate_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "package_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "plan_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Version"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "gate_version",
+          "package_checksum",
+          "decision"
+        ],
+        "title": "G04DecisionApiRequest",
+        "type": "object"
+      },
+      "G04DecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/G04Decision"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "gate_id": {
+            "default": "G04",
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_version": {
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "package_checksum": {
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "gate_version",
+          "decision",
+          "status",
+          "accepted",
+          "package_checksum",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "G04DecisionResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -7371,6 +7725,130 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/analysis": {
+      "get": {
+        "operationId": "get_analysis_api_v1_runs__run_id__analysis_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Analysis",
+        "tags": [
+          "analysis"
+        ]
+      },
+      "post": {
+        "operationId": "generate_api_v1_runs__run_id__analysis_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate",
+        "tags": [
+          "analysis"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/approvals/G03/decisions": {
       "post": {
         "operationId": "decide_api_v1_runs__run_id__approvals_G03_decisions_post",
@@ -7420,6 +7898,74 @@
         "summary": "Decide",
         "tags": [
           "baseline-g03"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/approvals/G04/decisions": {
+      "post": {
+        "operationId": "decide_g04_api_v1_runs__run_id__approvals_G04_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G04DecisionApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G04DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G04",
+        "tags": [
+          "analysis"
         ]
       }
     },
@@ -10576,6 +11122,130 @@
         ]
       }
     },
+    "/runs/{run_id}/analysis": {
+      "get": {
+        "operationId": "get_analysis_runs__run_id__analysis_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Analysis",
+        "tags": [
+          "analysis"
+        ]
+      },
+      "post": {
+        "operationId": "generate_runs__run_id__analysis_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate",
+        "tags": [
+          "analysis"
+        ]
+      }
+    },
     "/runs/{run_id}/approvals/G03/decisions": {
       "post": {
         "operationId": "decide_runs__run_id__approvals_G03_decisions_post",
@@ -10625,6 +11295,74 @@
         "summary": "Decide",
         "tags": [
           "baseline-g03"
+        ]
+      }
+    },
+    "/runs/{run_id}/approvals/G04/decisions": {
+      "post": {
+        "operationId": "decide_g04_runs__run_id__approvals_G04_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G04DecisionApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G04DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G04",
+        "tags": [
+          "analysis"
         ]
       }
     },
