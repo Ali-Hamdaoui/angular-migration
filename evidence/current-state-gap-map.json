@@ -3,98 +3,83 @@
   "goal_folder": "10-full-runtime-proof",
   "branch": "hermes/10-full-runtime-proof",
   "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
-  "inventory_date": "2026-07-19T21:37:00Z",
-  "phase": "Phase A \u2014 harness_ready",
+  "inventory_date": "2026-07-19T23:30:00Z",
+  "phase": "Phase A — harness_ready (post-audit)",
   "state_gap_map": {
     "S4-F15-I01 - Backend harness": {
       "criterion": "Fixture harness for generating synthetic Angular workspaces under external temp roots",
-      "existing": {
-        "fixture_generators": "PARTIAL - Basic 18.2.x single-fixture generator exists, needs 18.0.x, passing/repairable/blocked variants, harness orchestration"
-      },
-      "needed": "Extended fixture generators, harness orchestration service, fixture manifest generation"
+      "existing": "PRESENT — 7 fixture generators, harness orchestration service, fixture manifest generation, runtime evidence collector",
+      "needed": "Phase B integration with G01–G09"
     },
     "S4-F15-I01 - Real subprocess profiles": {
       "criterion": "Safe real subprocess profiles for execution testing",
-      "existing": {
-        "command_execution": "PRESENT - CommandExecutionWorker exists",
-        "runtime_profiles": "PRESENT - Runtime profile management exists"
-      },
-      "needed": "Harness subprocess profiles for fixture generation, npm install, ng build/upgrade"
+      "existing": "PRESENT — 5 harness profiles (ng-new, ng-generate, ng-build, npm-install, npx-ng-update), CommandRegistry extension, ExecutionWorker integration",
+      "needed": "Phase B production integration"
     },
     "S4-F15-I01 - Deterministic failure fixtures": {
       "criterion": "Fixtures for predictable migration failures",
-      "existing": "MISSING - No deterministic failure fixtures exist",
-      "needed": "Fixtures for compiler errors, dependency conflicts, environment blockers, cancellable operations"
+      "existing": "PRESENT — 4 failure fixtures: compiler_error, dependency_conflict, environment_blocker, cancellable",
+      "needed": "Phase B: real failure scenarios against production pipeline"
     },
     "S4-F15-I01 - Fake model suite": {
       "criterion": "Fake model client for integration testing",
-      "existing": {
-        "mock_gateway": "PRESENT - Mock LLM gateway exists",
-        "mock_agents": "PRESENT - Mock agents exist"
-      },
-      "needed": "Integration test suite using fake adapters"
+      "existing": "PRESENT — MockLlmGateway + 8 mock agents + test_fake_model_integration.py (113 tests pass)",
+      "needed": "Phase B: real Azure LLM integration"
     },
     "S4-F15-I01 - Evidence collector": {
       "criterion": "Service to collect and register runtime proof evidence",
-      "existing": {
-        "artifact_store": "PRESENT - LocalFilesystemArtifactStore with SHA-256 exists",
-        "run_service": "PRESENT - MigrationRunService has evidence pattern"
-      },
-      "needed": "Harness-specific evidence collector service"
+      "existing": "PRESENT — RuntimeEvidenceCollector with 11 record_* methods, atomic write + SHA-256 + ArtifactMetadataModel",
+      "needed": "Phase B: integration with production evidence pipeline"
     },
     "S4-F15-I02 - Persistence": {
       "criterion": "Test execution metadata and migration-run records storage",
-      "existing": "PRESENT - MigrationRunModel, ArtifactMetadataModel etc. exist",
-      "needed": "Reuse existing run/stage models for harness"
+      "existing": "PRESENT — MigrationRunModel, ArtifactMetadataModel, session_scope reused",
+      "needed": "Phase B: production DB-backed state transitions"
     },
     "S4-F15-I02 - API": {
-      "criterion": "Optional GET /api/v1/operator/acceptance-suite/status endpoint",
-      "existing": "PRESENT - Router composition exists with all current routes",
-      "needed": "New endpoint for acceptance suite status"
+      "criterion": "GET /api/v1/operator/acceptance-suite/status endpoint",
+      "existing": "PRESENT — GET /status, POST /fixtures, POST /fixtures/evaluate, GET /runs, GET /runs/{id}, GET /runs/{id}/evidence",
+      "needed": "Phase B: SSE integration, authentication"
     },
     "S4-F15-I02 - Durable events": {
       "criterion": "Existing production events validated; acceptance-suite events optional",
-      "existing": "PRESENT - WorkflowEventType, WorkflowEventModel, StateTransitionService all exist",
-      "needed": "Acceptance-suite-specific event types if needed"
+      "existing": "PRESENT — 11 new WorkflowEventType entries, event recording via StateTransitionService",
+      "needed": "Phase B: full event replay and SSE emit"
     },
     "S4-F15-I02 - Artifacts": {
       "criterion": "Fixture manifests, isolation evidence, output layout, proof report",
-      "existing": "PRESENT - Atomic write, SHA-256, metadata sidecar all exist",
-      "needed": "Harness artifact writing patterns for required evidence types"
+      "existing": "PRESENT — All artifact types handled by RuntimeEvidenceCollector",
+      "needed": "Phase B: integration with production artifact services"
     },
     "S4-F15-I03 - Frontend": {
       "criterion": "Operator acceptance checklist linking scenarios to live pages/artifacts",
-      "existing": {
-        "RunDashboard": "PRESENT - AuthoritativeRunDashboard exists",
-        "SSE hooks": "PRESENT - useMigrationEvents, useAuthoritativeRun exist",
-        "ArtifactPanel": "PRESENT - Artifact display exists"
-      },
-      "needed": "Acceptance checklist component"
+      "existing": "PARTIAL — Code exists (API client, hook, component, page, CSS) but no formal review or component tests",
+      "needed": "Component tests, reviewer PASS verdict, SSE integration in Phase B"
     },
     "S4-F15-I04 - Tests": {
       "criterion": "Backend/frontend/SSE/security tests",
-      "existing": "PRESENT - Comprehensive test suites exist",
-      "needed": "Tests for new harness components, security negatives, documentation"
+      "existing": "PARTIAL — 113 backend harness tests pass. Frontend component tests and SSE tests missing.",
+      "needed": "Frontend component tests, manual validation execution, security negatives"
     },
     "C90 - Contract tests": {
       "criterion": "All feature tests plus frozen handoff contract tests",
-      "existing": "PRESENT - test_contracts.py exists",
-      "needed": "Updated contract tests"
+      "existing": "PRESENT — 8 contract tests pass",
+      "needed": "Phase B: update contracts when integrating"
     },
     "C91 - Manual validation": {
       "criterion": "Execute MANUAL_TEST_PLAN.md against real isolated runtime",
-      "existing": "PRESENT - MANUAL_TEST_PLAN.md exists with 4 test cases",
-      "needed": "Execute manual validation"
+      "existing": "MISSING — deferred to Phase B",
+      "needed": "Execute manual validation scenarios"
     },
     "C92 - Documentation": {
       "criterion": "Document final code under docs/capabilities/10-full-runtime-proof/",
-      "existing": "MISSING - Documentation structure needs creation",
-      "needed": "Architecture, API, and evidence documentation"
+      "existing": "MISSING — deferred to Phase B",
+      "needed": "Create architecture, API, and evidence documentation"
     },
     "C93 - Final audits": {
       "criterion": "Two independent auditors, completion evidence, commit, push",
-      "existing": "PARTIAL - evidence directory created, templates exist",
-      "needed": "Completion evidence, audits, push"
+      "existing": "PARTIAL — this audit report created, completion.json updated",
+      "needed": "Independent architecture auditor and product auditor for Phase B"
     }
   }
 }

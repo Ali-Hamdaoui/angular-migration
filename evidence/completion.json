@@ -3,7 +3,7 @@
   "goal_id": "G10",
   "branch": "hermes/10-full-runtime-proof",
   "base_sha": "d759861290c1e76e26c4f2b27bbee9a77a12f0b5",
-  "head_sha": "aaf61a4b9c8bef10374ab3d44abc38739d3f98b1",
+  "head_sha": "5d4658e8d6d2cc16bc7ac21f051a2c73e138a935",
   "goal_package_sha256": "d34a17ba6337a91d5ab4d855801753ee9df3c5da54a904943cac91ae73fe12ac",
   "completion_level": "harness_ready",
   "jira_features": ["AMFA-225"],
@@ -36,7 +36,9 @@
     "Idempotency is in-memory (not DB-backed) per Phase A contract.",
     "Fake model integration is a contract point, not a full LLM pipeline.",
     "Frontend acceptance checklist is a minimal polling-based UI; full SSE integration in Phase B.",
-    "Manual validation and documentation deferred to Phase B."
+    "Manual validation and documentation deferred to Phase B.",
+    "T03 (AMFA-284) frontend code exists but lacks formal review evidence and component tests.",
+    "T04 (AMFA-285) tests/security/docs task has no implementation evidence."
   ],
   "pushed": true,
   "push_remote": "origin",

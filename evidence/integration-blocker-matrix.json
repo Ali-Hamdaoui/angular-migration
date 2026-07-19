@@ -1,0 +1,186 @@
+{
+  "goal": "G10",
+  "phase": "Phase A — harness_ready",
+  "audit_date": "2026-07-19",
+  "branch": "hermes/10-full-runtime-proof",
+  "dependencies": {
+    "S4-F01 (Command Runtime / G01)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "ExecutionWorker, CommandRegistry (via backend/app/command_execution/worker.py)",
+      "test_fake_boundary": "Harness subprocess profiles in runtime_profiles/harness_profiles.py"
+    },
+    "S4-F02 (Stage Bootstrap / G02)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "StageSandboxBootstrapService (not duplicated)",
+      "test_fake_boundary": "External temp directories for fixture workspaces"
+    },
+    "S4-F03 (Angular Transform / G03)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "TransformReviewService (not duplicated)",
+      "test_fake_boundary": "Synthetic fixture generators in angular_fixture.py"
+    },
+    "S4-F04 (Stage Validation / G04)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": false,
+      "g10_consumes": "StageValidationService (not duplicated)",
+      "test_fake_boundary": "Harness records own validation results via RuntimeEvidenceCollector"
+    },
+    "S4-F05 (Failure Diagnostics / G05)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "FailureEvidenceService, C-Lite (not duplicated)",
+      "test_fake_boundary": "Deterministic failure fixtures owned by harness"
+    },
+    "S4-F06 (Repair Agents / G06)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "RepairProposer, RepairReviewer, RepairContextPack (not duplicated)",
+      "test_fake_boundary": "record_repair_lineage() writes evidence placeholder"
+    },
+    "S4-F07 (Patch Validation / G07)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": false,
+      "g10_consumes": "PatchValidationService, PatchPreflightService (not duplicated)",
+      "test_fake_boundary": "Nothing — Phase B only"
+    },
+    "S4-F08 (Reconciliation / G08)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "ReconciliationAssistantService (not duplicated)",
+      "test_fake_boundary": "Nothing — Phase B only"
+    },
+    "S4-F09 (Assurance/Delivery/Report / G09)": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": true,
+      "pushed_to_origin": true,
+      "g10_consumes": "FinalAssuranceService, DeliveryService, FinalReportService (not duplicated)",
+      "test_fake_boundary": "Nothing — Phase B only"
+    },
+    "S4-F10–F14": {
+      "status": "BLOCKED_INTEGRATION",
+      "worktree_exists": false,
+      "pushed_to_origin": false,
+      "note": "All upstream — no worktrees exist"
+    },
+    "Cross-goal frozen schemas": {
+      "status": "PRESENT",
+      "note": "All 26 schemas in goals/shared/contracts/"
+    },
+    "S2-F03 (LLM Gateway)": {
+      "status": "PRESENT",
+      "note": "MockLlmGateway in backend/app/llm_gateway/mock_gateway.py, reused as fake model integration adapter"
+    }
+  },
+  "blocked_integration_criteria": [
+    {
+      "id": "BIC-01",
+      "description": "Real Angular 18.0.x/18.2.x passing path through 19, 20, 21",
+      "required_goals": ["G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09"],
+      "what_exists_in_g10": "Synthetic fixture generators, harness subprocess profiles",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-02",
+      "description": "Human gates and stale-state protection through production approval",
+      "required_goals": ["G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09"],
+      "what_exists_in_g10": "None (correct for Phase A)",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-03",
+      "description": "Real migration failure through FailureEvidence → C-Lite → RepairContextPack → Proposer → Reviewer → G10 → apply → validation → G11",
+      "required_goals": ["G04", "G05", "G06", "G07", "G08", "G09"],
+      "what_exists_in_g10": "record_repair_lineage() evidence placeholder",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-04",
+      "description": "Environment failure without code patch through G05–G09",
+      "required_goals": ["G05", "G06", "G07", "G08", "G09"],
+      "what_exists_in_g10": "Environment-blocker fixture generator",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-05",
+      "description": "Cancellation and process-tree cleanup through G01/G04",
+      "required_goals": ["G01", "G04"],
+      "what_exists_in_g10": "Cancellable fixture generator, cancellation evidence capture",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-06",
+      "description": "Backend restart, lease/checkpoint reconciliation, SSE reconnect/replay",
+      "required_goals": ["G01", "G08"],
+      "what_exists_in_g10": "record_restart_evidence() method",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-07",
+      "description": "Assistant evidence-grounded answer and labelled deterministic fallback",
+      "required_goals": ["G08"],
+      "what_exists_in_g10": "get_harness_gateway_info() contract point",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-08",
+      "description": "Final assurance (G13), atomic publication (G14), deterministic report (G15)",
+      "required_goals": ["G09"],
+      "what_exists_in_g10": "None (correct for Phase A)",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-09",
+      "description": "Source fingerprint unchanged and final output fingerprint/evidence complete",
+      "required_goals": ["G03", "G04", "G05"],
+      "what_exists_in_g10": "_compute_output_fingerprint(), record_source_integrity_proof()",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-10",
+      "description": "Human product sign-off through complete integrated workflow",
+      "required_goals": ["G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09"],
+      "what_exists_in_g10": "Not required for Phase A",
+      "severity": "BLOCKED_INTEGRATION"
+    },
+    {
+      "id": "BIC-11",
+      "description": "Jira completion (jira_complete=true) — Phase B only",
+      "required_goals": ["G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09"],
+      "what_exists_in_g10": "jira_complete=false (correct)",
+      "severity": "BLOCKED_INTEGRATION"
+    }
+  ],
+  "g10_phase_a_gaps": [
+    {
+      "id": "GAP-T03",
+      "description": "T03 (AMFA-284) frontend — code exists but no formal review or component tests",
+      "files_exist": ["frontend/src/api/acceptance.ts", "frontend/src/hooks/useAcceptanceChecklist.ts", "frontend/src/components/AcceptanceChecklist.tsx", "frontend/src/app/acceptance/page.tsx"],
+      "missing": ["evidence/task-results/03-S4-F15-I03.json", "Component tests", "Reviewer PASS verdict"],
+      "severity": "LOW (Phase A non-blocking for harness_ready)"
+    },
+    {
+      "id": "GAP-T04",
+      "description": "T04 (AMFA-285) tests/security/docs — zero evidence",
+      "missing": ["Implementation plan", "Code", "Tests", "Documentation", "Reviewer verdict"],
+      "severity": "LOW (Phase A non-blocking for harness_ready; task was optional for Phase A)"
+    }
+  ],
+  "honest_completion": {
+    "branch_ready": true,
+    "harness_ready": true,
+    "integration_verified": false,
+    "jira_complete": false,
+    "note": "branch_ready=true is justified because the harness is functional and tested (113 tests). T03/T04 gaps are documented limitations, not blockers for Phase A push."
+  }
+}
