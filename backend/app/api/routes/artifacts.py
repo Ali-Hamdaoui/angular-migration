@@ -49,7 +49,22 @@ def list_run_artifacts(run_id: str, actor: str = Depends(authenticated_actor)) -
     try:
         with session_scope() as session:
             _authorize_run(session, run_id, actor)
-        return get_artifact_store(run_id).list_artifacts(run_id)
+            metadata_by_artifact_id = {
+                row.id.removeprefix("metadata-"): row
+                for row in session.query(ArtifactMetadataModel).filter(ArtifactMetadataModel.run_id == run_id).all()
+            }
+        artifacts = get_artifact_store(run_id).list_artifacts(run_id)
+        return [
+            artifact.model_copy(update={
+                "immutable": metadata_by_artifact_id.get(artifact.artifact_id, None).immutable
+                if metadata_by_artifact_id.get(artifact.artifact_id) is not None else artifact.immutable,
+                "redacted": metadata_by_artifact_id.get(artifact.artifact_id, None).redacted
+                if metadata_by_artifact_id.get(artifact.artifact_id) is not None else artifact.redacted,
+                "truncated": metadata_by_artifact_id.get(artifact.artifact_id, None).truncated
+                if metadata_by_artifact_id.get(artifact.artifact_id) is not None else artifact.truncated,
+            })
+            for artifact in artifacts
+        ]
     except ArtifactStoreError as exc:
         raise HTTPException(status_code=400, detail="Invalid artifact run identifier") from exc
 
@@ -106,8 +121,15 @@ def read_artifact_by_id(artifact_id: str, actor: str = Depends(authenticated_act
         raise HTTPException(status_code=400, detail="Invalid artifact identifier") from exc
     except ArtifactNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Artifact not found") from exc
+    artifact_ref = stored_artifact.ref
+    if metadata is not None:
+        artifact_ref = artifact_ref.model_copy(update={
+            "immutable": metadata.immutable,
+            "redacted": metadata.redacted,
+            "truncated": metadata.truncated,
+        })
     return ArtifactContentResponse(
-        artifact=stored_artifact.ref,
+        artifact=artifact_ref,
         content=stored_artifact.content,
         created_by=stored_artifact.created_by,
         content_type=stored_artifact.envelope.content_type,

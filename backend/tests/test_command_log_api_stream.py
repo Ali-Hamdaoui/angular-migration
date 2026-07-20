@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
-import asyncio
 import pytest
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
@@ -79,7 +78,52 @@ def test_log_retrieval_exposes_chunk_truncation_metadata(db_session, monkeypatch
     assert response["chunks"][0].truncated is True
 
 
-def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatch):
+def test_sse_rejects_unknown_stream_filter(db_session, monkeypatch):
+    monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
+
+    response = run_commands.stream_command_logs("run-1", "exec-1", _request("/logs/stream"), actor="alice", stream="debug", last_event_id=None)
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 422
+    assert response.body and b"INVALID_LOG_STREAM" in response.body
+
+
+def test_sse_rejects_malformed_last_event_id(db_session, monkeypatch):
+    monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
+
+    response = run_commands.stream_command_logs("run-1", "exec-1", _request("/logs/stream"), actor="alice", last_event_id="not-a-sequence")
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 422
+    assert response.body and b"INVALID_LAST_EVENT_ID" in response.body
+
+
+@pytest.mark.asyncio
+async def test_sse_failure_preserves_correlation_id(db_session, monkeypatch):
+    db_session.query(CommandExecutionModel).filter_by(id="exec-1").update({"correlation_id": "corr-sse-failure"})
+    db_session.commit()
+    monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
+    monkeypatch.setattr(CommandLogService, "get_logs", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("storage unavailable")))
+
+    response = run_commands.stream_command_logs("run-1", "exec-1", _request("/logs/stream"), actor="alice", cursor=0)
+    body = "".join([item async for item in response.body_iterator])
+
+    assert '"code": "LOG_STREAM_FAILED"' in body
+    assert '"correlation_id": "corr-sse-failure"' in body
+
+
+def test_log_redacts_secrets_before_persistence(db_session):
+    service = CommandLogService()
+    service.append_chunk(db_session, "exec-1", "run-1", "stderr", "Authorization: Bearer super-secret-token-value")
+
+    chunks, _ = service.get_logs(db_session, "exec-1")
+
+    assert "super-secret-token-value" not in chunks[0].text
+    assert "[REDACTED]" in chunks[0].text
+
+
+@pytest.mark.asyncio
+async def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatch):
     service = CommandLogService()
     service.append_chunk(db_session, "exec-1", "run-1", "stdout", "safe output")
     service.ensure_summary(db_session, "exec-1", "run-1")
@@ -88,9 +132,7 @@ def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatch):
     monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
 
     response = run_commands.stream_command_logs("run-1", "exec-1", _request("/logs/stream"), actor="alice", cursor=0)
-    async def collect():
-        return "".join([item async for item in response.body_iterator])
-    body = asyncio.run(collect())
+    body = "".join([item async for item in response.body_iterator])
 
     assert "id: 1\n" in body
     assert "event: command_log" in body
@@ -99,7 +141,8 @@ def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatch):
     assert "event: cursor" not in body
 
 
-def test_explicit_cursor_is_preferred_over_last_event_id(db_session, monkeypatch):
+@pytest.mark.asyncio
+async def test_explicit_cursor_is_preferred_over_last_event_id(db_session, monkeypatch):
     service = CommandLogService()
     for sequence in range(3):
         service.append_chunk(db_session, "exec-1", "run-1", "stdout", f"line-{sequence}")
@@ -109,9 +152,7 @@ def test_explicit_cursor_is_preferred_over_last_event_id(db_session, monkeypatch
     response = run_commands.stream_command_logs(
         "run-1", "exec-1", _request("/logs/stream"), actor="alice", cursor=2, last_event_id="0"
     )
-    async def collect():
-        return "".join([item async for item in response.body_iterator])
-    body = asyncio.run(collect())
+    body = "".join([item async for item in response.body_iterator])
 
     assert response.media_type == "text/event-stream"
     assert "id: 3\n" in body

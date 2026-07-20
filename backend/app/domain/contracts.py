@@ -523,6 +523,9 @@ class ArtifactRefDto(ContractModel):
     relative_path: str
     created_at: datetime
     checksum: str
+    immutable: bool = True
+    redacted: bool = False
+    truncated: bool = False
 
 
 class RuntimeProfileDto(ContractModel):
@@ -905,13 +908,22 @@ class AuthoritativeRunStateDto(ContractModel):
     approval_status: ApprovalStatus
     repair_status: RepairStatus
     state_version: int = Field(ge=1)
-    preflight_id: str
-    source_path: str
-    target_output_path: str
-    graph_thread_id: str
+    preflight_id: str | None = None
+    source_path: str | None = None
+    target_output_path: str | None = None
+    graph_thread_id: str | None = None
     created_at: datetime
     updated_at: datetime
     workspace_aliases: dict[str, str] = Field(default_factory=dict)
+    target_parent_path: str | None = None
+    generated_output_name: str | None = None
+    resolved_output_root: str | None = None
+    run_root: str | None = None
+    migrated_app_path: str | None = None
+    source_angular_exact: str | None = None
+    catalogue_version: str | None = None
+    registry_snapshot: dict[str, object] | None = None
+    runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 

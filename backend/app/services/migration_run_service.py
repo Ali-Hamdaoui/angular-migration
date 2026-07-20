@@ -222,7 +222,12 @@ class MigrationRunService:
 
     @staticmethod
     def _artifacts_for_run(session, run_id: str) -> list[ArtifactRefDto]:
-        return [ArtifactRefDto(artifact_id=row.id.removeprefix("metadata-"), run_id=run_id, stage_id=row.stage_id, artifact_type=ArtifactType(row.artifact_type), relative_path=row.relative_path, created_at=row.created_at, checksum=row.checksum) for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id).order_by(ArtifactMetadataModel.relative_path))]
+        return [ArtifactRefDto(
+            artifact_id=row.id.removeprefix("metadata-"), run_id=run_id, stage_id=row.stage_id,
+            artifact_type=ArtifactType(row.artifact_type), relative_path=row.relative_path,
+            created_at=row.created_at, checksum=row.checksum, immutable=row.immutable,
+            redacted=row.redacted, truncated=row.truncated,
+        ) for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id).order_by(ArtifactMetadataModel.relative_path))]
 
     @staticmethod
     def _events_for_run(session, run_id: str) -> list[WorkflowEventDto]:
