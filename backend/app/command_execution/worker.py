@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import threading
 import queue
+import codecs
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from app.domain.contracts import (
     CommandResultDto,
     CommandStatus,
 )
+from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
 
@@ -303,6 +305,7 @@ class CommandLogWriter:
         if value is None:
             return "", False
         text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+        text = redact_prompt_text(text).redacted_text
         payload = text.encode("utf-8")
         if self._max_output_bytes is None or len(payload) <= self._max_output_bytes:
             return text, False
@@ -349,7 +352,7 @@ class WorkerSupervisor:
             cwd=request.working_directory,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=False,
             shell=False,
             env=self._build_safe_environment(request.environment_allowlist),
             creationflags=creationflags,
@@ -359,8 +362,19 @@ class WorkerSupervisor:
         output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
 
         def read_stream(name: str, stream) -> None:
-            for line in iter(stream.readline, ""):
-                item = (name, line)
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            while True:
+                raw = stream.read(4096)
+                if not raw:
+                    break
+                text = decoder.decode(raw, final=False)
+                if text:
+                    item = (name, text)
+                    chunks.append(item)
+                    output_queue.put(item)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                item = (name, tail)
                 chunks.append(item)
                 output_queue.put(item)
             output_queue.put(None)

@@ -233,6 +233,26 @@ class CommandLogChunkModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CommandLogSummaryModel(Base):
+    """Durable bounded-output cursor and finalization state for one execution."""
+    __tablename__ = "command_log_summaries"
+
+    execution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    first_sequence: Mapped[int | None] = mapped_column(Integer)
+    last_sequence: Mapped[int | None] = mapped_column(Integer)
+    stdout_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stderr_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stdout_stored_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stderr_stored_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stdout_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stderr_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    redaction_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    finalized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+
+
 class CommandExecutionModel(Base):
     __tablename__ = "command_executions"
     __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_command_executions_run_idempotency"),)

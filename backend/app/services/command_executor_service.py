@@ -61,6 +61,7 @@ from app.services.command_registry_service import (
     CommandRegistryService,
 )
 from app.services.job_supervisor_service import JobSupervisorService
+from app.services.command_log_service import CommandLogService
 
 
 class CommandExecutorError(ValueError):
@@ -402,7 +403,20 @@ class CommandExecutorService:
                     idempotency_key=model.idempotency_key,
                     requested_at=model.requested_at,
                 )
-                result = worker.run(request, cancel_event=cancel_event)
+                correlation_id = model.correlation_id
+
+                def persist_output(stream: str, text: str) -> None:
+                    # Each callback uses a short-lived transaction. The process
+                    # worker never owns a database transaction while it runs.
+                    from app.repositories.session import session_scope
+                    with session_scope() as log_session:
+                        CommandLogService().append_chunk(
+                            log_session, execution_id, run.id, stream, text,
+                            correlation_id=correlation_id,
+                            strict_ownership=True,
+                        )
+
+                result = worker.run(request, cancel_event=cancel_event, output_callback=persist_output)
                 self._finish_execution(session, model, result, run=run, authorization=authorization, profile=selected_profile)
         except Exception as exc:
             with session_scope() as session:
@@ -420,6 +434,10 @@ class CommandExecutorService:
 
     def _finish_execution(self, session: Session, model: CommandExecutionModel, result, *, run, authorization, profile) -> None:
         finished = datetime.now(UTC)
+        from app.services.command_log_service import CommandLogService
+        log_service = CommandLogService()
+        log_service.ensure_summary(session, model.id, model.run_id, correlation_id=model.correlation_id)
+        log_service.finalize(session, model.id, finalized_at=finished)
         self.transition_execution(session, model, result.result.status.value, now=finished)
         model.exit_code = result.result.exit_code
         if model.status == CommandStatus.FAILED.value and model.failure_code is None:
