@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -40,11 +40,14 @@ class TransformationEvidenceModel(Base):
     """Persistent record of transformation diff, risk classification, and forbidden changes."""
 
     __tablename__ = "transformation_evidence"
-    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_transformation_evidence_run_idempotency"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "idempotency_key", name="uq_transformation_evidence_run_idempotency"),
+        Index("ix_transformation_evidence_run_stage_created", "run_id", "stage_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
-    stage_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -68,6 +71,19 @@ class TransformationEvidenceModel(Base):
     gate_version: Mapped[str] = mapped_column(String(32), nullable=False, default="g03-evidence-v1")
     source_sandbox_path: Mapped[str | None] = mapped_column(String(512))
     target_sandbox_path: Mapped[str | None] = mapped_column(String(512))
+    evidence_schema_version: Mapped[str] = mapped_column(String(64), nullable=False, default="transformation-evidence-v2")
+    angular_update_record_id: Mapped[str | None] = mapped_column(ForeignKey("angular_update_records.id"), index=True)
+    angular_update_binding_checksum: Mapped[str | None] = mapped_column(String(128))
+    inventory_checksum: Mapped[str | None] = mapped_column(String(128))
+    builder_comparison: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    risk_report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    artifact_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    artifact_set_checksum: Mapped[str | None] = mapped_column(String(128))
+    integrity_status: Mapped[str] = mapped_column(String(32), nullable=False, default="in_progress", index=True)
+    stale_reason: Mapped[str | None] = mapped_column(Text)
+    failure_code: Mapped[str | None] = mapped_column(String(128))
+    computation_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    computation_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

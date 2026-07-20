@@ -2,11 +2,14 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { generateTransformationEvidence, getTransformationEvidence } from "@/api/transformations";
+import { getArtifactById } from "@/api/migrations";
 import { ApiClientError } from "@/api/client";
-import type { TransformationEvidenceResponse } from "@/types/transformation";
+import type { TransformationEvidenceResponse, TransformationArtifactRef, TransformationIntegrityStatus } from "@/types/transformation";
 import type { AuthoritativeConnectionStatus } from "@/hooks/useAuthoritativeRun";
 import type { WorkflowEventDto } from "@/types/generated/api";
 import { StatusPill } from "@/components/StatusPill";
+import { TransformationFileTree } from "@/components/TransformationFileTree";
+import { UnifiedDiffViewer } from "@/components/UnifiedDiffViewer";
 
 interface ChangedFileEntry {
   file_path: string;
@@ -42,11 +45,10 @@ type ViewState = "loading" | "empty" | "running" | "success" | "blocked" | "stal
 interface Props {
   runId: string;
   stageId: string;
-  sourceSandboxPath: string;
-  targetSandboxPath: string;
   expectedStateVersion: number;
   connectionStatus?: AuthoritativeConnectionStatus;
   workflowEvents?: WorkflowEventDto[];
+  onAuthoritativeRefresh?: () => Promise<void> | void;
 }
 
 const MAX_VISIBLE_FILES = 50;
@@ -63,23 +65,58 @@ const STATUS_PILL_MAP: Record<ViewState, string> = {
   "missing-artifact": "MISSING",
 };
 
+function viewStateFromIntegrity(integrity: TransformationIntegrityStatus, complete: boolean): ViewState {
+  switch (integrity) {
+    case "valid": return complete ? "success" : "blocked";
+    case "stale": return "stale";
+    case "tampered": return "failure";
+    case "missing": return "missing-artifact";
+    case "in_progress": return "running";
+    case "blocked": return "blocked";
+    case "failed": return "failure";
+  }
+}
+
+const INTEGRITY_LABELS: Record<TransformationIntegrityStatus, { label: string; color: string }> = {
+  valid: { label: "Valid", color: "text-green-600" },
+  stale: { label: "Stale", color: "text-amber-600" },
+  tampered: { label: "Tampered", color: "text-red-600" },
+  missing: { label: "Missing", color: "text-gray-400" },
+  in_progress: { label: "In Progress", color: "text-blue-600" },
+  blocked: { label: "Blocked", color: "text-amber-600" },
+  failed: { label: "Failed", color: "text-red-600" },
+};
+
+async function sha256Hex(text: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(text);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export function TransformationEvidenceViewer(props: Props) {
   const {
     runId,
     stageId,
-    sourceSandboxPath,
-    targetSandboxPath,
     expectedStateVersion,
     connectionStatus,
+    workflowEvents,
+    onAuthoritativeRefresh,
   } = props;
   const [viewState, setViewState] = useState<ViewState>("loading");
   const [evidence, setEvidence] = useState<TransformationEvidenceResponse | null>(null);
-  const [activeTab, setActiveTab] = useState<"diff" | "package" | "risk" | "migrations">("diff");
+  const [activeTab, setActiveTab] = useState<"diff" | "package" | "risk" | "migrations" | "builder" | "forbidden">("diff");
   const [riskFilter, setRiskFilter] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [diffSearchQuery, setDiffSearchQuery] = useState<string>("");
+  const [diffContent, setDiffContent] = useState<string>("");
+  const [patchIntegrityValid, setPatchIntegrityValid] = useState<boolean | null>(null);
   const fetchInFlight = useRef(false);
   const evidenceRef = useRef(evidence);
   useEffect(() => { evidenceRef.current = evidence; }, [evidence]);
+  const idempotencyKeyRef = useRef(`tev-${runId}-${stageId}`);
 
   const fetchEvidence = useCallback(async () => {
     if (fetchInFlight.current) return;
@@ -87,7 +124,7 @@ export function TransformationEvidenceViewer(props: Props) {
     try {
       const result = await getTransformationEvidence(runId, stageId);
       setEvidence(result);
-      setViewState(result.evidence_complete ? "success" : "blocked");
+      setViewState(viewStateFromIntegrity(result.integrity_status, result.evidence_complete));
     } catch (err: unknown) {
       if (err instanceof ApiClientError && err.status === 404) {
         if (evidenceRef.current) {
@@ -118,19 +155,62 @@ export function TransformationEvidenceViewer(props: Props) {
     }
   }, [connectionStatus, fetchEvidence]);
 
+  const unifiedDiffArtifact = useMemo(() => {
+    if (!evidence?.artifacts) return null;
+    return evidence.artifacts.find((a: TransformationArtifactRef) => a.kind === "unified_diff") || null;
+  }, [evidence]);
+
+  useEffect(() => {
+    if (!unifiedDiffArtifact) return;
+    let cancelled = false;
+    getArtifactById(unifiedDiffArtifact.artifact_id)
+      .then(async (response) => {
+        if (cancelled) return;
+        const receivedChecksum = await sha256Hex(response.content);
+        const expected = unifiedDiffArtifact.checksum.replace(/^sha256:/, "");
+        const valid = receivedChecksum === expected;
+        setPatchIntegrityValid(valid);
+        if (valid) {
+          setDiffContent(response.content);
+        } else {
+          setDiffContent("");
+          setViewState("failure");
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPatchIntegrityValid(false);
+      });
+    return () => { cancelled = true; };
+  }, [unifiedDiffArtifact]);
+
+  const prevWorkflowEventsLen = useRef(workflowEvents?.length ?? 0);
+  useEffect(() => {
+    const currentLen = workflowEvents?.length ?? 0;
+    if (currentLen > prevWorkflowEventsLen.current) {
+      const latest = workflowEvents?.[currentLen - 1];
+      if (latest && (
+        latest.event_type.includes("EVIDENCE") ||
+        latest.event_type.includes("DIFF") ||
+        latest.event_type.includes("RISK") ||
+        latest.event_type.includes("REFRESH")
+      )) {
+        fetchEvidence();
+      }
+    }
+    prevWorkflowEventsLen.current = currentLen;
+  }, [workflowEvents, fetchEvidence]);
+
   const handleGenerate = async () => {
-    const idempotencyKey = `tev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
       setViewState("running");
       const result = await generateTransformationEvidence(runId, stageId, {
         expected_state_version: expectedStateVersion,
-        idempotency_key: idempotencyKey,
-        actor: "operator",
-        source_sandbox_path: sourceSandboxPath,
-        target_sandbox_path: targetSandboxPath,
+        idempotency_key: idempotencyKeyRef.current,
+        correlation_id: idempotencyKeyRef.current,
       });
       setEvidence(result);
-      setViewState(result.evidence_complete ? "success" : "blocked");
+      setViewState(viewStateFromIntegrity(result.integrity_status, result.evidence_complete));
     } catch (err: unknown) {
       setViewState("failure");
       setError(err instanceof Error ? err.message : "Failed to generate evidence");
@@ -168,6 +248,8 @@ export function TransformationEvidenceViewer(props: Props) {
 
   const packageData = evidence?.package_change as PackageChangeSummary | undefined;
 
+  const integrityInfo = evidence ? INTEGRITY_LABELS[evidence.integrity_status] : null;
+
   if (viewState === "loading") {
     return (
       <div aria-label="Loading evidence" className="tev-panel p-4 border rounded-lg">
@@ -188,6 +270,11 @@ export function TransformationEvidenceViewer(props: Props) {
           {evidence?.idempotent_replay && (
             <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full" aria-label="Idempotent replay">
               Idempotent replay
+            </span>
+          )}
+          {integrityInfo && (
+            <span className={`px-2 py-0.5 text-xs rounded-full bg-gray-100 ${integrityInfo.color}`}>
+              {integrityInfo.label}
             </span>
           )}
           <StatusPill value={STATUS_PILL_MAP[viewState]} />
@@ -241,6 +328,12 @@ export function TransformationEvidenceViewer(props: Props) {
           </div>
 
           <div className="grid grid-cols-3 gap-3 p-3 bg-gray-50 rounded text-sm">
+            {evidence.evidence_id && (
+              <div>
+                <span className="text-gray-500">Evidence ID</span>
+                <p className="font-mono text-xs truncate">{evidence.evidence_id}</p>
+              </div>
+            )}
             {evidence.correlation_id && (
               <div>
                 <span className="text-gray-500">Correlation ID</span>
@@ -292,7 +385,7 @@ export function TransformationEvidenceViewer(props: Props) {
 
           <div className="border-b">
             <nav className="flex gap-4 text-sm" role="tablist" aria-label="Evidence tabs">
-              {(["diff", "package", "risk", "migrations"] as const).map((tab) => (
+              {(["diff", "package", "risk", "forbidden", "builder", "migrations"] as const).map((tab) => (
                 <button
                   key={tab}
                   role="tab"
@@ -308,6 +401,8 @@ export function TransformationEvidenceViewer(props: Props) {
                   {tab === "diff" && "Diff View"}
                   {tab === "package" && "Package Changes"}
                   {tab === "risk" && "Risk Report"}
+                  {tab === "forbidden" && "Forbidden"}
+                  {tab === "builder" && "Builder"}
                   {tab === "migrations" && "Migrations"}
                 </button>
               ))}
@@ -316,60 +411,107 @@ export function TransformationEvidenceViewer(props: Props) {
 
           <div role="tabpanel" id={`panel-${activeTab}`} aria-label={activeTab}>
             {activeTab === "diff" && (
-              <div className="space-y-1 max-h-96 overflow-y-auto">
-                {filteredOutCount > 0 && (
-                  <div className="p-2 bg-amber-50 text-amber-700 text-xs rounded mb-2" role="alert">
-                    Showing {visibleFiles.length} of {filteredFiles.length} files. Use filter to narrow results.
-                  </div>
-                )}
-                {isLargeDiff && filteredFiles.length <= MAX_VISIBLE_FILES && (
-                  <div className="p-2 bg-amber-50 text-amber-700 text-xs rounded mb-2" role="alert">
-                    Large diff ({evidence.total_files_changed} files) — showing summary only
-                  </div>
-                )}
-                {visibleFiles.map((file) => (
-                  <div
-                    key={file.file_path}
-                    className={`flex items-center justify-between p-2 rounded text-sm ${
-                      file.classification === "sensitive" ? "bg-red-50"
-                      : file.classification === "forbidden" ? "bg-red-100"
-                      : file.classification === "generated" ? "bg-gray-50"
-                      : file.classification === "unknown" ? "bg-yellow-50"
-                      : "hover:bg-gray-50"
-                    }`}
-                    role="listitem"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        file.classification === "sensitive" ? "bg-red-500"
-                        : file.classification === "high_risk" ? "bg-orange-500"
-                        : file.classification === "medium_risk" ? "bg-amber-500"
-                        : file.classification === "unknown" ? "bg-yellow-500"
-                        : "bg-green-500"
-                      }`} />
-                      <span className="truncate font-mono text-xs">{file.file_path}</span>
-                      {file.classification === "unknown" && (
-                        <span className="text-yellow-700 text-xs font-medium whitespace-nowrap">
-                          [Unknown — review required]
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 flex-shrink-0 text-xs">
-                      <span className="text-green-600">+{file.lines_added}</span>
-                      <span className="text-red-600">-{file.lines_removed}</span>
-                      <span className={`px-1.5 py-0.5 rounded text-xs ${
-                        file.classification === "sensitive" ? "bg-red-100 text-red-700"
-                        : file.classification === "unknown" ? "bg-yellow-100 text-yellow-700"
-                        : "bg-gray-100 text-gray-600"
-                      }`}>
-                        {file.classification}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-1">
+                  <TransformationFileTree
+                    files={allFiles}
+                    selectedFile={selectedFile}
+                    onSelectFile={setSelectedFile}
+                    searchQuery={diffSearchQuery}
+                    filterClassification={riskFilter === "all" ? "" : riskFilter}
+                  />
+                </div>
+                <div className="lg:col-span-2 space-y-2">
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="text"
+                      value={diffSearchQuery}
+                      onChange={(e) => setDiffSearchQuery(e.target.value)}
+                      placeholder="Search diff lines…"
+                      aria-label="Search diff lines"
+                      className="flex-1 px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                    {patchIntegrityValid === false && (
+                      <span className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded" role="alert">
+                        Patch integrity check failed
                       </span>
-                    </div>
+                    )}
+                    {patchIntegrityValid === true && (
+                      <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded">
+                        Verified
+                      </span>
+                    )}
                   </div>
-                ))}
-                {visibleFiles.length === 0 && (
-                  <p className="text-gray-400 text-sm py-4 text-center">No matching files</p>
-                )}
+                  {diffContent ? (
+                    <UnifiedDiffViewer
+                      content={diffContent}
+                      selectedFile={selectedFile}
+                      searchQuery={diffSearchQuery}
+                    />
+                  ) : (
+                    <div className="text-center py-8 text-gray-400 text-sm">
+                      {patchIntegrityValid === false
+                        ? "Patch artifact integrity verification failed"
+                        : "Loading patch content..."}
+                    </div>
+                  )}
+                  {filteredOutCount > 0 && (
+                    <div className="p-2 bg-amber-50 text-amber-700 text-xs rounded" role="alert">
+                      Showing {visibleFiles.length} of {filteredFiles.length} files. Use filter to narrow results.
+                    </div>
+                  )}
+                  {isLargeDiff && filteredFiles.length <= MAX_VISIBLE_FILES && (
+                    <div className="p-2 bg-amber-50 text-amber-700 text-xs rounded" role="alert">
+                      Large diff ({evidence.total_files_changed} files) — showing summary only
+                    </div>
+                  )}
+                  {selectedFile === null && !diffContent && visibleFiles.map((file) => (
+                    <div
+                      key={file.file_path}
+                      className={`flex items-center justify-between p-2 rounded text-sm cursor-pointer hover:bg-gray-50 ${
+                        file.classification === "sensitive" ? "bg-red-50"
+                        : file.classification === "forbidden" ? "bg-red-100"
+                        : file.classification === "generated" ? "bg-gray-50"
+                        : file.classification === "unknown" ? "bg-yellow-50"
+                        : "hover:bg-gray-50"
+                      }`}
+                      role="listitem"
+                      onClick={() => setSelectedFile(file.file_path)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedFile(file.file_path); } }}
+                      tabIndex={0}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          file.classification === "sensitive" ? "bg-red-500"
+                          : file.classification === "high_risk" ? "bg-orange-500"
+                          : file.classification === "medium_risk" ? "bg-amber-500"
+                          : file.classification === "unknown" ? "bg-yellow-500"
+                          : "bg-green-500"
+                        }`} />
+                        <span className="truncate font-mono text-xs">{file.file_path}</span>
+                        {file.classification === "unknown" && (
+                          <span className="text-yellow-700 text-xs font-medium whitespace-nowrap">
+                            [Unknown — review required]
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0 text-xs">
+                        <span className="text-green-600">+{file.lines_added}</span>
+                        <span className="text-red-600">-{file.lines_removed}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${
+                          file.classification === "sensitive" ? "bg-red-100 text-red-700"
+                          : file.classification === "unknown" ? "bg-yellow-100 text-yellow-700"
+                          : "bg-gray-100 text-gray-600"
+                        }`}>
+                          {file.classification}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {visibleFiles.length === 0 && !diffContent && (
+                    <p className="text-gray-400 text-sm py-4 text-center">No matching files</p>
+                  )}
+                </div>
               </div>
             )}
 
@@ -436,6 +578,53 @@ export function TransformationEvidenceViewer(props: Props) {
               </div>
             )}
 
+            {activeTab === "forbidden" && (
+              <div className="space-y-2 text-sm">
+                {evidence.forbidden_changes.length > 0 ? (
+                  evidence.forbidden_changes.map((fc, idx) => (
+                    <div key={idx} className="p-2 bg-red-50 border border-red-200 rounded">
+                      <p className="font-medium text-red-700">
+                        {(fc as unknown as ForbiddenChangeEntry).file_path}
+                      </p>
+                      <p className="text-red-600">{(fc as unknown as ForbiddenChangeEntry).reason}</p>
+                      {(fc as unknown as ForbiddenChangeEntry).suggestion ? (
+                        <p className="text-amber-700 text-xs mt-1">
+                          Suggestion: {(fc as unknown as ForbiddenChangeEntry).suggestion}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-gray-400 py-4 text-center">No forbidden changes detected</p>
+                )}
+              </div>
+            )}
+
+            {activeTab === "builder" && (
+              <div className="space-y-2 text-sm">
+                {evidence.builder_comparison && Object.keys(evidence.builder_comparison).length > 0 ? (
+                  <>
+                    <p className="text-gray-500">
+                      Drift detected: {String(evidence.builder_comparison.drift_detected ?? false)}
+                    </p>
+                    {Array.isArray(evidence.builder_comparison.changes) && evidence.builder_comparison.changes.length > 0 ? (
+                      <ul className="list-disc list-inside space-y-1">
+                        {(evidence.builder_comparison.changes as Array<Record<string, unknown>>).map((c, i) => (
+                          <li key={i} className="font-mono text-xs">
+                            {String(c.project ?? "")}/{String(c.target ?? "")}: {String(c.before_builder ?? "—")} → {String(c.after_builder ?? "—")}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-gray-400">No builder changes</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-gray-400 py-4 text-center">No builder comparison data</p>
+                )}
+              </div>
+            )}
+
             {activeTab === "migrations" && (
               <div className="space-y-2 text-sm">
                 {evidence.migration_list.length > 0 ? (
@@ -483,13 +672,23 @@ export function TransformationEvidenceViewer(props: Props) {
 
       {evidence && viewState === "stale" && (
         <div className="p-2 bg-amber-50 border border-amber-200 rounded text-sm text-amber-700 flex items-center justify-between" role="alert">
-          <span>Evidence is stale — refresh</span>
-          <button
-            onClick={fetchEvidence}
-            className="px-3 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 text-xs"
-          >
-            Refresh
-          </button>
+          <span>{evidence.stale_reason ?? "Evidence is stale — refresh"}</span>
+          <div className="flex gap-2">
+            <button
+              onClick={fetchEvidence}
+              className="px-3 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 text-xs"
+            >
+              Refresh
+            </button>
+            {onAuthoritativeRefresh && (
+              <button
+                onClick={onAuthoritativeRefresh}
+                className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs"
+              >
+                Reconnect
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -499,17 +698,24 @@ export function TransformationEvidenceViewer(props: Props) {
         </div>
       )}
 
-      {evidence && evidence.artifact_ids.length > 0 && (
-        <div className="flex gap-2 flex-wrap text-sm items-center" role="list" aria-label="Artifact links">
-          <span className="text-gray-500">Artifacts:</span>
-          {evidence.artifact_ids.map((id) => (
+      {evidence && evidence.artifacts && evidence.artifacts.length > 0 && (
+        <div className="space-y-2 text-sm" role="list" aria-label="Artifact refs">
+          <span className="text-gray-500 font-medium">Artifacts:</span>
+          {evidence.artifacts.map((artifact) => (
             <a
-              key={id}
-              href={`/api/v1/artifacts/${encodeURIComponent(id)}`}
-              className="text-blue-600 hover:underline font-mono text-xs"
+              key={artifact.artifact_id}
+              href={`/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 p-1.5 bg-gray-50 rounded text-xs font-mono hover:bg-gray-100 transition-colors"
               role="listitem"
             >
-              {id}
+              <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-bold uppercase">
+                {artifact.kind}
+              </span>
+              <span className="truncate">{artifact.relative_path}</span>
+              <span className="text-gray-400 ml-auto">{artifact.checksum.slice(0, 12)}…</span>
+              <span className="text-gray-400">{artifact.size_bytes} bytes</span>
             </a>
           ))}
         </div>

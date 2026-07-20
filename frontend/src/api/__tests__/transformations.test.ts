@@ -70,8 +70,8 @@ describe("transformations API client", () => {
     const client = createApiClient("http://backend.test", fetchMock);
 
     await generateTransformationEvidence(runId, stageId, {
-      expected_state_version: 1, idempotency_key: "ev-1", actor: "tester",
-      source_sandbox_path: "/src", target_sandbox_path: "/tgt",
+      expected_state_version: 1, idempotency_key: "ev-1",
+      correlation_id: "corr-1",
     }, client);
 
     expect(fetchMock).toHaveBeenCalledWith(

@@ -28,9 +28,10 @@ def client():
 @pytest.fixture
 def test_db(tmp_path):
     """Create a temporary SQLite database for testing (tmp_path avoids Windows file locking)."""
-    from app.domain.contracts import RunPhase, RunStatus, StageStatus, StepStatus
+    from app.domain.contracts import CommandStatus, RunPhase, RunStatus, StageStatus, StepStatus
     from app.repositories.models import (
         MigrationRunModel, MigrationStageModel, StageStepModel,
+        CommandExecutionModel,
         AngularUpdateRecordModel, TransformationEvidenceModel, G08ApprovalModel,
     )
     from app.repositories.models.base import Base
@@ -97,6 +98,57 @@ def test_db(tmp_path):
             )
         s.add(step)
 
+        # ── Setup for transformation evidence tests ──────────────────────
+        source_path = tmp_path / "source"
+        target_path = tmp_path / "stage_sandbox"
+        source_path.mkdir(parents=True, exist_ok=True)
+        target_path.mkdir(parents=True, exist_ok=True)
+
+        run.workspace_aliases = {
+            "SOURCE_SNAPSHOT": str(source_path),
+            "STAGE_SANDBOX": str(target_path),
+        }
+
+        update_id = f"ang-upd-evi-{uuid4().hex[:12]}"
+        exec_id = f"exec-evi-{uuid4().hex[:12]}"
+        update_record = AngularUpdateRecordModel(
+            id=update_id,
+            run_id=run_id,
+            stage_id=stage_id,
+            idempotency_key="evidence-fixture-ang-upd",
+            actor="local-operator",
+            status=AngularUpdateStatus.SUCCEEDED.value,
+            target_version_status=TargetVersionStatus.VERIFIED.value,
+            resolved_target_version="18.0.0",
+            source_version="17.0.0",
+            target_version="18.0.0",
+            command_execution_id=exec_id,
+            artifact_ids=[],
+            state_version=1,
+            event_sequence=1,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        s.add(update_record)
+
+        execution = CommandExecutionModel(
+            id=exec_id,
+            run_id=run_id,
+            stage_id=stage_id,
+            idempotency_key="evidence-fixture-exec",
+            command_id="angular-update",
+            status=CommandStatus.SUCCEEDED.value,
+            exit_code=0,
+            requested_at=datetime.now(UTC),
+            executable="npx",
+            arguments=["ng", "update"],
+            artifact_ids=[],
+            state_version=1,
+            event_sequence=1,
+        )
+        s.add(execution)
+        s.flush()
+
     try:
         yield run_id, stage_id, str(db_path), tmp_path
     finally:
@@ -126,19 +178,11 @@ class TestAngularUpdateAPI:
 
     def test_get_update(self, client, test_db):
         run_id, stage_id, _, _ = test_db
-        # Start the update first
-        client.post(
-            f"/api/v1/runs/{run_id}/stages/{stage_id}/angular-update",
-            json={
-                "expected_state_version": 1,
-                "idempotency_key": "test-get-001",
-                "actor": "tester",
-                "source_version": "17.0.0",
-                "target_version": "18.0.0",
-            },
-        )
+        # The fixture creates an AngularUpdateRecordModel so GET returns it
         response = client.get(f"/api/v1/runs/{run_id}/stages/{stage_id}/angular-update")
-        assert response.status_code == 404
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "succeeded"
 
     def test_update_stale_version(self, client, test_db):
         run_id, stage_id, _, _ = test_db
@@ -255,30 +299,25 @@ class TestAngularUpdateAPI:
 class TestTransformationEvidenceAPI:
     def test_generate_evidence(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
-        source_sandbox = tmp_dir / "src_sandbox"
-        target_sandbox = tmp_dir / "tgt_sandbox"
-        source_sandbox.mkdir()
-        target_sandbox.mkdir()
+        source_dir = tmp_dir / "source"
+        target_dir = tmp_dir / "stage_sandbox"
 
-        Path(source_sandbox, "package.json").write_text(
+        Path(source_dir, "package.json").write_text(
             json.dumps({"dependencies": {"@angular/core": "17.0.0"}})
         )
-        Path(target_sandbox, "package.json").write_text(
+        Path(target_dir, "package.json").write_text(
             json.dumps({"dependencies": {"@angular/core": "18.0.0"}})
         )
-        Path(source_sandbox, "src").mkdir(parents=True, exist_ok=True)
-        Path(target_sandbox, "src").mkdir(parents=True, exist_ok=True)
-        Path(source_sandbox, "src/main.ts").write_text("// Angular 17 main\n")
-        Path(target_sandbox, "src/main.ts").write_text("// Angular 18 main\n")
+        Path(source_dir, "src").mkdir(parents=True, exist_ok=True)
+        Path(target_dir, "src").mkdir(parents=True, exist_ok=True)
+        Path(source_dir, "src/main.ts").write_text("// Angular 17 main\n")
+        Path(target_dir, "src/main.ts").write_text("// Angular 18 main\n")
 
         response = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "test-evidence-001",
-                "actor": "tester",
-                "source_sandbox_path": str(source_sandbox),
-                "target_sandbox_path": str(target_sandbox),
             },
         )
         assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
@@ -288,21 +327,16 @@ class TestTransformationEvidenceAPI:
 
     def test_get_evidence(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
-        source_sandbox = tmp_dir / "src_evidence"
-        target_sandbox = tmp_dir / "tgt_evidence"
-        source_sandbox.mkdir()
-        target_sandbox.mkdir()
-        Path(source_sandbox, "file.ts").write_text("a")
-        Path(target_sandbox, "file.ts").write_text("b")
+        source_dir = tmp_dir / "source"
+        target_dir = tmp_dir / "stage_sandbox"
+        Path(source_dir, "file.ts").write_text("a")
+        Path(target_dir, "file.ts").write_text("b")
 
         client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "test-evidence-get-002",
-                "actor": "tester",
-                "source_sandbox_path": str(source_sandbox),
-                "target_sandbox_path": str(target_sandbox),
             },
         )
         response = client.get(
@@ -313,47 +347,40 @@ class TestTransformationEvidenceAPI:
         assert data["total_files_changed"] >= 1
 
     def test_generate_evidence_sandbox_boundary(self, client, test_db):
-        run_id, stage_id, _, _ = test_db
-        import shutil
-        outside_src = tempfile.mkdtemp(prefix="outside_")
-        outside_tgt = tempfile.mkdtemp(prefix="outside_")
-        try:
-            Path(outside_src, "file.ts").write_text("a")
-            Path(outside_tgt, "file.ts").write_text("b")
-            response = client.post(
-                f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
-                json={
-                    "expected_state_version": 1,
-                    "idempotency_key": "test-boundary-001",
-                    "actor": "tester",
-                    "source_sandbox_path": outside_src,
-                    "target_sandbox_path": outside_tgt,
-                },
-            )
-            assert response.status_code == 409
-            data = response.json()
-            msg = data.get("message", "")
-            assert any(kw in msg for kw in ["SANDBOX_BOUNDARY", "SOURCE_SAFETY", "TARGET_SAFETY"]), msg
-        finally:
-            shutil.rmtree(outside_src, ignore_errors=True)
-            shutil.rmtree(outside_tgt, ignore_errors=True)
+        run_id, stage_id, _, tmp_dir = test_db
+        from app.repositories.session import session_scope
+        from app.repositories.models import MigrationRunModel
+        with session_scope() as s:
+            run = s.get(MigrationRunModel, run_id)
+            run.workspace_aliases = {
+                "SOURCE_SNAPSHOT": str(tmp_dir / "nonexistent-source"),
+                "STAGE_SANDBOX": str(tmp_dir / "stage_sandbox"),
+            }
+            s.flush()
+        response = client.post(
+            f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
+            json={
+                "expected_state_version": 1,
+                "idempotency_key": "test-boundary-001",
+            },
+        )
+        assert response.status_code == 409
+        data = response.json()
+        msg = data.get("message", "")
+        assert "missing or unsafe" in msg, msg
 
     def test_generate_evidence_idempotent_replay(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
-        src = tmp_dir / "replay_src"
-        tgt = tmp_dir / "replay_tgt"
-        src.mkdir(); tgt.mkdir()
-        (src / "file.ts").write_text("a")
-        (tgt / "file.ts").write_text("b")
+        source_dir = tmp_dir / "source"
+        target_dir = tmp_dir / "stage_sandbox"
+        (source_dir / "file.ts").write_text("a")
+        (target_dir / "file.ts").write_text("b")
 
         resp1 = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "replay-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src),
-                "target_sandbox_path": str(tgt),
             },
         )
         assert resp1.status_code == 200, resp1.text
@@ -366,9 +393,6 @@ class TestTransformationEvidenceAPI:
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "replay-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src),
-                "target_sandbox_path": str(tgt),
             },
         )
         assert resp2.status_code == 200, resp2.text
@@ -378,59 +402,38 @@ class TestTransformationEvidenceAPI:
 
     def test_generate_evidence_idempotent_mismatch(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
-        src_a = tmp_dir / "mismatch_src_a"
-        tgt_a = tmp_dir / "mismatch_tgt_a"
-        src_a.mkdir(); tgt_a.mkdir()
-        (src_a / "file.ts").write_text("a")
-        (tgt_a / "file.ts").write_text("b")
+        source_dir = tmp_dir / "source"
+        target_dir = tmp_dir / "stage_sandbox"
+        (source_dir / "file.ts").write_text("a")
+        (target_dir / "file.ts").write_text("b")
 
         resp1 = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "mismatch-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src_a),
-                "target_sandbox_path": str(tgt_a),
             },
         )
         assert resp1.status_code == 200, resp1.text
-
-        src_b = tmp_dir / "mismatch_src_b"
-        tgt_b = tmp_dir / "mismatch_tgt_b"
-        src_b.mkdir(); tgt_b.mkdir()
-        (src_b / "file.ts").write_text("c")
-        (tgt_b / "file.ts").write_text("d")
 
         resp2 = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "mismatch-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src_b),
-                "target_sandbox_path": str(tgt_b),
+                "correlation_id": "different-payload",
             },
         )
         assert resp2.status_code == 409, resp2.text
         assert "IDEMPOTENCY_PAYLOAD_MISMATCH" in resp2.json()["message"]
 
     def test_generate_evidence_stale_version(self, client, test_db):
-        run_id, stage_id, _, tmp_dir = test_db
-        src = tmp_dir / "stale_src"
-        tgt = tmp_dir / "stale_tgt"
-        src.mkdir(); tgt.mkdir()
-        (src / "file.ts").write_text("a")
-        (tgt / "file.ts").write_text("b")
-
+        run_id, stage_id, _, _ = test_db
         response = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 99,
                 "idempotency_key": "stale-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src),
-                "target_sandbox_path": str(tgt),
             },
         )
         assert response.status_code == 409, response.text
@@ -438,20 +441,16 @@ class TestTransformationEvidenceAPI:
 
     def test_generate_evidence_correlation_id(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
-        src = tmp_dir / "corr_src"
-        tgt = tmp_dir / "corr_tgt"
-        src.mkdir(); tgt.mkdir()
-        (src / "file.ts").write_text("a")
-        (tgt / "file.ts").write_text("b")
+        source_dir = tmp_dir / "source"
+        target_dir = tmp_dir / "stage_sandbox"
+        (source_dir / "file.ts").write_text("a")
+        (target_dir / "file.ts").write_text("b")
 
         client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "corr-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src),
-                "target_sandbox_path": str(tgt),
                 "correlation_id": "test-correlation-123",
             },
         )
@@ -464,26 +463,22 @@ class TestTransformationEvidenceAPI:
 
     def test_generate_evidence_artifact_ids(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
-        src = tmp_dir / "art_src"
-        tgt = tmp_dir / "art_tgt"
-        src.mkdir(); tgt.mkdir()
-        (src / "file.ts").write_text("a")
-        (tgt / "file.ts").write_text("b")
+        source_dir = tmp_dir / "source"
+        target_dir = tmp_dir / "stage_sandbox"
+        (source_dir / "file.ts").write_text("a")
+        (target_dir / "file.ts").write_text("b")
 
         response = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/transformation-evidence",
             json={
                 "expected_state_version": 1,
                 "idempotency_key": "art-test-001",
-                "actor": "tester",
-                "source_sandbox_path": str(src),
-                "target_sandbox_path": str(tgt),
             },
         )
         assert response.status_code == 200, response.text
         data = response.json()
-        assert isinstance(data.get("artifact_ids"), list)
-        assert len(data["artifact_ids"]) > 0
+        assert isinstance(data.get("artifacts"), list)
+        assert len(data["artifacts"]) > 0
 
 
 class TestG08ApprovalAPI:
@@ -529,6 +524,7 @@ class TestG08ApprovalAPI:
                 updated_at=datetime.now(UTC),
             )
             s.add(update)
+            tev_checksum = "sha256:" + "a" * 64
             evidence = TransformationEvidenceModel(
                 id=f"tev-{stage_id}",
                 run_id=run_id,
@@ -538,12 +534,13 @@ class TestG08ApprovalAPI:
                 status="completed",
                 overall_risk_level="low",
                 total_files_changed=10,
-                diff_checksum="sha256:test123",
+                diff_checksum=tev_checksum,
                 diff_summary=DiffSummary(
                     total_files_changed=10,
                     total_lines_added=100,
                     total_lines_removed=50,
-                    diff_checksum="sha256:test123",
+                    diff_checksum=tev_checksum,
+                    inventory_checksum=tev_checksum,
                 ).model_dump(mode="json"),
                 evidence_complete=True,
                 artifact_ids=[],
@@ -621,6 +618,7 @@ class TestG08ApprovalAPI:
                 updated_at=datetime.now(UTC),
             )
             s.add(update)
+            tev_checksum = "sha256:" + "b" * 64
             evidence = TransformationEvidenceModel(
                 id=f"tev-rej-{stage_id}",
                 run_id=run_id,
@@ -630,12 +628,13 @@ class TestG08ApprovalAPI:
                 status="blocked",
                 overall_risk_level=RiskLevel.HIGH.value,
                 total_files_changed=0,
-                diff_checksum="sha256:none",
+                diff_checksum=tev_checksum,
                 diff_summary=DiffSummary(
                     total_files_changed=0,
                     total_lines_added=0,
                     total_lines_removed=0,
-                    diff_checksum="sha256:none",
+                    diff_checksum=tev_checksum,
+                    inventory_checksum=tev_checksum,
                 ).model_dump(mode="json"),
                 evidence_complete=False,
                 artifact_ids=[],

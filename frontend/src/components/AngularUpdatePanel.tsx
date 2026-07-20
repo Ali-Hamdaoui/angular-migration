@@ -109,7 +109,7 @@ export function AngularUpdatePanel({ runId, stageId, expectedStateVersion, onSta
   const command = plan?.commands.angular_update?.[0];
   const lockedSourceVersion = plan?.source_exact ?? "locked plan unavailable";
   const lockedTargetVersion = plan?.target_exact ?? "locked plan unavailable";
-  const evidenceIds = [...new Set([...(update?.artifact_ids ?? []), ...(target?.artifact_ids ?? []), ...(evidence?.artifact_ids ?? []), ...artifacts.filter((item) => item.stage_id === stageId).map((item) => item.artifact_id)])];
+  const evidenceIds = [...new Set([...(update?.artifact_ids ?? []), ...(target?.artifact_ids ?? []), ...(evidence?.artifacts ?? []).map((a) => a.artifact_id), ...artifacts.filter((item) => item.stage_id === stageId).map((item) => item.artifact_id)])];
   const evidenceRows = ["package_json_version", "lockfile_version", "dependency_tree_version", "ng_version_output"];
 
   if (viewState === "loading") return <section className={styles.panel} aria-labelledby="angular-update-title"><h2 id="angular-update-title">Angular Update</h2><p role="status">Loading authoritative Angular update evidence…</p></section>;

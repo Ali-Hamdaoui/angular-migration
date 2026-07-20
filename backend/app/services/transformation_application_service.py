@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 import json
 import hashlib
 import re
@@ -21,6 +20,8 @@ from app.domain.transformation import (
     AngularUpdateCommand,
     AngularUpdateResult,
     AngularUpdateStatus,
+    BuilderDecisionComparison,
+    BuilderChangeEntry,
     ChangedFileClassification,
     ChangedFileEntry,
     DiffSummary,
@@ -32,13 +33,17 @@ from app.domain.transformation import (
     G08EvidencePackageBuilder,
     PackageChangeSummary,
     PromptDetectionResult,
+    RiskFinding,
+    RiskReport,
     SensitiveChangeReason,
     TargetVersionEvidence,
     TargetVersionStatus,
     TransformationEvidenceResult,
-    VersionEvidenceSource,
 )
-from app.repositories.models import ArtifactMetadataModel, MigrationRunModel
+from app.services.transformation_diff_service import (
+    TransformationDiffService,
+)
+from app.repositories.models import ArtifactMetadataModel, MigrationRunModel, MigrationStageModel
 from app.repositories.models import CommandExecutionModel
 from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.execution_profiles import ExecutionProfileModel
@@ -186,8 +191,6 @@ def _installed_version(path: Path, package_name: str) -> str | None:
 def _normalize_line_endings(content: bytes) -> bytes:
     return content.replace(b"\r\n", b"\n")
 
-
-_MAX_DIFF_FILE_SIZE = 50 * 1024 * 1024
 
 _KNOWN_ANGULAR_MIGRATIONS = frozenset({
     "migration-v18", "migration-v17", "migration-v16", "migration-v15",
@@ -754,12 +757,29 @@ class AngularUpdateApplicationService:
 class TransformationEvidenceApplicationService:
     GATE_VERSION = "g03-evidence-v1"
 
-    def __init__(self, *, session_scope_factory=session_scope, now_provider=None) -> None:
+    def __init__(
+        self,
+        *,
+        session_scope_factory=session_scope,
+        now_provider=None,
+        diff_service: TransformationDiffService | None = None,
+    ) -> None:
         self._scope = session_scope_factory
         self._now = now_provider or (lambda: datetime.now(UTC))
+        self._diff_service = diff_service or TransformationDiffService()
 
-    def get(self, run_id: str, stage_id: str):
+    def get(self, run_id: str, stage_id: str, *, actor: str | None = None):
         with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            if actor is not None:
+                if run.actor and run.actor != actor:
+                    raise G03ApplicationError("RUN_FORBIDDEN", "Actor is not authorized for this run.", status_code=403)
+                stage = session.get(MigrationStageModel, stage_id)
+                if stage is None or stage.run_id != run_id:
+                    raise G03ApplicationError("STAGE_NOT_FOUND", "Migration stage does not belong to this run.", status_code=404)
+
             record = session.scalar(
                 select(TransformationEvidenceModel)
                 .where(TransformationEvidenceModel.run_id == run_id)
@@ -768,14 +788,32 @@ class TransformationEvidenceApplicationService:
             )
             if record is None:
                 return None
-            return self._dto(record)
+            store = (
+                LocalFilesystemArtifactStore(
+                    Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
+                )
+                if run.artifact_root
+                else None
+            )
+            integrity_status = self._recompute_integrity(session, store, record, run_id, stage_id)
+            record.integrity_status = integrity_status.value
+            session.flush()
+            return self._dto(record, artifact_store=store)
 
-    def generate(self, run_id: str, stage_id: str, request) -> object:
+    def generate(self, run_id: str, stage_id: str, request, *, actor: str | None = None) -> object:
         now = self._now()
         with self._scope() as session:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+
+            if actor is not None:
+                if run.actor and run.actor != actor:
+                    raise G03ApplicationError("RUN_FORBIDDEN", "Actor is not authorized for this run.", status_code=403)
+
+            stage = session.get(MigrationStageModel, stage_id)
+            if stage is None or stage.run_id != run_id:
+                raise G03ApplicationError("STAGE_NOT_FOUND", "Migration stage does not belong to this run.", status_code=404)
 
             request_checksum = "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -798,41 +836,25 @@ class TransformationEvidenceApplicationService:
                     status_code=409,
                 )
 
-            # Source safety checks
-            source_candidate = Path(request.source_sandbox_path)
-            target_candidate = Path(request.target_sandbox_path)
-            source = source_candidate.resolve() if source_candidate else None
-            target = target_candidate.resolve() if target_candidate else None
-            run_root = Path(run.run_root).resolve() if run.run_root else None
-            if source is None or source_candidate.is_symlink() or not source.is_dir():
-                raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source sandbox path is missing or unsafe.", status_code=409)
-            if target is None or target_candidate.is_symlink() or not target.is_dir():
-                raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target sandbox path is missing or unsafe.", status_code=409)
-            if source == target or source.is_relative_to(target) or target.is_relative_to(source):
-                raise G03ApplicationError("SANDBOX_OVERLAP", "Source and target sandboxes must not overlap.", status_code=409)
-            if run_root is not None:
-                if not source.is_relative_to(run_root) or not target.is_relative_to(run_root):
-                    raise G03ApplicationError("SANDBOX_BOUNDARY", "Sandbox paths must be within the run root.", status_code=409)
-            if any(item.is_symlink() for item in source.rglob("*")):
-                raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source sandbox contains a symlink escape.", status_code=409)
-            if any(item.is_symlink() for item in target.rglob("*")):
-                raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target sandbox contains a symlink escape.", status_code=409)
+            inputs = self._resolve_authoritative_inputs(session, run, stage, run_id, stage_id, actor or "unknown")
 
-            input_fingerprint = _tree_checksum(source)
-            target_fingerprint = _tree_checksum(target)
+            source = inputs.source_root
+            target = inputs.target_root
+            input_fingerprint = inputs.input_fingerprint
+            target_fingerprint = inputs.target_fingerprint
 
-            # Emit STARTED event before computation
+            # Phase A: Emit STARTED event before computation
             started_transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id,
                     expected_state_version=run.state_version,
                     idempotency_key=request.idempotency_key + ":started",
                     event_type=WorkflowEventType.TRANSFORMATION_EVIDENCE_STARTED,
-                    actor=request.actor,
+                    actor=actor or "unknown",
                     reason="Transformation evidence computation started",
                     occurred_at=now,
                     stage_id=stage_id,
-                    payload={"stage_id": stage_id, "source_sandbox_path": str(source), "target_sandbox_path": str(target)},
+                    payload={"stage_id": stage_id},
                 )
             )
 
@@ -840,8 +862,10 @@ class TransformationEvidenceApplicationService:
                 Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
             ) if run.artifact_root else None
 
-            # Build transformation evidence
-            diff_result = self._compute_diff_summary(source, target)
+            # Phase B: Compute outside transaction (canonical diff service)
+            canonical = self._diff_service.compute(source, target)
+            diff_result = canonical.summary
+            unified_diff_bytes = canonical.patch_bytes
 
             package_result = self._compute_package_changes(source, target)
 
@@ -849,14 +873,42 @@ class TransformationEvidenceApplicationService:
 
             migration_list = _scan_migrations(target)
 
-            # Compute unified diff
-            unified_diff = self._compute_unified_diff(source, target, diff_result.changed_files)
+            # Build builder comparison
+            builder_comparison = self._compute_builder_comparison(source, target)
 
+            # Build risk report
+            risk_findings: list[RiskFinding] = []
+            for cf in diff_result.changed_files:
+                if cf.classification in (ChangedFileClassification.FORBIDDEN, ChangedFileClassification.SENSITIVE, ChangedFileClassification.HIGH_RISK):
+                    risk_findings.append(
+                        RiskFinding(
+                            file_path=cf.file_path,
+                            classification=cf.classification,
+                            reason=cf.reason,
+                            risk_level=(
+                                RiskLevel.CRITICAL
+                                if cf.classification == ChangedFileClassification.FORBIDDEN
+                                else RiskLevel.CRITICAL
+                                if cf.classification == ChangedFileClassification.SENSITIVE
+                                else RiskLevel.HIGH
+                            ),
+                        )
+                    )
+            risk_report = RiskReport(
+                overall_risk_level=self._compute_enhanced_risk(diff_result, forbidden, builder_comparison),
+                findings=risk_findings,
+                counts=diff_result.files_by_classification,
+                unsupported_files=diff_result.unsupported_files,
+            )
+
+            # Phase C: Write artifacts, revalidate, finalize
             diff_written = False
             package_written = False
             migration_written = False
             forbidden_written = False
             inventory_written = False
+            builder_written = False
+            risk_written = False
             artifact_ids: list[str] = []
             if store:
                 ref = _write_evidence(
@@ -891,20 +943,30 @@ class TransformationEvidenceApplicationService:
                     artifact_ids.append(ref3.artifact_id)
                     forbidden_written = True
 
-                # Write unified diff artifact
-                if unified_diff:
-                    diff_ref = _write_evidence(
-                        store, session, run_id, "transformation_diff.patch",
-                        {"patch": unified_diff},
+                if unified_diff_bytes:
+                    diff_ref = store.write_text_artifact(
+                        run_id,
+                        f"stage/{stage_id}/g03/transformation_diff.patch",
+                        unified_diff_bytes.decode("utf-8"),
+                        ArtifactType.DIFF,
                         stage_id=stage_id,
                         created_by="transformation-evidence-service",
                         created_at=now,
                         input_hashes={"diff_checksum": diff_result.diff_checksum},
                     )
-                    artifact_ids.append(diff_ref.artifact_id)
+                    metadata = ArtifactMetadataModel(
+                        id=f"metadata-{diff_ref.ref.artifact_id}",
+                        run_id=run_id,
+                        stage_id=stage_id,
+                        artifact_type=diff_ref.ref.artifact_type.value,
+                        relative_path=diff_ref.ref.relative_path,
+                        checksum=diff_ref.ref.checksum,
+                        created_at=now,
+                    )
+                    session.add(metadata)
+                    artifact_ids.append(diff_ref.ref.artifact_id)
                     diff_written = True
 
-                # Register standalone migration list artifact
                 mig_ref = _write_evidence(
                     store, session, run_id, "transformation_migration_list.json",
                     {"migrations": migration_list},
@@ -915,7 +977,6 @@ class TransformationEvidenceApplicationService:
                 artifact_ids.append(mig_ref.artifact_id)
                 migration_written = True
 
-                # Register standalone changed file inventory artifact
                 inv_payload = {
                     "total_files_changed": diff_result.total_files_changed,
                     "changed_files": [cf.model_dump(mode="json") for cf in diff_result.changed_files],
@@ -930,11 +991,28 @@ class TransformationEvidenceApplicationService:
                 artifact_ids.append(inv_ref.artifact_id)
                 inventory_written = True
 
-            overall_risk = self._compute_overall_risk(diff_result, forbidden)
-            checks = []
-            checks.append(diff_written)
-            checks.append(migration_written)
-            checks.append(inventory_written)
+                builder_ref = _write_evidence(
+                    store, session, run_id, "builder_comparison.json",
+                    builder_comparison.model_dump(mode="json"),
+                    stage_id=stage_id,
+                    created_by="transformation-evidence-service",
+                    created_at=now,
+                )
+                artifact_ids.append(builder_ref.artifact_id)
+                builder_written = True
+
+                risk_ref = _write_evidence(
+                    store, session, run_id, "transformation_risk_report.json",
+                    risk_report.model_dump(mode="json"),
+                    stage_id=stage_id,
+                    created_by="transformation-evidence-service",
+                    created_at=now,
+                )
+                artifact_ids.append(risk_ref.artifact_id)
+                risk_written = True
+
+            overall_risk = risk_report.overall_risk_level
+            checks = [diff_written, migration_written, inventory_written, builder_written, risk_written]
             if package_result:
                 checks.append(package_written)
             if forbidden:
@@ -953,7 +1031,7 @@ class TransformationEvidenceApplicationService:
                     expected_state_version=started_transition.next_state_version,
                     idempotency_key=request.idempotency_key,
                     event_type=event_type,
-                    actor=request.actor,
+                    actor=actor or "unknown",
                     reason=f"Transformation evidence {'completed' if evidence_complete else 'blocked'}",
                     occurred_at=now,
                     stage_id=stage_id,
@@ -972,13 +1050,16 @@ class TransformationEvidenceApplicationService:
                 run_id=run_id,
                 stage_id=stage_id,
                 idempotency_key=request.idempotency_key,
-                actor=request.actor,
+                actor=actor or "unknown",
                 status="completed" if evidence_complete else "blocked",
                 overall_risk_level=overall_risk.value,
                 total_files_changed=diff_result.total_files_changed,
                 diff_checksum=diff_result.diff_checksum,
+                inventory_checksum=diff_result.inventory_checksum,
                 diff_summary=diff_result.model_dump(mode="json"),
                 package_change_summary=package_result.model_dump(mode="json") if package_result else None,
+                builder_comparison=builder_comparison.model_dump(mode="json"),
+                risk_report=risk_report.model_dump(mode="json"),
                 migration_list=migration_list,
                 forbidden_changes=[f.model_dump(mode="json") for f in forbidden],
                 changed_file_classifications={
@@ -986,6 +1067,10 @@ class TransformationEvidenceApplicationService:
                 },
                 evidence_complete=evidence_complete,
                 artifact_ids=artifact_ids,
+                angular_update_record_id=inputs.angular_update_record_id if hasattr(inputs, 'angular_update_record_id') else None,
+                angular_update_binding_checksum=inputs.angular_update_binding_checksum if hasattr(inputs, 'angular_update_binding_checksum') else None,
+                evidence_schema_version="transformation-evidence-v2",
+                integrity_status="valid" if evidence_complete else "in_progress",
                 state_version=transition.next_state_version,
                 event_sequence=transition.event_sequence,
                 block_reason=None if evidence_complete else "No changes detected in transformation sandbox",
@@ -1002,178 +1087,7 @@ class TransformationEvidenceApplicationService:
             session.add(record)
             session.flush()
 
-            return self._dto(record, source_sandbox_path=str(source), target_sandbox_path=str(target))
-
-    def _compute_diff_summary(self, source_path: Path, target_path: Path) -> DiffSummary:
-        """Compute a diff summary by comparing files between source and target sandboxes."""
-        changed_files: list[ChangedFileEntry] = []
-        total_added = 0
-        total_removed = 0
-        checksum_input: list[str] = []
-
-        if not source_path.exists() or not target_path.exists():
-            return DiffSummary(
-                total_files_changed=0,
-                total_lines_added=0,
-                total_lines_removed=0,
-                changed_files=[],
-                diff_checksum="sha256:" + "0" * 64,
-            )
-
-        source_files = {p.relative_to(source_path): p for p in source_path.rglob("*") if p.is_file()}
-        target_files = {p.relative_to(target_path): p for p in target_path.rglob("*") if p.is_file()}
-        all_paths = set(source_files) | set(target_files)
-
-        for rel_path in sorted(all_paths):
-            sp = source_files.get(rel_path)
-            tp = target_files.get(rel_path)
-            path_str = str(rel_path)
-
-            # Large file safety: skip reading files > 50MB
-            size_bytes = 0
-            if tp:
-                size_bytes = tp.stat().st_size
-            elif sp:
-                size_bytes = sp.stat().st_size
-            if (sp and sp.stat().st_size > _MAX_DIFF_FILE_SIZE) or (tp and tp.stat().st_size > _MAX_DIFF_FILE_SIZE):
-                if sp and tp:
-                    change_type = "modified"
-                elif sp:
-                    change_type = "deleted"
-                else:
-                    change_type = "added"
-                added = 0
-                removed = 0
-                classification = ChangedFileClassification.GENERATED
-                reason = SensitiveChangeReason.GENERATED_FILE
-                total_added += added
-                total_removed += removed
-                checksum_input.append(f"{change_type}:{path_str}:{added}:{removed}")
-                changed_files.append(
-                    ChangedFileEntry(
-                        file_path=path_str,
-                        change_type=change_type,
-                        classification=classification,
-                        reason=reason,
-                        lines_added=added,
-                        lines_removed=removed,
-                        is_binary=False,
-                        is_generated=True,
-                        size_bytes=size_bytes,
-                    )
-                )
-                continue
-
-            if sp and tp:
-                try:
-                    sc = _normalize_line_endings(sp.read_bytes())
-                    tc = _normalize_line_endings(tp.read_bytes())
-                    if sc == tc:
-                        continue  # unchanged
-                    change_type = "modified"
-                    sc_lines = sc.splitlines()
-                    tc_lines = tc.splitlines()
-                    added = max(0, len(tc_lines) - len(sc_lines))
-                    removed = max(0, len(sc_lines) - len(tc_lines))
-                except OSError:
-                    continue
-            elif sp and not tp:
-                change_type = "deleted"
-                added = 0
-                try:
-                    removed = len(_normalize_line_endings(sp.read_bytes()).splitlines())
-                except (OSError, UnicodeDecodeError):
-                    removed = 0
-            else:
-                change_type = "added"
-                removed = 0
-                try:
-                    added = len(_normalize_line_endings(tp.read_bytes()).splitlines()) if tp else 0
-                except (OSError, UnicodeDecodeError):
-                    added = 0
-
-            content_for_classify = None
-            if tp:
-                try:
-                    content_for_classify = tp.read_bytes()
-                except OSError:
-                    pass
-            elif sp:
-                try:
-                    content_for_classify = sp.read_bytes()
-                except OSError:
-                    pass
-
-            classification, reason = self._classify_file(path_str, content_for_classify)
-            total_added += added
-            total_removed += removed
-            checksum_input.append(f"{change_type}:{path_str}:{added}:{removed}")
-
-            changed_files.append(
-                ChangedFileEntry(
-                    file_path=path_str,
-                    change_type=change_type,
-                    classification=classification,
-                    reason=reason,
-                    lines_added=added,
-                    lines_removed=removed,
-                    is_binary=classification == ChangedFileClassification.BINARY,
-                    is_generated=classification == ChangedFileClassification.GENERATED,
-                    size_bytes=size_bytes,
-                )
-            )
-
-        import hashlib
-
-        diff_checksum = f"sha256:{hashlib.sha256('|'.join(checksum_input).encode()).hexdigest()}"
-        files_by_class: dict[str, int] = {}
-        for cf in changed_files:
-            files_by_class[cf.classification.value] = files_by_class.get(cf.classification.value, 0) + 1
-
-        return DiffSummary(
-            total_files_changed=len(changed_files),
-            total_lines_added=total_added,
-            total_lines_removed=total_removed,
-            files_by_classification=files_by_class,
-            changed_files=changed_files,
-            diff_checksum=diff_checksum,
-        )
-
-    def _compute_unified_diff(self, source_root: Path, target_root: Path, changed_files: list[ChangedFileEntry]) -> str:
-        lines: list[str] = []
-        for entry in changed_files:
-            sp = source_root / entry.file_path
-            tp = target_root / entry.file_path
-            try:
-                if entry.change_type == "deleted":
-                    src_content = _normalize_line_endings(sp.read_bytes())
-                    tgt_content = b""
-                elif entry.change_type == "added":
-                    src_content = b""
-                    tgt_content = _normalize_line_endings(tp.read_bytes())
-                else:
-                    src_content = _normalize_line_endings(sp.read_bytes()) if sp.exists() else b""
-                    tgt_content = _normalize_line_endings(tp.read_bytes()) if tp.exists() else b""
-            except (OSError, UnicodeDecodeError):
-                lines.append(f"diff --git a/{entry.file_path} b/{entry.file_path}")
-                lines.append("Binary files differ")
-                continue
-            try:
-                src_text = src_content.decode("utf-8", errors="replace").splitlines(keepends=True)
-                tgt_text = tgt_content.decode("utf-8", errors="replace").splitlines(keepends=True)
-            except Exception:
-                lines.append(f"diff --git a/{entry.file_path} b/{entry.file_path}")
-                lines.append("Binary files differ")
-                continue
-            diff = list(difflib.unified_diff(
-                src_text, tgt_text,
-                fromfile=f"a/{entry.file_path}",
-                tofile=f"b/{entry.file_path}",
-                lineterm="\n",
-            ))
-            if diff:
-                lines.extend(diff)
-        return "\n".join(lines)
+            return self._dto(record, artifact_store=store)
 
     def _classify_file(self, path: str, content: bytes | None = None) -> tuple[ChangedFileClassification, SensitiveChangeReason | None]:
         path_lower = path.lower()
@@ -1377,30 +1291,334 @@ class TransformationEvidenceApplicationService:
             return RiskLevel.MEDIUM
         return RiskLevel.LOW
 
-    def _dto(self, record, *, replay=False, source_sandbox_path=None, target_sandbox_path=None):
-        from app.api.transformation_contracts import TransformationEvidenceResponse
+    def _resolve_authoritative_inputs(self, session, run, stage, run_id, stage_id, actor):
+        from sqlalchemy import select
+
+        run_root = Path(run.run_root).resolve() if run.run_root else None
+
+        aliases = run.workspace_aliases or {}
+        source_raw = aliases.get("SOURCE_SNAPSHOT")
+        target_raw = aliases.get("STAGE_SANDBOX")
+
+        if not source_raw or not target_raw:
+            raise G03ApplicationError(
+                "WORKSPACE_ALIASES_REQUIRED",
+                "SOURCE_SNAPSHOT and STAGE_SANDBOX aliases must be configured.",
+                status_code=409,
+            )
+
+        source_candidate = Path(source_raw)
+        target_candidate = Path(target_raw)
+        source = source_candidate.resolve()
+        target = target_candidate.resolve()
+
+        if not source.is_dir() or source_candidate.is_symlink():
+            raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source path is missing or unsafe.", status_code=409)
+        if not target.is_dir() or target_candidate.is_symlink():
+            raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target path is missing or unsafe.", status_code=409)
+        if source == target or source.is_relative_to(target) or target.is_relative_to(source):
+            raise G03ApplicationError("SANDBOX_OVERLAP", "Source and target must not overlap.", status_code=409)
+        if run_root is not None:
+            if not source.is_relative_to(run_root) or not target.is_relative_to(run_root):
+                raise G03ApplicationError("SANDBOX_BOUNDARY", "Paths must be within run root.", status_code=409)
+
+        if any(item.is_symlink() for item in source.rglob("*")):
+            raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source contains symlink escape.", status_code=409)
+        if any(item.is_symlink() for item in target.rglob("*")):
+            raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target contains symlink escape.", status_code=409)
+
+        input_fingerprint = self._diff_service.fingerprint_tree(source)
+        target_fingerprint = self._diff_service.fingerprint_tree(target)
+
+        update = session.scalar(
+            select(AngularUpdateRecordModel)
+            .where(
+                AngularUpdateRecordModel.run_id == run_id,
+                AngularUpdateRecordModel.stage_id == stage_id,
+            )
+            .order_by(AngularUpdateRecordModel.created_at.desc())
+        )
+        if update is None:
+            raise G03ApplicationError(
+                "ANGULAR_UPDATE_REQUIRED",
+                "Successful Angular update evidence is required.",
+                status_code=409,
+            )
+        if update.status != AngularUpdateStatus.SUCCEEDED.value:
+            raise G03ApplicationError(
+                "ANGULAR_UPDATE_NOT_SUCCESSFUL",
+                "Angular update must have succeeded.",
+                status_code=409,
+            )
+        if update.target_version_status != TargetVersionStatus.VERIFIED.value:
+            raise G03ApplicationError(
+                "TARGET_VERSION_NOT_VERIFIED",
+                "Target version must be verified.",
+                status_code=409,
+            )
+
+        execution = session.get(CommandExecutionModel, update.command_execution_id)
+        if (
+            execution is None
+            or execution.run_id != run_id
+            or execution.stage_id != stage_id
+            or execution.status != CommandStatus.SUCCEEDED.value
+            or execution.exit_code != 0
+        ):
+            raise G03ApplicationError(
+                "COMMAND_AUTHORITY_REQUIRED",
+                "Authoritative command execution is required.",
+                status_code=409,
+            )
+
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class AuthoritativeTransformationInputs:
+            run_id: str
+            stage_id: str
+            actor: str
+            source_root: Path
+            target_root: Path
+            input_fingerprint: str
+            target_fingerprint: str
+            angular_update_record_id: str
+            angular_update_binding_checksum: str
+            command_execution_id: str
+
+        binding_data = {
+            "run_id": run_id,
+            "stage_id": stage_id,
+            "update_record_id": update.id,
+            "command_execution_id": execution.id,
+            "target_version": update.target_version,
+            "target_verified": update.target_version_status == TargetVersionStatus.VERIFIED.value,
+            "input_fingerprint": input_fingerprint,
+            "target_fingerprint": target_fingerprint,
+        }
+        binding_checksum = "sha256:" + hashlib.sha256(
+            json.dumps(binding_data, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        return AuthoritativeTransformationInputs(
+            run_id=run_id,
+            stage_id=stage_id,
+            actor=actor,
+            source_root=source,
+            target_root=target,
+            input_fingerprint=input_fingerprint,
+            target_fingerprint=target_fingerprint,
+            angular_update_record_id=update.id,
+            angular_update_binding_checksum=binding_checksum,
+            command_execution_id=execution.id,
+        )
+
+    def _compute_builder_comparison(self, source_root: Path, target_root: Path) -> BuilderDecisionComparison:
+        changes: list[BuilderChangeEntry] = []
+        schematic_changes: list[dict] = []
+        drift_detected = False
+        parser_status: str = "parsed"
+
+        try:
+
+            src_angular = source_root / "angular.json"
+            tgt_angular = target_root / "angular.json"
+
+            if not src_angular.is_file() or not tgt_angular.is_file():
+                parser_status = "missing"
+                return BuilderDecisionComparison(
+                    changes=[], parser_status=parser_status, drift_detected=False
+                )
+
+            src_config = json.loads(src_angular.read_text(encoding="utf-8"))
+            tgt_config = json.loads(tgt_angular.read_text(encoding="utf-8"))
+
+            projects = set(src_config.get("projects", {})) | set(tgt_config.get("projects", {}))
+            for project in sorted(projects):
+                src_proj = src_config.get("projects", {}).get(project, {})
+                tgt_proj = tgt_config.get("projects", {}).get(project, {})
+                for target_key in ("architect", "targets"):
+                    src_targets = src_proj.get(target_key, {})
+                    tgt_targets = tgt_proj.get(target_key, {})
+                    all_targets = set(src_targets) | set(tgt_targets)
+                    for target_name in sorted(all_targets):
+                        src_tgt = src_targets.get(target_name, {})
+                        tgt_tgt = tgt_targets.get(target_name, {})
+                        src_builder = src_tgt.get("builder") if isinstance(src_tgt, dict) else None
+                        tgt_builder = tgt_tgt.get("builder") if isinstance(tgt_tgt, dict) else None
+                        if src_builder != tgt_builder:
+                            changes.append(
+                                BuilderChangeEntry(
+                                    project=project,
+                                    target=target_name,
+                                    before_builder=src_builder,
+                                    after_builder=tgt_builder,
+                                )
+                            )
+                            drift_detected = True
+
+            src_schematics = src_config.get("schematics") or src_config.get("cli", {}).get("schematics") or {}
+            tgt_schematics = tgt_config.get("schematics") or tgt_config.get("cli", {}).get("schematics") or {}
+            if src_schematics != tgt_schematics:
+                schematic_changes.append({"before": src_schematics, "after": tgt_schematics})
+                drift_detected = True
+
+            for project in sorted(projects):
+                src_proj = src_config.get("projects", {}).get(project, {})
+                tgt_proj = tgt_config.get("projects", {}).get(project, {})
+                src_sch = src_proj.get("schematics") or {}
+                tgt_sch = tgt_proj.get("schematics") or {}
+                if src_sch != tgt_sch:
+                    schematic_changes.append({"project": project, "before": src_sch, "after": tgt_sch})
+                    drift_detected = True
+
+        except (OSError, json.JSONDecodeError):
+            parser_status = "invalid"
+
+        return BuilderDecisionComparison(
+            changes=changes,
+            schematic_changes=schematic_changes,
+            drift_detected=drift_detected,
+            parser_status=parser_status,
+        )
+
+    def _compute_enhanced_risk(
+        self,
+        diff: DiffSummary,
+        forbidden: list,
+        builder: BuilderDecisionComparison,
+    ) -> RiskLevel:
+        if any(f.risk_level == RiskLevel.CRITICAL for f in forbidden):
+            return RiskLevel.CRITICAL
+        if any(f.risk_level == RiskLevel.HIGH for f in forbidden):
+            return RiskLevel.HIGH
+        if builder.drift_detected:
+            return RiskLevel.MEDIUM
+        for cf in diff.changed_files:
+            if cf.classification in (ChangedFileClassification.FORBIDDEN, ChangedFileClassification.SENSITIVE):
+                return RiskLevel.CRITICAL
+            if cf.classification == ChangedFileClassification.HIGH_RISK:
+                return RiskLevel.HIGH
+        if diff.total_files_changed > 100:
+            return RiskLevel.MEDIUM
+        if diff.total_files_changed == 0 and diff.unsupported_files:
+            return RiskLevel.MEDIUM
+        return RiskLevel.LOW
+
+    def _recompute_integrity(self, session, store, record, run_id, stage_id):
+        from app.api.transformation_contracts import TransformationIntegrityStatus
+
+        if store is None or not record.artifact_ids:
+            return TransformationIntegrityStatus.IN_PROGRESS
+
+        for aid in record.artifact_ids:
+            metadata = session.get(ArtifactMetadataModel, f"metadata-{aid}")
+            if metadata is None:
+                return TransformationIntegrityStatus.MISSING
+            if metadata.run_id != run_id or metadata.stage_id != stage_id:
+                return TransformationIntegrityStatus.TAMPERED
+            try:
+                stored = store.read_artifact_by_id(aid)
+            except (OSError, ValueError, KeyError):
+                return TransformationIntegrityStatus.MISSING
+            if stored.ref.checksum != metadata.checksum:
+                return TransformationIntegrityStatus.TAMPERED
+
+        if not record.evidence_complete:
+            return TransformationIntegrityStatus.IN_PROGRESS
+
+        return TransformationIntegrityStatus.VALID
+
+    def _dto(self, record, *, replay=False, artifact_store=None):
+        from app.api.transformation_contracts import (
+            TransformationArtifactRef,
+            TransformationEvidenceResponse,
+            TransformationIntegrityStatus,
+        )
+
+        artifacts: list[TransformationArtifactRef] = []
+        if artifact_store is not None:
+            for aid in (record.artifact_ids or []):
+                try:
+                    stored = artifact_store.read_artifact_by_id(aid)
+                    from app.repositories.models import ArtifactMetadataModel
+                    artifacts.append(
+                        TransformationArtifactRef(
+                            kind="unknown",
+                            artifact_id=aid,
+                            artifact_type=stored.ref.artifact_type.value,
+                            checksum=stored.ref.checksum,
+                            size_bytes=len(stored.content.encode("utf-8")),
+                            relative_path=stored.ref.relative_path,
+                        )
+                    )
+                except (OSError, ValueError, KeyError):
+                    artifacts.append(
+                        TransformationArtifactRef(
+                            kind="unknown",
+                            artifact_id=aid,
+                            artifact_type="json",
+                            checksum="sha256:" + "0" * 64,
+                            size_bytes=0,
+                            relative_path="",
+                        )
+                    )
+        else:
+            for aid in (record.artifact_ids or []):
+                artifacts.append(
+                    TransformationArtifactRef(
+                        kind="unknown",
+                        artifact_id=aid,
+                        artifact_type="json",
+                        checksum=record.diff_checksum,
+                        size_bytes=0,
+                        relative_path="",
+                    )
+                )
+
+        artifact_set_checksum = record.artifact_set_checksum or record.diff_checksum
+        inventory_checksum = record.inventory_checksum or record.diff_checksum
+        integrity_value = (
+            record.integrity_status
+            if record.integrity_status
+            else ("valid" if record.evidence_complete and record.status == "completed" else "in_progress")
+        )
+        try:
+            integrity_status = TransformationIntegrityStatus(integrity_value)
+        except ValueError:
+            integrity_status = TransformationIntegrityStatus.IN_PROGRESS
+
+        angular_update_record_id = record.angular_update_record_id or ""
+        angular_update_binding_checksum = record.angular_update_binding_checksum or ""
 
         return TransformationEvidenceResponse(
             run_id=record.run_id,
             stage_id=record.stage_id,
+            evidence_id=record.id,
             status=record.status,
             overall_risk_level=record.overall_risk_level,
             total_files_changed=record.total_files_changed,
             diff_checksum=record.diff_checksum,
+            inventory_checksum=inventory_checksum,
             diff_summary=record.diff_summary,
             package_change=record.package_change_summary,
+            builder_comparison=record.builder_comparison or {},
+            risk_report=record.risk_report or {},
             migration_list=record.migration_list,
             forbidden_changes=record.forbidden_changes,
             changed_file_classifications=record.changed_file_classifications,
             evidence_complete=record.evidence_complete,
-            artifact_ids=record.artifact_ids,
+            artifacts=artifacts,
+            artifact_set_checksum=artifact_set_checksum,
+            integrity_status=integrity_status,
+            evidence_schema_version=record.evidence_schema_version or "transformation-evidence-v2",
+            angular_update_record_id=angular_update_record_id,
+            angular_update_binding_checksum=angular_update_binding_checksum,
             state_version=record.state_version,
             event_sequence=record.event_sequence,
             block_reason=record.block_reason,
             idempotent_replay=replay,
             correlation_id=record.correlation_id,
-            source_sandbox_path=source_sandbox_path or record.source_sandbox_path,
-            target_sandbox_path=target_sandbox_path or record.target_sandbox_path,
         )
 
 
@@ -1508,7 +1726,7 @@ class G08ApprovalApplicationService:
             ev_result = TransformationEvidenceResult(
                 run_id=run_id,
                 stage_id=stage_id,
-                diff=DiffSummary(total_files_changed=evidence_record.total_files_changed if evidence_record else 0, total_lines_added=0, total_lines_removed=0, diff_checksum=evidence_record.diff_checksum if evidence_record else "sha256:" + "0" * 64),
+                diff=DiffSummary(total_files_changed=evidence_record.total_files_changed if evidence_record else 0, total_lines_added=0, total_lines_removed=0, diff_checksum=evidence_record.diff_checksum if evidence_record else "sha256:" + "0" * 64, inventory_checksum=(evidence_record.inventory_checksum or evidence_record.diff_checksum) if evidence_record else "sha256:" + "0" * 64),
                 evidence_complete=evidence_record.evidence_complete if evidence_record else False,
                 overall_risk_level=RiskLevel(evidence_record.overall_risk_level) if evidence_record else RiskLevel.HIGH,
             )
@@ -1627,6 +1845,7 @@ class G08ApprovalApplicationService:
                 total_files_changed=evidence_record.total_files_changed if evidence_record else 0,
                 total_lines_added=0, total_lines_removed=0,
                 diff_checksum=evidence_record.diff_checksum if evidence_record else "sha256:" + "0" * 64,
+                inventory_checksum=(evidence_record.inventory_checksum or evidence_record.diff_checksum) if evidence_record else "sha256:" + "0" * 64,
             ),
             evidence_complete=evidence_record.evidence_complete if evidence_record else False,
             overall_risk_level=RiskLevel(evidence_record.overall_risk_level) if evidence_record else RiskLevel.HIGH,

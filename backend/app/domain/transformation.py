@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -117,6 +117,78 @@ class AngularUpdateVerificationRequest(ContractModel):
 # ── S3-F08 — Transformation Evidence and Risk Classification ─────────────
 
 
+class TransformationEvidenceMode(str, Enum):
+    FULL_DIFF = "full_diff"
+    BINARY_METADATA = "binary_metadata"
+    OVERSIZED_METADATA = "oversized_metadata"
+
+
+class LockfileParserStatus(str, Enum):
+    PARSED = "parsed"
+    MISSING = "missing"
+    INVALID = "invalid"
+    UNSUPPORTED = "unsupported"
+
+
+class MigrationEvidenceSource(str, Enum):
+    COMMAND_ARTIFACT = "command_artifact"
+    HEURISTIC_FALLBACK = "heuristic_fallback"
+
+
+class DependencyVersionDelta(ContractModel):
+    name: str = Field(min_length=1)
+    before: str | None = None
+    after: str | None = None
+
+
+class LockfileChangeSummary(ContractModel):
+    lockfile_name: str | None = None
+    lockfile_type: Literal["npm", "yarn", "pnpm", "unknown"] = "unknown"
+    parser_status: LockfileParserStatus
+    checksum_before: str | None = None
+    checksum_after: str | None = None
+    packages_added: list[DependencyVersionDelta] = Field(default_factory=list)
+    packages_removed: list[DependencyVersionDelta] = Field(default_factory=list)
+    packages_updated: list[DependencyVersionDelta] = Field(default_factory=list)
+    unsupported_reason: str | None = None
+
+
+class MigrationEvidenceEntry(ContractModel):
+    name: str = Field(min_length=1)
+    source: MigrationEvidenceSource
+    command_execution_id: str | None = None
+    artifact_id: str | None = None
+
+
+class BuilderChangeEntry(ContractModel):
+    project: str
+    target: str
+    before_builder: str | None = None
+    after_builder: str | None = None
+
+
+class BuilderDecisionComparison(ContractModel):
+    changes: list[BuilderChangeEntry] = Field(default_factory=list)
+    schematic_changes: list[dict[str, Any]] = Field(default_factory=list)
+    drift_detected: bool = False
+    parser_status: Literal["parsed", "missing", "invalid"] = "parsed"
+
+
+class RiskFinding(ContractModel):
+    file_path: str
+    classification: ChangedFileClassification
+    reason: SensitiveChangeReason | None = None
+    risk_level: RiskLevel
+    detail: str | None = None
+
+
+class RiskReport(ContractModel):
+    overall_risk_level: RiskLevel
+    findings: list[RiskFinding] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    unsupported_files: list[str] = Field(default_factory=list)
+
+
 class ChangedFileClassification(str, Enum):
     UNKNOWN = "unknown"
     LOW_RISK = "low_risk"
@@ -154,6 +226,12 @@ class ChangedFileEntry(ContractModel):
     is_generated: bool = False
     is_binary: bool = False
     size_bytes: int = Field(default=0, ge=0)
+    before_sha256: str | None = None
+    after_sha256: str | None = None
+    before_size_bytes: int | None = Field(default=None, ge=0)
+    after_size_bytes: int | None = Field(default=None, ge=0)
+    evidence_mode: TransformationEvidenceMode = TransformationEvidenceMode.FULL_DIFF
+    unsupported_reason: str | None = None
 
 
 class DiffSummary(ContractModel):
@@ -164,7 +242,11 @@ class DiffSummary(ContractModel):
     total_lines_removed: int = Field(ge=0)
     files_by_classification: dict[str, int] = Field(default_factory=dict)
     changed_files: list[ChangedFileEntry] = Field(default_factory=list)
-    diff_checksum: str = Field(min_length=1)
+    diff_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    inventory_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    diff_format_version: str = "unified-diff-v1"
+    truncated: bool = False
+    unsupported_files: list[str] = Field(default_factory=list)
 
 
 class PackageChangeSummary(ContractModel):
@@ -179,6 +261,9 @@ class PackageChangeSummary(ContractModel):
     angular_version_before: str | None = None
     angular_version_after: str | None = None
     other_major_changes: list[str] = Field(default_factory=list)
+    package_json_checksum_before: str | None = None
+    package_json_checksum_after: str | None = None
+    lockfile: LockfileChangeSummary = Field(default_factory=lambda: LockfileChangeSummary(parser_status=LockfileParserStatus.MISSING))
 
 
 class ForbiddenChangeEntry(ContractModel):
@@ -198,6 +283,9 @@ class TransformationEvidenceResult(ContractModel):
     diff: DiffSummary
     package_change: PackageChangeSummary | None = None
     migration_list: list[str] = Field(default_factory=list)
+    migration_evidence: list[MigrationEvidenceEntry] = Field(default_factory=list)
+    builder_comparison: BuilderDecisionComparison = Field(default_factory=BuilderDecisionComparison)
+    risk_report: RiskReport = Field(default_factory=lambda: RiskReport(overall_risk_level=RiskLevel.LOW))
     forbidden_changes: list[ForbiddenChangeEntry] = Field(default_factory=list)
     overall_risk_level: RiskLevel = RiskLevel.LOW
     evidence_complete: bool = False
@@ -205,16 +293,17 @@ class TransformationEvidenceResult(ContractModel):
 
 
 class TransformationEvidenceRequest(ContractModel):
-    """Input to generate transformation evidence for a stage."""
+    """Input to generate transformation evidence for a stage.
 
-    run_id: str = Field(min_length=1)
-    stage_id: str = Field(min_length=1)
+    Actor is passed separately from the authenticated request context.
+    Paths are resolved server-side from the run's workspace aliases.
+    """
+
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
-    prerequisite_artifact_ids: list[str] = Field(default_factory=list)
-    source_sandbox_path: str = Field(min_length=1)
-    target_sandbox_path: str = Field(min_length=1)
+    correlation_id: str | None = None
+    expected_angular_update_record_id: str | None = None
+    expected_angular_update_binding_checksum: str | None = None
 
 
 # ── S3-F09 — G08 Transformation Acceptance Gate ──────────────────────────

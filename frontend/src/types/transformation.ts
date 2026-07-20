@@ -28,33 +28,68 @@ export interface AngularUpdateResponse {
 export interface TransformationEvidenceRequest {
   expected_state_version: number;
   idempotency_key: string;
-  actor: string;
-  prerequisite_artifact_ids?: string[];
-  source_sandbox_path: string;
-  target_sandbox_path: string;
+  correlation_id?: string;
+  expected_angular_update_record_id?: string;
+  expected_angular_update_binding_checksum?: string;
 }
+
+export type TransformationArtifactKind =
+  | "unified_diff"
+  | "package_lock_diff"
+  | "migration_list"
+  | "changed_file_inventory"
+  | "risk_report"
+  | "forbidden_change_report"
+  | "builder_comparison"
+  | "artifact_manifest";
+
+export interface TransformationArtifactRef {
+  kind: TransformationArtifactKind;
+  artifact_id: string;
+  artifact_type: string;
+  checksum: string;
+  size_bytes: number;
+  relative_path: string;
+}
+
+export type TransformationIntegrityStatus =
+  | "valid"
+  | "stale"
+  | "tampered"
+  | "missing"
+  | "in_progress"
+  | "blocked"
+  | "failed";
 
 export interface TransformationEvidenceResponse {
   run_id: string;
   stage_id: string;
+  evidence_id: string;
   status: string;
   overall_risk_level: string;
   total_files_changed: number;
   diff_checksum: string;
+  inventory_checksum: string;
   diff_summary: Record<string, unknown>;
   package_change?: Record<string, unknown>;
+  builder_comparison: Record<string, unknown>;
+  risk_report: Record<string, unknown>;
   migration_list: string[];
   forbidden_changes: Record<string, unknown>[];
   changed_file_classifications: Record<string, string>;
   evidence_complete: boolean;
-  artifact_ids: string[];
+  artifacts: TransformationArtifactRef[];
+  artifact_set_checksum: string;
+  integrity_status: TransformationIntegrityStatus;
+  stale_reason?: string;
+  evidence_schema_version: string;
+  angular_update_record_id: string;
+  angular_update_binding_checksum: string;
   state_version: number;
   event_sequence: number;
   block_reason?: string;
   idempotent_replay: boolean;
   correlation_id?: string;
-  source_sandbox_path?: string;
-  target_sandbox_path?: string;
 }
 
 export interface TargetVersionResponse {

@@ -1,6 +1,7 @@
 """Typed HTTP contracts for G03 transformation, evidence, and G08 approval surfaces."""
 
 from typing import Any
+from enum import Enum
 
 from pydantic import Field
 
@@ -50,37 +51,62 @@ class TargetVersionResponse(ContractModel):
 # ── S3-F08 — Transformation Evidence ─────────────────────────────────────
 
 
+class TransformationArtifactRef(ContractModel):
+    kind: str
+    artifact_id: str
+    artifact_type: str
+    checksum: str
+    size_bytes: int = Field(ge=0)
+    relative_path: str
+
+
+class TransformationIntegrityStatus(str, Enum):
+    VALID = "valid"
+    STALE = "stale"
+    TAMPERED = "tampered"
+    MISSING = "missing"
+    IN_PROGRESS = "in_progress"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
 class TransformationEvidenceRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
-    prerequisite_artifact_ids: list[str] = Field(default_factory=list)
-    source_sandbox_path: str = Field(min_length=1)
-    target_sandbox_path: str = Field(min_length=1)
     correlation_id: str | None = None
+    expected_angular_update_record_id: str | None = None
+    expected_angular_update_binding_checksum: str | None = None
 
 
 class TransformationEvidenceResponse(ContractModel):
     run_id: str
     stage_id: str
+    evidence_id: str
     status: str
     overall_risk_level: str = "low"
     total_files_changed: int = 0
     diff_checksum: str
+    inventory_checksum: str
     diff_summary: dict[str, Any] = Field(default_factory=dict)
     package_change: dict[str, Any] | None = None
+    builder_comparison: dict[str, Any] = Field(default_factory=dict)
+    risk_report: dict[str, Any] = Field(default_factory=dict)
     migration_list: list[str] = Field(default_factory=list)
     forbidden_changes: list[dict[str, Any]] = Field(default_factory=list)
     changed_file_classifications: dict[str, str] = Field(default_factory=dict)
     evidence_complete: bool = False
-    artifact_ids: list[str] = Field(default_factory=list)
+    artifacts: list[TransformationArtifactRef] = Field(default_factory=list)
+    artifact_set_checksum: str
+    integrity_status: TransformationIntegrityStatus
+    stale_reason: str | None = None
+    evidence_schema_version: str
+    angular_update_record_id: str
+    angular_update_binding_checksum: str
     state_version: int = Field(ge=1)
     event_sequence: int = Field(ge=1)
     block_reason: str | None = None
     idempotent_replay: bool = False
     correlation_id: str | None = None
-    source_sandbox_path: str | None = None
-    target_sandbox_path: str | None = None
 
 
 # ── S3-F09 — G08 Approval ────────────────────────────────────────────────

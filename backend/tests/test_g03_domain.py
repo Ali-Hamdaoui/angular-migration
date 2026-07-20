@@ -24,6 +24,7 @@ from app.domain.transformation import (
     SensitiveChangeReason,
     TargetVersionStatus,
     TargetVersionEvidence,
+    TransformationEvidenceMode,
     TransformationEvidenceResult,
 )
 from app.services.transformation_application_service import (
@@ -31,6 +32,15 @@ from app.services.transformation_application_service import (
     _scan_migrations,
     TransformationEvidenceApplicationService,
 )
+
+_VALID_SHA256 = "sha256:" + "a" * 64
+_VALID_SHA256_B = "sha256:" + "b" * 64
+_VALID_SHA256_C = "sha256:" + "c" * 64
+_VALID_SHA256_D = "sha256:" + "d" * 64
+_VALID_SHA256_E = "sha256:" + "e" * 64
+_VALID_SHA256_F = "sha256:" + "f" * 64
+_VALID_SHA256_G = "sha256:" + "0" * 64
+_VALID_SHA256_G = "sha256:" + "0" * 64
 
 
 class TestAngularUpdateCommand:
@@ -168,7 +178,8 @@ class TestDiffSummary:
             total_lines_removed=3,
             files_by_classification={"low_risk": 2},
             changed_files=entries,
-            diff_checksum="sha256:abc123",
+            diff_checksum=_VALID_SHA256,
+            inventory_checksum=_VALID_SHA256,
         )
         assert summary.total_files_changed == 2
         assert summary.total_lines_added == 25
@@ -221,7 +232,8 @@ class TestG08ApprovalService:
                 run_id="run-1", stage_id="stage-1",
                 diff=DiffSummary(
                     total_files_changed=10, total_lines_added=100,
-                    total_lines_removed=50, diff_checksum="sha256:test",
+                    total_lines_removed=50, diff_checksum=_VALID_SHA256,
+                    inventory_checksum=_VALID_SHA256,
                 ),
                 evidence_complete=True,
                 overall_risk_level=RiskLevel.LOW,
@@ -250,7 +262,8 @@ class TestG08ApprovalService:
                 run_id="run-1", stage_id="stage-1",
                 diff=DiffSummary(
                     total_files_changed=0, total_lines_added=0,
-                    total_lines_removed=0, diff_checksum="sha256:none",
+                    total_lines_removed=0, diff_checksum=_VALID_SHA256_G,
+                    inventory_checksum=_VALID_SHA256_G,
                 ),
                 evidence_complete=False,
                 overall_risk_level=RiskLevel.HIGH,
@@ -280,7 +293,8 @@ class TestG08ApprovalService:
                 run_id="run-1", stage_id="stage-1",
                 diff=DiffSummary(
                     total_files_changed=5, total_lines_added=10,
-                    total_lines_removed=3, diff_checksum="sha256:test2",
+                    total_lines_removed=3, diff_checksum=_VALID_SHA256,
+                    inventory_checksum=_VALID_SHA256,
                 ),
                 evidence_complete=True,
                 overall_risk_level=RiskLevel.CRITICAL,
@@ -310,7 +324,8 @@ class TestG08ApprovalService:
                 run_id="run-1", stage_id="stage-1",
                 diff=DiffSummary(
                     total_files_changed=10, total_lines_added=100,
-                    total_lines_removed=50, diff_checksum="sha256:test3",
+                    total_lines_removed=50, diff_checksum=_VALID_SHA256,
+                    inventory_checksum=_VALID_SHA256,
                 ),
                 evidence_complete=True,
                 overall_risk_level=RiskLevel.LOW,
@@ -337,7 +352,8 @@ class TestG08EvidencePackageBuilder:
             run_id="run-1", stage_id="stage-1",
             diff=DiffSummary(
                 total_files_changed=10, total_lines_added=100,
-                total_lines_removed=50, diff_checksum="sha256:test",
+                total_lines_removed=50, diff_checksum=_VALID_SHA256,
+                inventory_checksum=_VALID_SHA256,
             ),
             evidence_complete=True,
             overall_risk_level=RiskLevel.LOW,
@@ -594,35 +610,25 @@ class TestDetectContentReason:
 
 class TestLargeFileClassification:
     def setup_method(self):
-        self.svc = TransformationEvidenceApplicationService()
+        from app.services.transformation_diff_service import TransformationDiffService
+        self.diff_svc = TransformationDiffService()
 
     def test_large_file_classified_as_generated(self, tmp_path):
+        from app.services.transformation_diff_service import TransformationDiffService, TransformationDiffLimits
+        tight_limits = TransformationDiffLimits(max_text_file_bytes=5)
+        big_svc = TransformationDiffService(limits=tight_limits)
         src = tmp_path / "source"
         tgt = tmp_path / "target"
         src.mkdir()
         tgt.mkdir()
-        (src / "large.bin").write_bytes(b"source content")
-        (tgt / "large.bin").write_bytes(b"target content")
+        (src / "large.bin").write_bytes(b"source content exceeds limit")
+        (tgt / "large.bin").write_bytes(b"target content also oversized")
 
-        real_stat = Path.stat
-        def oversized_stat(self_obj):
-            st = real_stat(self_obj)
-            if self_obj.name == "large.bin":
-                return os.stat_result((
-                    st.st_mode, st.st_ino, st.st_dev, st.st_nlink,
-                    st.st_uid, st.st_gid, 60 * 1024 * 1024,
-                    st.st_atime, st.st_mtime, st.st_ctime,
-                ))
-            return st
-
-        with mock.patch.object(Path, "stat", oversized_stat):
-            summary = self.svc._compute_diff_summary(src, tgt)
-
-        large_entry = [f for f in summary.changed_files if "large.bin" in f.file_path]
+        result = big_svc.compute(src, tgt)
+        large_entry = [f for f in result.summary.changed_files if "large.bin" in f.file_path]
         assert len(large_entry) == 1
-        assert large_entry[0].classification == ChangedFileClassification.GENERATED
-        assert large_entry[0].is_generated is True
-        assert large_entry[0].size_bytes == 60 * 1024 * 1024
+        assert large_entry[0].evidence_mode == TransformationEvidenceMode.OVERSIZED_METADATA
+        assert large_entry[0].is_generated is False
 
     def test_normal_size_file_not_affected(self, tmp_path):
         src = tmp_path / "source"
@@ -632,9 +638,9 @@ class TestLargeFileClassification:
         (src / "normal.ts").write_text("line1\nline2\nline3\n")
         (tgt / "normal.ts").write_text("line1\nline2 modified\nline3\nline4\n")
 
-        summary = self.svc._compute_diff_summary(src, tgt)
+        result = self.diff_svc.compute(src, tgt)
 
-        entry = [f for f in summary.changed_files if "normal.ts" in f.file_path]
+        entry = [f for f in result.summary.changed_files if "normal.ts" in f.file_path]
         assert len(entry) == 1
         assert entry[0].classification != ChangedFileClassification.GENERATED
         assert entry[0].is_generated is False
@@ -647,7 +653,8 @@ class TestScanForbiddenChanges:
     def test_forbidden_file_is_critical(self):
         diff = DiffSummary(
             total_files_changed=1, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:a",
+            diff_checksum=_VALID_SHA256,
+            inventory_checksum=_VALID_SHA256,
             changed_files=[
                 ChangedFileEntry(
                     file_path=".github/workflows/ci.yml", change_type="modified",
@@ -662,7 +669,8 @@ class TestScanForbiddenChanges:
     def test_sensitive_file_with_suggestion(self):
         diff = DiffSummary(
             total_files_changed=1, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:b",
+            diff_checksum=_VALID_SHA256_B,
+            inventory_checksum=_VALID_SHA256_B,
             changed_files=[
                 ChangedFileEntry(
                     file_path="src/app/auth/login.ts", change_type="modified",
@@ -679,7 +687,7 @@ class TestScanForbiddenChanges:
     def test_other_major_changes_medium(self):
         diff = DiffSummary(
             total_files_changed=0, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:c",
+            diff_checksum=_VALID_SHA256_C, inventory_checksum=_VALID_SHA256_C,
         )
         pkg = PackageChangeSummary(
             other_major_changes=["lib-a: ^1.0.0 -> ^3.0.0 (major jump 1->3)"],
@@ -692,7 +700,7 @@ class TestScanForbiddenChanges:
     def test_empty_diff_returns_empty(self):
         diff = DiffSummary(
             total_files_changed=0, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:d",
+            diff_checksum=_VALID_SHA256_D, inventory_checksum=_VALID_SHA256_D,
         )
         result = self.svc._scan_forbidden_changes(diff, None)
         assert result == []
@@ -705,7 +713,7 @@ class TestComputeOverallRisk:
     def test_critical_forbidden(self):
         diff = DiffSummary(
             total_files_changed=0, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:e",
+            diff_checksum=_VALID_SHA256_E, inventory_checksum=_VALID_SHA256_E,
         )
         forbidden = [
             ForbiddenChangeEntry(
@@ -718,7 +726,7 @@ class TestComputeOverallRisk:
     def test_high_forbidden(self):
         diff = DiffSummary(
             total_files_changed=0, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:f",
+            diff_checksum=_VALID_SHA256_F, inventory_checksum=_VALID_SHA256_F,
         )
         forbidden = [
             ForbiddenChangeEntry(
@@ -738,14 +746,15 @@ class TestComputeOverallRisk:
         ]
         diff = DiffSummary(
             total_files_changed=101, total_lines_added=0, total_lines_removed=0,
-            diff_checksum="sha256:g", changed_files=entries,
+            diff_checksum=_VALID_SHA256_G, inventory_checksum=_VALID_SHA256_G,
+            changed_files=entries,
         )
         assert self.svc._compute_overall_risk(diff, []) == RiskLevel.MEDIUM
 
     def test_few_files_low(self):
         diff = DiffSummary(
             total_files_changed=5, total_lines_added=10, total_lines_removed=2,
-            diff_checksum="sha256:h",
+            diff_checksum=_VALID_SHA256, inventory_checksum=_VALID_SHA256,
         )
         assert self.svc._compute_overall_risk(diff, []) == RiskLevel.LOW
 
@@ -762,19 +771,28 @@ class TestTransformationEvidenceService:
 
     def test_dto_mapping(self):
         record = mock.MagicMock()
+        record.id = "tev-test-123"
         record.run_id = "run-1"
         record.stage_id = "stage-1"
         record.status = "completed"
         record.overall_risk_level = "low"
         record.total_files_changed = 5
-        record.diff_checksum = "sha256:test"
+        record.diff_checksum = _VALID_SHA256
+        record.inventory_checksum = _VALID_SHA256
         record.diff_summary = {}
         record.package_change_summary = None
+        record.builder_comparison = {}
+        record.risk_report = {}
         record.migration_list = []
         record.forbidden_changes = []
         record.changed_file_classifications = {}
         record.evidence_complete = True
         record.artifact_ids = []
+        record.artifact_set_checksum = _VALID_SHA256
+        record.integrity_status = "valid"
+        record.evidence_schema_version = "transformation-evidence-v2"
+        record.angular_update_record_id = "ang-upd-test"
+        record.angular_update_binding_checksum = _VALID_SHA256
         record.state_version = 1
         record.event_sequence = 1
         record.block_reason = None

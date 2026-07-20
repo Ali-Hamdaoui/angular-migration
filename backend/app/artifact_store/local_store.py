@@ -332,6 +332,21 @@ class LocalFilesystemArtifactStore:
             return parts[1]
         return parts[0] if parts and parts[0] in ARTIFACT_LAYOUT else None
 
+    def delete_artifact_version(self, stored: StoredArtifact) -> None:
+        """Delete one just-created artifact version and its sidecar after failed finalization.
+
+        This method is only for rollback of an uncommitted evidence set. It verifies
+        artifact ID and checksum before deleting and never deletes by arbitrary path.
+        """
+        ref = stored.ref
+        artifact_path = self._resolve_existing_artifact_path(ref.run_id, ref.relative_path)
+        metadata = self._read_metadata(artifact_path)
+        if metadata.ref.artifact_id != ref.artifact_id or metadata.ref.checksum != ref.checksum:
+            raise ArtifactStoreError("Artifact rollback identity mismatch")
+        sidecar = self._metadata_sidecar(artifact_path)
+        artifact_path.unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
+
     def _content_type_for_artifact(self, artifact_type: ArtifactType) -> str:
         return {
             ArtifactType.JSON: "application/json",

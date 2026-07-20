@@ -136,7 +136,7 @@ def generate_transformation_evidence(
     service: TransformationEvidenceApplicationService = Depends(get_transformation_evidence_service),
 ):
     try:
-        return service.generate(run_id, stage_id, request.model_copy(update={"actor": actor}))
+        return service.generate(run_id, stage_id, request, actor=actor)
     except G03ApplicationError as error:
         raise HTTPException(
             status_code=error.status_code,
@@ -154,7 +154,13 @@ def get_transformation_evidence(
     actor: str = Depends(authenticated_actor),
     service: TransformationEvidenceApplicationService = Depends(get_transformation_evidence_service),
 ):
-    result = service.get(run_id, stage_id)
+    try:
+        result = service.get(run_id, stage_id, actor=actor)
+    except G03ApplicationError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"error_code": error.code, "message": error.message},
+        ) from error
     if result is None:
         raise HTTPException(status_code=404, detail="Transformation evidence not found")
     return result
