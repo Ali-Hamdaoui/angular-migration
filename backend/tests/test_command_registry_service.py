@@ -26,7 +26,7 @@ from app.domain.command import (
 )
 from app.domain.contracts import CommandPolicyValidateRequestDto
 from app.repositories.models.base import Base
-from app.repositories.models.workflow import CommandTemplateModel, CommandAuthorizationAuditModel, MigrationRunModel
+from app.repositories.models.workflow import CommandTemplateModel, CommandAuthorizationAuditModel, MigrationRunModel, WorkflowEventModel, ArtifactMetadataModel
 from app.repositories.planning_models import MigrationPlanModel, StageExecutionPlanModel
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
@@ -354,6 +354,66 @@ class TestCommandPolicyEngineService:
         )
         result = policy_engine.validate(db_session, request)
         assert result.decision == "rejected"
+
+    def test_matching_authoritative_state_version_is_persisted(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path, expected_state_version=1, correlation_id="corr-1")
+        result = strict_policy_engine.validate(db_session, request)
+        audit = db_session.get(CommandAuthorizationAuditModel, result.authorization_id)
+        assert audit is not None
+        assert audit.state_version == 1
+        assert audit.expected_state_version == 1
+        assert result.authoritative_state_version == 1
+        assert result.correlation_id == "corr-1"
+
+    def test_stale_state_version_has_no_side_effects(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path, expected_state_version=2)
+        with pytest.raises(Exception) as exc_info:
+            strict_policy_engine.validate(db_session, request)
+        assert getattr(exc_info.value, "code", None) == "STALE_STATE_VERSION"
+        assert db_session.query(CommandAuthorizationAuditModel).count() == 0
+        assert db_session.query(WorkflowEventModel).count() == 0
+        assert list((tmp_path / "artifacts").rglob("*")) == []
+
+    def test_same_payload_replays_without_duplicate_records_events_or_artifacts(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path, correlation_id="corr-replay")
+        first = strict_policy_engine.validate(db_session, request)
+        second = strict_policy_engine.validate(db_session, request)
+        assert second.authorization_id == first.authorization_id
+        assert second.idempotent_replay is True
+        assert second.artifact_id == first.artifact_id
+        assert db_session.query(CommandAuthorizationAuditModel).count() == 1
+        assert db_session.query(WorkflowEventModel).count() == 1
+        assert db_session.query(ArtifactMetadataModel).count() == 1
+
+    def test_same_key_different_payload_is_rejected_without_overwrite(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path)
+        strict_policy_engine.validate(db_session, request)
+        conflicting = request.model_copy(update={"network_profile": "approved-registries-only"})
+        with pytest.raises(Exception) as exc_info:
+            strict_policy_engine.validate(db_session, conflicting)
+        assert getattr(exc_info.value, "code", None) == "IDEMPOTENCY_KEY_REUSED"
+        assert db_session.query(CommandAuthorizationAuditModel).count() == 1
+        assert db_session.query(WorkflowEventModel).count() == 1
+
+    def test_decision_artifact_is_checksum_bound_retrievable_and_sanitized(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path, working_directory=str(tmp_path / "secret"), correlation_id="corr-artifact")
+        result = strict_policy_engine.validate(db_session, request)
+        assert result.artifact_id
+        run = db_session.get(MigrationRunModel, request.run_id)
+        from app.artifact_store import LocalFilesystemArtifactStore
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+        artifact = store.read_artifact_by_id(result.artifact_id)
+        import hashlib
+        assert artifact.ref.checksum == "sha256:" + hashlib.sha256(artifact.content.encode()).hexdigest()
+        assert str(tmp_path / "secret") not in artifact.content
+        assert artifact.ref.artifact_id == result.artifact_id
+
+    def test_rejected_decision_also_creates_evidence(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path, network_profile="full")
+        result = strict_policy_engine.validate(db_session, request)
+        assert result.decision == "rejected"
+        assert result.artifact_id
+        assert db_session.query(WorkflowEventModel).one().event_type == "COMMAND_AUTHORIZATION_REJECTED"
 
     def test_windows_npm_alias_requires_approved_plan(
         self, policy_engine: CommandPolicyEngineService, db_session: Session, seeded_registry

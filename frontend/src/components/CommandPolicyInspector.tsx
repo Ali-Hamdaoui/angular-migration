@@ -16,12 +16,14 @@ import styles from "./ControlTowerShell.module.css";
 interface CommandPolicyInspectorProps {
   runId: string | null;
   stageId?: string | null;
+  stateVersion?: number;
   connectionStatus?: string;
 }
 
 export function CommandPolicyInspector({
   runId,
   stageId,
+  stateVersion = 1,
   connectionStatus,
 }: CommandPolicyInspectorProps) {
   const [templates, setTemplates] = useState<CommandTemplateListDto | null>(null);
@@ -60,11 +62,13 @@ export function CommandPolicyInspector({
     try {
       const request: CommandPolicyValidateRequestDto = {
         run_id: runId,
+        expected_state_version: stateVersion,
         stage_id: stageId ?? null,
         command_id: template.command_id,
         executable: template.executable,
         arguments: template.arguments,
         working_directory_alias: "BASELINE_SANDBOX",
+        working_directory: null,
         execution_profile_id: "source-runtime-profile",
         network_profile: "none",
         cancellation_policy: "terminate_process_tree",

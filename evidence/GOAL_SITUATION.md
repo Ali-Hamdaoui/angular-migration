@@ -67,9 +67,9 @@ Closeout tasks (from `evidence/task-results/`):
 |---|---|---|---|---|
 | S3-F01 register + COMMAND_AUTHORIZATION_* | Authz persisted + events + UI | `command_registry_service.py:291` emits; `commands.py:70` validates | Verified (backend) | Frontend only inspector, not full run |
 | S3-F01 invalid input | Stable error | policy engine rejects (18 reject tests) | Verified | — |
-| S3-F01 stale state (STALE_STATE_VERSION) | Reject old state version | authz audit hardcodes `state_version=1` (`command_registry_service.py:285`) | PARTIAL | audit does not read real run state_version |
+| S3-F01 stale state (STALE_STATE_VERSION) | Reject old state version | `CommandPolicyEngineService.validate` loads `MigrationRunModel.state_version` before policy side effects | VERIFIED (backend tests) | HTTP/manual runtime validation remains pending |
 | S3-F01 persistence (versioned template + authz audit) | Records with version/lineage | `CommandTemplateModel`, `CommandAuthorizationAuditModel` | Verified | — |
-| S3-F01 evidence (sanitized decision artifact) | SHA-256 registered | audit persisted; no immutable artifact-store SHA for decision | PARTIAL | decision not finalized as checksum artifact |
+| S3-F01 evidence (sanitized decision artifact) | SHA-256 registered | authorization manifest is finalized through `LocalFilesystemArtifactStore`, registered in `artifact_metadata`, and referenced by audit/event | VERIFIED (backend tests) | HTTP/manual runtime validation remains pending |
 | S3-F01 frontend states | Distinct UI states | CommandPolicyInspector renders | PARTIAL | only S3-F01 surface |
 | S3-F01 backend failure | correlation id, legal state | error codes returned | PARTIAL | no correlation-id propagation to UI |
 | S3-F01 execution authority (shell=false, reject pre-process) | Reject bypass | policy `_check_shell_enforcement` structural; `WorkerSupervisor` hard `shell=False` | PARTIAL | DTO `shell` not explicitly validated |
@@ -156,14 +156,14 @@ Closeout tasks (from `evidence/task-results/`):
 | Table/model | Migration | Purpose | Jira task | Status |
 |---|---|---|---|---|
 | `command_templates` | `20260719_07_command_templates_and_authorization.py` (rev 07, down 06) | Registry | AMFA-155 | Present |
-| `command_authorization_audits` | same (07) | Authz audit | AMFA-155 | Present |
+| `command_authorization_audits` | `20260720_10_authorization_integrity.py` (rev 10, down 09) | Authz audit, authoritative version, payload hash, lineage, and artifact references | AMFA-155 / AMFA-140 Task 2 | Present |
 | `command_log_chunks` | `20260719_08_command_log_chunks.py` (rev 08, down 07) | Log chunks | AMFA-163 | Present |
 | `command_executions.authorization_id` | `20260719_09_add_authorization_id.py` (rev 09, down 08) | link exec→authz | AMFA-159 | Present (head) |
 | `command_executions`, `worker_leases` | Sprint 0 (`initial_workflow_state`, `execution_supervision`) | exec + leases | AMFA-166/167 | Present |
 
 - Alembic chain linear `…06 → 07 → 08 → 09`; **current head = `20260719_09`**. No conflicts/divergent heads.
 - Indexes: `uq_command_templates_command_id`, `uq_cmd_auth_audit_run_idempotency`, `ix_cmd_log_chunks_exec_seq`, `uq_command_executions_run_idempotency`, `ix_worker_leases_run_owner`. Idempotency persistence present.
-- `state_version` incremented on transitions; authz audit still hardcodes `state_version=1`.
+- Authorization audit now persists the authoritative run version, expected version, canonical request hash, correlation ID, binding identifiers, and artifact reference.
 - `runtime_checksum` (sha256) computed — satisfies `command_execution_record.schema.json`.
 - Note: C93.json falsely states "Alembic current at 20260719_08" — head is actually 09.
 
@@ -171,7 +171,7 @@ Closeout tasks (from `evidence/task-results/`):
 
 | Test file | Scope | Collected tests | Passing | Failing | Jira coverage |
 |---|---|---|---|---|---|
-| `backend/tests/test_command_registry_service.py` | registry + policy engine | 35 | 35 (focused run) | 0 | AMFA-154/155/157 |
+| `backend/tests/test_command_registry_service.py` | registry + policy engine, stale state, idempotency, artifact evidence | 41 | 41 (focused run) | 0 | AMFA-140 Task 2 / AMFA-154/155/157 |
 | `backend/tests/test_command_executor_services.py` | log/lease/cancel/queue/idempotency/events | 26 | 26 (ran by reviewer) | 0 | AMFA-158/161/162/165/166/169 |
 | `backend/tests/test_command_execution.py` | Sprint-0 WorkerSupervisor | 14 | N/E | N/E | upstream reuse |
 
@@ -228,7 +228,7 @@ Manual runtime validation was **never executed** against a live backend/frontend
 | K3 | CRITICAL | `acquire_lease` never called; worker leases never created; `get_active_lease` always None | AMFA-166 | G01 | Wire lease acquisition into execution flow |
 | K4 | MAJOR | No STALE_STATE_VERSION gate on execute/cancel requests | S3-F02/F04 | G01 | Add expected_state_version handling |
 | K5 | MAJOR | Executor does not persist stdout/stderr as immutable artifacts | S3-F02/F04 | G01 | Wire `CommandLogWriter` into executor |
-| K6 | MAJOR | Authz audit `state_version` hardcoded 1; execute has no authoritative state_version input | S3-F01/F02 | G01 | Read real run state_version |
+| K6 | RESOLVED_FOR_S3-F01 | Authorization audit now reads and persists the authoritative run state version; command execution remains separately out of scope | S3-F01 | AMFA-140 Task 2 | Covered by focused authorization tests |
 | K7 | MAJOR | Frontend execute/log/cancel surfaces (AMFA-160/164/168) absent/unwired | AMFA-141/142/143 | G01 | Implement projections or mark incomplete |
 | K8 | MAJOR | Manual runtime validation never executed (C91 PENDING) | all acceptance | G01 | Execute MANUAL_TEST_PLAN vs live stack |
 | K9 | MINOR | Evidence stale vs HEAD `7c8264e`; false `IMPORTANT.md` claim; C93 wrong Alembic head | evidence | G01 | Regenerate evidence at current HEAD |

@@ -12,8 +12,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 from typing import Any
 from pathlib import Path
+import hashlib
+import json
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.command import (
@@ -50,6 +53,7 @@ class CommandPolicyError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details: dict[str, Any] = {}
 
 
 @dataclass(frozen=True)
@@ -195,6 +199,36 @@ class CommandPolicyEngineService:
         request: CommandPolicyValidateRequestDto,
     ) -> CommandPolicyValidateResponseDto:
         """Run all policy checks and return an authorization decision."""
+        from app.repositories.models.workflow import CommandAuthorizationAuditModel, MigrationRunModel
+
+        correlation_id = request.correlation_id or uuid4().hex
+        run = session.get(MigrationRunModel, request.run_id)
+        if run is not None and run.state_version != request.expected_state_version:
+            error = CommandPolicyError(
+                "STALE_STATE_VERSION",
+                "The run snapshot is stale; refresh the authoritative run snapshot and retry.",
+            )
+            error.details = {
+                "run_id": request.run_id,
+                "requested_state_version": request.expected_state_version,
+                "current_state_version": run.state_version,
+                "correlation_id": correlation_id,
+                "guidance": "Refresh the run snapshot before retrying.",
+            }
+            raise error
+
+        payload_hash = self._request_payload_hash(request)
+        existing = session.scalar(select(CommandAuthorizationAuditModel).where(
+            CommandAuthorizationAuditModel.run_id == request.run_id,
+            CommandAuthorizationAuditModel.idempotency_key == request.idempotency_key,
+        ))
+        if existing is not None:
+            if existing.request_payload_hash != payload_hash:
+                error = CommandPolicyError("IDEMPOTENCY_KEY_REUSED", "The idempotency key is already bound to a different request payload.")
+                error.details = {"run_id": request.run_id, "idempotency_key": request.idempotency_key, "correlation_id": correlation_id}
+                raise error
+            return self._response_from_audit(existing, replay=True)
+
         authorization_id = f"authz-{uuid4().hex[:12]}"
         checks: list[AuthorizationCheckResult] = []
         reasons: list[str] = []
@@ -240,7 +274,7 @@ class CommandPolicyEngineService:
                     rule_name="executable_matches_template",
                     reason=f"executable '{request.executable}' not in allowed set: {allowed}",
                 ))
-                reasons.append(f"executable mismatch")
+                reasons.append("executable mismatch")
             else:
                 checks.append(AuthorizationCheckResult(passed=True, rule_name="executable_matches_template"))
 
@@ -293,6 +327,11 @@ class CommandPolicyEngineService:
             decision=decision.value,
             reasons=reasons,
             policy_version=self.policy_version,
+            expected_state_version=request.expected_state_version,
+            authoritative_state_version=run.state_version if run is not None else request.expected_state_version,
+            artifact_id=None,
+            correlation_id=correlation_id,
+            request_payload_hash=payload_hash,
         )
 
         # Persist authorization audit record
@@ -309,12 +348,69 @@ class CommandPolicyEngineService:
             reasons=reasons,
             policy_version=self.policy_version,
             idempotency_key=request.idempotency_key,
+            request_payload_hash=payload_hash,
+            expected_state_version=request.expected_state_version,
+            template_id=request.template_id,
+            template_version=request.template_version,
+            plan_id=request.plan_id,
+            plan_version=request.plan_version,
+            execution_profile_id=request.execution_profile_id,
+            workspace_alias=request.working_directory_alias or request.cwd_alias,
+            network_profile=request.network_profile,
+            correlation_id=correlation_id,
             actor=request.requested_by,
             artifact_ids=[],
-            state_version=1,
+            state_version=run.state_version if run is not None else request.expected_state_version,
             created_at=now,
         )
         session.add(audit)
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            existing = session.scalar(select(CommandAuthorizationAuditModel).where(
+                CommandAuthorizationAuditModel.run_id == request.run_id,
+                CommandAuthorizationAuditModel.idempotency_key == request.idempotency_key,
+            ))
+            if existing is None:
+                raise
+            if existing.request_payload_hash != payload_hash:
+                raise CommandPolicyError("IDEMPOTENCY_KEY_REUSED", "The idempotency key is already bound to a different request payload.")
+            return self._response_from_audit(existing, replay=True)
+
+        # Finalize sanitized evidence before the decision can be returned.
+        if run is not None and run.artifact_root:
+            from app.artifact_store import LocalFilesystemArtifactStore
+            from app.domain.contracts import ArtifactType
+            from app.repositories.models import ArtifactMetadataModel
+            evidence = {
+                "evidence_schema_version": 1,
+                "authorization_decision_id": authorization_id,
+                "run_id": request.run_id,
+                "stage_id": request.stage_id,
+                "plan_id": request.plan_id,
+                "plan_version": request.plan_version,
+                "command_template_id": request.template_id,
+                "command_template_version": request.template_version,
+                "command_id": request.command_id,
+                "sanitized_arguments": list(request.arguments),
+                "execution_profile_id": request.execution_profile_id,
+                "workspace_alias": request.working_directory_alias or request.cwd_alias,
+                "network_profile": request.network_profile,
+                "expected_state_version": request.expected_state_version,
+                "authoritative_state_version": audit.state_version,
+                "result": decision.value,
+                "error_codes": [reason.split(":", 1)[0] for reason in reasons],
+                "safe_reasons": reasons,
+                "correlation_id": correlation_id,
+                "idempotency_key": request.idempotency_key,
+                "request_payload_hash": payload_hash,
+                "decision_timestamp": now.isoformat(),
+            }
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+            stored = store.write_text_artifact(run.id, f"04_workflow_state/authorization/{authorization_id}.json", json.dumps(evidence, sort_keys=True), ArtifactType.JSON, stage_id=request.stage_id, created_by="command-policy-engine", created_at=now, input_hashes={"request": payload_hash}, policy_version=self.policy_version)
+            session.add(ArtifactMetadataModel(id=f"metadata-{stored.ref.artifact_id}", run_id=run.id, stage_id=request.stage_id, artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, created_at=now))
+            audit.artifact_ids = [stored.ref.artifact_id]
 
         # Emit authorization event
         from app.repositories.models.workflow import WorkflowEventModel
@@ -341,16 +437,47 @@ class CommandPolicyEngineService:
             payload={
                 "authorization_id": authorization_id,
                 "command_id": request.command_id,
+                "stage_id": request.stage_id,
+                "plan_id": request.plan_id,
+                "plan_version": request.plan_version,
+                "template_id": request.template_id,
+                "template_version": request.template_version,
+                "execution_profile_id": request.execution_profile_id,
+                "workspace_alias": request.working_directory_alias or request.cwd_alias,
+                "network_profile": request.network_profile,
                 "decision": decision.value,
                 "reasons": reasons,
                 "policy_version": self.policy_version,
+                "state_version": audit.state_version,
+                "correlation_id": correlation_id,
+                "request_payload_hash": payload_hash,
+                "artifact_ids": list(audit.artifact_ids),
+                "artifact_checksums": ({audit.artifact_ids[0]: session.get(ArtifactMetadataModel, f"metadata-{audit.artifact_ids[0]}").checksum} if audit.artifact_ids else {}),
             },
             occurred_at=now,
         )
         session.add(event)
         session.flush()
 
-        return response
+        return self._response_from_audit(audit, replay=False)
+
+    @staticmethod
+    def _request_payload_hash(request: CommandPolicyValidateRequestDto) -> str:
+        payload = request.model_dump(mode="json", exclude={"correlation_id"})
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _response_from_audit(audit, *, replay: bool) -> CommandPolicyValidateResponseDto:
+        return CommandPolicyValidateResponseDto(
+            authorization_id=audit.id, run_id=audit.run_id, stage_id=audit.stage_id,
+            plan_id=audit.plan_id, command_id=audit.command_id, executable=audit.executable,
+            arguments=list(audit.arguments or []), execution_profile_id=audit.execution_profile_id or "source-runtime-profile",
+            decision=audit.decision, reasons=list(audit.reasons or []), policy_version=audit.policy_version,
+            idempotent_replay=replay, expected_state_version=audit.expected_state_version,
+            authoritative_state_version=audit.state_version, artifact_id=(audit.artifact_ids or [None])[0],
+            correlation_id=audit.correlation_id, request_payload_hash=audit.request_payload_hash,
+        )
 
     def _check_shell_enforcement(self, request: CommandPolicyValidateRequestDto) -> AuthorizationCheckResult:
         """Reject any request attempting shell execution."""

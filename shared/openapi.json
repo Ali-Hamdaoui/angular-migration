@@ -1994,6 +1994,30 @@
         "title": "BaselineWorkspaceRequest",
         "type": "object"
       },
+      "CancelCommandRequestDto": {
+        "additionalProperties": false,
+        "description": "Request body for POST /api/v1/runs/{run_id}/commands/{execution_id}/cancel.",
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "CancelCommandRequestDto",
+        "type": "object"
+      },
       "CancellationPolicy": {
         "enum": [
           "terminate_process_tree",
@@ -2001,6 +2025,448 @@
         ],
         "title": "CancellationPolicy",
         "type": "string"
+      },
+      "CommandExecuteRequestDto": {
+        "additionalProperties": false,
+        "description": "Request body for POST /api/v1/runs/{run_id}/commands.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Arguments",
+            "type": "array"
+          },
+          "cancellation_policy": {
+            "default": "terminate_process_tree",
+            "title": "Cancellation Policy",
+            "type": "string"
+          },
+          "command_id": {
+            "minLength": 1,
+            "title": "Command Id",
+            "type": "string"
+          },
+          "executable": {
+            "minLength": 1,
+            "title": "Executable",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "network_profile": {
+            "default": "none",
+            "title": "Network Profile",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "requester": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requester"
+          },
+          "runtime_profile_id": {
+            "default": "source-runtime-profile",
+            "title": "Runtime Profile Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "timeout_seconds": {
+            "default": 300,
+            "exclusiveMinimum": 0.0,
+            "maximum": 3600.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "working_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Directory"
+          },
+          "working_directory_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Directory Alias"
+          }
+        },
+        "required": [
+          "command_id",
+          "executable",
+          "idempotency_key"
+        ],
+        "title": "CommandExecuteRequestDto",
+        "type": "object"
+      },
+      "CommandPolicyValidateRequestDto": {
+        "additionalProperties": false,
+        "description": "Request body for POST /api/v1/operator/command-policy/validate.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Arguments",
+            "type": "array"
+          },
+          "cancellation_policy": {
+            "default": "terminate_process_tree",
+            "title": "Cancellation Policy",
+            "type": "string"
+          },
+          "command_id": {
+            "minLength": 1,
+            "title": "Command Id",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "cwd_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cwd Alias"
+          },
+          "executable": {
+            "minLength": 1,
+            "title": "Executable",
+            "type": "string"
+          },
+          "execution_profile_id": {
+            "default": "source-runtime-profile",
+            "title": "Execution Profile Id",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "network_profile": {
+            "default": "none",
+            "title": "Network Profile",
+            "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "plan_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Version"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "run_id": {
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "shell": {
+            "default": false,
+            "title": "Shell",
+            "type": "boolean"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "template_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Version"
+          },
+          "timeout_seconds": {
+            "default": 300,
+            "exclusiveMinimum": 0.0,
+            "maximum": 3600.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "working_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Directory"
+          },
+          "working_directory_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Directory Alias"
+          }
+        },
+        "required": [
+          "run_id",
+          "command_id",
+          "executable",
+          "idempotency_key"
+        ],
+        "title": "CommandPolicyValidateRequestDto",
+        "type": "object"
+      },
+      "CommandPolicyValidateResponseDto": {
+        "additionalProperties": false,
+        "description": "Response body for POST /api/v1/operator/command-policy/validate.",
+        "properties": {
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Arguments",
+            "type": "array"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "authoritative_state_version": {
+            "default": 1,
+            "title": "Authoritative State Version",
+            "type": "integer"
+          },
+          "authorization_id": {
+            "title": "Authorization Id",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "cwd_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cwd Alias"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "executable": {
+            "title": "Executable",
+            "type": "string"
+          },
+          "execution_profile_id": {
+            "default": "source-runtime-profile",
+            "title": "Execution Profile Id",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "default": 1,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "policy_version": {
+            "default": "s3-f01-v1",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "request_payload_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Payload Hash"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "authorization_id",
+          "run_id",
+          "command_id",
+          "executable",
+          "decision"
+        ],
+        "title": "CommandPolicyValidateResponseDto",
+        "type": "object"
       },
       "CommandRequestDto": {
         "additionalProperties": false,
@@ -2227,16 +2693,135 @@
       },
       "CommandStatus": {
         "enum": [
-          "PENDING",
-          "RUNNING",
-          "SUCCEEDED",
-          "FAILED",
-          "REJECTED",
-          "TIMED_OUT",
-          "CANCELLED"
+          "queued",
+          "pending",
+          "running",
+          "succeeded",
+          "failed",
+          "rejected",
+          "timed_out",
+          "cancelled",
+          "interrupted"
         ],
         "title": "CommandStatus",
         "type": "string"
+      },
+      "CommandTemplateDto": {
+        "additionalProperties": false,
+        "description": "One registered command template in the structured registry.",
+        "properties": {
+          "allowed_env_vars": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Env Vars",
+            "type": "array"
+          },
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Arguments",
+            "type": "array"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "executable": {
+            "title": "Executable",
+            "type": "string"
+          },
+          "executable_aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Executable Aliases",
+            "type": "array"
+          },
+          "max_output_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 1000000,
+            "title": "Max Output Bytes"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "command_id",
+          "executable"
+        ],
+        "title": "CommandTemplateDto",
+        "type": "object"
+      },
+      "CommandTemplateListDto": {
+        "additionalProperties": false,
+        "description": "Response wrapper for GET /api/v1/operator/command-templates.",
+        "properties": {
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/CommandTemplateDto"
+            },
+            "title": "Templates",
+            "type": "array"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "CommandTemplateListDto",
+        "type": "object"
       },
       "CompatibilityArtifact": {
         "additionalProperties": false,
@@ -4235,6 +4820,188 @@
         "title": "G05DecisionResponse",
         "type": "object"
       },
+      "G06Decision": {
+        "enum": [
+          "approve",
+          "approve_with_comment",
+          "request_modification",
+          "reject"
+        ],
+        "title": "G06Decision",
+        "type": "string"
+      },
+      "G06DecisionApiRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_set_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/G06Decision"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "gate_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "package_checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Checksum"
+          },
+          "plan_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Plan Checksum",
+            "type": "string"
+          },
+          "stage_plan_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Stage Plan Checksum",
+            "type": "string"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "gate_version",
+          "artifact_set_checksum",
+          "plan_checksum",
+          "stage_plan_checksum",
+          "decision"
+        ],
+        "title": "G06DecisionApiRequest",
+        "type": "object"
+      },
+      "G06DecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "artifact_set_checksum": {
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/G06Decision"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "gate_id": {
+            "default": "G06",
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_version": {
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "package_checksum": {
+            "title": "Package Checksum",
+            "type": "string"
+          },
+          "plan_checksum": {
+            "title": "Plan Checksum",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_plan_checksum": {
+            "title": "Stage Plan Checksum",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "gate_version",
+          "decision",
+          "status",
+          "accepted",
+          "package_checksum",
+          "artifact_set_checksum",
+          "plan_checksum",
+          "stage_plan_checksum",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "G06DecisionResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -5637,6 +6404,662 @@
         ],
         "title": "PhaseStatus",
         "type": "string"
+      },
+      "PlanArtifactInput": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Checksum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "checksum"
+        ],
+        "title": "PlanArtifactInput",
+        "type": "object"
+      },
+      "PlanCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "builder": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Builder",
+            "type": "string"
+          },
+          "catalogue_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Catalogue Version",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "execution_profile_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Execution Profile Id",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Input Fingerprint",
+            "type": "string"
+          },
+          "prerequisite_artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PlanArtifactInput"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Prerequisite Artifacts",
+            "type": "array"
+          },
+          "recovery_policy_id": {
+            "default": "safe-boundary-v1",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Recovery Policy Id",
+            "type": "string"
+          },
+          "repair_policy_id": {
+            "default": "proposer-reviewer-human-v1",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Repair Policy Id",
+            "type": "string"
+          },
+          "source_exact": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Exact",
+            "type": "string"
+          },
+          "source_family": {
+            "pattern": "^angular-(18|19|20)\\.x$",
+            "title": "Source Family",
+            "type": "string"
+          },
+          "stage_route": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Stage Route",
+            "type": "array"
+          },
+          "target_cli_exact": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Cli Exact"
+          },
+          "target_family": {
+            "default": "angular-21.x",
+            "pattern": "^angular-(19|20|21)\\.x$",
+            "title": "Target Family",
+            "type": "string"
+          },
+          "validation_policy_id": {
+            "default": "angular-stage-standard-v2",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Validation Policy Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "source_exact",
+          "source_family",
+          "catalogue_version",
+          "input_fingerprint",
+          "execution_profile_id",
+          "stage_route",
+          "builder",
+          "prerequisite_artifacts"
+        ],
+        "title": "PlanCreateRequest",
+        "type": "object"
+      },
+      "PlanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "artifact_links": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Links",
+            "type": "object"
+          },
+          "builder_decision": {
+            "additionalProperties": true,
+            "title": "Builder Decision",
+            "type": "object"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "plan_checksum": {
+            "title": "Plan Checksum",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_plan": {
+            "additionalProperties": true,
+            "title": "Stage Plan",
+            "type": "object"
+          },
+          "stage_plan_checksum": {
+            "title": "Stage Plan Checksum",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "plan",
+          "stage_plan",
+          "plan_checksum",
+          "stage_plan_checksum",
+          "builder_decision",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "PlanResponse",
+        "type": "object"
+      },
+      "PlanReviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Checksums",
+            "type": "object"
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifact Ids",
+            "type": "array"
+          },
+          "artifact_links": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Artifact Links",
+            "type": "object"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "gate_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Decision"
+          },
+          "gate_id": {
+            "default": "G06",
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "gate_status": {
+            "default": "blocked",
+            "title": "Gate Status",
+            "type": "string"
+          },
+          "gate_version": {
+            "default": "g06-v1",
+            "title": "Gate Version",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "package": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package"
+          },
+          "package_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Checksum"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
+          },
+          "plan_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Checksum"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Plan"
+          },
+          "stage_plan_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Plan Checksum"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "PlanReviewResponse",
+        "type": "object"
+      },
+      "PlanRevisionApiRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_set_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/PlanRevisionChanges"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "prerequisite_artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PlanArtifactInput"
+            },
+            "maxItems": 32,
+            "title": "Prerequisite Artifacts",
+            "type": "array"
+          },
+          "stage_plan": {
+            "additionalProperties": true,
+            "title": "Stage Plan",
+            "type": "object"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "plan",
+          "stage_plan",
+          "changes",
+          "artifact_set_checksum"
+        ],
+        "title": "PlanRevisionApiRequest",
+        "type": "object"
+      },
+      "PlanRevisionChanges": {
+        "additionalProperties": false,
+        "description": "The only plan fields a reviewer may request to be rebuilt.",
+        "properties": {
+          "builder": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Builder"
+          },
+          "catalogue_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogue Version"
+          },
+          "execution_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Profile Id"
+          },
+          "recovery_policy_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Policy Id"
+          },
+          "repair_policy_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Policy Id"
+          },
+          "target_cli_exact": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Cli Exact"
+          },
+          "validation_policy_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Policy Id"
+          }
+        },
+        "title": "PlanRevisionChanges",
+        "type": "object"
+      },
+      "PlanningExplanationApiRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_set_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "plan_version": {
+            "minimum": 1.0,
+            "title": "Plan Version",
+            "type": "integer"
+          },
+          "prerequisite_artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PlanArtifactInput"
+            },
+            "maxItems": 32,
+            "title": "Prerequisite Artifacts",
+            "type": "array"
+          },
+          "stage_plan": {
+            "additionalProperties": true,
+            "title": "Stage Plan",
+            "type": "object"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "plan",
+          "stage_plan",
+          "artifact_set_checksum",
+          "plan_version"
+        ],
+        "title": "PlanningExplanationApiRequest",
+        "type": "object"
       },
       "PreflightRequest": {
         "properties": {
@@ -8065,6 +9488,113 @@
         ]
       }
     },
+    "/api/v1/operator/command-policy/validate": {
+      "post": {
+        "description": "Validate a command against the structured registry and policy engine.\n\nThis endpoint does NOT execute the command. It only checks whether the\ncommand would be authorized. Use POST /api/v1/runs/{id}/commands to\nactually queue execution.\n\nAudit record and workflow event are persisted by the policy engine's\nvalidate() method.",
+        "operationId": "validate_command_policy_api_v1_operator_command_policy_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandPolicyValidateRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandPolicyValidateResponseDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Command Policy",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/command-templates": {
+      "get": {
+        "description": "List all registered command templates.",
+        "operationId": "list_command_templates_api_v1_operator_command_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandTemplateListDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Command Templates",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/operator/command-templates/{template_id}": {
+      "get": {
+        "description": "Get a single command template by ID.",
+        "operationId": "get_command_template_api_v1_operator_command_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandTemplateDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Command Template",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/v1/preflights": {
       "post": {
         "operationId": "create_preflight_api_v1_preflights_post",
@@ -8339,6 +9869,88 @@
         "summary": "Decide G01 Draft",
         "tags": [
           "preflights"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/active-command": {
+      "get": {
+        "description": "Get the currently active command for a run.",
+        "operationId": "get_active_command_api_v1_runs__run_id__active_command_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Active Command",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/active-lease": {
+      "get": {
+        "description": "Get the active worker lease for a run.",
+        "operationId": "get_active_lease_api_v1_runs__run_id__active_lease_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Active Lease",
+        "tags": [
+          "run-commands"
         ]
       }
     },
@@ -8651,6 +10263,74 @@
         "summary": "Decide G05",
         "tags": [
           "feasibility"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/approvals/G06/decisions": {
+      "post": {
+        "operationId": "decide_g06_api_v1_runs__run_id__approvals_G06_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G06DecisionApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G06DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G06",
+        "tags": [
+          "planning-review"
         ]
       }
     },
@@ -9701,9 +11381,100 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/commands": {
+      "get": {
+        "description": "List all command executions for a run.",
+        "operationId": "list_command_executions_api_v1_runs__run_id__commands_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Command Executions",
+        "tags": [
+          "run-commands"
+        ]
+      },
+      "post": {
+        "description": "Queue and execute one approved command for a migration run.\n\nThe command must be registered in the structured command registry and\npass all policy checks. This endpoint blocks until the command completes.",
+        "operationId": "queue_command_api_v1_runs__run_id__commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandExecuteRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Command",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/commands/{execution_id}": {
       "get": {
-        "operationId": "get_baseline_command_api_v1_runs__run_id__commands__execution_id__get",
+        "description": "Get the details of a specific command execution.",
+        "operationId": "get_command_execution_api_v1_runs__run_id__commands__execution_id__get",
         "parameters": [
           {
             "in": "path",
@@ -9728,9 +11499,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BaselineInstallResponse"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -9746,15 +11515,16 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Baseline Command",
+        "summary": "Get Command Execution",
         "tags": [
-          "baseline"
+          "run-commands"
         ]
       }
     },
     "/api/v1/runs/{run_id}/commands/{execution_id}/cancel": {
       "post": {
-        "operationId": "cancel_baseline_api_v1_runs__run_id__commands__execution_id__cancel_post",
+        "description": "Cancel a running command execution.",
+        "operationId": "cancel_command_api_v1_runs__run_id__commands__execution_id__cancel_post",
         "parameters": [
           {
             "in": "path",
@@ -9779,7 +11549,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BaselineInstallCancelRequest"
+                "$ref": "#/components/schemas/CancelCommandRequestDto"
               }
             }
           },
@@ -9789,9 +11559,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BaselineInstallResponse"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -9807,9 +11575,247 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Cancel Baseline",
+        "summary": "Cancel Command",
         "tags": [
-          "baseline"
+          "run-commands"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/commands/{execution_id}/logs": {
+      "get": {
+        "description": "Get log chunks for a command execution.",
+        "operationId": "get_command_logs_api_v1_runs__run_id__commands__execution_id__logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stream"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Command Logs",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream": {
+      "get": {
+        "description": "SSE endpoint that streams log chunks as they become available.\n\nAccepts ?cursor=<seq> to resume from a known sequence number and\n?stream=stdout|stderr to filter by stream.  The connection stays\nopen and emits new chunks as ``data:`` SSE lines.\n\nWhen no new data is available for 30 seconds the connection is\nclosed gracefully.",
+        "operationId": "stream_command_logs_api_v1_runs__run_id__commands__execution_id__logs_stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stream"
+            }
+          },
+          {
+            "in": "query",
+            "name": "poll_interval",
+            "required": false,
+            "schema": {
+              "default": 0.5,
+              "title": "Poll Interval",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Command Logs",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/commands/{execution_id}/logs/summary": {
+      "get": {
+        "description": "Get a summary of available log streams for a command.",
+        "operationId": "get_command_log_summary_api_v1_runs__run_id__commands__execution_id__logs_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Command Log Summary",
+        "tags": [
+          "run-commands"
         ]
       }
     },
@@ -10446,6 +12452,326 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/plan": {
+      "get": {
+        "operationId": "get_plan_api_v1_runs__run_id__plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Plan",
+        "tags": [
+          "plans"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/plan/explanation": {
+      "post": {
+        "operationId": "explain_api_v1_runs__run_id__plan_explanation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanningExplanationApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Explain",
+        "tags": [
+          "planning-review"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/plan/review": {
+      "get": {
+        "operationId": "get_review_api_v1_runs__run_id__plan_review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Review",
+        "tags": [
+          "planning-review"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/plan/revisions": {
+      "post": {
+        "operationId": "revise_api_v1_runs__run_id__plan_revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRevisionApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revise",
+        "tags": [
+          "planning-review"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/plans": {
+      "post": {
+        "operationId": "create_plan_api_v1_runs__run_id__plans_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Plan",
+        "tags": [
+          "plans"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/snapshots": {
       "post": {
         "operationId": "create_snapshot_api_v1_runs__run_id__snapshots_post",
@@ -10546,6 +12872,73 @@
         "summary": "Inspect Snapshot",
         "tags": [
           "snapshots"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/stages/{stage_id}/plan": {
+      "get": {
+        "operationId": "get_stage_plan_api_v1_runs__run_id__stages__stage_id__plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Stage Plan",
+        "tags": [
+          "plans"
         ]
       }
     },
@@ -11710,6 +14103,113 @@
         ]
       }
     },
+    "/operator/command-policy/validate": {
+      "post": {
+        "description": "Validate a command against the structured registry and policy engine.\n\nThis endpoint does NOT execute the command. It only checks whether the\ncommand would be authorized. Use POST /api/v1/runs/{id}/commands to\nactually queue execution.\n\nAudit record and workflow event are persisted by the policy engine's\nvalidate() method.",
+        "operationId": "validate_command_policy_operator_command_policy_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandPolicyValidateRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandPolicyValidateResponseDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Command Policy",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/operator/command-templates": {
+      "get": {
+        "description": "List all registered command templates.",
+        "operationId": "list_command_templates_operator_command_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandTemplateListDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Command Templates",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/operator/command-templates/{template_id}": {
+      "get": {
+        "description": "Get a single command template by ID.",
+        "operationId": "get_command_template_operator_command_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandTemplateDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Command Template",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/preflights": {
       "post": {
         "operationId": "create_preflight_preflights_post",
@@ -11984,6 +14484,88 @@
         "summary": "Decide G01 Draft",
         "tags": [
           "preflights"
+        ]
+      }
+    },
+    "/runs/{run_id}/active-command": {
+      "get": {
+        "description": "Get the currently active command for a run.",
+        "operationId": "get_active_command_runs__run_id__active_command_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Active Command",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
+    "/runs/{run_id}/active-lease": {
+      "get": {
+        "description": "Get the active worker lease for a run.",
+        "operationId": "get_active_lease_runs__run_id__active_lease_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Active Lease",
+        "tags": [
+          "run-commands"
         ]
       }
     },
@@ -12296,6 +14878,74 @@
         "summary": "Decide G05",
         "tags": [
           "feasibility"
+        ]
+      }
+    },
+    "/runs/{run_id}/approvals/G06/decisions": {
+      "post": {
+        "operationId": "decide_g06_runs__run_id__approvals_G06_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G06DecisionApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G06DecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G06",
+        "tags": [
+          "planning-review"
         ]
       }
     },
@@ -13346,9 +15996,100 @@
         ]
       }
     },
+    "/runs/{run_id}/commands": {
+      "get": {
+        "description": "List all command executions for a run.",
+        "operationId": "list_command_executions_runs__run_id__commands_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Command Executions",
+        "tags": [
+          "run-commands"
+        ]
+      },
+      "post": {
+        "description": "Queue and execute one approved command for a migration run.\n\nThe command must be registered in the structured command registry and\npass all policy checks. This endpoint blocks until the command completes.",
+        "operationId": "queue_command_runs__run_id__commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandExecuteRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Command",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
     "/runs/{run_id}/commands/{execution_id}": {
       "get": {
-        "operationId": "get_baseline_command_runs__run_id__commands__execution_id__get",
+        "description": "Get the details of a specific command execution.",
+        "operationId": "get_command_execution_runs__run_id__commands__execution_id__get",
         "parameters": [
           {
             "in": "path",
@@ -13373,9 +16114,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BaselineInstallResponse"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -13391,15 +16130,16 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Baseline Command",
+        "summary": "Get Command Execution",
         "tags": [
-          "baseline"
+          "run-commands"
         ]
       }
     },
     "/runs/{run_id}/commands/{execution_id}/cancel": {
       "post": {
-        "operationId": "cancel_baseline_runs__run_id__commands__execution_id__cancel_post",
+        "description": "Cancel a running command execution.",
+        "operationId": "cancel_command_runs__run_id__commands__execution_id__cancel_post",
         "parameters": [
           {
             "in": "path",
@@ -13424,7 +16164,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BaselineInstallCancelRequest"
+                "$ref": "#/components/schemas/CancelCommandRequestDto"
               }
             }
           },
@@ -13434,9 +16174,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BaselineInstallResponse"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -13452,9 +16190,247 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Cancel Baseline",
+        "summary": "Cancel Command",
         "tags": [
-          "baseline"
+          "run-commands"
+        ]
+      }
+    },
+    "/runs/{run_id}/commands/{execution_id}/logs": {
+      "get": {
+        "description": "Get log chunks for a command execution.",
+        "operationId": "get_command_logs_runs__run_id__commands__execution_id__logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stream"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Command Logs",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
+    "/runs/{run_id}/commands/{execution_id}/logs/stream": {
+      "get": {
+        "description": "SSE endpoint that streams log chunks as they become available.\n\nAccepts ?cursor=<seq> to resume from a known sequence number and\n?stream=stdout|stderr to filter by stream.  The connection stays\nopen and emits new chunks as ``data:`` SSE lines.\n\nWhen no new data is available for 30 seconds the connection is\nclosed gracefully.",
+        "operationId": "stream_command_logs_runs__run_id__commands__execution_id__logs_stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Cursor",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stream"
+            }
+          },
+          {
+            "in": "query",
+            "name": "poll_interval",
+            "required": false,
+            "schema": {
+              "default": 0.5,
+              "title": "Poll Interval",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Command Logs",
+        "tags": [
+          "run-commands"
+        ]
+      }
+    },
+    "/runs/{run_id}/commands/{execution_id}/logs/summary": {
+      "get": {
+        "description": "Get a summary of available log streams for a command.",
+        "operationId": "get_command_log_summary_runs__run_id__commands__execution_id__logs_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Command Log Summary",
+        "tags": [
+          "run-commands"
         ]
       }
     },
@@ -14091,6 +17067,326 @@
         ]
       }
     },
+    "/runs/{run_id}/plan": {
+      "get": {
+        "operationId": "get_plan_runs__run_id__plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Plan",
+        "tags": [
+          "plans"
+        ]
+      }
+    },
+    "/runs/{run_id}/plan/explanation": {
+      "post": {
+        "operationId": "explain_runs__run_id__plan_explanation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanningExplanationApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Explain",
+        "tags": [
+          "planning-review"
+        ]
+      }
+    },
+    "/runs/{run_id}/plan/review": {
+      "get": {
+        "operationId": "get_review_runs__run_id__plan_review_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Review",
+        "tags": [
+          "planning-review"
+        ]
+      }
+    },
+    "/runs/{run_id}/plan/revisions": {
+      "post": {
+        "operationId": "revise_runs__run_id__plan_revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRevisionApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revise",
+        "tags": [
+          "planning-review"
+        ]
+      }
+    },
+    "/runs/{run_id}/plans": {
+      "post": {
+        "operationId": "create_plan_runs__run_id__plans_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Plan",
+        "tags": [
+          "plans"
+        ]
+      }
+    },
     "/runs/{run_id}/snapshots": {
       "post": {
         "operationId": "create_snapshot_runs__run_id__snapshots_post",
@@ -14191,6 +17487,73 @@
         "summary": "Inspect Snapshot",
         "tags": [
           "snapshots"
+        ]
+      }
+    },
+    "/runs/{run_id}/stages/{stage_id}/plan": {
+      "get": {
+        "operationId": "get_stage_plan_runs__run_id__stages__stage_id__plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Stage Plan",
+        "tags": [
+          "plans"
         ]
       }
     },

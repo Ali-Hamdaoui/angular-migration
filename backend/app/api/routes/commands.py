@@ -83,5 +83,10 @@ def validate_command_policy(
     validate() method.
     """
     with session_scope() as session:
-        result = engine.validate(session, body)
-        return result
+        try:
+            return engine.validate(session, body)
+        except Exception as exc:
+            from app.services.command_registry_service import CommandPolicyError
+            if isinstance(exc, CommandPolicyError):
+                return error_response(request, status_code=409, error_code=exc.code, message=exc.message, details=exc.details)
+            raise

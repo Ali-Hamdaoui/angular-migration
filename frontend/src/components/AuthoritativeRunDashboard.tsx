@@ -66,7 +66,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <BaselinePreparationPanel runId={runId} initialState={state} />
       <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
       <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
-      <CommandPolicyInspector runId={runId} connectionStatus={status} />
+      <CommandPolicyInspector runId={runId} stateVersion={state.state_version} connectionStatus={status} />
       </div>
       <aside className={styles.secondaryColumn}>
       <div className={styles.twoColumns}>

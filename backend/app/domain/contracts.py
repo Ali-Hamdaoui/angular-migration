@@ -590,6 +590,7 @@ class CommandTemplateListDto(ContractModel):
 class CommandPolicyValidateRequestDto(ContractModel):
     """Request body for POST /api/v1/operator/command-policy/validate."""
     run_id: str = Field(min_length=1)
+    expected_state_version: int = Field(default=1, ge=1)
     stage_id: str | None = None
     command_id: str = Field(min_length=1)
     template_id: str | None = None
@@ -607,6 +608,7 @@ class CommandPolicyValidateRequestDto(ContractModel):
     timeout_seconds: int = Field(default=300, gt=0, le=3600)
     idempotency_key: str = Field(min_length=1, max_length=128)
     requested_by: str | None = None
+    correlation_id: str | None = Field(default=None, min_length=1, max_length=128)
     shell: bool = False
 
 
@@ -625,6 +627,11 @@ class CommandPolicyValidateResponseDto(ContractModel):
     reasons: list[str] = Field(default_factory=list)
     policy_version: str = "s3-f01-v1"
     idempotent_replay: bool = False
+    expected_state_version: int = 1
+    authoritative_state_version: int = 1
+    artifact_id: str | None = None
+    correlation_id: str | None = None
+    request_payload_hash: str | None = None
 
 
 class CommandExecuteRequestDto(ContractModel):
