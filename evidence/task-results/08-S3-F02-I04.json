@@ -4,12 +4,26 @@
   "description": "Verify and document Execute one approved command",
   "files_created": [],
   "files_modified": [
-    "frontend/src/api/__tests__/commands.execution.test.ts",
-    "frontend/src/components/__tests__/CommandExecutionPanel.test.tsx"
+    "frontend/src/components/LogViewer.tsx",
+    "frontend/src/components/BaselinePreparationPanel.tsx",
+    "frontend/src/components/__tests__/ArtifactViewers.test.tsx",
+    "frontend/src/components/__tests__/CommandPolicyInspector.test.tsx",
+    "frontend/src/components/__tests__/MigrationPlanPanel.test.tsx",
+    "frontend/src/components/__tests__/FeasibilityPanel.test.tsx",
+    "backend/tests/test_planning_verification_s2_f06_i04.py",
+    "docs/capabilities/01-command-runtime/MANUAL_TEST_GUIDE.md",
+    "docs/capabilities/01-command-runtime/IMPLEMENTATION.md",
+    "goals/01-command-runtime/manual-tests/MT-002-s3-f02-authoritative-scenario.md"
   ],
-  "tests_passed": 7,
-  "evidence": "Focused frontend execution/API suite: 7 passed. Full frontend suite: 101 passed, 3 unrelated pre-existing failures. Typecheck, lint, and production build remain blocked by pre-existing LogViewer/ArtifactPreviewPanel issues. Backend end-to-end and manual browser scenarios were not executed in this task run.",
+  "tests_passed": 125,
+  "evidence": "Frontend: typecheck PASS, lint PASS, 38 files/104 tests PASS, production build PASS. Backend collection PASS with 476 tests collected; focused execution tests PASS (21). Full backend suite: 447 passed, 3 skipped, 26 failed, including stale queue_command tests and unrelated Sprint 2/preflight expectation drift. Browser happy and negative scenarios were not executed because no supported browser/manual runtime was available; no manual artifacts or screenshots are claimed.",
   "commit_sha": null,
+  "acceptance_matrix": {
+    "AMFA-158": { "status": "PRESENT", "implementation": "backend/app/services/command_executor_service.py", "api": "POST /api/v1/runs/{id}/commands", "automated_test": "backend/tests/test_command_execution.py: 14 passed", "manual": "BLOCKED; browser runtime unavailable", "artifact_or_screenshot": null, "remaining_gap": "Full backend suite still contains unrelated failures" },
+    "AMFA-159": { "status": "PRESENT", "implementation": "backend/app/api/routes/run_commands.py; backend/app/repositories/models/workflow.py", "api": "POST/GET run command endpoints", "automated_test": "backend/tests/test_command_execution_task2.py: 2 passed", "manual": "BLOCKED; browser runtime unavailable", "artifact_or_screenshot": null, "remaining_gap": "No real manual artifact retrieval evidence" },
+    "AMFA-160": { "status": "PRESENT", "implementation": "frontend/src/components/CommandExecutionPanel.tsx; frontend/src/api/commands.ts", "api": "typed execution client", "automated_test": "frontend: 104 passed", "manual": "BLOCKED; browser runtime unavailable", "artifact_or_screenshot": null, "remaining_gap": "No browser refresh/reconnect capture" },
+    "AMFA-161": { "status": "PARTIAL", "implementation": "docs/capabilities/01-command-runtime/MANUAL_TEST_GUIDE.md; goals/01-command-runtime/manual-tests/MT-002-s3-f02-authoritative-scenario.md", "api": "authorization-bound execution contract documented", "automated_test": "frontend gates PASS; backend collection PASS; full backend 447 passed/26 failed/3 skipped", "manual": "BLOCKED", "artifact_or_screenshot": null, "remaining_gap": "Required happy-path and negative browser scenarios not executed" }
+  },
   "reviewer_verdict": "PARTIAL",
-  "verdict_notes": "The new frontend behavior is covered, but AMFA-141 cannot be marked complete until the repository quality gates, backend end-to-end execution checks, and manual scenarios pass."
+  "verdict_notes": "Frontend quality gates and focused execution coverage pass. AMFA-141 remains incomplete: the full backend suite has 26 failures, the stale queue_command test group targets a removed pre-authorization API, and the required browser happy/negative scenarios remain blocked without the supported runtime."
 }

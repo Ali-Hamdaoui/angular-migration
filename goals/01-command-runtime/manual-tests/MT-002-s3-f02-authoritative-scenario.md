@@ -28,7 +28,7 @@ A user can run one harmless approved diagnostic command inspect exact executable
 
 **Expected backend state:** The legal aggregate transition is persisted with an incremented state version, or the read-only result is recorded without altering workflow state.
 
-**Expected database/API result:** Records described by `command_executions with idempotency, state, runtime checksum, process metadata, and artifact references.` are retrievable through `POST /api/v1/runs/{id}/commands; GET /api/v1/runs/{id}/commands/{commandId}` and include idempotency and correlation metadata where the operation is mutating.
+**Expected database/API result:** First obtain an accepted authorization decision. Submit only `authorization_decision_id`, `expected_state_version`, `idempotency_key`, and optional `requested_by` to `POST /api/v1/runs/{id}/commands`; retrieve the authoritative record with `GET /api/v1/runs/{id}/commands/{commandId}`. The backend reloads the approved executable, arguments, profile, workspace, and shell policy.
 
 **Expected artifact:** Command manifest, full stdout, full stderr, combined ordered stream where available, and result report.
 
@@ -41,3 +41,12 @@ A user can run one harmless approved diagnostic command inspect exact executable
 ## Required evidence
 
 Record preconditions, external fixture identity/fingerprints, exact UI/API steps, expected/actual result, DB records/state version, durable event sequence, artifact IDs/checksums, screenshots/trace/network/SSE/log evidence, source-integrity proof, cleanup, defects, and PASS/FAIL/BLOCKED.
+
+## Finalization Task 2 execution record
+
+- Automated frontend gates: PASS — typecheck, lint, 38 test files/104 tests, and production build.
+- Backend collection: PASS — 476 tests collected from `backend` without import errors.
+- Focused execution backend tests: PASS — 21 tests in `test_command_execution.py` and `test_command_execution_task2.py`.
+- Browser happy path: BLOCKED — no supported browser/manual runtime was available; no screenshots, API captures, execution IDs, or artifact IDs are claimed.
+- Browser negative path: BLOCKED for the same reason.
+- Overall manual verdict: `BLOCKED` until MT-002 and one negative case are executed in the supported runtime.

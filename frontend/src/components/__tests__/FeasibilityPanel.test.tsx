@@ -10,7 +10,7 @@ vi.mock("@/api/compatibility", () => ({ getFeasibility: vi.fn(), resolveFeasibil
 
 const checksum = (letter: string) => `sha256:${letter.repeat(64)}`;
 const artifact: ArtifactRefDto = { artifact_id: "finding-1", run_id: "run-1", stage_id: null, artifact_type: "json", relative_path: "02_analysis/findings.json", created_at: "now", checksum: checksum("a") };
-const state = { run_id: "run-1", state_version: 3, artifacts: [artifact] } as unknown as AuthoritativeRunStateDto;
+const state = { run_id: "run-1", state_version: 3, artifacts: [artifact], source_angular_exact: "18.2.4", catalogue_version: "catalog-v1", runtime_candidates: [{ profile_id: "node-20-approved" }], registry_snapshot: { snapshot_id: "registry-1", checksum: checksum("e") } } as unknown as AuthoritativeRunStateDto;
 const response: FeasibilityResponse = {
   run_id: "run-1", resolution_id: "resolution-1", status: "feasible_with_warnings", source_exact: "18.2.4", source_family: "angular-18.x", target_family: "angular-21.x", support_level: "historical_experimental",
   route: ["19", "20", "21"].map((major, index) => ({ stage_id: `angular-${18 + index}-to-${major}`, source_family: `angular-${18 + index}.x`, target_family: `angular-${major}.x`, support_level: "historical_experimental", target_angular_exact: `${major}.0.0`, target_cli_exact: `${major}.0.0`, blockers: [], warnings: ["historical_fixture_evidence_incomplete"] })),

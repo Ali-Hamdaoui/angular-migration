@@ -6,7 +6,7 @@ This guide validates the G01 Governed Command Runtime — command registry and p
 
 What this guide validates:
 - Command template inspection and policy validation (S3-F01)
-- Command execution with authorization_id and runtime_checksum (S3-F02)
+- Command execution with authorization_decision_id, state-version protection, and runtime evidence (S3-F02)
 - Log streaming with cursor-based reconnect (S3-F03)
 - Process cancellation with cancel_event and lease management (S3-F04)
 - Environment sanitization (no backend secrets leaked to subprocess)
@@ -146,11 +146,11 @@ curl -s -X POST http://127.0.0.1:8301/api/v1/runs \
   -H "Content-Type: application/json" \
   -d '{"source_path":"/tmp/test-source","target_version":"21","idempotency_key":"mt002-run1"}' | python3 -m json.tool
 ```
-2. Execute a command (python --version):
+2. Execute the accepted authorization (python --version). The authorization response supplies `authorization_id`; execution does not accept executable, arguments, working-directory, profile, or shell fields from the client:
 ```bash
 curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
   -H "Content-Type: application/json" \
-  -d '{"command_id":"python-version","executable":"python","arguments":["--version"],"idempotency_key":"mt002-exec1"}' | python3 -m json.tool
+  -d '{"authorization_decision_id":"{authorization_id}","expected_state_version":{state_version},"idempotency_key":"mt002-exec1","requested_by":"operator"}' | python3 -m json.tool
 ```
 3. Retrieve execution record:
 ```bash
@@ -158,7 +158,7 @@ curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id} | pyt
 ```
 
 **Expected API behavior**:
-- Step 2: Response includes `execution_id`, `status: "SUCCEEDED"`, `idempotent_replay: false`
+- Step 2: Response is `202 Accepted` and includes `execution_id`, `status: "PENDING"` or `"RUNNING"`, `idempotent_replay: false`, and the authoritative command fields.
 - Step 3: Record shows `status: "SUCCEEDED"`, `exit_code: 0`, `runtime_checksum: "sha256:..."`, `authorization_id: "..."`
 
 **Expected UI behavior**: Command detail drawer shows exact command, lifecycle (queued → running → succeeded), evidence links.
@@ -171,7 +171,43 @@ curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id} | pyt
 
 **Evidence to capture**: curl responses, DB query for execution record, event sequence.
 
-**Pass criteria**: Successful execution with correct checksum, exit code, and authorization_id.
+**Pass criteria**: Successful execution with correct checksum, exit code, and authorization trail.
+
+#### Current authorization-bound request contract
+
+The command policy step must complete first. The accepted decision is the only authority for executable, arguments, profile, workspace, shell mode, timeout, and environment. The execution endpoint reloads those values by `authorization_decision_id`; the client cannot redefine them. `expected_state_version` must equal the current run snapshot. A retry of the same logical request reuses the same idempotency key; a different logical request uses a new key.
+
+Successful submission (`202 Accepted`):
+
+```json
+{
+  "execution_id": "exec-001",
+  "run_id": "run-001",
+  "status": "PENDING",
+  "idempotent_replay": false,
+  "authorization_id": "auth-001",
+  "state_version": 8,
+  "event_sequence": 12
+}
+```
+
+Stale state (`409`): `{"error_code":"STALE_STATE_VERSION","message":"The run state version is stale","details":{"expected":7,"actual":8}}`.
+
+Idempotent replay (`202`): the same `execution_id` with `"idempotent_replay": true` when the key and authorization payload identify the same logical request.
+
+Idempotency conflict (`409`): `{"error_code":"IDEMPOTENCY_KEY_CONFLICT","message":"The idempotency key was already used for a different request"}`.
+
+Authorization rejection (`409` or `422`, depending on the rejection): `{"error_code":"AUTHORIZATION_STALE","message":"The authorization decision is not accepted for this run"}`. No process or execution artifacts are created.
+
+Process failure (`202` submission, terminal `FAILED` on retrieval): the execution detail contains `status: "FAILED"`, `exit_code`, `failure_code`, and the registered artifact IDs for stdout, stderr, command manifest/log, and result report.
+
+Artifact retrieval (`200`):
+
+```text
+GET /api/v1/artifacts/{artifact_id}
+```
+
+The response is backend-owned artifact content and metadata, including `artifact_id`, `artifact_type`, `checksum`, `relative_path`, and finalized status. Clients use the artifact ID only; absolute filesystem paths are never exposed.
 
 ---
 
@@ -186,7 +222,7 @@ curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id} | pyt
 ```bash
 curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
   -H "Content-Type: application/json" \
-  -d '{"command_id":"python-version","executable":"python","arguments":["-c","import time\nfor i in range(5): print(f\"line {i}\"); time.sleep(0.2)"],"idempotency_key":"mt003-exec1","timeout_seconds":10}' | python3 -m json.tool
+  -d '{"authorization_decision_id":"{authorization_id_for_registered_log_fixture}","expected_state_version":{state_version},"idempotency_key":"mt003-exec1","requested_by":"operator"}' | python3 -m json.tool
 ```
 2. Retrieve logs after completion:
 ```bash
@@ -232,7 +268,7 @@ curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs
 ```bash
 curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
   -H "Content-Type: application/json" \
-  -d '{"command_id":"python-version","executable":"python","arguments":["-c","import time; time.sleep(30)"],"idempotency_key":"mt004-exec1","timeout_seconds":60}' | python3 -m json.tool
+  -d '{"authorization_decision_id":"{authorization_id_for_registered_cancellation_fixture}","expected_state_version":{state_version},"idempotency_key":"mt004-exec1","requested_by":"operator"}' | python3 -m json.tool
 ```
 2. Check active command:
 ```bash

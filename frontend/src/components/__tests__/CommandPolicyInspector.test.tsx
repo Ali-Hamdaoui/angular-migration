@@ -44,7 +44,7 @@ describe("CommandPolicyInspector", () => {
   });
 
   it("renders rejection code, correlation, and evidence guidance", async () => {
-    vi.mocked(validateCommandPolicy).mockResolvedValue({ ...plan, authorization_id: "auth-2", run_id: "run-1", stage_id: "stage-1", plan_id: "plan-1", command_id: "npm-ci", executable: "npm", arguments: ["ci"], cwd_alias: "BASELINE_SANDBOX", execution_profile_id: "profile-approved", decision: "rejected", reasons: ["COMMAND_NOT_IN_APPROVED_PLAN: command is not approved"], policy_version: "s3-f01-v1", idempotent_replay: false, expected_state_version: 7, authoritative_state_version: 7, artifact_id: "reject-evidence", correlation_id: "corr-reject", request_payload_hash: null, decision_timestamp: null } as never);
+    vi.mocked(validateCommandPolicy).mockResolvedValue({ authorization_id: "auth-2", run_id: "run-1", stage_id: "stage-1", plan_id: "plan-1", command_id: "npm-ci", executable: "npm", arguments: ["ci"], cwd_alias: "BASELINE_SANDBOX", execution_profile_id: "profile-approved", decision: "rejected", reasons: ["COMMAND_NOT_IN_APPROVED_PLAN: command is not approved"], policy_version: "s3-f01-v1", idempotent_replay: false, expected_state_version: 7, authoritative_state_version: 7, artifact_id: "reject-evidence", correlation_id: "corr-reject", request_payload_hash: null, decision_timestamp: null });
     render(<CommandPolicyInspector runId="run-1" runState={state} />);
     fireEvent.click((await screen.findAllByRole("button", { name: "Validate against policy" }))[0]);
     expect(await screen.findByText("COMMAND_NOT_IN_APPROVED_PLAN")).toBeInTheDocument();

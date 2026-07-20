@@ -9,8 +9,9 @@ type LogChunk = {
 };
 
 type LogViewerProps = {
-  executionId: string;
-  runId: string;
+  executionId?: string;
+  runId?: string;
+  content?: string;
   search?: string;
   maxLines?: number;
   apiBase?: string;
@@ -19,6 +20,7 @@ type LogViewerProps = {
 type StreamFilter = "all" | "stdout" | "stderr";
 
 export function LogViewer({
+  content,
   executionId,
   runId,
   search = "",
@@ -35,7 +37,7 @@ export function LogViewer({
 
   // Connect to SSE stream
   useEffect(() => {
-    if (!executionId || !runId) return;
+    if (content !== undefined || !executionId || !runId) return;
 
     let params = `cursor=${cursorRef.current}`;
     if (streamFilter !== "all") {
@@ -51,7 +53,7 @@ export function LogViewer({
       const es = new EventSource(url);
       esRef.current = es;
 
-      es.addEventListener("connected", (event: MessageEvent) => {
+      es.addEventListener("connected", () => {
         setConnected(true);
         setError(null);
       });
@@ -88,7 +90,7 @@ export function LogViewer({
         esRef.current = null;
       }
     };
-  }, [executionId, runId, apiBase, streamFilter]);
+  }, [content, executionId, runId, apiBase, streamFilter]);
 
   // Auto-scroll to bottom when new chunks arrive
   useEffect(() => {
@@ -102,7 +104,7 @@ export function LogViewer({
     return c.stream === streamFilter;
   });
 
-  const allLines = filteredChunks.map((c) => c.text).join("").split(/\r?\n/);
+  const allLines = (content ?? filteredChunks.map((c) => c.text).join("")).split(/\r?\n/);
   const visibleLines = allLines.slice(0, maxLines);
   const normalizedSearch = search.trim().toLowerCase();
   const hiddenLineCount = Math.max(0, allLines.length - visibleLines.length);

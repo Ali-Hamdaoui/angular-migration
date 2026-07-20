@@ -242,7 +242,7 @@ All components cover: loading spinner, empty state (no templates/logs), success/
 |---|---|---|---|---|---|---|
 | GET | `/api/v1/operator/command-templates` | — | `CommandTemplateDto[]` | — | — | N/A (read) |
 | POST | `/api/v1/operator/command-policy/validate` | `CommandPolicyValidateRequestDto` | `CommandPolicyValidateResponseDto` | `COMMAND_AUTHORIZATION_ACCEPTED`/`REJECTED` | Validation errors | Via idempotency_key |
-| POST | `/api/v1/runs/{run_id}/commands` | `{ executable, arguments, command_id, idempotency_key, ... }` | `CommandExecutionResponse` | `COMMAND_QUEUED`, `STARTED`, `SUCCEEDED`/`FAILED` | `POLICY_REJECTED`, `IDEMPOTENCY_KEY_CONFLICT` | Required (key+payload) |
+| POST | `/api/v1/runs/{run_id}/commands` | `{ authorization_decision_id, expected_state_version, idempotency_key, requested_by? }` | `CommandExecutionResponse` | `COMMAND_QUEUED`, `STARTED`, `SUCCEEDED`/`FAILED` | `STALE_STATE_VERSION`, `AUTHORIZATION_STALE`, `IDEMPOTENCY_KEY_CONFLICT`, `AUTHORIZATION_DECISION_NOT_FOUND` | Required (key+authorization decision) |
 | GET | `/api/v1/runs/{run_id}/commands/{execution_id}` | — | `CommandExecutionModel` | — | `404` | N/A |
 | GET | `/api/v1/runs/{run_id}/commands/{execution_id}/logs` | `?offset=&limit=&stream=&cursor=` | `{ chunks: LogChunkDto[], total: number }` | — | — | N/A |
 | POST | `/api/v1/runs/{run_id}/commands/{execution_id}/cancel` | `{ actor, idempotency_key }` | `{ cancelled, execution_id, ... }` | `RUN_CANCEL_REQUESTED`, `COMMAND_CANCELLED` | `EXECUTION_NOT_FOUND`, `EXECUTION_NOT_ACTIVE` | Via idempotency_key |
