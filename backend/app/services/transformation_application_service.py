@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import hashlib
 import re
@@ -31,6 +32,7 @@ from app.domain.transformation import (
     G08EvidencePackageBuilder,
     PackageChangeSummary,
     PromptDetectionResult,
+    SensitiveChangeReason,
     TargetVersionEvidence,
     TargetVersionStatus,
     TransformationEvidenceResult,
@@ -163,6 +165,50 @@ def _installed_version(path: Path, package_name: str) -> str | None:
         return _exact_dependency_version(json.loads((path / "node_modules" / package_name / "package.json").read_text(encoding="utf-8")).get("version"))
     except (OSError, TypeError, json.JSONDecodeError):
         return None
+
+
+def _normalize_line_endings(content: bytes) -> bytes:
+    return content.replace(b"\r\n", b"\n")
+
+
+_KNOWN_ANGULAR_MIGRATIONS = frozenset({
+    "migration-v18", "migration-v17", "migration-v16", "migration-v15",
+    "migration-v14", "migration-v13",
+})
+
+
+def _scan_migrations(workspace: Path) -> list[str]:
+    migrations: list[str] = []
+    angular_dir = workspace / ".angular"
+    if angular_dir.is_dir():
+        for item in sorted(angular_dir.glob("migration-*.json")):
+            name = item.stem
+            if name in _KNOWN_ANGULAR_MIGRATIONS:
+                migrations.append(name)
+    pkg = workspace / "package.json"
+    if pkg.is_file():
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+            scripts = data.get("scripts") or {}
+            for script_name, script_cmd in scripts.items():
+                if isinstance(script_cmd, str) and "ng update" in script_cmd:
+                    for known in _KNOWN_ANGULAR_MIGRATIONS:
+                        if known in script_cmd:
+                            migrations.append(known)
+        except (OSError, json.JSONDecodeError):
+            pass
+    cli_output_dir = workspace / ".angular" / "cli-output"
+    if cli_output_dir.is_dir():
+        for item in sorted(cli_output_dir.rglob("*")):
+            if item.is_file():
+                try:
+                    text = item.read_text(encoding="utf-8", errors="replace")
+                    for known in _KNOWN_ANGULAR_MIGRATIONS:
+                        if known in text and known not in migrations:
+                            migrations.append(known)
+                except OSError:
+                    pass
+    return sorted(set(migrations))
 
 
 # ── S3-F07 — Angular Update Service ──────────────────────────────────────
@@ -648,48 +694,58 @@ class TransformationEvidenceApplicationService:
                     status_code=409,
                 )
 
+            # Source safety checks
+            source_candidate = Path(request.source_sandbox_path)
+            target_candidate = Path(request.target_sandbox_path)
+            source = source_candidate.resolve() if source_candidate else None
+            target = target_candidate.resolve() if target_candidate else None
+            run_root = Path(run.run_root).resolve() if run.run_root else None
+            if source is None or source_candidate.is_symlink() or not source.is_dir():
+                raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source sandbox path is missing or unsafe.", status_code=409)
+            if target is None or target_candidate.is_symlink() or not target.is_dir():
+                raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target sandbox path is missing or unsafe.", status_code=409)
+            if source == target or source.is_relative_to(target) or target.is_relative_to(source):
+                raise G03ApplicationError("SANDBOX_OVERLAP", "Source and target sandboxes must not overlap.", status_code=409)
+            if run_root is not None:
+                if not source.is_relative_to(run_root) or not target.is_relative_to(run_root):
+                    raise G03ApplicationError("SANDBOX_BOUNDARY", "Sandbox paths must be within the run root.", status_code=409)
+            if any(item.is_symlink() for item in source.rglob("*")):
+                raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source sandbox contains a symlink escape.", status_code=409)
+            if any(item.is_symlink() for item in target.rglob("*")):
+                raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target sandbox contains a symlink escape.", status_code=409)
+
+            # Emit STARTED event before computation
+            started_transition = StateTransitionService(session).apply_transition(
+                TransitionRequest(
+                    run_id=run_id,
+                    expected_state_version=run.state_version,
+                    idempotency_key=request.idempotency_key + ":started",
+                    event_type=WorkflowEventType.TRANSFORMATION_EVIDENCE_STARTED,
+                    actor=request.actor,
+                    reason="Transformation evidence computation started",
+                    occurred_at=now,
+                    stage_id=stage_id,
+                    payload={"stage_id": stage_id, "source_sandbox_path": str(source), "target_sandbox_path": str(target)},
+                )
+            )
+
             store = LocalFilesystemArtifactStore(
                 Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
             ) if run.artifact_root else None
 
             # Build transformation evidence
-            diff_result = self._compute_diff_summary(
-                Path(request.source_sandbox_path), Path(request.target_sandbox_path)
-            )
+            diff_result = self._compute_diff_summary(source, target)
 
-            package_result = self._compute_package_changes(
-                Path(request.source_sandbox_path), Path(request.target_sandbox_path)
-            )
+            package_result = self._compute_package_changes(source, target)
 
             forbidden = self._scan_forbidden_changes(diff_result, package_result)
 
-            evidence_complete = diff_result.total_files_changed > 0
-            overall_risk = self._compute_overall_risk(diff_result, forbidden)
+            migration_list = _scan_migrations(target)
 
-            event_type = (
-                WorkflowEventType.TRANSFORMATION_EVIDENCE_COMPLETED
-                if evidence_complete
-                else WorkflowEventType.TRANSFORMATION_EVIDENCE_BLOCKED
-            )
+            # Compute unified diff
+            unified_diff = self._compute_unified_diff(source, target, diff_result.changed_files)
 
-            transition = StateTransitionService(session).apply_transition(
-                TransitionRequest(
-                    run_id=run_id,
-                    expected_state_version=run.state_version,
-                    idempotency_key=request.idempotency_key,
-                    event_type=event_type,
-                    actor=request.actor,
-                    reason=f"Transformation evidence {'completed' if evidence_complete else 'blocked'}",
-                    occurred_at=now,
-                    stage_id=stage_id,
-                    payload={
-                        "evidence_complete": evidence_complete,
-                        "overall_risk_level": overall_risk.value,
-                        "stage_id": stage_id,
-                    },
-                )
-            )
-
+            diff_written = False
             artifact_ids: list[str] = []
             if store:
                 ref = _write_evidence(
@@ -722,6 +778,50 @@ class TransformationEvidenceApplicationService:
                     )
                     artifact_ids.append(ref3.artifact_id)
 
+                # Write unified diff artifact
+                if unified_diff:
+                    diff_ref = _write_evidence(
+                        store, session, run_id, "transformation_diff.patch",
+                        {"patch": unified_diff},
+                        stage_id=stage_id,
+                        created_by="transformation-evidence-service",
+                        created_at=now,
+                        input_hashes={"diff_checksum": diff_result.diff_checksum},
+                    )
+                    artifact_ids.append(diff_ref.artifact_id)
+                    diff_written = True
+
+            overall_risk = self._compute_overall_risk(diff_result, forbidden)
+            evidence_complete = (
+                diff_result.total_files_changed > 0
+                and diff_written
+            )
+
+            event_type = (
+                WorkflowEventType.TRANSFORMATION_EVIDENCE_COMPLETED
+                if evidence_complete
+                else WorkflowEventType.TRANSFORMATION_EVIDENCE_BLOCKED
+            )
+
+            transition = StateTransitionService(session).apply_transition(
+                TransitionRequest(
+                    run_id=run_id,
+                    expected_state_version=started_transition.next_state_version,
+                    idempotency_key=request.idempotency_key,
+                    event_type=event_type,
+                    actor=request.actor,
+                    reason=f"Transformation evidence {'completed' if evidence_complete else 'blocked'}",
+                    occurred_at=now,
+                    stage_id=stage_id,
+                    payload={
+                        "evidence_complete": evidence_complete,
+                        "overall_risk_level": overall_risk.value,
+                        "stage_id": stage_id,
+                        "total_files_changed": diff_result.total_files_changed,
+                    },
+                )
+            )
+
             record_id = f"tev-{uuid4().hex[:12]}"
             record = TransformationEvidenceModel(
                 id=record_id,
@@ -735,6 +835,7 @@ class TransformationEvidenceApplicationService:
                 diff_checksum=diff_result.diff_checksum,
                 diff_summary=diff_result.model_dump(mode="json"),
                 package_change_summary=package_result.model_dump(mode="json") if package_result else None,
+                migration_list=migration_list,
                 forbidden_changes=[f.model_dump(mode="json") for f in forbidden],
                 changed_file_classifications={
                     cf.file_path: cf.classification.value for cf in diff_result.changed_files
@@ -779,31 +880,45 @@ class TransformationEvidenceApplicationService:
 
             if sp and tp:
                 try:
-                    sc = sp.read_bytes()
-                    tc = tp.read_bytes()
+                    sc = _normalize_line_endings(sp.read_bytes())
+                    tc = _normalize_line_endings(tp.read_bytes())
                     if sc == tc:
                         continue  # unchanged
                     change_type = "modified"
-                    added = max(0, len(tc.splitlines()) - len(sc.splitlines()))
-                    removed = max(0, len(sc.splitlines()) - len(tc.splitlines()))
+                    sc_lines = sc.splitlines()
+                    tc_lines = tc.splitlines()
+                    added = max(0, len(tc_lines) - len(sc_lines))
+                    removed = max(0, len(sc_lines) - len(tc_lines))
                 except OSError:
                     continue
             elif sp and not tp:
                 change_type = "deleted"
                 added = 0
                 try:
-                    removed = len(sp.read_text().splitlines())
+                    removed = len(_normalize_line_endings(sp.read_bytes()).splitlines())
                 except (OSError, UnicodeDecodeError):
                     removed = 0
             else:
                 change_type = "added"
                 removed = 0
                 try:
-                    added = len(tp.read_text().splitlines()) if tp else 0
+                    added = len(_normalize_line_endings(tp.read_bytes()).splitlines()) if tp else 0
                 except (OSError, UnicodeDecodeError):
                     added = 0
 
-            classification = self._classify_file(path_str)
+            content_for_classify = None
+            if tp:
+                try:
+                    content_for_classify = tp.read_bytes()
+                except OSError:
+                    pass
+            elif sp:
+                try:
+                    content_for_classify = sp.read_bytes()
+                except OSError:
+                    pass
+
+            classification, reason = self._classify_file(path_str, content_for_classify)
             total_added += added
             total_removed += removed
             checksum_input.append(f"{change_type}:{path_str}:{added}:{removed}")
@@ -813,6 +928,7 @@ class TransformationEvidenceApplicationService:
                     file_path=path_str,
                     change_type=change_type,
                     classification=classification,
+                    reason=reason,
                     lines_added=added,
                     lines_removed=removed,
                 )
@@ -834,7 +950,43 @@ class TransformationEvidenceApplicationService:
             diff_checksum=diff_checksum,
         )
 
-    def _classify_file(self, path: str) -> ChangedFileClassification:
+    def _compute_unified_diff(self, source_root: Path, target_root: Path, changed_files: list[ChangedFileEntry]) -> str:
+        lines: list[str] = []
+        for entry in changed_files:
+            sp = source_root / entry.file_path
+            tp = target_root / entry.file_path
+            try:
+                if entry.change_type == "deleted":
+                    src_content = _normalize_line_endings(sp.read_bytes())
+                    tgt_content = b""
+                elif entry.change_type == "added":
+                    src_content = b""
+                    tgt_content = _normalize_line_endings(tp.read_bytes())
+                else:
+                    src_content = _normalize_line_endings(sp.read_bytes()) if sp.exists() else b""
+                    tgt_content = _normalize_line_endings(tp.read_bytes()) if tp.exists() else b""
+            except (OSError, UnicodeDecodeError):
+                lines.append(f"diff --git a/{entry.file_path} b/{entry.file_path}")
+                lines.append(f"Binary files differ")
+                continue
+            try:
+                src_text = src_content.decode("utf-8", errors="replace").splitlines(keepends=True)
+                tgt_text = tgt_content.decode("utf-8", errors="replace").splitlines(keepends=True)
+            except Exception:
+                lines.append(f"diff --git a/{entry.file_path} b/{entry.file_path}")
+                lines.append(f"Binary files differ")
+                continue
+            diff = list(difflib.unified_diff(
+                src_text, tgt_text,
+                fromfile=f"a/{entry.file_path}",
+                tofile=f"b/{entry.file_path}",
+                lineterm="\n",
+            ))
+            if diff:
+                lines.extend(diff)
+        return "\n".join(lines)
+
+    def _classify_file(self, path: str, content: bytes | None = None) -> tuple[ChangedFileClassification, SensitiveChangeReason | None]:
         path_lower = path.lower()
 
         # Forbidden: CI/CD pipeline configs
@@ -846,7 +998,7 @@ class TransformationEvidenceApplicationService:
                 "jenkinsfile", "bitbucket-pipelines",
             ]
         ):
-            return ChangedFileClassification.FORBIDDEN
+            return ChangedFileClassification.FORBIDDEN, None
 
         # Forbidden: Credential and secret files
         if any(
@@ -859,7 +1011,7 @@ class TransformationEvidenceApplicationService:
                 ".netrc", ".pgpass",
             ]
         ):
-            return ChangedFileClassification.FORBIDDEN
+            return ChangedFileClassification.FORBIDDEN, None
 
         # Forbidden: Security policy configs
         if any(
@@ -869,22 +1021,49 @@ class TransformationEvidenceApplicationService:
                 "allowed_signers", "snyk", "codeql",
             ]
         ):
-            return ChangedFileClassification.FORBIDDEN
+            return ChangedFileClassification.FORBIDDEN, None
 
         if any(ext in path_lower for ext in [".bin", ".exe", ".dll", ".so", ".dylib", ".png", ".jpg", ".gif", ".ico"]):
-            return ChangedFileClassification.BINARY
+            return ChangedFileClassification.BINARY, SensitiveChangeReason.BINARY_FILE
         if any(gen in path_lower for gen in ["/dist/", "/build/", "/.angular/", "node_modules", "/coverage/"]):
-            return ChangedFileClassification.GENERATED
+            return ChangedFileClassification.GENERATED, SensitiveChangeReason.GENERATED_FILE
         if any(
             sens in path_lower
             for sens in ["auth", "security", "credential", "secret", "key", "token", "password"]
         ):
-            return ChangedFileClassification.SENSITIVE
+            classification = ChangedFileClassification.SENSITIVE
+            reason = self._detect_content_reason(path, content) or SensitiveChangeReason.AUTH_OR_API
+            return classification, reason
         if path_lower.endswith("package-lock.json") or path_lower.endswith("yarn.lock"):
-            return ChangedFileClassification.MEDIUM_RISK
+            return ChangedFileClassification.MEDIUM_RISK, SensitiveChangeReason.PACKAGE_LOCK_CHANGE
         if path_lower.endswith(( ".ts", ".js", ".html", ".css", ".scss", ".json", ".py")):
-            return ChangedFileClassification.LOW_RISK
-        return ChangedFileClassification.MEDIUM_RISK
+            reason = self._detect_content_reason(path, content)
+            return ChangedFileClassification.LOW_RISK, reason
+        reason = self._detect_content_reason(path, content)
+        return ChangedFileClassification.UNKNOWN, reason
+
+    def _detect_content_reason(self, path: str, content: bytes | None = None) -> SensitiveChangeReason | None:
+        if content is None:
+            return None
+        try:
+            text = content.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        if any(p in text for p in ["HttpClient", "HttpHeaders", "HttpParams", "HttpInterceptor", "HttpHandler", "HttpEvent", "HttpRequest", "HttpResponse"]):
+            return SensitiveChangeReason.AUTH_OR_API
+        if any(p in text for p in ["RouterModule", "RouterLink", "RouterOutlet", "CanActivate", "CanActivateChild", "CanDeactivate", "CanLoad", "CanMatch", "Route", "Router"]):
+            return SensitiveChangeReason.AUTH_OR_API
+        if any(p in text for p in ["localStorage", "sessionStorage", "document.cookie", "eval(", "Function(", "setTimeout(", "innerHTML", "outerHTML"]):
+            return SensitiveChangeReason.SECURITY_RELEVANT
+        if path == "angular.json" or path.endswith("/angular.json") or any(p in text for p in ['"builder"', '"architect"', '"schematics"']):
+            return SensitiveChangeReason.BUILD_SYSTEM_CHANGE
+        if path.endswith((".json", ".conf", ".config", ".ini", ".cfg", ".yaml", ".yml")) and not path.endswith(("package.json", "package-lock.json", "yarn.lock")):
+            return SensitiveChangeReason.CONFIGURATION_CHANGE
+        if any(p in text for p in ["ngOnChanges", "ngDoCheck", "ngAfterViewInit", "ngAfterContentInit", "ngAfterViewChecked", "ngAfterContentChecked"]):
+            return SensitiveChangeReason.BEHAVIOR_CHANGE
+        if any(p in text for p in ["@deprecated", "TODO.*migrat", "FIXME.*angular"]):
+            return SensitiveChangeReason.HIDDEN_MODERNIZATION
+        return None
 
     def _compute_package_changes(
         self, source_path: Path, target_path: Path
