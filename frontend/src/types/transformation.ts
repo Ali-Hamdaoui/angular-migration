@@ -58,16 +58,13 @@ export interface TargetVersionResponse {
   run_id: string;
   stage_id: string;
   target_version_status: "verified" | "mismatch" | "failed" | "inconclusive";
-  resolved_target_version: string;
-  evidence_sources: string[];
+  resolved_target_version: string | null;
+  evidence_sources: Record<string, string>;
   all_sources_agree: boolean;
-  disagreements: Array<{
-    source: string;
-    declared_version: string;
-    resolved_version: string;
-  }>;
-  state_version: number;
-  event_sequence: number;
+  disagreements: string[];
+  artifact_ids?: string[];
+  state_version?: number;
+  event_sequence?: number;
 }
 
 export type G08Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";

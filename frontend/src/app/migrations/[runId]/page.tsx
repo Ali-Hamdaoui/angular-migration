@@ -1,5 +1,5 @@
 import { getAuthoritativeRunState } from "@/api/runs";
-import { getMockMigrationState } from "@/api/migrations";
+import { getMigrationState, getMockMigrationState } from "@/api/migrations";
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
 import { RunDashboard } from "@/components/RunDashboard";
 
@@ -13,7 +13,8 @@ export default async function MigrationRunPage({ params }: { params: Promise<{ r
   }
   try {
     const state = await getAuthoritativeRunState(runId);
-    return <AuthoritativeRunDashboard runId={runId} initialState={state} />;
+    const migration = await getMigrationState(runId).catch(() => null);
+    return <AuthoritativeRunDashboard runId={runId} initialState={state} initialMigrationState={migration} />;
   } catch {
     return <main><p>Authoritative run state could not be loaded.</p></main>;
   }

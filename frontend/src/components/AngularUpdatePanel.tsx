@@ -1,366 +1,129 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { getAngularUpdate, getTargetVersionTyped, startAngularUpdate, verifyTargetVersion } from "@/api/transformations";
-import type { AngularUpdateResponse, TargetVersionResponse } from "@/types/transformation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiClientError } from "@/api/client";
+import { getExecutionProfiles } from "@/api/executionProfiles";
+import { getStagePlan } from "@/api/plans";
+import { getTransformationEvidence, getAngularUpdate, getTargetVersionTyped, startAngularUpdate, verifyTargetVersion } from "@/api/transformations";
+import type { ArtifactRefDto, ExecutionProfile } from "@/types/generated/api";
+import type { AngularUpdateResponse, TargetVersionResponse, TransformationEvidenceResponse } from "@/types/transformation";
 import type { WorkflowEventDto } from "@/types/generated/api";
 import { StatusPill } from "@/components/StatusPill";
-import { LogViewer } from "@/components/LogViewer";
 import styles from "./ControlTowerShell.module.css";
 
-type ViewState = "loading" | "empty" | "running" | "success" | "blocked" | "stale" | "reconnecting" | "failure" | "cancelled" | "no_evidence";
+type ViewState = "loading" | "empty" | "running" | "pending_verification" | "success" | "blocked" | "stale" | "reconnecting" | "failure" | "cancelled" | "no_evidence";
 
 interface Props {
-  runId: string;
-  stageId: string;
-  sourceVersion: string;
-  targetVersion: string;
-  expectedStateVersion: number;
-  onStateChange?: (newVersion: number) => void;
-  workflowEvents?: WorkflowEventDto[];
+  runId: string; stageId: string; expectedStateVersion: number;
+  onStateChange?: (newVersion: number) => void; workflowEvents?: WorkflowEventDto[]; artifacts?: ArtifactRefDto[]; connectionStatus?: "loading" | "connecting" | "open" | "reconnecting" | "recovering" | "failed";
 }
 
-export function AngularUpdatePanel({
-  runId,
-  stageId,
-  sourceVersion,
-  targetVersion,
-  expectedStateVersion,
-  onStateChange,
-  workflowEvents = [],
-}: Props) {
+const artifactHref = (id: string) => `/api/v1/artifacts/${encodeURIComponent(id)}`;
+const text = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : "—";
+
+export function AngularUpdatePanel({ runId, stageId, expectedStateVersion, onStateChange, workflowEvents = [], artifacts = [], connectionStatus = "open" }: Props) {
   const [viewState, setViewState] = useState<ViewState>("loading");
-  const [updateResult, setUpdateResult] = useState<AngularUpdateResponse | null>(null);
-  const [targetVersionResult, setTargetVersionResult] = useState<TargetVersionResponse | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [update, setUpdate] = useState<AngularUpdateResponse | null>(null);
+  const [target, setTarget] = useState<TargetVersionResponse | null>(null);
+  const [evidence, setEvidence] = useState<TransformationEvidenceResponse | null>(null);
+  const [plan, setPlan] = useState<Awaited<ReturnType<typeof getStagePlan>>["stage_plan"] | null>(null);
+  const [planArtifactIds, setPlanArtifactIds] = useState<string[]>([]);
+  const [profile, setProfile] = useState<ExecutionProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const submittedRef = useRef(false);
-  const idempotencyRef = useRef<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const verifiedEventRef = useRef(false);
+  const seenEvents = useRef(new Set<string>());
+  const submittingKind = useRef<"start" | "verify" | null>(null);
 
-  const addLog = useCallback((msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toISOString()}] ${msg}`]);
+  const log = useCallback((value: string) => setLogs((items) => [...items, value]), []);
+  const applyResult = useCallback((result: AngularUpdateResponse) => {
+    setUpdate(result);
+    if (result.target_version_status === "verified" && verifiedEventRef.current) setViewState("success");
+    else if (result.status === "failed" || result.target_version_status === "failed" || result.target_version_status === "mismatch") setViewState("failure");
+    else if (result.status === "interactive_blocked") setViewState("blocked");
+    else if (result.status === "running") setViewState("running");
+    else if (result.status === "succeeded") setViewState("pending_verification");
+    else setViewState("empty");
+    if (result.error_message) setError(result.error_message);
   }, []);
 
-  const handleStateChange = useCallback((result: AngularUpdateResponse) => {
-    if (result.target_version_status === "verified") {
-      setViewState("success");
-    } else if (result.status === "succeeded" && result.target_version_status !== "mismatch" && result.target_version_status !== "inconclusive") {
-      setViewState("success");
-    } else if (result.status === "failed" || result.target_version_status === "failed" || result.target_version_status === "mismatch") {
-      setViewState("failure");
-      setError(result.error_message ?? (result.target_version_status === "mismatch" ? "Target version mismatch" : "Angular update failed"));
-    } else if (result.status === "interactive_blocked") {
-      setViewState("blocked");
-    } else if (result.status === "running") {
-      setViewState("running");
-    } else {
-      setViewState("empty");
-    }
-    setUpdateResult(result);
-  }, []);
-
-  const fetchState = useCallback(async () => {
+  const refresh = useCallback(async () => {
+    setViewState("reconnecting");
     try {
-      setViewState("reconnecting");
-      const result = await getAngularUpdate(runId, stageId);
-      if (!result) {
-        setViewState("no_evidence");
-        return;
-      }
-      handleStateChange(result);
-    } catch {
-      setViewState("no_evidence");
+      const [result, lockedPlan, profiles, transformEvidence] = await Promise.all([
+        getAngularUpdate(runId, stageId), getStagePlan(runId, stageId), getExecutionProfiles(runId), getTransformationEvidence(runId, stageId),
+      ]);
+      setPlan(lockedPlan.stage_plan); setPlanArtifactIds(lockedPlan.artifact_ids); setEvidence(transformEvidence);
+      applyResult(result);
+      setProfile(profiles.selected_profile ?? profiles.compatible_profiles.find((item) => item.profile_id === lockedPlan.stage_plan.execution_profile_id) ?? null);
+      try { setTarget(await getTargetVersionTyped(runId, stageId)); } catch { /* update state remains authoritative */ }
+    } catch (reason: unknown) {
+      if (reason instanceof ApiClientError && reason.status === 409) { setViewState("stale"); setError("The locked plan or run state changed. Refresh the authoritative snapshot."); }
+      else if (reason instanceof ApiClientError && (reason.status === 401 || reason.status === 403)) { setViewState("failure"); setError("You are not authorized to view or run this stage."); }
+      else if (reason instanceof ApiClientError && reason.status === 404) setViewState("no_evidence");
+      else { setViewState("no_evidence"); setError("Angular update evidence could not be loaded."); }
     }
-  }, [runId, stageId, handleStateChange]);
+  }, [runId, stageId, applyResult]);
 
-  useEffect(() => {
-    fetchState();
-  }, [fetchState]);
+  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { if (connectionStatus === "reconnecting" || connectionStatus === "recovering") setViewState("reconnecting"); }, [connectionStatus]);
 
   useEffect(() => {
     for (const event of workflowEvents) {
-      if (event.event_type === "ANGULAR_UPDATE_COMPLETED") {
-        const payload = event.payload as Record<string, unknown>;
-        if (payload.target_version_status === "verified") {
-          setViewState("success");
-          addLog("Angular update completed (SSE)");
-          if (typeof payload.state_version === "number") {
-            onStateChange?.(payload.state_version);
-          }
-        } else if (payload.target_version_status === "mismatch" || payload.target_version_status === "inconclusive") {
-          setViewState("failure");
-          setError(payload.target_version_status === "mismatch" ? "Target version mismatch" : "Target version inconclusive");
-          addLog(`Angular update completed but target version ${payload.target_version_status} (SSE)`);
-        } else {
-          setViewState("success");
-          addLog("Angular update completed (SSE)");
-        }
-      } else if (event.event_type === "ANGULAR_UPDATE_FAILED") {
-        setViewState("failure");
-        const payload = event.payload as Record<string, unknown>;
-        const isCancellation = payload.error_message && typeof payload.error_message === "string" && payload.error_message.toLowerCase().includes("cancell");
-        if (isCancellation) {
-          setViewState("cancelled");
-          setError("Angular update was cancelled");
-          addLog("Angular update cancelled (SSE)");
-        } else {
-          setError(typeof payload.error_message === "string" ? payload.error_message : "Angular update failed");
-          addLog("Angular update failed (SSE)");
-        }
-      } else if (event.event_type === "TARGET_VERSION_FAILED") {
-        setViewState("failure");
-        setError("Target version verification failed");
-        addLog("Target version verification failed (SSE)");
-      } else if (event.event_type === "INTERACTIVE_DECISION_REQUIRED") {
-        setViewState("blocked");
-        addLog("Interactive prompt detected (SSE)");
-      }
+      if (event.run_id !== runId || event.stage_id !== stageId || seenEvents.current.has(event.event_id)) continue;
+      seenEvents.current.add(event.event_id);
+      const payload = event.payload ?? {};
+      if (event.event_type === "TARGET_VERSION_VERIFIED") { verifiedEventRef.current = true; setViewState("success"); log("Target version verified by backend (SSE)."); }
+      else if (event.event_type === "TARGET_VERSION_FAILED") { setViewState("failure"); setError("Target version verification failed."); }
+      else if (event.event_type === "INTERACTIVE_DECISION_REQUIRED") { setViewState("blocked"); setError("Interactive prompt detected. Manual intervention is required."); }
+      else if (event.event_type === "COMMAND_CANCELLED" || event.event_type === "COMMAND_INTERRUPTED") { setViewState("cancelled"); setError("Angular update was cancelled."); }
+      else if (event.event_type === "ANGULAR_UPDATE_FAILED") { setViewState("failure"); setError(typeof payload.error_message === "string" ? payload.error_message : "Angular update failed."); }
+      else if ((event.event_type === "COMMAND_OUTPUT_CHUNK" || event.event_type === "COMMAND_OUTPUT_AVAILABLE") && typeof payload.chunk === "string") setLogs((items) => [...items, payload.chunk as string]);
+      else if (event.event_type === "ANGULAR_UPDATE_COMPLETED") setViewState("pending_verification");
+      if (typeof payload.state_version === "number") onStateChange?.(payload.state_version);
     }
-  }, [workflowEvents, onStateChange, addLog]);
+  }, [workflowEvents, runId, stageId, onStateChange, log]);
 
-  const handleStartUpdate = async () => {
-    if (submittedRef.current) return;
-    submittedRef.current = true;
-    setSubmitting(true);
-    const idempotencyKey = `ang-upd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    idempotencyRef.current = idempotencyKey;
+  async function start() {
+    if (submittingKind.current) return; submittingKind.current = "start"; setSubmitting(true); setViewState("running");
     try {
-      setViewState("running");
-      addLog(`Starting Angular update: ${sourceVersion} → ${targetVersion}`);
-      const result = await startAngularUpdate(runId, stageId, {
-        expected_state_version: expectedStateVersion,
-        idempotency_key: idempotencyKey,
-        actor: "operator",
-        source_version: sourceVersion,
-        target_version: targetVersion,
-      });
-      setUpdateResult(result);
-      handleStateChange(result);
-      addLog(result.status === "succeeded" ? "Angular update completed successfully" : `Update status: ${result.status}`);
-      onStateChange?.(result.state_version);
-    } catch (err: unknown) {
-      setViewState("failure");
-      const message = err instanceof Error ? err.message : "Failed to start Angular update";
-      setError(message);
-      addLog(`Error: ${message}`);
-    } finally {
-      setSubmitting(false);
-      setTimeout(() => { submittedRef.current = false; }, 1000);
-    }
-  };
-
-  const handleVerifyTarget = async () => {
-    if (submittedRef.current) return;
-    submittedRef.current = true;
-    setSubmitting(true);
-    const idempotencyKey = `ang-verify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      const result = await verifyTargetVersion(runId, stageId, {
-        expected_state_version: expectedStateVersion,
-        idempotency_key: idempotencyKey,
-        actor: "operator",
-      });
-      setUpdateResult(result);
-      if (result.target_version_status === "verified") {
-        addLog(`Target version verified: ${result.resolved_target_version}`);
-        onStateChange?.(result.state_version);
-      } else if (result.target_version_status === "mismatch") {
-        setViewState("failure");
-        setError(`Target version mismatch: expected ${targetVersion}, resolved ${result.resolved_target_version}`);
-        addLog("Target version mismatch");
-      } else if (result.target_version_status === "failed") {
-        setViewState("failure");
-        setError("Target version verification failed");
-        addLog("Target version verification failed");
-      } else {
-        addLog(`Version check completed: ${result.target_version_status}`);
-      }
-      onStateChange?.(result.state_version);
-    } catch (err: unknown) {
-      addLog(`Version check failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    } finally {
-      setSubmitting(false);
-      setTimeout(() => { submittedRef.current = false; }, 1000);
-    }
-  };
-
-  const handleFetchTargetVersion = useCallback(async () => {
-    try {
-      const result = await getTargetVersionTyped(runId, stageId);
-      setTargetVersionResult(result);
-      const sourceCount = Object.keys(result.evidence_sources).length;
-      addLog(`Target version: ${result.resolved_target_version} (sources: ${sourceCount})`);
-      if (!result.all_sources_agree) {
-        setError("Target version sources disagree");
-      }
-    } catch (err: unknown) {
-      addLog(`Target version fetch failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    }
-  }, [runId, stageId, addLog]);
-
-  useEffect(() => {
-    if (viewState === "success" && !targetVersionResult) {
-      handleFetchTargetVersion();
-    }
-  }, [viewState, targetVersionResult, handleFetchTargetVersion]);
-
-  const isRunning = submitting || viewState === "running";
-
-  if (viewState === "loading") {
-    return (
-      <section className={styles.panel} aria-labelledby="angular-update-title">
-        <div className={styles.header}>
-          <div>
-            <p className={styles.kicker}>S3-F07 angular transform</p>
-            <h2 id="angular-update-title">Angular Update</h2>
-          </div>
-        </div>
-        <div role="status">
-          <p className={styles.note}>Loading Angular update state…</p>
-        </div>
-      </section>
-    );
+      if (!plan) return;
+      const result = await startAngularUpdate(runId, stageId, { expected_state_version: expectedStateVersion, idempotency_key: `angular-update-${runId}-${stageId}`, actor: "operator", source_version: plan.source_exact, target_version: plan.target_exact, toolchain_profile_id: plan.execution_profile_id, prerequisite_artifact_ids: planArtifactIds });
+      applyResult(result); onStateChange?.(result.state_version);
+    } catch (reason: unknown) {
+      setViewState(reason instanceof ApiClientError && reason.status === 409 ? "stale" : reason instanceof ApiClientError && [401, 403].includes(reason.status) ? "failure" : "failure");
+      setError(reason instanceof ApiClientError && reason.status === 403 ? "You are not authorized to run this stage." : "Angular update could not be started.");
+    } finally { submittingKind.current = null; setSubmitting(false); }
   }
 
-  return (
-    <section className={styles.panel} aria-labelledby="angular-update-title">
-      <div className={styles.header}>
-        <div>
-          <p className={styles.kicker}>S3-F07 angular transform</p>
-          <h2 id="angular-update-title">Angular Update</h2>
-        </div>
-        <StatusPill value={
-          viewState === "success" ? "PASSED" :
-          viewState === "failure" ? "FAILED" :
-          viewState === "cancelled" ? "FAILED" :
-          viewState === "blocked" ? "BLOCKED" :
-          viewState === "stale" ? "STALE" :
-          viewState === "no_evidence" ? "WARNING" :
-          "RUNNING"
-        } />
-      </div>
+  async function verify() {
+    if (submittingKind.current) return; submittingKind.current = "verify"; setSubmitting(true);
+    try { const result = await verifyTargetVersion(runId, stageId, { expected_state_version: expectedStateVersion, idempotency_key: `angular-target-verify-${runId}-${stageId}`, actor: "operator", command_execution_id: update?.command_execution_id ?? "" }); setTarget(result); setViewState(result.target_version_status === "mismatch" || result.target_version_status === "failed" ? "failure" : "pending_verification"); if (result.state_version) onStateChange?.(result.state_version); }
+    catch (reason: unknown) { setViewState(reason instanceof ApiClientError && reason.status === 409 ? "stale" : "failure"); setError("Target verification could not be completed."); }
+    finally { submittingKind.current = null; setSubmitting(false); }
+  }
 
-      <div className={styles.dimensionGrid} aria-label="Version matrix">
-        <div>
-          <span>Source</span>
-          <strong>{sourceVersion}</strong>
-        </div>
-        <div>
-          <span>Target</span>
-          <strong>{targetVersion}</strong>
-        </div>
-        {updateResult?.resolved_target_version && (
-          <div>
-            <span>Resolved target</span>
-            <strong>
-              {updateResult.resolved_target_version}
-              {updateResult.target_version_status === "verified" && " ✓"}
-              {updateResult.target_version_status === "mismatch" && " ✗"}
-            </strong>
-          </div>
-        )}
-        {updateResult?.command_execution_id && (
-          <div>
-            <span>Execution ID</span>
-            <strong>{updateResult.command_execution_id}</strong>
-          </div>
-        )}
-        {updateResult?.artifact_ids && updateResult.artifact_ids.length > 0 && (
-          <div>
-            <span>Artifacts</span>
-            <strong>{updateResult.artifact_ids.length}</strong>
-          </div>
-        )}
-      </div>
+  const stateLabel = viewState === "success" ? "PASSED" : viewState === "failure" || viewState === "cancelled" ? "FAILED" : viewState === "blocked" ? "BLOCKED" : viewState === "stale" || viewState === "no_evidence" ? "WARNING" : "RUNNING";
+  const command = plan?.commands.angular_update?.[0];
+  const lockedSourceVersion = plan?.source_exact ?? "locked plan unavailable";
+  const lockedTargetVersion = plan?.target_exact ?? "locked plan unavailable";
+  const evidenceIds = [...new Set([...(update?.artifact_ids ?? []), ...(target?.artifact_ids ?? []), ...(evidence?.artifact_ids ?? []), ...artifacts.filter((item) => item.stage_id === stageId).map((item) => item.artifact_id)])];
+  const evidenceRows = ["package_json_version", "lockfile_version", "dependency_tree_version", "ng_version_output"];
 
-      {targetVersionResult && (
-        <div className={styles.dimensionGrid} aria-label="Target verification matrix">
-          <div>
-            <span>Sources agree</span>
-            <strong>{targetVersionResult.all_sources_agree ? "Yes ✓" : "No ✗"}</strong>
-          </div>
-          {Object.entries(targetVersionResult.evidence_sources).map(([key, value]) => (
-            <div key={key}>
-              <span>{key.replace(/_/g, " ")}</span>
-              <strong>{value || "—"}</strong>
-            </div>
-          ))}
-          {targetVersionResult.disagreements.length > 0 && (
-            <div>
-              <span>Disagreements</span>
-              <strong>{targetVersionResult.disagreements.length}</strong>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className={styles.row}>
-        <span>State version {expectedStateVersion}</span>
-        {viewState === "empty" && (
-          <button
-            type="button"
-            onClick={handleStartUpdate}
-            disabled={isRunning || !sourceVersion || !targetVersion}
-            aria-label="Start Angular Update"
-          >
-            {submitting ? "Starting…" : "Start Angular Update"}
-          </button>
-        )}
-        {viewState === "success" && (
-          <button
-            type="button"
-            onClick={handleVerifyTarget}
-            disabled={submitting || isRunning}
-            aria-label="Verify Target Version"
-          >
-            {submitting ? "Verifying…" : "Verify Target Version"}
-          </button>
-        )}
-      </div>
-
-      {viewState === "failure" && error && (
-        <div role="alert" className={styles.note}>
-          {error}
-        </div>
-      )}
-
-      {viewState === "cancelled" && (
-        <div role="alert" className={styles.note}>
-          {error || "Angular update was cancelled."}
-        </div>
-      )}
-
-      {viewState === "blocked" && (
-        <div role="alert" className={styles.note}>
-          Interactive prompt detected. Manual intervention required.
-        </div>
-      )}
-
-      {viewState === "stale" && (
-        <div role="alert" className={styles.note}>
-          State version changed. Reloading snapshot…
-        </div>
-      )}
-
-      {viewState === "no_evidence" && (
-        <div role="alert" className={styles.note}>
-          No Angular update evidence found for this stage.
-        </div>
-      )}
-
-      {viewState === "reconnecting" && (
-        <div role="status" className={styles.note}>
-          Reconnecting…
-        </div>
-      )}
-
-      {logs.length > 0 && (
-        <div aria-live="polite">
-          <h3 className={styles.kicker}>Logs</h3>
-          <LogViewer content={logs.join("\n")} maxLines={200} />
-        </div>
-      )}
-    </section>
-  );
+  if (viewState === "loading") return <section className={styles.panel} aria-labelledby="angular-update-title"><h2 id="angular-update-title">Angular Update</h2><p role="status">Loading authoritative Angular update evidence…</p></section>;
+  return <section className={styles.panel} aria-labelledby="angular-update-title">
+    <div className={styles.header}><div><p className={styles.kicker}>S3-F07-I03 · locked stage plan</p><h2 id="angular-update-title">Angular Update</h2></div><StatusPill value={stateLabel} /></div>
+    <div className={styles.dimensionGrid} aria-label="Angular update dimensions"><div><span>Source version</span><strong>{lockedSourceVersion}</strong></div><div><span>Exact target</span><strong>{lockedTargetVersion}</strong></div><div><span>Stage</span><strong>{stageId}</strong></div><div><span>Execution ID</span><strong>{update?.command_execution_id ?? "pending"}</strong></div><div><span>State version</span><strong>{expectedStateVersion}</strong></div></div>
+    {command ? <div className={styles.previewPanel}><h3>Registered command</h3><p><code>{command.executable} {command.arguments.join(" ")}</code></p><p className={styles.note}>Working directory: {command.working_directory_alias}; shell: disabled; network: {command.network_profile}</p></div> : null}
+    {profile ? <div className={styles.previewPanel}><h3>Execution profile</h3><p><strong>{profile.profile_id}</strong> · Node {profile.node_exact} · npm {profile.package_manager_exact} · npx {profile.npx_exact}</p><p className={styles.note}>Profile checksum: <code>{profile.checksum}</code></p></div> : null}
+    {target ? <div className={styles.previewPanel}><h3>Target verification matrix</h3><p>Backend status: <strong>{target.target_version_status}</strong> · resolved: <strong>{text(target.resolved_target_version)}</strong> · sources agree: <strong>{target.all_sources_agree ? "yes" : "no"}</strong></p><dl>{evidenceRows.map((key) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd><code>{target.evidence_sources[key] ?? "not available"}</code></dd></div>)}</dl>{target.disagreements.map((item) => <p role="alert" key={item}>{item}</p>)}</div> : null}
+    {evidence ? <div className={styles.previewPanel}><h3>Applied migrations and evidence matrix</h3><ul>{(evidence.migration_list.length ? evidence.migration_list : ["No migration entries recorded"]).map((item) => <li key={item}><code>{item}</code></li>)}</ul><p className={styles.note}>Package manifest, lockfile, dependency tree, and local CLI evidence are backend artifacts; this UI does not infer their result from logs or exit codes.</p></div> : null}
+    {evidenceIds.length ? <div className={styles.previewPanel}><h3>Artifact links</h3><ul className={styles.list}>{evidenceIds.map((id) => <li key={id}><a href={artifactHref(id)} target="_blank" rel="noreferrer">{id}</a></li>)}</ul></div> : null}
+    <div className={styles.row}><span>{viewState === "pending_verification" ? "Execution finished; awaiting TARGET_VERSION_VERIFIED." : viewState === "reconnecting" ? "Reconnecting…" : "Backend-authoritative state"}</span>{viewState === "empty" ? <button type="button" onClick={() => void start()} disabled={submitting || !plan}>Start Angular update</button> : null}{viewState === "pending_verification" ? <button type="button" onClick={() => void verify()} disabled={submitting}>Verify target version</button> : null}</div>
+    {viewState === "blocked" ? <p role="alert">{error ?? "Interactive prompt detected. Manual intervention is required."}</p> : null}
+    {viewState === "stale" ? <p role="alert">{error}</p> : null}
+    {viewState === "no_evidence" || viewState === "failure" || viewState === "cancelled" ? <p role="alert">{error ?? "No passing evidence is available."}</p> : null}
+    {logs.length ? <pre aria-label="Angular update logs">{logs.join("\n")}</pre> : null}
+  </section>;
 }

@@ -45,14 +45,17 @@ const initialState: AuthoritativeRunStateDto = {
   }],
 };
 
+const migrationState = { stages: [{ stage_id: "stage-1", status: "RUNNING", source_angular_version: "17.0.0", target_angular_version: "18.0.0" }] } as never;
+
 describe("AuthoritativeRunDashboard", () => {
   it("renders backend-owned state, event history, and evidence", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} initialMigrationState={migrationState} />);
 
     expect(screen.getByText("Live ? authoritative state")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "C:/source ? C:/target" })).toBeInTheDocument();
     expect(screen.getByText("RUN_CREATED")).toBeInTheDocument();
     expect(screen.getByText("00_job_setup/create_run_request.json")).toBeInTheDocument();
     expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
+    expect(screen.getByText("Angular Update")).toBeInTheDocument();
   });
 });

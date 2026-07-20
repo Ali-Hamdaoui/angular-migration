@@ -94,7 +94,7 @@ export async function decideG08(
 export async function completeAngularUpdate(
   runId: string,
   stageId: string,
-  request: { expected_state_version: number; idempotency_key: string; actor: string },
+  request: { expected_state_version: number; idempotency_key: string; actor: string; command_execution_id: string },
   client: ApiClient = apiClient,
 ): Promise<AngularUpdateResponse> {
   return client.post<AngularUpdateResponse>(
@@ -106,10 +106,10 @@ export async function completeAngularUpdate(
 export async function verifyTargetVersion(
   runId: string,
   stageId: string,
-  request: { expected_state_version: number; idempotency_key: string; actor: string },
+  request: { expected_state_version: number; idempotency_key: string; actor: string; command_execution_id: string },
   client: ApiClient = apiClient,
-): Promise<AngularUpdateResponse> {
-  return client.post<AngularUpdateResponse>(
+): Promise<TargetVersionResponse> {
+  return client.post<TargetVersionResponse>(
     `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/target-version/verify`,
     request,
   );

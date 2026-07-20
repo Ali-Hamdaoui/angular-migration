@@ -1,6 +1,8 @@
 "use client";
 
-import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import { useEffect, useState } from "react";
+import { getMigrationState } from "@/api/migrations";
+import type { AuthoritativeRunStateDto, MigrationRunDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { AngularUpdatePanel } from "./AngularUpdatePanel";
 import { TransformationEvidenceViewer } from "./TransformationEvidenceViewer";
@@ -26,8 +28,10 @@ const pipelineSteps = [
   { label: 'Verify', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type.includes('VALIDATION') && event.event_type.endsWith('COMPLETED')) },
 ];
 
-export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
+export function AuthoritativeRunDashboard({ runId, initialState, initialMigrationState }: { runId: string; initialState: AuthoritativeRunStateDto; initialMigrationState?: MigrationRunDto | null }) {
   const { state, status, error, refresh } = useAuthoritativeRun(runId, initialState);
+  const [migrationState, setMigrationState] = useState(initialMigrationState);
+  useEffect(() => { void getMigrationState(runId).then(setMigrationState).catch(() => undefined); }, [runId, state.state_version]);
   const connectionLabel = {
     loading: "Loading authoritative state?", connecting: "Connecting to backend events?", open: "Live ? authoritative state", reconnecting: "Connection lost ? reconnecting?", recovering: "Refreshing authoritative snapshot?", failed: "Unable to refresh authoritative state",
   }[status];
@@ -66,11 +70,10 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <G02ReviewPanel runId={runId} initialState={state} />
       <ExecutionProfilePanel runId={runId} initialState={state} />
       {((): React.ReactNode => {
-        const stateWithStages = state as AuthoritativeRunStateDto & { stages?: Array<{ stage_id: string; status: string; source_angular_version: string | null; target_angular_version: string | null }> };
-        const activeStage = stateWithStages.stages?.find((s) => s.status !== "PASSED" && s.status !== "FAILED" && s.status !== "ROLLED_BACK" && s.status !== "CANCELLED");
+        const activeStage = migrationState?.stages.find((s) => !["PASSED", "FAILED", "ROLLED_BACK", "CANCELLED"].includes(s.status));
         if (!activeStage) return null;
         return <>
-          <AngularUpdatePanel runId={runId} stageId={activeStage.stage_id} sourceVersion={activeStage.source_angular_version ?? "unknown"} targetVersion={activeStage.target_angular_version ?? "unknown"} expectedStateVersion={state.state_version} onStateChange={() => refresh()} workflowEvents={state.workflow_events} />
+          <AngularUpdatePanel runId={runId} stageId={activeStage.stage_id} expectedStateVersion={state.state_version} onStateChange={() => refresh()} workflowEvents={state.workflow_events} connectionStatus={status} artifacts={state.artifacts} />
           <TransformationEvidenceViewer runId={runId} stageId={activeStage.stage_id} sourceSandboxPath={state.source_path} targetSandboxPath={state.target_output_path} expectedStateVersion={state.state_version} />
           <G08ReviewWorkspace runId={runId} stageId={activeStage.stage_id} gateId="G08" expectedStateVersion={state.state_version} />
         </>;

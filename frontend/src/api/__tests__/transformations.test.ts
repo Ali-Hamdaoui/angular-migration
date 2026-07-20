@@ -124,7 +124,7 @@ describe("transformations API client", () => {
     const client = createApiClient("http://backend.test", fetchMock);
 
     await completeAngularUpdate(runId, stageId, {
-      expected_state_version: 1, idempotency_key: "compl-1", actor: "tester",
+      expected_state_version: 1, idempotency_key: "compl-1", actor: "tester", command_execution_id: "exec-1",
     }, client);
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -138,7 +138,7 @@ describe("transformations API client", () => {
     const client = createApiClient("http://backend.test", fetchMock);
 
     await verifyTargetVersion(runId, stageId, {
-      expected_state_version: 1, idempotency_key: "ver-1", actor: "tester",
+      expected_state_version: 1, idempotency_key: "ver-1", actor: "tester", command_execution_id: "exec-1",
     }, client);
 
     expect(fetchMock).toHaveBeenCalledWith(
