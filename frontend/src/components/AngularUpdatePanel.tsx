@@ -160,7 +160,6 @@ export function AngularUpdatePanel({
         expected_state_version: expectedStateVersion,
         idempotency_key: idempotencyKey,
         actor: "operator",
-        command_execution_id: updateResult?.command_execution_id ?? "",
       });
       setUpdateResult(result);
       if (result.target_version_status === "verified") {

@@ -108,9 +108,9 @@ describe("AngularUpdatePanel", () => {
       <AngularUpdatePanel runId="r1" stageId="s1" sourceVersion="17.0.0" targetVersion="18.0.0" expectedStateVersion={1} onStateChange={onStateChange} />
     );
     expect(screen.getByText("Angular Update")).toBeTruthy();
-    const sseEvents = [
+    const sseEvents: Array<{ event_id: string; run_id: string; stage_id: string | null; event_type: string; occurred_at: string; sequence: number; payload: Record<string, unknown> }> = [
       {
-        id: "evt-1",
+        event_id: "evt-1", run_id: "r1", stage_id: "s1", occurred_at: new Date().toISOString(), sequence: 1,
         event_type: "ANGULAR_UPDATE_COMPLETED",
         payload: { target_version_status: "verified", state_version: 2 },
       },
@@ -126,7 +126,7 @@ describe("AngularUpdatePanel", () => {
     (getAngularUpdate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
     render(
       <AngularUpdatePanel runId="r1" stageId="s1" sourceVersion="17.0.0" targetVersion="18.0.0" expectedStateVersion={1} workflowEvents={[
-        { id: "evt-2", event_type: "ANGULAR_UPDATE_FAILED", payload: { error_message: "Command failed" } },
+        { event_id: "evt-2", run_id: "r1", stage_id: "s1", occurred_at: new Date().toISOString(), sequence: 2, event_type: "ANGULAR_UPDATE_FAILED", payload: { error_message: "Command failed" } },
       ]} />
     );
     expect(await screen.findByText("Command failed")).toBeTruthy();
@@ -136,7 +136,7 @@ describe("AngularUpdatePanel", () => {
     (getAngularUpdate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
     render(
       <AngularUpdatePanel runId="r1" stageId="s1" sourceVersion="17.0.0" targetVersion="18.0.0" expectedStateVersion={1} workflowEvents={[
-        { id: "evt-3", event_type: "INTERACTIVE_DECISION_REQUIRED", payload: {} },
+        { event_id: "evt-3", run_id: "r1", stage_id: "s1", occurred_at: new Date().toISOString(), sequence: 3, event_type: "INTERACTIVE_DECISION_REQUIRED", payload: {} },
       ]} />
     );
     expect(await screen.findByText("Interactive prompt detected. Manual intervention required.")).toBeTruthy();
@@ -157,7 +157,7 @@ describe("AngularUpdatePanel", () => {
     (getAngularUpdate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
     render(
       <AngularUpdatePanel runId="r1" stageId="s1" sourceVersion="17.0.0" targetVersion="18.0.0" expectedStateVersion={1} workflowEvents={[
-        { id: "evt-4", event_type: "ANGULAR_UPDATE_COMPLETED", payload: { target_version_status: "mismatch", state_version: 3 } },
+        { event_id: "evt-4", run_id: "r1", stage_id: "s1", occurred_at: new Date().toISOString(), sequence: 4, event_type: "ANGULAR_UPDATE_COMPLETED", payload: { target_version_status: "mismatch", state_version: 3 } },
       ]} />
     );
     expect(await screen.findByText("Target version mismatch")).toBeTruthy();
@@ -167,7 +167,7 @@ describe("AngularUpdatePanel", () => {
     (getAngularUpdate as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
     render(
       <AngularUpdatePanel runId="r1" stageId="s1" sourceVersion="17.0.0" targetVersion="18.0.0" expectedStateVersion={1} workflowEvents={[
-        { id: "evt-5", event_type: "ANGULAR_UPDATE_FAILED", payload: { error_message: "Cancelled by operator" } },
+        { event_id: "evt-5", run_id: "r1", stage_id: "s1", occurred_at: new Date().toISOString(), sequence: 5, event_type: "ANGULAR_UPDATE_FAILED", payload: { error_message: "Cancelled by operator" } },
       ]} />
     );
     expect(await screen.findByText("Angular update was cancelled")).toBeTruthy();
