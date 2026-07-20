@@ -632,6 +632,7 @@ class CommandPolicyValidateResponseDto(ContractModel):
     artifact_id: str | None = None
     correlation_id: str | None = None
     request_payload_hash: str | None = None
+    decision_timestamp: datetime | None = None
 
 
 class CommandExecuteRequestDto(ContractModel):
@@ -888,6 +889,7 @@ class AuthoritativeRunStateDto(ContractModel):
     graph_thread_id: str
     created_at: datetime
     updated_at: datetime
+    workspace_aliases: dict[str, str] = Field(default_factory=dict)
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 

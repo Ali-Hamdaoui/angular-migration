@@ -477,6 +477,7 @@ class CommandPolicyEngineService:
             idempotent_replay=replay, expected_state_version=audit.expected_state_version,
             authoritative_state_version=audit.state_version, artifact_id=(audit.artifact_ids or [None])[0],
             correlation_id=audit.correlation_id, request_payload_hash=audit.request_payload_hash,
+            decision_timestamp=audit.created_at,
         )
 
     def _check_shell_enforcement(self, request: CommandPolicyValidateRequestDto) -> AuthorizationCheckResult:
