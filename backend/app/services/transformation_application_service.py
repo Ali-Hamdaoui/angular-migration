@@ -678,13 +678,18 @@ class TransformationEvidenceApplicationService:
             if run is None:
                 raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
 
+            request_checksum = "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
             existing_event = _find_event(session, run_id, request.idempotency_key)
             if existing_event:
                 record = session.scalar(
                     select(TransformationEvidenceModel)
                     .where(TransformationEvidenceModel.run_id == run_id)
+                    .where(TransformationEvidenceModel.idempotency_key == request.idempotency_key)
                     .order_by(TransformationEvidenceModel.created_at.desc())
                 )
+                if record is not None and record.request_checksum is not None and record.request_checksum != request_checksum:
+                    raise G03ApplicationError("IDEMPOTENCY_PAYLOAD_MISMATCH", "Idempotency key payload differs.", status_code=409)
                 return self._dto(record, replay=True) if record else None
 
             if run.state_version != request.expected_state_version:
@@ -713,6 +718,9 @@ class TransformationEvidenceApplicationService:
                 raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Source sandbox contains a symlink escape.", status_code=409)
             if any(item.is_symlink() for item in target.rglob("*")):
                 raise G03ApplicationError("TARGET_SAFETY_AUTHORITY_REQUIRED", "Target sandbox contains a symlink escape.", status_code=409)
+
+            input_fingerprint = _tree_checksum(source)
+            target_fingerprint = _tree_checksum(target)
 
             # Emit STARTED event before computation
             started_transition = StateTransitionService(session).apply_transition(
@@ -791,6 +799,30 @@ class TransformationEvidenceApplicationService:
                     artifact_ids.append(diff_ref.artifact_id)
                     diff_written = True
 
+                # Register standalone migration list artifact
+                mig_ref = _write_evidence(
+                    store, session, run_id, "transformation_migration_list.json",
+                    {"migrations": migration_list},
+                    stage_id=stage_id,
+                    created_by="transformation-evidence-service",
+                    created_at=now,
+                )
+                artifact_ids.append(mig_ref.artifact_id)
+
+                # Register standalone changed file inventory artifact
+                inv_payload = {
+                    "total_files_changed": diff_result.total_files_changed,
+                    "changed_files": [cf.model_dump(mode="json") for cf in diff_result.changed_files],
+                }
+                inv_ref = _write_evidence(
+                    store, session, run_id, "transformation_changed_file_inventory.json",
+                    inv_payload,
+                    stage_id=stage_id,
+                    created_by="transformation-evidence-service",
+                    created_at=now,
+                )
+                artifact_ids.append(inv_ref.artifact_id)
+
             overall_risk = self._compute_overall_risk(diff_result, forbidden)
             evidence_complete = (
                 diff_result.total_files_changed > 0
@@ -845,13 +877,20 @@ class TransformationEvidenceApplicationService:
                 state_version=transition.next_state_version,
                 event_sequence=transition.event_sequence,
                 block_reason=None if evidence_complete else "No changes detected in transformation sandbox",
+                correlation_id=request.correlation_id,
+                input_fingerprint=input_fingerprint,
+                target_fingerprint=target_fingerprint,
+                request_checksum=request_checksum,
+                gate_version=self.GATE_VERSION,
+                source_sandbox_path=str(source),
+                target_sandbox_path=str(target),
                 created_at=now,
                 updated_at=now,
             )
             session.add(record)
             session.flush()
 
-            return self._dto(record)
+            return self._dto(record, source_sandbox_path=str(source), target_sandbox_path=str(target))
 
     def _compute_diff_summary(self, source_path: Path, target_path: Path) -> DiffSummary:
         """Compute a diff summary by comparing files between source and target sandboxes."""
@@ -1165,7 +1204,7 @@ class TransformationEvidenceApplicationService:
             return RiskLevel.MEDIUM
         return RiskLevel.LOW
 
-    def _dto(self, record, *, replay=False):
+    def _dto(self, record, *, replay=False, source_sandbox_path=None, target_sandbox_path=None):
         from app.api.transformation_contracts import TransformationEvidenceResponse
 
         return TransformationEvidenceResponse(
@@ -1186,6 +1225,9 @@ class TransformationEvidenceApplicationService:
             event_sequence=record.event_sequence,
             block_reason=record.block_reason,
             idempotent_replay=replay,
+            correlation_id=record.correlation_id,
+            source_sandbox_path=source_sandbox_path or record.source_sandbox_path,
+            target_sandbox_path=target_sandbox_path or record.target_sandbox_path,
         )
 
 

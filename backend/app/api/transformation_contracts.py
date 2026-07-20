@@ -57,6 +57,7 @@ class TransformationEvidenceRequest(ContractModel):
     prerequisite_artifact_ids: list[str] = Field(default_factory=list)
     source_sandbox_path: str = Field(min_length=1)
     target_sandbox_path: str = Field(min_length=1)
+    correlation_id: str | None = None
 
 
 class TransformationEvidenceResponse(ContractModel):
@@ -77,6 +78,9 @@ class TransformationEvidenceResponse(ContractModel):
     event_sequence: int = Field(ge=1)
     block_reason: str | None = None
     idempotent_replay: bool = False
+    correlation_id: str | None = None
+    source_sandbox_path: str | None = None
+    target_sandbox_path: str | None = None
 
 
 # ── S3-F09 — G08 Approval ────────────────────────────────────────────────

@@ -61,6 +61,13 @@ class TransformationEvidenceModel(Base):
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     block_reason: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(String(64))
+    input_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    target_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    request_checksum: Mapped[str | None] = mapped_column(String(128))
+    gate_version: Mapped[str] = mapped_column(String(32), nullable=False, default="g03-evidence-v1")
+    source_sandbox_path: Mapped[str | None] = mapped_column(String(512))
+    target_sandbox_path: Mapped[str | None] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

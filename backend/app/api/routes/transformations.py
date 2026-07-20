@@ -129,10 +129,11 @@ def generate_transformation_evidence(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
     request: TransformationEvidenceRequest = None,
+    actor: str = Depends(authenticated_actor),
     service: TransformationEvidenceApplicationService = Depends(get_transformation_evidence_service),
 ):
     try:
-        return service.generate(run_id, stage_id, request)
+        return service.generate(run_id, stage_id, request.model_copy(update={"actor": actor}))
     except G03ApplicationError as error:
         raise HTTPException(
             status_code=error.status_code,
@@ -147,6 +148,7 @@ def generate_transformation_evidence(
 def get_transformation_evidence(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
+    actor: str = Depends(authenticated_actor),
     service: TransformationEvidenceApplicationService = Depends(get_transformation_evidence_service),
 ):
     result = service.get(run_id, stage_id)

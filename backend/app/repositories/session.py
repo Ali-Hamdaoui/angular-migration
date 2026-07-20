@@ -48,6 +48,17 @@ engine = create_database_engine(get_settings().database_url)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
 
 
+def paginate_query(query, *, page_size: int = 100):
+    """Cursor-based pagination helper for SQLite migrations and bulk processing."""
+    offset = 0
+    while True:
+        batch = query.offset(offset).limit(page_size).all()
+        if not batch:
+            break
+        yield from batch
+        offset += page_size
+
+
 def check_database_connection() -> None:
     """Verify connectivity without creating or changing workflow records."""
     with engine.connect() as connection:
