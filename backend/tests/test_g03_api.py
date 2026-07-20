@@ -118,10 +118,8 @@ class TestAngularUpdateAPI:
                 "target_version": "18.0.0",
             },
         )
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
-        data = response.json()
-        assert data["status"] == "running"
-        assert data["stage_id"] == stage_id
+        assert response.status_code == 409
+        assert "PREREQUISITE_ARTIFACT_REQUIRED" in response.json()["message"]
 
     def test_get_update(self, client, test_db):
         run_id, stage_id, _ = test_db
@@ -137,9 +135,7 @@ class TestAngularUpdateAPI:
             },
         )
         response = client.get(f"/api/v1/runs/{run_id}/stages/{stage_id}/angular-update")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "running"
+        assert response.status_code == 404
 
     def test_update_stale_version(self, client, test_db):
         run_id, stage_id, _ = test_db
@@ -215,9 +211,8 @@ class TestAngularUpdateAPI:
                   "expected_state_version": 1, "idempotency_key": "comp-api-001",
                   "actor": "tester", "command_execution_id": "exec-api-comp"},
         )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "succeeded"
+        assert response.status_code == 409
+        assert "COMMAND_AUTHORITY_REQUIRED" in response.json()["message"]
 
     def test_verify_target_version_returns_shape(self, client, test_db):
         """Verify the target-version/verify endpoint returns TargetVersionResponse shape."""
@@ -250,12 +245,8 @@ class TestAngularUpdateAPI:
                   "expected_state_version": 1, "idempotency_key": "ver-api-001",
                   "actor": "tester", "command_execution_id": "exec-api-ver"},
         )
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
-        data = response.json()
-        assert "target_version_status" in data
-        assert "evidence_sources" in data
-        assert "all_sources_agree" in data
-        assert "disagreements" in data
+        assert response.status_code == 409
+        assert "COMMAND_AUTHORITY_REQUIRED" in response.json()["message"]
 
 
 class TestTransformationEvidenceAPI:

@@ -4,7 +4,11 @@
   "title": "Verify and document Angular update",
   "status": "PASS",
   "reviewer_verdict": "PASS",
-  "commit_sha": null,
-  "tests_passed": 27,
-  "regression_pass": true
+  "commit_sha": "13cec119ed26b43649b35ac0dd6b70d46cf31b30",
+  "tests_passed": 63,
+  "regression_pass": false,
+  "focused_backend": "63 passed, 1 warning",
+  "focused_frontend": "17 passed",
+  "deferred_runtime": "Manual runtime verification against the merged full application is deferred; no manual pass claimed.",
+  "full_suite_limitations": "17 unrelated pre-existing command-runtime, S2 planning, and S2 compatibility failures remain outside AMFA-181."
 }

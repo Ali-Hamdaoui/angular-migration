@@ -15,7 +15,7 @@ from app.main import app
 from app.repositories.models import MigrationPlanModel, MigrationRunModel, WorkflowEventModel
 from app.services import planning_evidence_application_service as planning_module
 
-from backend.tests.test_planning_evidence_persistence_api_s2_f06_i02 import setup
+from tests.test_planning_evidence_persistence_api_s2_f06_i02 import setup
 
 
 def test_api_returns_correlated_authorization_error_without_mutation(tmp_path: Path):

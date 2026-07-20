@@ -64,13 +64,13 @@ All G03 logic follows the existing domain → service → API pattern establishe
 ## Test Coverage
 
 |- **Domain unit tests**: 21 tests (`test_g03_domain.py`) covering all domain models, builders, and decision rules
-- **API integration tests**: 13 tests (`test_g03_api.py`) covering angular update, transformation evidence, and G08 approval flows
-- **AMFA-178 service tests**: 12 tests (`test_angular_update_amfa178.py`) covering worker dispatch, idempotency, prompts, timeout, cancellation
-- **AMFA-179 API tests**: 7 tests (`test_angular_update_amfa179.py`) covering complete/verify routes
-- **Policy tests**: 3 tests (`test_angular_update_policy_amfa178.py`) covering forbidden CLI flags and registration
+- **API integration tests**: 13 tests (`test_g03_api.py`) covering Angular update, transformation evidence, and G08 approval flows; prerequisite-missing and non-authoritative command fixtures fail closed
+- **AMFA-178 service tests**: 13 tests (`test_angular_update_amfa178.py`) covering worker dispatch, idempotency, prompts, target disagreement, partial mutation, timeout, and cancellation
+- **AMFA-179 API tests**: 8 tests (`test_angular_update_amfa179.py`) covering complete/verify routes and artifact integrity
+- **Policy tests**: 8 tests (`test_angular_update_policy_amfa178.py`) covering the exact local CLI shape, forbidden flags, and registered verification commands
 - **Frontend component tests**: 17 tests (`AngularUpdatePanel.test.tsx`) covering all view states, SSE transitions, accessibility
 - **Frontend API client tests**: 11 tests (`transformations.test.ts`) covering all 10 transformation API functions
-- **Regression**: Existing tests continue to pass with no regressions from G03 changes
+- **Focused regression**: 63 AMFA-181/G03 tests pass on Windows; the full repository suite still has unrelated command-runtime and S2 planning/compatibility failures
 
 ### Windows Compatibility
 
@@ -86,3 +86,4 @@ All SQLite test databases use `pytest`'s `tmp_path` fixture instead of `tempfile
 
 - Full Angular fixture generation must be done outside Git through production intake APIs
 - `integration_verified` remains `false` until cross-goal integration evidence exists
+- Manual runtime verification against the merged full application is deferred until the upstream G02 runtime and integrated application are available; no manual pass is claimed here.

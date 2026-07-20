@@ -112,6 +112,9 @@ class CommandRegistry:
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
         CommandDefinition("git-version", "git", ("--version",), ("git.exe",)),
         CommandDefinition("npm-ci-bootstrap", "npm", ("ci",), ("npm.cmd",)),
+        CommandDefinition("angular-update", "npx", ("--no-install", "ng", "update", "@angular/core@18.2.0", "@angular/cli@18.2.0"), ("npx.cmd",)),
+        CommandDefinition("angular-version", "npx", ("ng", "version"), ("npx.cmd",)),
+        CommandDefinition("angular-dependency-tree", "npm", ("ls", "--json", "--depth=0"), ("npm.cmd",)),
     )
 
     def find(self, command_id: str) -> CommandDefinition:
