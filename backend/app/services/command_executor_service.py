@@ -6,6 +6,7 @@ authorization, persistence, event emission, and artifact registration.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -174,6 +175,7 @@ class CommandExecutorService:
             id=execution_id,
             run_id=run_id,
             stage_id=stage_id,
+            authorization_id=policy_result.authorization_id,
             idempotency_key=idempotency_key,
             requested_by=requested_by,
             requester=requester,
@@ -271,6 +273,10 @@ class CommandExecutorService:
             exec_model.duration_ms = int((finished_at - now).total_seconds() * 1000)
             exec_model.timed_out = supervised.timed_out
             exec_model.cancelled = supervised.cancelled
+
+            # Compute runtime checksum from stdout+stderr output
+            output_data = (supervised.stdout or "") + (supervised.stderr or "")
+            exec_model.runtime_checksum = f"sha256:{hashlib.sha256(output_data.encode('utf-8')).hexdigest()}"
 
             # 7. Emit completion event
             event_type = {

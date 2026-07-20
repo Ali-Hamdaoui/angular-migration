@@ -220,6 +220,7 @@ class CommandExecutionModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
     stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
+    authorization_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
     requested_by: Mapped[str | None] = mapped_column(String(128))
     executable: Mapped[str] = mapped_column(String(128), nullable=False)

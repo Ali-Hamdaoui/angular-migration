@@ -107,14 +107,28 @@ class CommandLogService:
         offset: int = 0,
         limit: int = 1000,
         stream_filter: str | None = None,
+        cursor: int | None = None,
     ) -> tuple[list[LogChunkDto], int]:
-        """Retrieve stored log chunks for a command execution."""
+        """Retrieve stored log chunks for a command execution.
+
+        Args:
+            session: DB session
+            execution_id: Target execution ID
+            offset: Row offset for pagination (used when cursor is None)
+            limit: Max rows to return
+            stream_filter: Optional stream name filter (stdout, stderr, system)
+            cursor: If set, return only chunks with sequence > cursor
+                    (overrides offset for cursor-based pagination)
+        """
         base_query = select(CommandLogChunkModel).where(
             CommandLogChunkModel.execution_id == execution_id
         )
 
         if stream_filter:
             base_query = base_query.where(CommandLogChunkModel.stream == stream_filter)
+
+        if cursor is not None:
+            base_query = base_query.where(CommandLogChunkModel.sequence > cursor)
 
         # Get total count
         count_query = select(CommandLogChunkModel).where(
@@ -127,7 +141,7 @@ class CommandLogService:
         chunks = list(
             session.scalars(
                 base_query.order_by(CommandLogChunkModel.sequence)
-                .offset(offset)
+                .offset(offset if cursor is None else 0)
                 .limit(limit)
             )
         )

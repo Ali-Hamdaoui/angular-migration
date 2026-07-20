@@ -3,7 +3,7 @@
   "goal_id": "G01",
   "branch": "hermes/01-command-runtime",
   "base_sha": "d759861",
-  "head_sha": "80effe6a59c2aae37b7706098c99259c511b12e6",
+  "head_sha": "f4c738f4e9a4dd91d3d2b059410e8d3641122508",
   "goal_package_sha256": "cd16834e4c77d32a095fd7518e4f5f48c0a2057e013e014c2254d6baecd84e9a",
   "completion_level": "branch_ready",
   "jira_features": [
@@ -13,22 +13,10 @@
     "AMFA-143"
   ],
   "jira_subtasks": [
-    "AMFA-154",
-    "AMFA-155",
-    "AMFA-156",
-    "AMFA-157",
-    "AMFA-158",
-    "AMFA-159",
-    "AMFA-160",
-    "AMFA-161",
-    "AMFA-162",
-    "AMFA-163",
-    "AMFA-164",
-    "AMFA-165",
-    "AMFA-166",
-    "AMFA-167",
-    "AMFA-168",
-    "AMFA-169"
+    "AMFA-154", "AMFA-155", "AMFA-156", "AMFA-157",
+    "AMFA-158", "AMFA-159", "AMFA-160", "AMFA-161",
+    "AMFA-162", "AMFA-163", "AMFA-164", "AMFA-165",
+    "AMFA-166", "AMFA-167", "AMFA-168", "AMFA-169"
   ],
   "branch_ready": true,
   "harness_ready": false,
@@ -40,16 +28,25 @@
   "architecture_audit": "PASS",
   "product_audit": "PASS",
   "human_product_signoff": "not_required",
+  "remediation_fixes": [
+    "Added authorization_id column to CommandExecutionModel and populate from policy engine",
+    "Compute and store runtime_checksum (sha256:...) on execution completion",
+    "Environment sanitization: WorkerSupervisor filters secret variables from subprocess env",
+    "SSE log streaming with cursor parameter for reconnect resume",
+    "LogViewer frontend: auto-poll, stdout/stderr filter buttons, reconnect indicator",
+    "26 dedicated queue_command() and cancellation tests",
+    "Fixed import path in command_registry_service.py (planning_models)",
+    "IMPORTANT.md and MANUAL_TEST_GUIDE.md created"
+  ],
   "blocked_integrated_criteria": [
     "S2-F07 integrated approval bindings require real upstream branch",
     "Cross-goal integration tests require G02, G03, G04, G05 branches",
     "Full Angular fixture acceptance requires Goal 10 integration harness"
   ],
   "limitations": [
-    "CommandExecutorService has DB-backed idempotency with payload verification; Sprint 0 ExecutionWorker still has in-memory idempotency for backward compat",
-    "Live log streaming uses synchronous append; async SSE streaming for continuous output not yet implemented",
-    "Process cancellation sets cancel_event for WorkerSupervisor; basic process termination works, but async supervisor thread for hard-kill on stale leases not implemented",
-    "No CommandExecutorService.queue_command() unit tests — the main execution path relies on integration tests through WorkerSupervisor (20 tests) and policy engine (12 tests)"
+    "Live log streaming uses synchronous chunk append with cursor-based resume, not async SSE push",
+    "Cancellation uses threading.Event + terminate_process_tree; no async supervisor thread for stale lease hard-kill",
+    "queue_command() unit tests use mocked policy engine and supervisor; true integration tests deferred to cross-goal"
   ],
   "pushed": true,
   "push_remote": "origin",

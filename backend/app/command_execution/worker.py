@@ -303,6 +303,22 @@ class CommandLogWriter:
 class WorkerSupervisor:
     """Run approved processes with shell disabled and process-tree termination."""
 
+    _SECRET_PATTERNS: tuple[str, ...] = (
+        "TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL",
+        "HERMES_", "API_KEY", "ACCESS_KEY", "PRIVATE_KEY",
+    )
+
+    @staticmethod
+    def _build_safe_environment() -> dict[str, str]:
+        """Build a sanitized environment blocking secret and backend variables."""
+        clean: dict[str, str] = {}
+        for var, value in os.environ.items():
+            upper = var.upper()
+            blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
+            if not blocked:
+                clean[var] = value
+        return clean
+
     def run(
         self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None
     ) -> SupervisedProcessResult:
@@ -324,6 +340,7 @@ class WorkerSupervisor:
             stderr=subprocess.PIPE,
             text=True,
             shell=False,
+            env=self._build_safe_environment(),
             creationflags=creationflags,
             **popen_kwargs,
         )

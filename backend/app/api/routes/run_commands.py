@@ -7,6 +7,11 @@ All execution goes through the CommandExecutor service.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
+
+import json
+import time
+from typing import Generator
 
 from app.api.errors import error_response
 from app.core.config import get_settings
@@ -173,6 +178,60 @@ def get_command_log_summary(
     with session_scope() as session:
         log_service = CommandLogService()
         return log_service.get_stream_summary(session, execution_id)
+
+
+@router.get("/{run_id}/commands/{execution_id}/logs/stream")
+def stream_command_logs(
+    run_id: str,
+    execution_id: str,
+    cursor: int = 0,
+    stream: str | None = None,
+    poll_interval: float = 0.5,
+):
+    """SSE endpoint that streams log chunks as they become available.
+
+    Accepts ?cursor=<seq> to resume from a known sequence number and
+    ?stream=stdout|stderr to filter by stream.  The connection stays
+    open and emits new chunks as ``data:`` SSE lines.
+
+    When no new data is available for 30 seconds the connection is
+    closed gracefully.
+    """
+    log_service = CommandLogService()
+    idle_seconds = 0
+    max_idle = 30.0
+
+    def generate() -> Generator[str, None, None]:
+        nonlocal cursor, idle_seconds
+        yield f"event: connected\ndata: {json.dumps({'execution_id': execution_id, 'cursor': cursor})}\n\n"
+        while idle_seconds < max_idle:
+            with session_scope() as session:
+                chunks, _total = log_service.get_logs(
+                    session, execution_id,
+                    cursor=cursor,
+                    limit=200,
+                    stream_filter=stream,
+                )
+            if chunks:
+                idle_seconds = 0
+                for chunk in chunks:
+                    cursor = chunk.sequence
+                    yield f"event: chunk\ndata: {json.dumps({'sequence': chunk.sequence, 'stream': chunk.stream, 'text': chunk.text, 'redacted': chunk.redacted})}\n\n"
+                yield f"event: cursor\ndata: {json.dumps({'cursor': cursor})}\n\n"
+            else:
+                idle_seconds += poll_interval
+            time.sleep(poll_interval)
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/{run_id}/commands/{execution_id}/cancel")

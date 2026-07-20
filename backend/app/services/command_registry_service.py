@@ -317,7 +317,7 @@ class CommandPolicyEngineService:
         request: CommandPolicyValidateRequestDto,
     ) -> AuthorizationCheckResult:
         """Verify the command_id appears in the approved stage plan for this run."""
-        from app.repositories.models.planning_models import MigrationPlanModel, StageExecutionPlanModel
+        from app.repositories.planning_models import MigrationPlanModel, StageExecutionPlanModel
 
         # Look up the approved stage plan for the run
         plan = session.scalar(
