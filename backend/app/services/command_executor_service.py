@@ -22,7 +22,7 @@ from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.command_execution.worker import (
@@ -64,10 +64,11 @@ from app.services.job_supervisor_service import JobSupervisorService
 
 class CommandExecutorError(ValueError):
     """Raised when a command execution operation fails."""
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = details or {}
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,23 @@ class CommandExecutionResponse:
     event_sequence: int
     idempotent_replay: bool = False
     artifacts: tuple[ArtifactRefDto, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
+    stage_id: str | None = None
+    authorization_id: str | None = None
+    template_id: str | None = None
+    template_version: int | None = None
+    plan_id: str | None = None
+    plan_version: int | None = None
+    execution_profile_id: str | None = None
+    workspace_alias: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    exit_code: int | None = None
+    failure_code: str | None = None
+    correlation_id: str | None = None
+    request_payload_hash: str | None = None
 
 
 class CommandExecutorService:
@@ -107,6 +125,8 @@ class CommandExecutorService:
     # a small MVP worker pool; the durable execution row is the queue and the
     # worker always opens its own database session.
     _worker_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="amfa-command")
+    _dispatch_lock = threading.Lock()
+    _dispatched_execution_ids: set[str] = set()
 
     def queue_authorized_command(
         self,
@@ -117,6 +137,7 @@ class CommandExecutorService:
         expected_state_version: int,
         idempotency_key: str,
         requested_by: str | None = None,
+        correlation_id: str | None = None,
     ) -> CommandExecutionResponse:
         """Persist one execution from an accepted, immutable authorization.
 
@@ -129,15 +150,19 @@ class CommandExecutorService:
             CommandExecutionModel.idempotency_key == idempotency_key,
         ))
         if existing is not None:
-            if existing.authorization_id != authorization_decision_id:
-                raise CommandExecutorError("IDEMPOTENCY_KEY_CONFLICT", "Idempotency key is bound to another authorization")
+            if (existing.authorization_id != authorization_decision_id
+                    or existing.authoritative_state_version != expected_state_version):
+                raise CommandExecutorError("IDEMPOTENCY_KEY_REUSED", "Idempotency key is bound to a different request")
             return self._response_from_model(existing, idempotent_replay=True)
 
         run = session.get(MigrationRunModel, run_id)
         if run is None:
             raise CommandExecutorError("RUN_NOT_FOUND", "Migration run does not exist")
         if run.state_version != expected_state_version:
-            raise CommandExecutorError("STALE_STATE_VERSION", "The run state version is stale")
+            raise CommandExecutorError(
+                "STALE_STATE_VERSION", "The run state version is stale",
+                {"requested_version": expected_state_version, "current_version": run.state_version, "run_id": run_id},
+            )
 
         authorization = session.get(CommandAuthorizationAuditModel, authorization_decision_id)
         if authorization is None:
@@ -177,17 +202,39 @@ class CommandExecutorService:
             raise CommandExecutorError("WORKSPACE_NOT_AVAILABLE", "Run-owned workspace configuration is unavailable")
 
         now = datetime.now(UTC)
+        normalized_payload = {
+            "run_id": run_id, "authorization_decision_id": authorization.id,
+            "expected_state_version": expected_state_version, "stage_id": authorization.stage_id,
+            "template_id": authorization.template_id, "template_version": authorization.template_version,
+            "plan_id": authorization.plan_id, "plan_version": authorization.plan_version,
+            "command_id": authorization.command_id, "executable": authorization.executable,
+            "arguments": list(authorization.arguments or []),
+            "execution_profile_id": authorization.execution_profile_id,
+            "workspace_alias": authorization.workspace_alias,
+            "network_profile": authorization.network_profile or "none",
+        }
+        payload_hash = "sha256:" + hashlib.sha256(
+            json.dumps(normalized_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         execution_id = f"exec-{uuid4().hex[:12]}"
         model = CommandExecutionModel(
             id=execution_id,
             run_id=run_id,
             stage_id=authorization.stage_id,
             authorization_id=authorization.id,
+            template_id=authorization.template_id,
+            template_version=authorization.template_version,
+            plan_id=authorization.plan_id,
+            plan_version=authorization.plan_version,
             idempotency_key=idempotency_key,
+            request_payload_hash=payload_hash,
+            correlation_id=correlation_id or authorization.correlation_id,
+            authoritative_state_version=run.state_version,
             requested_by=requested_by or authorization.actor,
             executable=authorization.executable,
             arguments=list(authorization.arguments or []),
             working_directory_alias=authorization.workspace_alias,
+            safe_relative_working_directory=authorization.workspace_alias,
             runtime_profile_id=authorization.execution_profile_id,
             status=CommandStatus.QUEUED.value,
             command_id=authorization.command_id,
@@ -210,7 +257,31 @@ class CommandExecutorService:
 
     def dispatch_execution(self, execution_id: str) -> None:
         """Transfer a committed execution to the process-owned worker."""
-        self._worker_pool.submit(self._run_execution, execution_id)
+        with self._dispatch_lock:
+            if execution_id in self._dispatched_execution_ids:
+                return
+            self._dispatched_execution_ids.add(execution_id)
+        from app.repositories.session import session_scope
+        dispatch_owner = f"dispatch-{uuid4().hex[:12]}"
+        with session_scope() as session:
+            claimed = session.execute(update(CommandExecutionModel).where(
+                CommandExecutionModel.id == execution_id,
+                CommandExecutionModel.status == CommandStatus.QUEUED.value,
+                CommandExecutionModel.worker_id.is_(None),
+            ).values(worker_id=dispatch_owner)).rowcount
+        if claimed != 1:
+            return
+        try:
+            self._worker_pool.submit(self._run_execution, execution_id)
+        except Exception:
+            with self._dispatch_lock:
+                self._dispatched_execution_ids.discard(execution_id)
+            with session_scope() as session:
+                session.execute(update(CommandExecutionModel).where(
+                    CommandExecutionModel.id == execution_id,
+                    CommandExecutionModel.worker_id == dispatch_owner,
+                ).values(worker_id=None))
+            raise
 
     def _run_execution(self, execution_id: str) -> None:
         from app.repositories.session import session_scope
@@ -286,7 +357,7 @@ class CommandExecutorService:
                     requested_at=model.requested_at,
                 )
                 result = worker.run(request, cancel_event=cancel_event)
-                self._finish_execution(session, model, result)
+                self._finish_execution(session, model, result, run=run, authorization=authorization, profile=selected_profile)
         except Exception as exc:
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
@@ -301,7 +372,7 @@ class CommandExecutorService:
         stage = session.get(MigrationStageModel, stage_id)
         return stage is not None and stage.run_id == run_id
 
-    def _finish_execution(self, session: Session, model: CommandExecutionModel, result) -> None:
+    def _finish_execution(self, session: Session, model: CommandExecutionModel, result, *, run, authorization, profile) -> None:
         finished = datetime.now(UTC)
         model.status = result.result.status.value
         model.exit_code = result.result.exit_code
@@ -312,8 +383,44 @@ class CommandExecutorService:
         model.command_log_artifact_id = result.command_log_artifact.ref.artifact_id
         model.stdout_artifact_id = result.stdout_artifact.ref.artifact_id if result.stdout_artifact else None
         model.stderr_artifact_id = result.stderr_artifact.ref.artifact_id if result.stderr_artifact else None
-        model.artifact_ids = [ref for ref in (model.command_log_artifact_id, model.stdout_artifact_id, model.stderr_artifact_id) if ref]
-        model.runtime_checksum = "sha256:" + hashlib.sha256((result.result.model_dump_json()).encode()).hexdigest()
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+        output_refs = [ref for ref in (result.stdout_artifact.ref, result.stderr_artifact.ref, result.command_log_artifact.ref)]
+        result_payload = {
+            "schema_version": "command-execution-result.v1", "execution_id": model.id,
+            "run_id": model.run_id, "status": model.status, "exit_code": model.exit_code,
+            "duration_ms": model.duration_ms, "timed_out": bool(model.timed_out),
+            "failure_code": model.failure_code, "artifact_ids": [ref.artifact_id for ref in output_refs],
+        }
+        result_artifact = store.write_text_artifact(
+            run.id, f"04_workflow_state/command_executions/{model.id}.result.json",
+            json.dumps(result_payload, indent=2, sort_keys=True), ArtifactType.REPORT,
+            stage_id=model.stage_id, created_by="command-execution-worker", created_at=finished,
+        )
+        manifest_payload = {
+            "schema_version": "command-execution-manifest.v1", "execution_id": model.id,
+            "run_id": model.run_id, "stage_id": model.stage_id,
+            "authorization_decision_id": authorization.id, "plan_id": authorization.plan_id,
+            "plan_version": authorization.plan_version, "command_template_id": authorization.template_id,
+            "command_template_version": authorization.template_version,
+            "sanitized_command": {"executable": model.executable, "arguments": model.arguments, "shell": False},
+            "execution_profile_id": model.runtime_profile_id, "workspace_alias": model.working_directory_alias,
+            "safe_relative_working_directory": model.safe_relative_working_directory,
+            "network_profile": model.network_profile, "authoritative_state_version": authorization.state_version,
+            "worker_id": model.worker_id, "started_at": model.started_at.isoformat() if model.started_at else None,
+            "ended_at": finished.isoformat(), "duration_ms": model.duration_ms, "status": model.status,
+            "exit_code": model.exit_code, "artifact_ids": [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id],
+            "runtime_identity": {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None},
+            "correlation_id": model.correlation_id,
+        }
+        manifest_artifact = store.write_text_artifact(
+            run.id, f"04_workflow_state/command_executions/{model.id}.manifest.json",
+            json.dumps(manifest_payload, indent=2, sort_keys=True), ArtifactType.JSON,
+            stage_id=model.stage_id, created_by="command-execution-worker", created_at=finished,
+        )
+        model.result_artifact_id = result_artifact.ref.artifact_id
+        model.manifest_artifact_id = manifest_artifact.ref.artifact_id
+        model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
+        model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
         model.state_version = (model.state_version or 1) + 1
         event_type = WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
@@ -323,6 +430,8 @@ class CommandExecutorService:
     def _fail_execution(self, session: Session, model: CommandExecutionModel, code: str, message: str) -> None:
         model.status = CommandStatus.FAILED.value
         model.finished_at = datetime.now(UTC)
+        model.failure_code = code
+        model.failure_message = message[:1000]
         model.blockers = [code]
         model.state_version = (model.state_version or 1) + 1
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:failed", WorkflowEventType.COMMAND_FAILED,
@@ -543,8 +652,10 @@ class CommandExecutorService:
         execution_id: str,
     ) -> CommandExecutionModel | None:
         """Retrieve a command execution record."""
-        model = session.get(CommandExecutionModel, execution_id)
-        return model if model is not None and model.run_id == run_id else None
+        return session.scalar(select(CommandExecutionModel).where(
+            CommandExecutionModel.id == execution_id,
+            CommandExecutionModel.run_id == run_id,
+        ))
 
     def request_cancel(
         self,
@@ -644,4 +755,21 @@ class CommandExecutorService:
             state_version=model.state_version or 1,
             event_sequence=model.event_sequence or 1,
             idempotent_replay=idempotent_replay,
+            stage_id=model.stage_id,
+            authorization_id=model.authorization_id,
+            template_id=model.template_id,
+            template_version=model.template_version,
+            plan_id=model.plan_id,
+            plan_version=model.plan_version,
+            execution_profile_id=model.runtime_profile_id,
+            workspace_alias=model.working_directory_alias,
+            created_at=model.requested_at,
+            started_at=model.started_at,
+            completed_at=model.finished_at,
+            duration_ms=model.duration_ms,
+            exit_code=model.exit_code,
+            failure_code=model.failure_code,
+            correlation_id=model.correlation_id,
+            artifact_ids=tuple(model.artifact_ids or []),
+            request_payload_hash=model.request_payload_hash,
         )

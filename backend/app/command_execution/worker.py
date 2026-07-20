@@ -288,8 +288,6 @@ class CommandLogWriter:
         stream_name: str,
         content: str,
     ) -> StoredArtifact | None:
-        if content == "":
-            return None
         return self._artifact_store.write_text_artifact(
             result.run_id,
             f"04_workflow_state/command_logs/{result.command_id}.{stream_name}.log",

@@ -3,15 +3,21 @@
   "jira": "AMFA-159",
   "description": "Persist and expose evidence contracts for Execute one approved command",
   "files_created": [
-    "backend/app/repositories/models/workflow.py (CommandExecutionModel)"
+    "backend/alembic/versions/20260720_11_command_execution_lineage.py",
+    "backend/tests/test_command_execution_task2.py"
   ],
   "files_modified": [
-    "backend/app/domain/contracts.py (CommandRequestDto, CommandResultDto)",
-    "backend/app/api/routes/run_commands.py"
+    "backend/app/domain/contracts.py (CommandExecutionResponseDto)",
+    "backend/app/repositories/models/workflow.py (CommandExecutionModel)",
+    "backend/app/services/command_executor_service.py",
+    "backend/app/command_execution/worker.py",
+    "backend/app/api/routes/run_commands.py",
+    "backend/app/services/job_supervisor_service.py"
+    ,"backend/alembic/versions/20260719_09_add_authorization_id.py (downgrade index ordering)"
   ],
-  "tests_passed": 0,
-  "evidence": "CommandExecutionModel with idempotency, status, checksum, artifact refs. POST/GET API endpoints. COMMAND_QUEUED/STARTED/SUCCEEDED/FAILED events.",
-  "commit_sha": "debae85",
+  "tests_passed": 35,
+  "evidence": "Run-scoped execution reads, normalized idempotency identity, authoritative state-version persistence, complete execution projections, separate finalized stdout/stderr/result/manifest artifacts, and migration upgrade/downgrade coverage.",
+  "commit_sha": null,
   "reviewer_verdict": "PASS",
   "verdict_notes": "Combined with T05."
 }

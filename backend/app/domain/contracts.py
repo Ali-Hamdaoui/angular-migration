@@ -652,6 +652,23 @@ class CommandExecutionResponseDto(ContractModel):
     state_version: int = 1
     event_sequence: int = 1
     idempotent_replay: bool = False
+    stage_id: str | None = None
+    authorization_id: str | None = None
+    template_id: str | None = None
+    template_version: int | None = None
+    plan_id: str | None = None
+    plan_version: int | None = None
+    execution_profile_id: str | None = None
+    workspace_alias: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    exit_code: int | None = None
+    failure_code: str | None = None
+    correlation_id: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    request_payload_hash: str | None = None
 
 
 class CancelCommandRequestDto(ContractModel):

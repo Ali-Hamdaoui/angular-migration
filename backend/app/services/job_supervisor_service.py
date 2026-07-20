@@ -175,7 +175,10 @@ class JobSupervisorService:
             return {"idempotent_replay": True, "event_id": existing.id}
 
         # Find the command execution
-        exec_model = session.get(CommandExecutionModel, execution_id)
+        exec_model = session.scalar(select(CommandExecutionModel).where(
+            CommandExecutionModel.id == execution_id,
+            CommandExecutionModel.run_id == run_id,
+        ))
         if exec_model is None:
             raise JobSupervisorError("EXECUTION_NOT_FOUND", f"Command execution {execution_id} not found")
         if exec_model.status not in {"pending", "running"}:

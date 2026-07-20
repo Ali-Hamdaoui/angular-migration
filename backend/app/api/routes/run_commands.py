@@ -54,10 +54,14 @@ def queue_command(
                 expected_state_version=body.expected_state_version,
                 idempotency_key=body.idempotency_key,
                 requested_by=body.requested_by,
+                correlation_id=request.headers.get("x-correlation-id"),
             )
         except CommandExecutorError as error:
-            status_code = 404 if error.code in {"RUN_NOT_FOUND", "AUTHORIZATION_DECISION_NOT_FOUND", "COMMAND_TEMPLATE_NOT_FOUND"} else 409 if error.code in {"STALE_STATE_VERSION", "AUTHORIZATION_STALE", "IDEMPOTENCY_KEY_CONFLICT", "AUTHORIZATION_IDEMPOTENCY_MISMATCH"} else 422
-            return error_response(request, status_code=status_code, error_code=error.code, message=error.message)
+            status_code = 404 if error.code in {"RUN_NOT_FOUND", "AUTHORIZATION_DECISION_NOT_FOUND", "COMMAND_TEMPLATE_NOT_FOUND"} else 409 if error.code in {"STALE_STATE_VERSION", "AUTHORIZATION_STALE", "IDEMPOTENCY_KEY_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "AUTHORIZATION_IDEMPOTENCY_MISMATCH"} else 422
+            details = dict(error.details)
+            if error.code == "STALE_STATE_VERSION":
+                details["guidance"] = "Refresh the authoritative run snapshot and retry."
+            return error_response(request, status_code=status_code, error_code=error.code, message=error.message, details=details)
     executor.dispatch_execution(result.execution_id)
     return CommandExecutionResponseDto(
             execution_id=result.execution_id,
@@ -67,6 +71,23 @@ def queue_command(
             state_version=result.state_version,
             event_sequence=result.event_sequence,
             idempotent_replay=result.idempotent_replay,
+            stage_id=result.stage_id,
+            authorization_id=result.authorization_id,
+            template_id=result.template_id,
+            template_version=result.template_version,
+            plan_id=result.plan_id,
+            plan_version=result.plan_version,
+            execution_profile_id=result.execution_profile_id,
+            workspace_alias=result.workspace_alias,
+            created_at=result.created_at,
+            started_at=result.started_at,
+            completed_at=result.completed_at,
+            duration_ms=result.duration_ms,
+            exit_code=result.exit_code,
+            failure_code=result.failure_code,
+            correlation_id=result.correlation_id,
+            artifact_ids=list(result.artifact_ids),
+            request_payload_hash=result.request_payload_hash,
         )
 
 
@@ -87,14 +108,7 @@ def get_command_execution(
                 error_code="EXECUTION_NOT_FOUND",
                 message=f"Command execution '{execution_id}' not found for run '{run_id}'",
             )
-        return CommandExecutionResponseDto(
-            execution_id=model.id,
-            run_id=model.run_id,
-            command_id=model.command_id or "",
-            status=model.status,
-            state_version=model.state_version or 1,
-            event_sequence=model.event_sequence or 1,
-        )
+        return executor._response_from_model(model)
 
 
 @router.get("/{run_id}/commands")
@@ -108,14 +122,7 @@ def list_command_executions(
         return {
             "run_id": run_id,
             "executions": [
-                CommandExecutionResponseDto(
-                    execution_id=m.id,
-                    run_id=m.run_id,
-                    command_id=m.command_id or "",
-                    status=m.status,
-                    state_version=m.state_version or 1,
-                    event_sequence=m.event_sequence or 1,
-                )
+                executor._response_from_model(m)
                 for m in models
             ],
             "total": len(models),
@@ -134,6 +141,8 @@ def get_command_logs(
 ):
     """Get log chunks for a command execution."""
     with session_scope() as session:
+        if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
+            return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
         chunks, total = log_service.get_logs(
             session, execution_id,
@@ -162,9 +171,12 @@ def get_command_logs(
 def get_command_log_summary(
     run_id: str,
     execution_id: str,
+    request: Request,
 ):
     """Get a summary of available log streams for a command."""
     with session_scope() as session:
+        if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
+            return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
         return log_service.get_stream_summary(session, execution_id)
 
@@ -173,6 +185,7 @@ def get_command_log_summary(
 def stream_command_logs(
     run_id: str,
     execution_id: str,
+    request: Request,
     cursor: int = 0,
     stream: str | None = None,
     poll_interval: float = 0.5,
@@ -186,6 +199,9 @@ def stream_command_logs(
     When no new data is available for 30 seconds the connection is
     closed gracefully.
     """
+    with session_scope() as session:
+        if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
+            return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
     log_service = CommandLogService()
     idle_seconds = 0
     max_idle = 30.0

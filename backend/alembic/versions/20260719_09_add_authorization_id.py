@@ -22,4 +22,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("ix_command_executions_authorization_id", table_name="command_executions")
     op.drop_column("command_executions", "authorization_id")
