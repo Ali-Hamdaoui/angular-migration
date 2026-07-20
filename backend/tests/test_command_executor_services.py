@@ -242,7 +242,7 @@ class TestJobSupervisorService:
             command_id="test-cmd",
             executable="echo",
             arguments=["hello"],
-            status="RUNNING",
+            status="running",
             requested_at=now,
         )
         db_session.add(exec_model)
@@ -269,7 +269,7 @@ class TestJobSupervisorService:
             command_id="test-cmd",
             executable="echo",
             arguments=["hello"],
-            status="RUNNING",
+            status="running",
             requested_at=now,
         )
         db_session.add(exec_model)
@@ -295,7 +295,7 @@ class TestJobSupervisorService:
             command_id="test-cmd",
             executable="echo",
             arguments=["hello"],
-            status="RUNNING",
+            status="running",
             requested_at=now,
         )
         db_session.add(exec_model)
@@ -348,7 +348,7 @@ class TestCommandExecutorQueueCommand:
         )
 
         assert result.execution_id is not None
-        assert result.status == "SUCCEEDED"
+        assert result.status == "succeeded"
         assert result.idempotent_replay is False
         assert result.run_id == "run-qc-1"
         assert result.command_id == "python-version"
@@ -358,7 +358,7 @@ class TestCommandExecutorQueueCommand:
         # Verify DB record
         saved = db_session.get(CommandExecutionModel, result.execution_id)
         assert saved is not None
-        assert saved.status == "SUCCEEDED"
+        assert saved.status == "succeeded"
         assert saved.exit_code == 0
         assert saved.authorization_id is not None
         assert saved.runtime_checksum is not None
@@ -533,7 +533,7 @@ class TestCommandExecutorQueueCommand:
             requested_by="tester",
         )
 
-        assert result.status == "TIMED_OUT"
+        assert result.status == "timed_out"
 
         saved = db_session.get(CommandExecutionModel, result.execution_id)
         assert saved is not None
@@ -559,7 +559,7 @@ class TestCommandExecutorQueueCommand:
             requested_by="tester",
         )
 
-        assert result.status == "CANCELLED"
+        assert result.status == "cancelled"
 
         saved = db_session.get(CommandExecutionModel, result.execution_id)
         assert saved is not None
@@ -658,7 +658,7 @@ class TestCancellationProcessTermination:
 
         exec_model = CommandExecutionModel(
             id=execution_id, run_id=run_id, command_id="python-version",
-            executable="python", arguments=["--version"], status="RUNNING",
+            executable="python", arguments=["--version"], status="running",
             requested_at=now,
         )
         db_session.add(exec_model)

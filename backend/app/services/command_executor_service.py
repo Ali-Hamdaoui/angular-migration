@@ -203,6 +203,7 @@ class CommandExecutorService:
 
         # 3. Update status to RUNNING
         exec_model.status = CommandStatus.RUNNING.value
+        exec_model.state_version = (exec_model.state_version or 1) + 1
         exec_model.started_at = datetime.now(UTC)
         session.flush()
 
@@ -273,6 +274,7 @@ class CommandExecutorService:
             exec_model.duration_ms = int((finished_at - now).total_seconds() * 1000)
             exec_model.timed_out = supervised.timed_out
             exec_model.cancelled = supervised.cancelled
+            exec_model.state_version = (exec_model.state_version or 1) + 1
 
             # Compute runtime checksum from stdout+stderr output
             output_data = (supervised.stdout or "") + (supervised.stderr or "")

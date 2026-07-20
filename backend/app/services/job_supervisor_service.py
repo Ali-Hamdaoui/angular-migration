@@ -178,7 +178,7 @@ class JobSupervisorService:
         exec_model = session.get(CommandExecutionModel, execution_id)
         if exec_model is None:
             raise JobSupervisorError("EXECUTION_NOT_FOUND", f"Command execution {execution_id} not found")
-        if exec_model.status not in {"PENDING", "RUNNING"}:
+        if exec_model.status not in {"pending", "running"}:
             raise JobSupervisorError(
                 "EXECUTION_NOT_ACTIVE",
                 f"Command execution is {exec_model.status}, cannot cancel",
@@ -236,7 +236,7 @@ class JobSupervisorService:
         return session.scalar(
             select(CommandExecutionModel)
             .where(CommandExecutionModel.run_id == run_id)
-            .where(CommandExecutionModel.status.in_(["PENDING", "RUNNING"]))
+            .where(CommandExecutionModel.status.in_(["pending", "running"]))
             .order_by(CommandExecutionModel.requested_at.desc())
             .limit(1)
         )

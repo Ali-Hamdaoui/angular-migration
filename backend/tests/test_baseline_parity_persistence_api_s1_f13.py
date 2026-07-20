@@ -143,7 +143,7 @@ def test_capture_rejects_missing_and_mismatched_prerequisite_checksums(tmp_path)
 
 def test_installation_failure_diagnostics_are_fingerprinted():
     service = BaselineParityApplicationService()
-    installation = type("Installation", (), {"status": "FAILED", "blockers": ["BASELINE_INSTALL_FAILED"], "artifact_ids": ["stderr-1"]})()
+    installation = type("Installation", (), {"status": "failed", "blockers": ["BASELINE_INSTALL_FAILED"], "artifact_ids": ["stderr-1"]})()
     store = type("Store", (), {"read_artifact_by_id": lambda self, artifact_id: type("Artifact", (), {"content": "npm ERR! E401 unauthorized"})()})()
     failures, diagnostics = service._failures([], [installation], store)
     assert any(item["kind"] == "install" for item in diagnostics)

@@ -120,7 +120,7 @@ def test_worker_runs_safe_python_version_command_and_writes_command_artifacts(tm
     assert '"command": [' in stored.content
     assert '"python"' in stored.content
     assert '"shell": false' in stored.content
-    assert '"status": "SUCCEEDED"' in stored.content
+    assert '"status": "succeeded"' in stored.content
     assert '"runtime_profile_id": "source-runtime-profile"' in stored.content
 
 
@@ -179,7 +179,7 @@ def test_worker_rejects_working_directory_outside_sandbox_root(tmp_path: Path) -
         "mock-run-angular-18-to-21",
         "04_workflow_state/command_logs/python-version.json",
     )
-    assert '"status": "REJECTED"' in stored.content
+    assert '"status": "rejected"' in stored.content
 
 
 def test_worker_rejects_unknown_working_directory_alias(tmp_path: Path) -> None:

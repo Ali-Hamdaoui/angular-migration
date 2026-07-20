@@ -143,6 +143,7 @@ def get_command_logs(
     offset: int = 0,
     limit: int = 1000,
     stream: str | None = None,
+    cursor: int | None = None,
 ):
     """Get log chunks for a command execution."""
     with session_scope() as session:
@@ -152,6 +153,7 @@ def get_command_logs(
             offset=offset,
             limit=min(limit, 5000),
             stream_filter=stream,
+            cursor=cursor,
         )
         return {
             "execution_id": execution_id,
@@ -252,9 +254,6 @@ def cancel_command(
                 actor=body.actor,
                 idempotency_key=body.idempotency_key,
             )
-        except CommandExecutorError as error:
-            status_code = 404 if error.code == "EXECUTION_NOT_FOUND" else 409
-            return error_response(request, status_code=status_code, error_code=error.code, message=error.message)
         except JobSupervisorError as error:
             status_code = 404 if error.code == "EXECUTION_NOT_FOUND" else 409
             return error_response(request, status_code=status_code, error_code=error.code, message=error.message)

@@ -192,9 +192,9 @@ curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
 ```bash
 curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs" | python3 -m json.tool
 ```
-3. Retrieve with cursor (simulate reconnect at sequence 2):
+3. Retrieve with cursor (simulate reconnect at sequence 2) via the SSE streaming endpoint:
 ```bash
-curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs?cursor=2" | python3 -m json.tool
+curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream?cursor=2" | python3 -m json.tool
 ```
 4. Filter by stream:
 ```bash

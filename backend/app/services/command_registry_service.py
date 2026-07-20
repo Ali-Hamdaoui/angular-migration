@@ -251,20 +251,77 @@ class CommandPolicyEngineService:
                 reasons.append(plan_check.reason or "plan membership rejected")
 
         decision = AuthorizationDecision.REJECTED if reasons else AuthorizationDecision.ACCEPTED
-        return CommandPolicyValidateResponseDto(
+        response = CommandPolicyValidateResponseDto(
             authorization_id=authorization_id,
             run_id=request.run_id,
             stage_id=request.stage_id,
             command_id=request.command_id,
             executable=request.executable,
             arguments=request.arguments,
-            cwd_alias=request.cwd_alias,
+            cwd_alias=request.cwd_alias or "",
             plan_id=request.plan_id,
             execution_profile_id=request.execution_profile_id,
             decision=decision.value,
             reasons=reasons,
             policy_version=self.policy_version,
         )
+
+        # Persist authorization audit record
+        from app.repositories.models.workflow import CommandAuthorizationAuditModel
+        now = datetime.now(UTC)
+        audit = CommandAuthorizationAuditModel(
+            id=authorization_id,
+            run_id=request.run_id,
+            stage_id=request.stage_id,
+            command_id=request.command_id,
+            executable=request.executable,
+            arguments=request.arguments,
+            decision=decision.value,
+            reasons=reasons,
+            policy_version=self.policy_version,
+            idempotency_key=request.idempotency_key,
+            actor=request.requested_by,
+            artifact_ids=[],
+            state_version=1,
+            created_at=now,
+        )
+        session.add(audit)
+
+        # Emit authorization event
+        from app.repositories.models.workflow import WorkflowEventModel
+        latest = session.scalar(
+            select(WorkflowEventModel)
+            .where(WorkflowEventModel.run_id == request.run_id)
+            .order_by(WorkflowEventModel.sequence.desc())
+            .limit(1)
+        )
+        event_type = (
+            WorkflowEventType.COMMAND_AUTHORIZATION_ACCEPTED
+            if decision.value == "accepted"
+            else WorkflowEventType.COMMAND_AUTHORIZATION_REJECTED
+        )
+        event = WorkflowEventModel(
+            id=f"event-{uuid4().hex[:12]}",
+            run_id=request.run_id,
+            stage_id=request.stage_id,
+            event_type=event_type.value,
+            idempotency_key=request.idempotency_key,
+            actor=request.requested_by or "system",
+            reason=f"command authorization {decision.value}",
+            sequence=(latest.sequence + 1) if latest else 1,
+            payload={
+                "authorization_id": authorization_id,
+                "command_id": request.command_id,
+                "decision": decision.value,
+                "reasons": reasons,
+                "policy_version": self.policy_version,
+            },
+            occurred_at=now,
+        )
+        session.add(event)
+        session.flush()
+
+        return response
 
     def _check_shell_enforcement(self, request: CommandPolicyValidateRequestDto) -> AuthorizationCheckResult:
         """Reject any request attempting shell execution."""

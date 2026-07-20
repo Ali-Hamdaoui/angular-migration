@@ -236,13 +236,15 @@ class ArtifactType(str, Enum):
 
 
 class CommandStatus(str, Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    REJECTED = "REJECTED"
-    TIMED_OUT = "TIMED_OUT"
-    CANCELLED = "CANCELLED"
+    QUEUED = "queued"
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    REJECTED = "rejected"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class CancellationPolicy(str, Enum):

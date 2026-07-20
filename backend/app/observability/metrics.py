@@ -62,7 +62,7 @@ def build_diagnostics_summary(
     )
 
     alerts: list[AlertEventDto] = []
-    if any(result.status.value == "TIMED_OUT" for result in commands):
+    if any(result.status.value == "timed_out" for result in commands):
         alerts.append(mock_alert(run.run_id, AlertType.REPEATED_TIMEOUT, stage_id=stage_id, severity=AlertSeverity.WARNING))
     if any(gate.status == ValidationStatus.FAILED for gate in validations):
         alerts.append(mock_alert(run.run_id, AlertType.STUCK_STATE, stage_id=stage_id, severity=AlertSeverity.WARNING))

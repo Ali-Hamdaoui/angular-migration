@@ -131,7 +131,7 @@ class BaselineParityApplicationService:
                 for message in result.get("failed_tests", []) or result.get("warnings", []) or [result.get("blocker") or "baseline command failed"]:
                     diagnostics.append({"kind": result.get("kind", validation.kind), "message": message, "group": result.get("target_id")})
         for installation in installations:
-            if installation.status not in {"FAILED", "TIMED_OUT", "CANCELLED"}:
+            if installation.status not in {"failed", "timed_out", "cancelled"}:
                 continue
             for blocker in installation.blockers or []:
                 diagnostics.append({"kind": "install", "message": blocker})

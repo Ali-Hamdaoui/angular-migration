@@ -7,7 +7,7 @@
 | Goal | G01 — Governed Command Runtime |
 | Branch | `hermes/01-command-runtime` |
 | Base SHA | `d759861290c1e76e26c4f2b27bbee9a77a12f0b5` |
-| Final SHA | `f4c738f4e9a4dd91d3d2b059410e8d3641122508` (pre-remediation), `<post-remediation>` |
+| Final SHA | `f4c738f4e9a4dd91d3d2b059410e8d3641122508` (pre-remediation), `3f5450b` (post-remediation) |
 | Sprint | Sprint 3 |
 | Jira features | AMFA-140, AMFA-141, AMFA-142, AMFA-143 |
 | Completion level | `branch_ready` |
@@ -145,9 +145,9 @@ flowchart TD
 
 ### Services
 
-**CommandRegistryService** — CRUD for `CommandTemplateModel`. Seeds 6 default templates on first empty list. Methods: `list_templates()`, `find_template_by_command_id()`, `create_template()`, `update_template()`.
+**CommandRegistryService** — CRUD for `CommandTemplateModel`. Seeds 6 default templates on first empty list. Methods: `list_templates()`, `get_template()`, `find_template_by_command_id()`, `seed_defaults()`.
 
-**CommandPolicyEngineService** — 8 conjunctive policy checks. Returns `CommandPolicyValidateResponseDto` with `authorization_id`, `decision`, `reasons`. Persists a `CommandAuthorizationAuditModel` record for every validation.
+**CommandPolicyEngineService** — 8 conjunctive policy checks. Returns `CommandPolicyValidateResponseDto` with `authorization_id`, `decision`, `reasons`. Persists a `CommandAuthorizationAuditModel` record for every validation via `validate()`.
 
 **CommandExecutorService** — Orchestrates queue_command lifecycle:
 1. Check idempotency (key + payload identity)
@@ -460,6 +460,6 @@ rm -rf /home/ubuntu/amfa-runtime/01-command-runtime/artifacts/
 | `harness_ready` | false |
 | `integration_verified` | false |
 | `jira_complete` | false |
-| Reviewer verdict | PENDING (Phase 4 not yet executed) |
-| Final commit SHA | `<post-commit>` |
+| Reviewer verdict | PENDING (Phase 4 fixes applied, re-review pending) |
+| Final commit SHA | `3f5450b` |
 | Push status | PENDING |
