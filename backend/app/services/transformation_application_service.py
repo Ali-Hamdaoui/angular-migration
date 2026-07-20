@@ -187,6 +187,8 @@ def _normalize_line_endings(content: bytes) -> bytes:
     return content.replace(b"\r\n", b"\n")
 
 
+_MAX_DIFF_FILE_SIZE = 50 * 1024 * 1024
+
 _KNOWN_ANGULAR_MIGRATIONS = frozenset({
     "migration-v18", "migration-v17", "migration-v16", "migration-v15",
     "migration-v14", "migration-v13",
@@ -213,6 +215,7 @@ def _scan_migrations(workspace: Path) -> list[str]:
                             migrations.append(known)
         except (OSError, json.JSONDecodeError):
             pass
+    # Heuristic: scan cli-output directory for migration names in text and JSON
     cli_output_dir = workspace / ".angular" / "cli-output"
     if cli_output_dir.is_dir():
         for item in sorted(cli_output_dir.rglob("*")):
@@ -224,6 +227,33 @@ def _scan_migrations(workspace: Path) -> list[str]:
                             migrations.append(known)
                 except OSError:
                     pass
+        # Try structured JSON parsing for better detection
+        for json_file in sorted(cli_output_dir.rglob("*.json")):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(data, dict):
+                    for key in ("migrations", "applied_migrations", "available_migrations", "migration_notes"):
+                        value = data.get(key)
+                        if isinstance(value, list):
+                            for v in value:
+                                if isinstance(v, str) and v in _KNOWN_ANGULAR_MIGRATIONS and v not in migrations:
+                                    migrations.append(v)
+                        elif isinstance(value, str) and value in _KNOWN_ANGULAR_MIGRATIONS and value not in migrations:
+                            migrations.append(value)
+            except (OSError, json.JSONDecodeError):
+                pass
+    # Also check for target-version-report.json in .angular directory
+    tv_report = angular_dir / "cli-output" / "target-version-report.json"
+    if not tv_report.is_file():
+        tv_report = angular_dir / "target-version-report.json"
+    if tv_report.is_file():
+        try:
+            text = tv_report.read_text(encoding="utf-8", errors="replace")
+            for known in _KNOWN_ANGULAR_MIGRATIONS:
+                if known in text and known not in migrations:
+                    migrations.append(known)
+        except OSError:
+            pass
     return sorted(set(migrations))
 
 
@@ -823,6 +853,10 @@ class TransformationEvidenceApplicationService:
             unified_diff = self._compute_unified_diff(source, target, diff_result.changed_files)
 
             diff_written = False
+            package_written = False
+            migration_written = False
+            forbidden_written = False
+            inventory_written = False
             artifact_ids: list[str] = []
             if store:
                 ref = _write_evidence(
@@ -844,6 +878,7 @@ class TransformationEvidenceApplicationService:
                         created_at=now,
                     )
                     artifact_ids.append(ref2.artifact_id)
+                    package_written = True
 
                 if forbidden:
                     ref3 = _write_evidence(
@@ -854,6 +889,7 @@ class TransformationEvidenceApplicationService:
                         created_at=now,
                     )
                     artifact_ids.append(ref3.artifact_id)
+                    forbidden_written = True
 
                 # Write unified diff artifact
                 if unified_diff:
@@ -877,6 +913,7 @@ class TransformationEvidenceApplicationService:
                     created_at=now,
                 )
                 artifact_ids.append(mig_ref.artifact_id)
+                migration_written = True
 
                 # Register standalone changed file inventory artifact
                 inv_payload = {
@@ -891,12 +928,18 @@ class TransformationEvidenceApplicationService:
                     created_at=now,
                 )
                 artifact_ids.append(inv_ref.artifact_id)
+                inventory_written = True
 
             overall_risk = self._compute_overall_risk(diff_result, forbidden)
-            evidence_complete = (
-                diff_result.total_files_changed > 0
-                and diff_written
-            )
+            checks = []
+            checks.append(diff_written)
+            checks.append(migration_written)
+            checks.append(inventory_written)
+            if package_result:
+                checks.append(package_written)
+            if forbidden:
+                checks.append(forbidden_written)
+            evidence_complete = all(checks) if store else False
 
             event_type = (
                 WorkflowEventType.TRANSFORMATION_EVIDENCE_COMPLETED
@@ -986,6 +1029,41 @@ class TransformationEvidenceApplicationService:
             tp = target_files.get(rel_path)
             path_str = str(rel_path)
 
+            # Large file safety: skip reading files > 50MB
+            size_bytes = 0
+            if tp:
+                size_bytes = tp.stat().st_size
+            elif sp:
+                size_bytes = sp.stat().st_size
+            if (sp and sp.stat().st_size > _MAX_DIFF_FILE_SIZE) or (tp and tp.stat().st_size > _MAX_DIFF_FILE_SIZE):
+                if sp and tp:
+                    change_type = "modified"
+                elif sp:
+                    change_type = "deleted"
+                else:
+                    change_type = "added"
+                added = 0
+                removed = 0
+                classification = ChangedFileClassification.GENERATED
+                reason = SensitiveChangeReason.GENERATED_FILE
+                total_added += added
+                total_removed += removed
+                checksum_input.append(f"{change_type}:{path_str}:{added}:{removed}")
+                changed_files.append(
+                    ChangedFileEntry(
+                        file_path=path_str,
+                        change_type=change_type,
+                        classification=classification,
+                        reason=reason,
+                        lines_added=added,
+                        lines_removed=removed,
+                        is_binary=False,
+                        is_generated=True,
+                        size_bytes=size_bytes,
+                    )
+                )
+                continue
+
             if sp and tp:
                 try:
                     sc = _normalize_line_endings(sp.read_bytes())
@@ -1039,6 +1117,9 @@ class TransformationEvidenceApplicationService:
                     reason=reason,
                     lines_added=added,
                     lines_removed=removed,
+                    is_binary=classification == ChangedFileClassification.BINARY,
+                    is_generated=classification == ChangedFileClassification.GENERATED,
+                    size_bytes=size_bytes,
                 )
             )
 
@@ -1133,7 +1214,13 @@ class TransformationEvidenceApplicationService:
 
         if any(ext in path_lower for ext in [".bin", ".exe", ".dll", ".so", ".dylib", ".png", ".jpg", ".gif", ".ico"]):
             return ChangedFileClassification.BINARY, SensitiveChangeReason.BINARY_FILE
-        if any(gen in path_lower for gen in ["/dist/", "/build/", "/.angular/", "node_modules", "/coverage/"]):
+        if (
+            path_lower.startswith("dist/")
+            or path_lower.startswith("build/")
+            or path_lower.startswith(".angular/")
+            or path_lower.startswith("coverage/")
+            or any(gen in path_lower for gen in ["/dist/", "/build/", "/.angular/", "node_modules", "/coverage/"])
+        ):
             return ChangedFileClassification.GENERATED, SensitiveChangeReason.GENERATED_FILE
         if any(
             sens in path_lower
@@ -1220,6 +1307,18 @@ class TransformationEvidenceApplicationService:
             if dep in all_tdeps:
                 ang_after = all_tdeps[dep]
 
+        other_major: list[str] = []
+        for dep in deps_updated:
+            from_major = _major(dep.get("from"))
+            to_major = _major(dep.get("to"))
+            if from_major is not None and to_major is not None and abs(to_major - from_major) >= 2:
+                other_major.append(f"{dep['name']}: {dep['from']} -> {dep['to']} (major jump {from_major}->{to_major})")
+        for dep in dev_updated:
+            from_major = _major(dep.get("from"))
+            to_major = _major(dep.get("to"))
+            if from_major is not None and to_major is not None and abs(to_major - from_major) >= 2:
+                other_major.append(f"{dep['name']}: {dep['from']} -> {dep['to']} (major jump {from_major}->{to_major})")
+
         return PackageChangeSummary(
             dependencies_added=deps_added,
             dependencies_removed=deps_removed,
@@ -1229,6 +1328,7 @@ class TransformationEvidenceApplicationService:
             dev_dependencies_updated=dev_updated,
             angular_version_before=ang_before,
             angular_version_after=ang_after,
+            other_major_changes=other_major,
         )
 
     def _scan_forbidden_changes(
