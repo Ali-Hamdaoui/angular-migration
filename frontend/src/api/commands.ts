@@ -20,6 +20,19 @@ export type CommandArtifactMetadata = {
   filename: string | null;
 };
 
+export type CommandLogSummary = {
+  execution_id: string;
+  run_id: string;
+  total_chunks: number;
+  streams: { stdout: number; stderr: number; system: number };
+  first_sequence: number | null;
+  last_sequence: number | null;
+  finalized: boolean;
+  finalized_at: string | null;
+  truncated: { stdout: boolean; stderr: boolean };
+  redaction_applied: boolean;
+};
+
 export function listCommandTemplates(
   client: ApiClient = apiClient,
 ): Promise<CommandTemplateListDto> {
@@ -81,5 +94,15 @@ export function getCommandArtifactById(
 ): Promise<CommandArtifactMetadata> {
   return client.get<CommandArtifactMetadata>(
     `/api/v1/artifacts/${encodeURIComponent(artifactId)}`,
+  );
+}
+
+export function getCommandLogSummary(
+  runId: string,
+  executionId: string,
+  client: ApiClient = apiClient,
+): Promise<CommandLogSummary> {
+  return client.get<CommandLogSummary>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/logs/summary`,
   );
 }

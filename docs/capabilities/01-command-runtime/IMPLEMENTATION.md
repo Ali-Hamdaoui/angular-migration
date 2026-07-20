@@ -48,7 +48,7 @@ All external process execution must pass through the registered command template
   - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs/summary` — run-scoped summary with counts, latest cursor, truncation, and finalization
   - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs/stream` — SSE replay/tail using explicit `cursor` or `Last-Event-ID` (explicit cursor wins)
   - SSE events: `command_log` with `id=<log sequence>`, `log_checkpoint`, `execution_complete`, heartbeat comments, and safe `stream_error`
-  - `LogViewer.tsx` — tail/pause, stdout/stderr filter buttons, search, reconnect indicator, auto-poll for live updates, scroll-to-bottom
+  - `LogViewer.tsx` — `LiveCommandLogViewer` and `StaticLogArtifactViewer`; live tail/pause, stdout/stderr filters, search, sequence deduplication, reconnect indicator, completion/artifact links, and safe static artifact rendering
 
 - **S3-F04 — Own commands with JobSupervisor, leases, timeout, and explicit cancellation**
   - `JobSupervisorService` — exclusive worker lease acquire/renew/release with expiry, active-command tracking, run state transitions via `StateTransitionService`

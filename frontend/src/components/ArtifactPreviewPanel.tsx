@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { getArtifactById, type ArtifactContentResponse } from "@/api/migrations";
 import type { ArtifactRefDto } from "@/types/generated/api";
-import { LogViewer } from "./LogViewer";
+import { StaticLogArtifactViewer } from "./LogViewer";
 import { MarkdownReportViewer } from "./MarkdownReportViewer";
 import { UnifiedDiffViewer } from "./UnifiedDiffViewer";
 import styles from "./ControlTowerShell.module.css";
@@ -26,7 +26,7 @@ function viewerFor(artifact: ArtifactRefDto, content: string) {
   if (artifact.artifact_type === "markdown" || artifact.artifact_type === "report" || artifact.relative_path.endsWith(".md")) {
     return <MarkdownReportViewer content={content} />;
   }
-  return <LogViewer content={content} maxLines={200} />;
+  return <StaticLogArtifactViewer content={content} maxLines={200} />;
 }
 
 export function ArtifactPreviewPanel({ artifact, initialContent, initialCreatedBy = null, loadArtifact = getArtifactById }: ArtifactPreviewPanelProps) {
