@@ -37,42 +37,29 @@ def get_executor() -> CommandExecutorService:
     return CommandExecutorService()
 
 
-@router.post("/{run_id}/commands", status_code=201)
+@router.post("/{run_id}/commands", status_code=202)
 def queue_command(
     run_id: str,
     body: CommandExecuteRequestDto,
     request: Request,
     executor: CommandExecutorService = Depends(get_executor),
 ):
-    """Queue and execute one approved command for a migration run.
-
-    The command must be registered in the structured command registry and
-    pass all policy checks. This endpoint blocks until the command completes.
-    """
+    """Queue an accepted authorization for worker-owned execution."""
     with session_scope() as session:
         try:
-            result = executor.queue_command(
+            result = executor.queue_authorized_command(
                 session,
                 run_id=run_id,
-                stage_id=body.stage_id,
-                command_id=body.command_id,
-                executable=body.executable,
-                arguments=body.arguments,
+                authorization_decision_id=body.authorization_decision_id,
+                expected_state_version=body.expected_state_version,
                 idempotency_key=body.idempotency_key,
                 requested_by=body.requested_by,
-                requester=body.requester,
-                working_directory_alias=body.working_directory_alias,
-                working_directory=body.working_directory,
-                runtime_profile_id=body.runtime_profile_id,
-                timeout_seconds=body.timeout_seconds,
-                network_profile=body.network_profile,
-                cancellation_policy=body.cancellation_policy,
             )
         except CommandExecutorError as error:
-            status_code = 409 if error.code in {"STALE_STATE"} else 422
+            status_code = 404 if error.code in {"RUN_NOT_FOUND", "AUTHORIZATION_DECISION_NOT_FOUND", "COMMAND_TEMPLATE_NOT_FOUND"} else 409 if error.code in {"STALE_STATE_VERSION", "AUTHORIZATION_STALE", "IDEMPOTENCY_KEY_CONFLICT", "AUTHORIZATION_IDEMPOTENCY_MISMATCH"} else 422
             return error_response(request, status_code=status_code, error_code=error.code, message=error.message)
-
-        return CommandExecutionResponseDto(
+    executor.dispatch_execution(result.execution_id)
+    return CommandExecutionResponseDto(
             execution_id=result.execution_id,
             run_id=result.run_id,
             command_id=result.command_id,
@@ -117,7 +104,7 @@ def list_command_executions(
 ):
     """List all command executions for a run."""
     with session_scope() as session:
-        models = executor.list_command_executions(session, run_id)
+        models = executor.get_list_command_executions(session, run_id)
         return {
             "run_id": run_id,
             "executions": [

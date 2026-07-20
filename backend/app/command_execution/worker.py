@@ -72,6 +72,7 @@ class StructuredCommandRequest:
     definition: CommandDefinition
     command: tuple[str, ...]
     working_directory: Path
+    environment_allowlist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,7 @@ class CommandPolicy:
     working_directory_aliases: dict[str, Path] = field(default_factory=dict)
     runtime_profiles: frozenset[str] = frozenset({_DEFAULT_RUNTIME_PROFILE})
     network_profiles: frozenset[str] = frozenset({_DEFAULT_NETWORK_PROFILE})
+    environment_allowlist: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
@@ -166,21 +168,31 @@ class CommandPolicy:
             definition=definition,
             command=(request.executable, *definition.arguments),
             working_directory=working_directory,
+            environment_allowlist=self.environment_allowlist,
         )
 
     def _resolve_working_directory(self, request: CommandRequestDto) -> Path:
         if request.working_directory_alias:
+            if request.working_directory:
+                raise CommandPolicyViolation("Working directory path cannot override an approved alias")
             if request.working_directory_alias not in self.working_directory_aliases:
                 raise CommandPolicyViolation("Working directory alias is not registered")
             candidate = self.working_directory_aliases[request.working_directory_alias]
         elif request.working_directory:
             raw_path = Path(request.working_directory)
+            if ".." in raw_path.parts:
+                raise CommandPolicyViolation("Working directory traversal is forbidden")
+            if not raw_path.is_absolute() and raw_path.drive:
+                raise CommandPolicyViolation("Working directory drive changes are forbidden")
             candidate = raw_path if raw_path.is_absolute() else self.sandbox_root / raw_path
         else:
             raise CommandPolicyViolation("Working directory alias is required")
 
-        sandbox_root = self.sandbox_root.resolve()
-        resolved = Path(candidate).resolve()
+        sandbox_root = self.sandbox_root.resolve(strict=True)
+        try:
+            resolved = Path(candidate).resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise CommandPolicyViolation("Working directory is not available") from exc
         try:
             resolved.relative_to(sandbox_root)
         except ValueError as exc:
@@ -309,13 +321,14 @@ class WorkerSupervisor:
     )
 
     @staticmethod
-    def _build_safe_environment() -> dict[str, str]:
+    def _build_safe_environment(allowlist: tuple[str, ...] = ()) -> dict[str, str]:
         """Build a sanitized environment blocking secret and backend variables."""
         clean: dict[str, str] = {}
+        allowed = set(allowlist)
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
-            if not blocked:
+            if not blocked and (not allowed or var in allowed):
                 clean[var] = value
         return clean
 
@@ -340,7 +353,7 @@ class WorkerSupervisor:
             stderr=subprocess.PIPE,
             text=True,
             shell=False,
-            env=self._build_safe_environment(),
+            env=self._build_safe_environment(request.environment_allowlist),
             creationflags=creationflags,
             **popen_kwargs,
         )

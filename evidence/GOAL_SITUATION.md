@@ -42,8 +42,8 @@ G01 is the sole governed external-process execution path for the Angular 18→21
 | AMFA-155 | AMFA-140 | S3-F01-I02 db/api/events/artifacts | Templates/audit models, API, events | `backend/app/api/routes/commands.py`; `CommandTemplateModel`, `CommandAuthorizationAuditModel`; migration `20260719_07`; COMMAND_AUTHORIZATION_ACCEPTED/REJECTED | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-156 | AMFA-140 | S3-F01-I03 frontend | Policy inspector UI | `frontend/src/components/CommandPolicyInspector.tsx` (wired `AuthoritativeRunDashboard.tsx:69`); `frontend/src/api/commands.ts` | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-157 | AMFA-140 | S3-F01-I04 tests/security/docs | Tests + docs | `backend/tests/test_command_registry_service.py` (22 tests); `docs/capabilities/01-command-runtime/`; `docs/adr/0003-structured-command-authority.md` | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
-| AMFA-158 | AMFA-141 | S3-F02-I01 backend domain | Command executor service | `backend/app/services/command_executor_service.py:CommandExecutorService.queue_command` (policy, idempotency, runtime_checksum, cancel_event) | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
-| AMFA-159 | AMFA-141 | S3-F02-I02 db/api/events/artifacts | Execute API + events | `backend/app/api/routes/run_commands.py` (queue/get/list/logs/stream/cancel) — **list endpoint 500s** (method name mismatch) | PARTIALLY_IMPLEMENTED |
+| AMFA-158 | AMFA-141 | S3-F02-I01 backend domain | Command executor service | `CommandExecutorService.queue_authorized_command`/`dispatch_execution` rehydrate accepted authorization, profile, run-owned workspace, and execute through `ExecutionWorker` in a process-owned worker | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
+| AMFA-159 | AMFA-141 | S3-F02-I02 db/api/events/artifacts | Execute API + events | `backend/app/api/routes/run_commands.py` now accepts authorization ID + expected state version, returns 202, dispatches after commit, and uses the correct list method | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-160 | AMFA-141 | S3-F02-I03 frontend | Command detail drawer | **No frontend client `queueCommand`/`executeCommand` and no drawer component.** `commands.ts` exposes only S3-F01 functions. | PARTIALLY_IMPLEMENTED |
 | AMFA-161 | AMFA-141 | S3-F02-I04 tests/security/docs | Tests + docs | `backend/tests/test_command_executor_services.py` (queue/idempotency/cancel) | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-162 | AMFA-142 | S3-F03-I01 backend domain | Log streaming service | `backend/app/services/command_log_service.py:CommandLogService` (append_chunk/get_logs/get_stream_summary); COMMAND_OUTPUT_AVAILABLE | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
@@ -75,9 +75,9 @@ Closeout tasks (from `evidence/task-results/`):
 | S3-F01 execution authority (shell=false, reject pre-process) | Reject bypass | policy `_check_shell_enforcement` structural; `WorkerSupervisor` hard `shell=False` | PARTIAL | DTO `shell` not explicitly validated |
 | S3-F02 happy path + events | Exec + persist + events + UI | `command_executor_service.py` emits; `run_commands.py:40` | Verified (backend) | no frontend execution surface |
 | S3-F02 invalid input | Stable error | POLICY_REJECTED | Verified | API only 422/409, no STALE handling |
-| S3-F02 stale state | STALE_STATE_VERSION | no expected_state_version on execute request | MISSING | no state-version gate on execute |
-| S3-F02 persistence (idempotency/state/checksum/artifacts) | Records present | `CommandExecutionModel` fields present | Verified | executor does not persist stdout/stderr artifacts |
-| S3-F02 evidence (manifest/stdout/stderr/report) | SHA-256 registered | Sprint-0 `CommandLogWriter` not wired into executor | PARTIAL | no install evidence produced |
+| S3-F02 stale state | STALE_STATE_VERSION | authorization-ID execute request validates run and authorization state versions | VERIFIED (backend) | HTTP/manual runtime validation remains pending |
+| S3-F02 persistence (idempotency/state/checksum/artifacts) | Records present | queued execution is persisted before worker dispatch; worker updates lifecycle and artifact IDs | VERIFIED (backend) | HTTP/manual runtime validation remains pending |
+| S3-F02 evidence (manifest/stdout/stderr/report) | SHA-256 registered | worker uses Sprint-0 `CommandLogWriter` and stores command/stdout/stderr artifact references | VERIFIED (backend) | HTTP/manual runtime validation remains pending |
 | S3-F02 frontend behavior | States | no command drawer | MISSING | AMFA-160 unimplemented |
 | S3-F02 execution authority | reject before process | policy engine called at queue | Verified | — |
 | S3-F03 happy path + COMMAND_OUTPUT_AVAILABLE | logs + event + UI | `CommandLogService.append_chunk`; `run_commands.py:138/185` | Verified (backend) | no command-log frontend |
@@ -101,8 +101,8 @@ Closeout tasks (from `evidence/task-results/`):
 | `backend/app/domain/command.py` | `CommandTemplate`, `CommandPolicyEngine` dataclasses, `DEFAULT_COMMAND_TEMPLATES` (6) | Registry/policy domain | AMFA-154 | Unit tests |
 | `backend/app/services/command_registry_service.py` | `CommandRegistryService`, `CommandPolicyEngineService.validate` | Template CRUD/seed + 8 policy checks + audit+event persistence | AMFA-154/155 | 22 tests |
 | `backend/app/api/routes/commands.py` | list/get template, validate_command_policy | S3-F01 API | AMFA-155 | registered router.py:56; no HTTP test |
-| `backend/app/services/command_executor_service.py` | `CommandExecutorService.queue_command`/`get_*`/`request_cancel` | S3-F02 orchestration | AMFA-158/159 | 26 tests (logic) |
-| `backend/app/api/routes/run_commands.py` | queue/get/list/logs/summary/stream(SSE)/cancel/active | S3-F02/03/04 API | AMFA-159/163/167 | registered; list endpoint 500s |
+| `backend/app/services/command_executor_service.py` | `queue_authorized_command`/`dispatch_execution`/`_run_execution` | S3-F02 orchestration | AMFA-158/159 | focused worker/service tests pass; HTTP/manual runtime validation pending |
+| `backend/app/api/routes/run_commands.py` | queue/get/list/logs/summary/stream(SSE)/cancel/active | S3-F02/03/04 API | AMFA-159/163/167 | registered; queue is 202 authorization-bound; list method corrected |
 | `backend/app/services/command_log_service.py` | `CommandLogService` | S3-F03 log store + event | AMFA-162/163 | tests present |
 | `backend/app/services/job_supervisor_service.py` | `JobSupervisorService` | S3-F04 leases + cancel | AMFA-166/167 | tests present; acquire_lease unused |
 | `backend/app/command_execution/worker.py` | `WorkerSupervisor.run`, `CommandLogWriter`, `CommandRegistry`, `ExecutionWorker` | Sole `subprocess.Popen` authority (Sprint 0 reuse) | upstream | tests present |
@@ -223,11 +223,11 @@ Manual runtime validation was **never executed** against a live backend/frontend
 
 | ID | Severity | Description | Jira impact | Owner | Required action |
 | -- | -------- | ----------- | ----------- | ----- | --------------- |
-| K1 | BLOCKER | `GET /runs/{id}/commands` returns 500 (`executor.list_command_executions` vs `get_list_command_executions`) | AMFA-159 | G01 | Fix method name in `run_commands.py` |
+| K1 | RESOLVED | `GET /runs/{id}/commands` called a non-existent service method | AMFA-159 | G01 | Corrected route to `get_list_command_executions`; focused suite passes |
 | K2 | BLOCKER | Cancellation cannot terminate a live OS process; `RUN_CANCELLED` never emitted (new `CommandExecutorService` per request) | AMFA-167/169 | G01 | Share executor instance / terminal cancel via worker |
 | K3 | CRITICAL | `acquire_lease` never called; worker leases never created; `get_active_lease` always None | AMFA-166 | G01 | Wire lease acquisition into execution flow |
-| K4 | MAJOR | No STALE_STATE_VERSION gate on execute/cancel requests | S3-F02/F04 | G01 | Add expected_state_version handling |
-| K5 | MAJOR | Executor does not persist stdout/stderr as immutable artifacts | S3-F02/F04 | G01 | Wire `CommandLogWriter` into executor |
+| K4 | RESOLVED_FOR_S3-F02 | Execute request now requires expected state version and validates accepted authorization freshness | S3-F02 | G01 | HTTP/manual runtime validation remains pending |
+| K5 | RESOLVED_FOR_S3-F02 | Worker-owned execution now uses `CommandLogWriter` and persists artifact IDs/checksum | S3-F02 | G01 | HTTP/manual runtime validation remains pending |
 | K6 | RESOLVED_FOR_S3-F01 | Authorization audit now reads and persists the authoritative run state version; command execution remains separately out of scope | S3-F01 | AMFA-140 Task 2 | Covered by focused authorization tests |
 | K7 | MAJOR | Frontend execute/log/cancel surfaces (AMFA-160/164/168) absent/unwired | AMFA-141/142/143 | G01 | Implement projections or mark incomplete |
 | K8 | MAJOR | Manual runtime validation never executed (C91 PENDING) | all acceptance | G01 | Execute MANUAL_TEST_PLAN vs live stack |

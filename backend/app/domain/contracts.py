@@ -637,19 +637,10 @@ class CommandPolicyValidateResponseDto(ContractModel):
 
 class CommandExecuteRequestDto(ContractModel):
     """Request body for POST /api/v1/runs/{run_id}/commands."""
-    command_id: str = Field(min_length=1)
-    executable: str = Field(min_length=1)
-    arguments: list[str] = Field(default_factory=list)
-    stage_id: str | None = None
-    working_directory_alias: str | None = None
-    working_directory: str | None = None
-    runtime_profile_id: str = "source-runtime-profile"
-    timeout_seconds: int = Field(default=300, gt=0, le=3600)
-    network_profile: str = "none"
-    cancellation_policy: str = "terminate_process_tree"
+    authorization_decision_id: str = Field(min_length=1)
+    expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
     requested_by: str | None = None
-    requester: str | None = None
 
 
 class CommandExecutionResponseDto(ContractModel):
