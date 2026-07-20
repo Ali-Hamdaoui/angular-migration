@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError } from "@/api/client";
 import { executeApprovedCommand, getCommandArtifactById, getCommandExecution, listCommandExecutions } from "@/api/commands";
 import type { CommandArtifactMetadata } from "@/api/commands";
-import type { CommandExecutionResponseDto, CommandPolicyValidateResponseDto } from "@/types/generated/api";
+import type { CommandExecutionResponseDto, CommandPolicyValidateResponseDto, WorkflowEventDto } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
 
 const FINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "interrupted", "rejected"]);
@@ -20,23 +20,36 @@ function details(error: unknown) {
 function label(status: string) { return status.replaceAll("_", " ").toUpperCase(); }
 function timestamp(value: string | null | undefined) { return value ? new Date(value).toLocaleString() : "not supplied"; }
 
-export function CommandExecutionPanel({ runId, stateVersion, authorization, refreshAuthoritativeState }: { runId: string; stateVersion: number; authorization: CommandPolicyValidateResponseDto | null; refreshAuthoritativeState?: () => Promise<unknown> }) {
+export function CommandExecutionPanel({ runId, stateVersion, authorization, connectionStatus, workflowEvents, refreshAuthoritativeState }: { runId: string; stateVersion: number; authorization: CommandPolicyValidateResponseDto | null; connectionStatus?: string; workflowEvents?: WorkflowEventDto[]; refreshAuthoritativeState?: () => Promise<unknown> }) {
   const [executions, setExecutions] = useState<CommandExecutionResponseDto[]>([]);
   const [selected, setSelected] = useState<CommandExecutionResponseDto | null>(null);
-  const [viewStatus, setViewStatus] = useState<"loading" | "ready" | "unavailable" | "not_found">("loading");
+  const [viewStatus, setViewStatus] = useState<"loading" | "ready" | "unavailable" | "not_found" | "reconnecting">("loading");
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitting" | "failed">("idle");
   const [error, setError] = useState<ReturnType<typeof details> | null>(null);
   const [artifactMetadata, setArtifactMetadata] = useState<Record<string, CommandArtifactMetadata["artifact"]>>({});
   const [artifactMetadataStatus, setArtifactMetadataStatus] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
   const attemptKey = useRef<string | null>(null);
 
+  const commandEventSequence = useMemo(() => {
+    const commandEvents = (workflowEvents ?? []).filter((event) => ["COMMAND_QUEUED", "COMMAND_STARTED", "COMMAND_SUCCEEDED", "COMMAND_FAILED"].includes(event.event_type));
+    return commandEvents.length ? Math.max(...commandEvents.map((event) => event.sequence)) : null;
+  }, [workflowEvents]);
+
   const reload = useCallback(async () => {
     setViewStatus("loading");
-    try { const result = await listCommandExecutions(runId); setExecutions(result.executions); setSelected((current) => current ?? result.executions[0] ?? null); setViewStatus("ready"); }
+    try { const result = await listCommandExecutions(runId); setExecutions(result.executions); setSelected((current) => result.executions.find((item) => item.execution_id === current?.execution_id) ?? result.executions[0] ?? null); setViewStatus("ready"); }
     catch { setViewStatus("unavailable"); }
   }, [runId]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  useEffect(() => {
+    if (connectionStatus === "reconnecting" || connectionStatus === "recovering") {
+      setViewStatus("reconnecting");
+      return;
+    }
+    if (connectionStatus === "open" && commandEventSequence !== null) void reload();
+  }, [commandEventSequence, connectionStatus, reload]);
 
   useEffect(() => { attemptKey.current = null; }, [authorization?.authorization_id, authorization?.expected_state_version, runId]);
 
@@ -90,6 +103,7 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, refr
     {authorization && authorization.expected_state_version !== stateVersion ? <p role="alert">Authorization is stale. Refresh the run and authorize the command again before executing.</p> : null}
     {error ? <div role="alert"><strong>{error.code}</strong><p>{error.message}</p>{error.requested !== null ? <p>Requested version: {error.requested}. Current version: {error.current}.</p> : null}{error.correlationId ? <p>Correlation ID: {error.correlationId}</p> : null}{error.code === "IDEMPOTENCY_KEY_REUSED" ? <p>Start a new logical attempt; the existing idempotency key cannot be reused for changed input.</p> : null}</div> : null}
     {viewStatus === "loading" ? <p role="status">Loading command executions...</p> : null}
+    {viewStatus === "reconnecting" ? <p role="status">Connection interrupted. Refreshing authoritative command state...</p> : null}
     {viewStatus === "unavailable" ? <p role="alert">Execution history is temporarily unavailable. Retry from the run.</p> : null}
     {viewStatus === "ready" && executions.length === 0 ? <p className={styles.note}>No command executions have been recorded.</p> : null}
     {executions.length > 0 ? <ul className={styles.list}>{executions.map((execution) => <li key={execution.execution_id}><button type="button" onClick={() => setSelected(execution)}>{execution.command_id} · {label(execution.status)}</button><code>{execution.execution_id}</code></li>)}</ul> : null}

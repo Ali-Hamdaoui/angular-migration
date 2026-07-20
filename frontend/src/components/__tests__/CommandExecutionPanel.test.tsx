@@ -44,4 +44,14 @@ describe("CommandExecutionPanel", () => {
     expect(screen.getByText(/Evidence is not available/)).toBeInTheDocument();
     await waitFor(() => expect(getCommandExecution).not.toHaveBeenCalled());
   });
+
+  it("reloads command state after a durable command event and exposes reconnecting recovery", async () => {
+    const { rerender } = render(<CommandExecutionPanel runId="run-1" stateVersion={7} authorization={null} connectionStatus="open" workflowEvents={[]} />);
+    await screen.findByText("No command executions have been recorded.");
+    vi.mocked(listCommandExecutions).mockClear();
+    rerender(<CommandExecutionPanel runId="run-1" stateVersion={7} authorization={null} connectionStatus="open" workflowEvents={[{ event_id: "event-command-1", run_id: "run-1", stage_id: "stage-1", event_type: "COMMAND_SUCCEEDED", occurred_at: "2026-07-20T10:02:00Z", sequence: 9, payload: {} }]} />);
+    await waitFor(() => expect(listCommandExecutions).toHaveBeenCalledWith("run-1"));
+    rerender(<CommandExecutionPanel runId="run-1" stateVersion={7} authorization={null} connectionStatus="recovering" workflowEvents={[]} />);
+    expect(screen.getByRole("status")).toHaveTextContent(/connection interrupted/i);
+  });
 });

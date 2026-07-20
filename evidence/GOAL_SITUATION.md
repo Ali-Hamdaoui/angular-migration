@@ -78,7 +78,7 @@ Closeout tasks (from `evidence/task-results/`):
 | S3-F02 stale state | STALE_STATE_VERSION | authorization-ID execute request validates run and authorization state versions | VERIFIED (backend) | HTTP/manual runtime validation remains pending |
 | S3-F02 persistence (idempotency/state/checksum/artifacts) | Records present | queued execution is persisted before worker dispatch; worker updates lifecycle and artifact IDs | VERIFIED (backend) | HTTP/manual runtime validation remains pending |
 | S3-F02 evidence (manifest/stdout/stderr/report) | SHA-256 registered | worker uses Sprint-0 `CommandLogWriter` and stores command/stdout/stderr artifact references | VERIFIED (backend) | HTTP/manual runtime validation remains pending |
-| S3-F02 frontend behavior | States | no command drawer | MISSING | AMFA-160 unimplemented |
+| S3-F02 frontend behavior | States | command detail drawer plus authoritative event/reconnect/gap recovery | VERIFIED | AMFA-160 UI and event recovery tests pass; manual browser validation remains pending |
 | S3-F02 execution authority | reject before process | policy engine called at queue | Verified | — |
 | S3-F03 happy path + COMMAND_OUTPUT_AVAILABLE | logs + event + UI | `CommandLogService.append_chunk`; `run_commands.py:138/185` | Verified (backend) | no command-log frontend |
 | S3-F03 invalid input | stable error | empty on bad id | PARTIAL | — |
@@ -115,7 +115,7 @@ Closeout tasks (from `evidence/task-results/`):
 | `frontend/src/api/commands.ts` | API client | list/get template + validate policy | AMFA-156 | YES |
 | `frontend/src/types/generated/api.ts:39-46` | DTO types | command templates/policy/execute/cancel/log types | AMFA-156/160/164/168 | PARTIAL (execute/cancel types unused) |
 | `frontend/src/components/LogViewer.tsx` | Component | generic text log viewer w/ SSE + cursor | AMFA-164 | PARTIAL-NO (only ArtifactPreviewPanel; not command stream) |
-| `frontend/src/hooks/useAuthoritativeRun.ts` | SSE hook | projects command events via run SSE | events | YES |
+| `frontend/src/hooks/useAuthoritativeRun.ts` | SSE hook | projects command events via run SSE with duplicate, late-event, gap, and reconnect recovery | events | YES |
 | (missing) command execute drawer | — | S3-F02 detail drawer | AMFA-160 | NO |
 | (missing) cancel UI | — | S3-F04 cancel action | AMFA-168 | NO |
 
@@ -130,7 +130,7 @@ Closeout tasks (from `evidence/task-results/`):
 | POST | `/api/v1/operator/command-policy/validate` | Policy validate + audit + event | AMFA-154/155 | Yes | Service tests |
 | POST | `/api/v1/runs/{id}/commands` | Queue+execute command | AMFA-159 | Yes | Service tests |
 | GET | `/api/v1/runs/{id}/commands/{eid}` | Get execution | AMFA-159 | Yes | Service tests |
-| GET | `/api/v1/runs/{id}/commands` | List executions | AMFA-159 | **Broken (500)** | No test |
+| GET | `/api/v1/runs/{id}/commands` | List executions | AMFA-159 | Yes | Real API integration test |
 | GET | `/api/v1/runs/{id}/commands/{eid}/logs` | Get log chunks | AMFA-163 | Yes | Service tests |
 | GET | `/api/v1/runs/{id}/commands/{eid}/logs/summary` | Stream summary | AMFA-163 | Yes | Service tests |
 | GET | `/api/v1/runs/{id}/commands/{eid}/logs/stream` | SSE log stream (cursor) | AMFA-163 | Yes | No HTTP test |
