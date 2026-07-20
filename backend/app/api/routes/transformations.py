@@ -2,14 +2,17 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
+from app.api.authentication import authenticated_actor
 from app.api.transformation_contracts import (
     AngularUpdateRequest,
     AngularUpdateResponse,
     G08DecisionRequest,
     G08ReviewResponse,
+    TargetVersionResponse,
     TransformationEvidenceRequest,
     TransformationEvidenceResponse,
 )
+from app.domain.transformation import AngularUpdateVerificationRequest
 from app.services.transformation_application_service import (
     AngularUpdateApplicationService,
     G03ApplicationError,
@@ -63,16 +66,56 @@ def get_angular_update(
     return result
 
 
-@router.get("/{run_id}/stages/{stage_id}/target-version", response_model=AngularUpdateResponse)
+@router.get("/{run_id}/stages/{stage_id}/target-version", response_model=TargetVersionResponse)
 def get_target_version(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
     service: AngularUpdateApplicationService = Depends(get_angular_update_service),
 ):
-    result = service.get(run_id, stage_id)
+    result = service.get_target_version(run_id, stage_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Target version not found")
     return result
+
+
+@router.post(
+    "/{run_id}/stages/{stage_id}/angular-update/complete",
+    response_model=AngularUpdateResponse,
+)
+def complete_angular_update(
+    run_id: str = Path(min_length=1),
+    stage_id: str = Path(min_length=1),
+    body: AngularUpdateVerificationRequest = None,
+    actor: str = Depends(authenticated_actor),
+    service: AngularUpdateApplicationService = Depends(get_angular_update_service),
+):
+    try:
+        return service.complete_update(run_id, stage_id, body.model_copy(update={"actor": actor}))
+    except G03ApplicationError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"error_code": error.code, "message": error.message},
+        ) from error
+
+
+@router.post(
+    "/{run_id}/stages/{stage_id}/target-version/verify",
+    response_model=TargetVersionResponse,
+)
+def verify_target_version(
+    run_id: str = Path(min_length=1),
+    stage_id: str = Path(min_length=1),
+    body: AngularUpdateVerificationRequest = None,
+    actor: str = Depends(authenticated_actor),
+    service: AngularUpdateApplicationService = Depends(get_angular_update_service),
+):
+    try:
+        return service.verify_target_version(run_id, stage_id, body.model_copy(update={"actor": actor}))
+    except G03ApplicationError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"error_code": error.code, "message": error.message},
+        ) from error
 
 
 # ── S3-F08 — Transformation Evidence ────────────────────────────────────

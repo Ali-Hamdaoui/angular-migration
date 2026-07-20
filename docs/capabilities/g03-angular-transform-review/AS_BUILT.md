@@ -17,8 +17,8 @@ All G03 logic follows the existing domain → service → API pattern establishe
 |-------|--------|---------|
 | Domain | `domain/transformation.py` | Pure Pydantic models and checksum-bound builders with zero persistence side effects |
 | Contracts | `api/transformation_contracts.py` | FastAPI request/response DTOs for all G03 endpoints |
-| Service | `services/transformation_application_service.py` | Three application services orchestrating domain logic, persistence, events, and artifact store |
-| API | `api/routes/transformations.py` | 7 REST endpoints registered under `/runs/{id}/stages/{stageId}/` |
+| Service | `services/transformation_application_service.py` | AMFA-178 locked-plan validation, worker dispatch, bounded output, and exact target evidence; sibling evidence/approval services unchanged |
+| API | `api/routes/transformations.py` | 9 REST endpoints registered under `/runs/{id}/stages/{stageId}/` |
 | DB | `repositories/transformation_models.py` | 3 SQLAlchemy models: `AngularUpdateRecordModel`, `TransformationEvidenceModel`, `G08ApprovalModel` |
 | Migration | `alembic/versions/20260719_07_*` | Append-only schema migration |
 
@@ -45,6 +45,8 @@ All G03 logic follows the existing domain → service → API pattern establishe
 | POST | `/api/v1/runs/{id}/stages/{stageId}/angular-update` | S3-F07 |
 | GET | `/api/v1/runs/{id}/stages/{stageId}/angular-update` | S3-F07 |
 | GET | `/api/v1/runs/{id}/stages/{stageId}/target-version` | S3-F07 |
+| POST | `/api/v1/runs/{id}/stages/{stageId}/angular-update/complete` | S3-F07 |
+| POST | `/api/v1/runs/{id}/stages/{stageId}/target-version/verify` | S3-F07 |
 | POST | `/api/v1/runs/{id}/stages/{stageId}/transformation-evidence` | S3-F08 |
 | GET | `/api/v1/runs/{id}/stages/{stageId}/transformation-evidence` | S3-F08 |
 | GET | `/api/v1/runs/{id}/stages/{stageId}/approvals/G08` | S3-F09 |

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -10,6 +13,8 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.artifact_store import LocalFilesystemArtifactStore
+from app.command_execution import CommandLogWriter, CommandPolicy, CommandRegistry, ExecutionWorker
+from app.domain.contracts import CancellationPolicy, CommandRequestDto, CommandStatus
 from app.domain.contracts import ArtifactRefDto, ArtifactType, RiskLevel, WorkflowEventType
 from app.domain.transformation import (
     AngularUpdateCommand,
@@ -32,6 +37,11 @@ from app.domain.transformation import (
     VersionEvidenceSource,
 )
 from app.repositories.models import ArtifactMetadataModel, MigrationRunModel
+from app.repositories.models import CommandExecutionModel
+from app.repositories.baseline_models import BaselineQualificationModel
+from app.repositories.execution_profiles import ExecutionProfileModel
+from app.repositories.planning_models import ActivePlanVersionModel, MigrationPlanModel, StageExecutionPlanModel
+from app.repositories.planning_review_models import G06ApprovalModel
 from app.repositories.session import session_scope
 from app.repositories.transformation_models import (
     AngularUpdateRecordModel,
@@ -98,13 +108,71 @@ def _find_event(session, run_id: str, key: str):
     )
 
 
+_INTERACTIVE_PROMPT = re.compile(r"(?im)(?:\[y/n\]|\(y/n\)|yes/no\s*[:?]|(?:continue|proceed|overwrite|confirm|apply|install)[^\n]{0,80}\?\s*$)")
+_EXECUTION_LOCK = threading.Lock()
+
+
+def _prompt_detected(result) -> bool:
+    text = "\n".join(item.content for item in (result.stdout_artifact, result.stderr_artifact) if item is not None)
+    return bool(_INTERACTIVE_PROMPT.search(text))
+
+
+def _version(value: str | None) -> str | None:
+    match = re.search(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", value or "")
+    return match.group(0) if match else None
+
+
+def _exact_dependency_version(value: str | None) -> str | None:
+    return value if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", value or "") else None
+
+
+def _major(value: str | None) -> int | None:
+    version = _version(value)
+    return int(version.split(".", 1)[0]) if version else None
+
+
+def _tree_checksum(root: Path) -> str:
+    digest = hashlib.sha256()
+    for item in root.rglob("*"):
+        if item.is_symlink():
+            raise ValueError("symlink in authoritative tree")
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(path.read_bytes())
+    return "sha256:" + digest.hexdigest()
+
+
+def _package_version(path: Path, package_name: str) -> str | None:
+    try:
+        package = json.loads((path / "package.json").read_text(encoding="utf-8"))
+        return _exact_dependency_version((package.get("dependencies") or {}).get(package_name) or (package.get("devDependencies") or {}).get(package_name))
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _lock_version(path: Path, package_name: str) -> str | None:
+    try:
+        lock = json.loads((path / "package-lock.json").read_text(encoding="utf-8"))
+        return _exact_dependency_version(lock.get("packages", {}).get(f"node_modules/{package_name}", {}).get("version"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _installed_version(path: Path, package_name: str) -> str | None:
+    try:
+        return _exact_dependency_version(json.loads((path / "node_modules" / package_name / "package.json").read_text(encoding="utf-8")).get("version"))
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+
+
 # ── S3-F07 — Angular Update Service ──────────────────────────────────────
 
 
 class AngularUpdateApplicationService:
-    def __init__(self, *, session_scope_factory=session_scope, now_provider=None) -> None:
+    def __init__(self, *, session_scope_factory=session_scope, now_provider=None, worker_factory=None) -> None:
         self._scope = session_scope_factory
         self._now = now_provider or (lambda: datetime.now(UTC))
+        self._worker_factory = worker_factory
 
     def get(self, run_id: str, stage_id: str):
         with self._scope() as session:
@@ -118,81 +186,247 @@ class AngularUpdateApplicationService:
                 return None
             return self._dto(record)
 
+    def get_target_version(self, run_id: str, stage_id: str):
+        with self._scope() as session:
+            record = session.scalar(
+                select(AngularUpdateRecordModel)
+                .where(AngularUpdateRecordModel.run_id == run_id)
+                .where(AngularUpdateRecordModel.stage_id == stage_id)
+                .order_by(AngularUpdateRecordModel.created_at.desc())
+            )
+            if record is None:
+                return None
+            return self._dto_target_version(record)
+
     def start_update(self, run_id: str, stage_id: str, request) -> object:
+        with _EXECUTION_LOCK:
+            prepared = self._prepare_execution(run_id, stage_id, request)
+            execution_id, command, workspace, runtime_id, runtime_checksum = prepared
+            if execution_id is None:
+                with self._scope() as session:
+                    record = session.scalar(select(AngularUpdateRecordModel).where(AngularUpdateRecordModel.run_id == run_id, AngularUpdateRecordModel.idempotency_key == request.idempotency_key))
+                    return self._dto(record, replay=True)
+            result = self._execute(run_id, stage_id, request, execution_id, command, workspace, runtime_id, runtime_checksum)
+            with self._scope() as session:
+                record = session.get(AngularUpdateRecordModel, execution_id.replace("execution-", "ang-upd-", 1))
+                if record is None:
+                    record = session.scalar(select(AngularUpdateRecordModel).where(AngularUpdateRecordModel.command_execution_id == execution_id))
+                return self._dto(record) if record else result
+
+    def _prepare_execution(self, run_id, stage_id, request):
         now = self._now()
         with self._scope() as session:
-            run = session.get(MigrationRunModel, run_id)
+            run = session.scalar(select(MigrationRunModel).where(MigrationRunModel.id == run_id).with_for_update())
             if run is None:
                 raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
-
-            existing_event = _find_event(session, run_id, request.idempotency_key)
-            if existing_event:
-                record = session.scalar(
-                    select(AngularUpdateRecordModel)
-                    .where(AngularUpdateRecordModel.run_id == run_id)
-                    .order_by(AngularUpdateRecordModel.created_at.desc())
-                )
-                return self._dto(record, replay=True) if record else None
-
+            request_checksum = "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            existing = session.scalar(select(AngularUpdateRecordModel).where(AngularUpdateRecordModel.run_id == run_id, AngularUpdateRecordModel.idempotency_key == request.idempotency_key))
+            if existing:
+                if existing.stage_id != stage_id or (existing.source_version, existing.target_version) != (request.source_version, request.target_version) or (existing.evidence or {}).get("request_checksum") != request_checksum:
+                    raise G03ApplicationError("IDEMPOTENCY_PAYLOAD_MISMATCH", "Idempotency key payload differs.", status_code=409)
+                if (existing.evidence or {}).get("partial_mutation"):
+                    raise G03ApplicationError("PARTIAL_MUTATION_RECOVERY_REQUIRED", "Failed workspace requires recovery or rebuild before retry.", status_code=409)
+                current_workspace = Path((run.workspace_aliases or {}).get("STAGE_SANDBOX", ""))
+                binding = "sha256:" + hashlib.sha256(json.dumps({"request": request_checksum, "plan": (existing.evidence or {}).get("plan_checksum"), "stage_plan": (existing.evidence or {}).get("stage_plan_checksum"), "profile": (existing.evidence or {}).get("execution_profile_checksum"), "workspace": _tree_checksum(current_workspace.resolve())}, sort_keys=True).encode()).hexdigest()
+                if binding != (existing.evidence or {}).get("idempotency_binding"):
+                    raise G03ApplicationError("IDEMPOTENCY_BINDING_MISMATCH", "Idempotency binding no longer matches the approved execution context.", status_code=409)
+                return None, None, None, None, None
             if run.state_version != request.expected_state_version:
-                raise G03ApplicationError(
-                    "STALE_STATE_VERSION",
-                    f"run is at version {run.state_version}, expected {request.expected_state_version}",
-                    status_code=409,
-                )
-
-            command = AngularUpdateCommand(
-                arguments=[
-                    "ng",
-                    "update",
-                    f"@angular/core@{request.target_version}",
-                    f"@angular/cli@{request.target_version}",
-                    "--migrate-only",
-                    f"--from={request.source_version}",
-                    f"--to={request.target_version}",
-                ]
-            )
-
-            transition = StateTransitionService(session).apply_transition(
-                TransitionRequest(
-                    run_id=run_id,
-                    expected_state_version=run.state_version,
-                    idempotency_key=request.idempotency_key,
-                    event_type=WorkflowEventType.ANGULAR_UPDATE_STARTED,
-                    actor=request.actor,
-                    reason=f"Angular update {request.source_version} -> {request.target_version} started",
-                    occurred_at=now,
-                    stage_id=stage_id,
-                    payload={
-                        "source_version": request.source_version,
-                        "target_version": request.target_version,
-                        "stage_id": stage_id,
-                    },
-                )
-            )
-
-            record_id = f"ang-upd-{uuid4().hex[:12]}"
-            record = AngularUpdateRecordModel(
-                id=record_id,
-                run_id=run_id,
-                stage_id=stage_id,
-                idempotency_key=request.idempotency_key,
-                actor=request.actor,
-                status=AngularUpdateStatus.RUNNING.value,
-                target_version_status=TargetVersionStatus.INCONCLUSIVE.value,
-                source_version=request.source_version,
-                target_version=request.target_version,
-                prompt_detected=PromptDetectionResult.NO_PROMPT.value,
-                artifact_ids=[],
-                state_version=transition.next_state_version,
-                event_sequence=transition.event_sequence,
-                created_at=now,
-                updated_at=now,
-            )
+                raise G03ApplicationError("STALE_STATE_VERSION", "Run state version is stale.", status_code=409)
+            if not request.prerequisite_artifact_ids:
+                raise G03ApplicationError("PREREQUISITE_ARTIFACT_REQUIRED", "Bootstrap and sandbox prerequisite artifacts are required.", status_code=409)
+            prerequisite_evidence = self._validate_prerequisites(session, run, stage_id, request.prerequisite_artifact_ids)
+            stage_pointer = session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == stage_id))
+            if stage_pointer is None or stage_pointer.stage_plan_id is None:
+                raise G03ApplicationError("PREREQUISITE_PLAN_REQUIRED", "Approved stage plan is required.", status_code=409)
+            plan = session.get(MigrationPlanModel, stage_pointer.migration_plan_id)
+            stage_plan = session.get(StageExecutionPlanModel, stage_pointer.stage_plan_id)
+            gate = session.scalar(select(G06ApprovalModel).where(G06ApprovalModel.run_id == run_id, G06ApprovalModel.gate_id == "G06").order_by(G06ApprovalModel.created_at.desc()))
+            if not plan or not stage_plan or not gate or gate.status != "approved" or gate.plan_checksum != plan.checksum or gate.stage_plan_checksum != stage_plan.checksum:
+                raise G03ApplicationError("PREREQUISITE_PLAN_CHECKSUM", "Approved plan binding is stale or missing.", status_code=409)
+            values = stage_plan.stage_plan
+            if values.get("stage_id") != stage_id or values.get("target_exact") != request.target_version or values.get("source_exact") != request.source_version:
+                raise G03ApplicationError("PLAN_INPUT_MISMATCH", "Caller versions do not match locked stage plan.", status_code=409)
+            if _major(values.get("target_exact")) != _major(values.get("source_exact")) + 1:
+                raise G03ApplicationError("ONE_MAJOR_ROUTE_REQUIRED", "Angular update must follow exactly one major-version route.", status_code=409)
+            profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.created_at.desc()))
+            if not profile or profile.status not in {"resolved", "selected"} or profile.selected_profile_id != values.get("execution_profile_id") or not profile.selected_checksum:
+                raise G03ApplicationError("EXECUTION_PROFILE_REQUIRED", "Selected execution profile is missing or stale.", status_code=409)
+            baseline = session.scalar(select(BaselineQualificationModel).where(BaselineQualificationModel.run_id == run_id).order_by(BaselineQualificationModel.created_at.desc()))
+            if not baseline or baseline.status not in {"qualified", "qualified_with_known_failures"} or baseline.authorization_status != "authorized":
+                raise G03ApplicationError("BOOTSTRAP_PREREQUISITE_REQUIRED", "Successful authorized bootstrap evidence is required.", status_code=409)
+            workspace_raw = (run.workspace_aliases or {}).get("STAGE_SANDBOX")
+            workspace_candidate = Path(workspace_raw) if workspace_raw else None
+            workspace = workspace_candidate.resolve() if workspace_candidate else None
+            run_root = Path(run.run_root).resolve() if run.run_root else None
+            if workspace is None or workspace_candidate.is_symlink() or not workspace.is_dir() or run_root is None or not workspace.is_relative_to(run_root):
+                raise G03ApplicationError("WORKSPACE_BOUNDARY", "Registered stage sandbox is missing or unsafe.", status_code=409)
+            source_raw = run.source_path or (run.workspace_aliases or {}).get("SOURCE_SNAPSHOT")
+            source_candidate = Path(source_raw) if source_raw else None
+            source = source_candidate.resolve() if source_candidate else None
+            if source is None or source_candidate.is_symlink() or not source.is_dir() or source == workspace or source.is_relative_to(workspace) or workspace.is_relative_to(source):
+                raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Immutable source boundary is missing or overlaps stage sandbox.", status_code=409)
+            if any(item.is_symlink() for item in workspace.rglob("*")):
+                raise G03ApplicationError("WORKSPACE_BOUNDARY", "Stage sandbox contains a symlink escape.", status_code=409)
+            if any(item.is_symlink() for item in source.rglob("*")):
+                raise G03ApplicationError("SOURCE_SAFETY_AUTHORITY_REQUIRED", "Immutable source contains a symlink escape.", status_code=409)
+            refs = values.get("commands", {}).get("angular_update", ())
+            ref = next((item for item in refs if item.get("command_id") == "angular-update"), None)
+            if ref is None or ref.get("executable") not in {"npx", "npx.cmd"} or ref.get("shell") is not False:
+                raise G03ApplicationError("INCOMPATIBLE_PLAN_COMMAND", "Locked plan has no approved local Angular CLI command.", status_code=409)
+            arguments = list(ref.get("arguments", ()))
+            expected_cli = values.get("target_cli_exact") or values["target_exact"]
+            expected_arguments = ["--no-install", "ng", "update", f"@angular/core@{values['target_exact']}", f"@angular/cli@{expected_cli}"]
+            if arguments != expected_arguments:
+                raise G03ApplicationError("INCOMPATIBLE_PLAN_COMMAND", "Forbidden Angular command flags are not allowed.", status_code=409)
+            command_id = f"execution-{uuid4().hex[:12]}"
+            transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key, event_type=WorkflowEventType.ANGULAR_UPDATE_STARTED, actor=request.actor, reason="approved Angular update started", occurred_at=now, stage_id=stage_id, payload={"plan_checksum": stage_plan.checksum, "stage_plan_checksum": stage_plan.checksum, "command_execution_id": command_id}))
+            workspace_fingerprint = _tree_checksum(workspace)
+            idempotency_binding = "sha256:" + hashlib.sha256(json.dumps({"request": request_checksum, "plan": plan.checksum, "stage_plan": stage_plan.checksum, "profile": profile.selected_checksum, "workspace": workspace_fingerprint}, sort_keys=True).encode()).hexdigest()
+            record = AngularUpdateRecordModel(id=f"ang-upd-{uuid4().hex[:12]}", run_id=run_id, stage_id=stage_id, idempotency_key=request.idempotency_key, actor=request.actor, status=AngularUpdateStatus.RUNNING.value, target_version_status=TargetVersionStatus.INCONCLUSIVE.value, source_version=values["source_exact"], target_version=values["target_exact"], command_execution_id=command_id, prompt_detected=PromptDetectionResult.NO_PROMPT.value, evidence={"request_checksum": request_checksum, "plan_checksum": plan.checksum, "stage_plan_checksum": stage_plan.checksum, "execution_profile_id": profile.selected_profile_id, "execution_profile_checksum": profile.selected_checksum, "expected_cli_target": expected_cli, "workspace_fingerprint": workspace_fingerprint, "source_fingerprint": _tree_checksum(source), "source_path": str(source), "prerequisite_artifacts": prerequisite_evidence, "idempotency_binding": idempotency_binding}, artifact_ids=[], state_version=transition.next_state_version, event_sequence=transition.event_sequence, created_at=now, updated_at=now)
             session.add(record)
+            session.add(CommandExecutionModel(id=command_id, run_id=run_id, stage_id=stage_id, idempotency_key=request.idempotency_key + ":command", requested_by=request.actor, requester=request.actor, executable="npx", arguments=arguments, working_directory_alias="STAGE_SANDBOX", runtime_profile_id=profile.selected_profile_id, runtime_checksum=profile.selected_checksum, command_id="angular-update", shell=False, timeout_seconds=int(ref.get("timeout_seconds", 600)), network_profile=ref.get("network_profile", "none"), cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE.value, status=CommandStatus.PENDING.value, requested_at=now, artifact_ids=[], blockers=[], state_version=transition.next_state_version, event_sequence=transition.event_sequence))
+            session.flush()
+            return command_id, AngularUpdateCommand(executable="npx", arguments=arguments, working_directory_alias="STAGE_SANDBOX", timeout_seconds=int(ref.get("timeout_seconds", 600)), network_profile=ref.get("network_profile", "none")), workspace, profile.selected_profile_id, profile.selected_checksum
+
+    def _validate_prerequisites(self, session, run, stage_id, artifact_ids):
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root).resolve(), fixed_run_root=Path(run.artifact_root).resolve())
+        found = {"sandbox": False, "bootstrap": False, "source": False}
+        evidence = []
+        for artifact_id in artifact_ids:
+            metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+            if metadata is None:
+                raise G03ApplicationError("PREREQUISITE_ARTIFACT_MISSING", "A prerequisite artifact is not registered.", status_code=409)
+            if metadata.run_id != run.id or metadata.stage_id != stage_id:
+                raise G03ApplicationError("PREREQUISITE_ARTIFACT_OWNERSHIP", "A prerequisite artifact belongs to another run or stage.", status_code=409)
+            try:
+                artifact = store.read_artifact_by_id(artifact_id)
+            except (OSError, ValueError, KeyError) as error:
+                raise G03ApplicationError("PREREQUISITE_ARTIFACT_MISSING", "A prerequisite artifact cannot be read.", status_code=409) from error
+            if artifact.ref.checksum != metadata.checksum:
+                raise G03ApplicationError("PREREQUISITE_ARTIFACT_CHECKSUM", "A prerequisite artifact checksum does not match.", status_code=409)
+            try:
+                payload = json.loads(artifact.content)
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            name = metadata.relative_path.lower()
+            found["sandbox"] |= "sandbox" in name and payload.get("status") in {"ready", "passed"}
+            found["bootstrap"] |= "bootstrap" in name and payload.get("install_status", payload.get("status")) in {"passed", "succeeded"}
+            found["source"] |= "source" in name and payload.get("status") == "unchanged"
+            evidence.append({"artifact_id": artifact_id, "checksum": metadata.checksum, "stage_id": metadata.stage_id})
+        if not found["sandbox"]:
+            raise G03ApplicationError("G07_SANDBOX_AUTHORITY_REQUIRED", "Authoritative G07 sandbox evidence is required.", status_code=409)
+        if not found["bootstrap"]:
+            raise G03ApplicationError("BOOTSTRAP_AUTHORITY_REQUIRED", "Successful stage bootstrap evidence is required.", status_code=409)
+        if not found["source"]:
+            raise G03ApplicationError("SOURCE_INTEGRITY_AUTHORITY_REQUIRED", "Source immutability evidence is required.", status_code=409)
+        return evidence
+
+    def _execute(self, run_id, stage_id, request, execution_id, command, workspace, runtime_id, runtime_checksum):
+        if not execution_id:
+            return None
+        root = workspace.parent
+        store = LocalFilesystemArtifactStore(Path(self._run_artifact_root(run_id)), fixed_run_root=Path(self._run_artifact_root(run_id)))
+        worker = self._worker_factory(run_id, workspace, runtime_id, runtime_checksum) if self._worker_factory else ExecutionWorker(CommandPolicy(sandbox_root=root, registry=CommandRegistry(), working_directory_aliases={"STAGE_SANDBOX": workspace}, runtime_profiles=frozenset({runtime_id}), network_profiles=frozenset({command.network_profile})), CommandLogWriter(store))
+        command_request = CommandRequestDto(command_id="angular-update", run_id=run_id, stage_id=stage_id, requested_by=request.actor, requester=request.actor, executable=command.executable, arguments=command.arguments, working_directory_alias="STAGE_SANDBOX", runtime_profile_id=runtime_id, shell=False, timeout_seconds=command.timeout_seconds, network_profile=command.network_profile, cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE, idempotency_key=request.idempotency_key + ":command", requested_at=self._now())
+        cancel_event = threading.Event()
+        try:
+            result = worker.run(command_request, cancel_event=cancel_event, output_callback=lambda _stream, chunk: cancel_event.set() if _INTERACTIVE_PROMPT.search(chunk) else None)
+        except Exception as error:
+            self._mark_command_start_failure(run_id, stage_id, execution_id, request, error)
+            raise G03ApplicationError("COMMAND_START_FAILED", "Approved Angular command could not start.", status_code=409) from error
+        with self._scope() as session:
+            record = session.scalar(select(AngularUpdateRecordModel).where(AngularUpdateRecordModel.command_execution_id == execution_id))
+            execution = session.get(CommandExecutionModel, execution_id)
+            record.command_execution_id = execution_id
+            record.artifact_ids = [x for x in (result.command_log_artifact.ref.artifact_id, result.stdout_artifact.ref.artifact_id if result.stdout_artifact else None, result.stderr_artifact.ref.artifact_id if result.stderr_artifact else None) if x]
+            prompt = _prompt_detected(result)
+            workspace_before = (record.evidence or {}).get("workspace_fingerprint")
+            workspace_after = _tree_checksum(workspace)
+            source_path = Path((record.evidence or {}).get("source_path", ""))
+            source_before = (record.evidence or {}).get("source_fingerprint")
+            source_after = _tree_checksum(source_path) if source_path.is_dir() else None
+            source_changed = source_before is not None and source_after != source_before
+            workspace_changed = workspace_after != workspace_before
+            verified = False
+            evidence = dict(record.evidence or {})
+            version_result = None
+            if result.result.status is CommandStatus.SUCCEEDED and not prompt:
+                version_request = command_request.model_copy(update={"command_id": "angular-version", "arguments": ["ng", "version"], "idempotency_key": request.idempotency_key + ":version"})
+                version_result = worker.run(version_request)
+                ng_output = "\n".join(item.content for item in (version_result.stdout_artifact, version_result.stderr_artifact) if item is not None)
+                tree_request = command_request.model_copy(update={"command_id": "angular-dependency-tree", "executable": "npm", "arguments": ["ls", "--json", "--depth=0"], "idempotency_key": request.idempotency_key + ":tree"})
+                tree_result = worker.run(tree_request)
+                tree_output = "\n".join(item.content for item in (tree_result.stdout_artifact, tree_result.stderr_artifact) if item is not None)
+                try:
+                    dependency_tree = json.loads(tree_output)
+                except (TypeError, json.JSONDecodeError):
+                    dependency_tree = {}
+                tree_core = _exact_dependency_version((dependency_tree.get("dependencies") or {}).get("@angular/core", {}).get("version"))
+                tree_cli = _exact_dependency_version((dependency_tree.get("dependencies") or {}).get("@angular/cli", {}).get("version"))
+                package = _package_version(workspace, "@angular/core")
+                cli = _package_version(workspace, "@angular/cli")
+                lock_core = _lock_version(workspace, "@angular/core")
+                lock_cli = _lock_version(workspace, "@angular/cli")
+                expected = record.target_version
+                expected_cli = (record.evidence or {}).get("expected_cli_target", expected)
+                evidence.update({"package_json_core": package, "package_json_cli": cli, "lockfile_core": lock_core, "lockfile_cli": lock_cli, "dependency_tree_core": tree_core, "dependency_tree_cli": tree_cli, "ng_version": CommandLogWriter._redact(ng_output), "execution_profile_id": runtime_id, "execution_profile_checksum": runtime_checksum, "expected_cli_target": expected_cli})
+                versions = [package, cli, lock_core, lock_cli, tree_core, tree_cli, _version(re.search(r"Angular:\s*([^\s]+)", ng_output, re.I).group(1) if re.search(r"Angular:\s*([^\s]+)", ng_output, re.I) else None), _version(re.search(r"Angular CLI:\s*([^\s]+)", ng_output, re.I).group(1) if re.search(r"Angular CLI:\s*([^\s]+)", ng_output, re.I) else None)]
+                verified = version_result.result.status is CommandStatus.SUCCEEDED and tree_result.result.status is CommandStatus.SUCCEEDED and all(value == expected for value in versions[:1] + versions[2:]) and cli == expected_cli and lock_cli == expected_cli and tree_cli == expected_cli and versions[-1] == expected_cli
+                if not verified:
+                    record.error_message = "EXACT_TARGET_MISMATCH"
+            partial_mutation = source_changed or (workspace_changed and (result.result.status is not CommandStatus.SUCCEEDED or not verified))
+            record.status = AngularUpdateStatus.SUCCEEDED.value if result.result.status is CommandStatus.SUCCEEDED and verified and not prompt and not source_changed else AngularUpdateStatus.FAILED.value
+            record.target_version_status = TargetVersionStatus.VERIFIED.value if verified else TargetVersionStatus.MISMATCH.value
+            record.resolved_target_version = record.target_version if verified else None
+            evidence.update({"workspace_fingerprint_before": workspace_before, "workspace_fingerprint_after": workspace_after, "source_fingerprint_before": source_before, "source_fingerprint_after": source_after, "partial_mutation": partial_mutation, "source_changed": source_changed})
+            record.evidence = evidence
+            failure_code = "TIMEOUT" if result.timed_out else "CANCELLATION" if result.cancelled else "EXIT_NONZERO" if result.result.status is CommandStatus.FAILED else "ANGULAR_UPDATE_EXECUTION_FAILED"
+            record.error_message = "SOURCE_MUTATION_DETECTED" if source_changed else "PARTIAL_MUTATION" if partial_mutation else "INTERACTIVE_PROMPT_DETECTED" if prompt else record.error_message or (None if record.status == AngularUpdateStatus.SUCCEEDED.value else failure_code)
+            if partial_mutation:
+                record.evidence["partial_mutation"] = True
+            record.prompt_detected = PromptDetectionResult.PROMPT_DETECTED.value if prompt else PromptDetectionResult.NO_PROMPT.value
+            execution.status = result.result.status.value
+            execution.started_at, execution.finished_at, execution.exit_code = result.result.started_at, result.result.finished_at, result.result.exit_code
+            execution.timed_out, execution.cancelled = result.timed_out, result.cancelled
+            execution.command_log_artifact_id = result.command_log_artifact.ref.artifact_id
+            execution.stdout_artifact_id = result.stdout_artifact.ref.artifact_id if result.stdout_artifact else None
+            execution.stderr_artifact_id = result.stderr_artifact.ref.artifact_id if result.stderr_artifact else None
+            run = session.get(MigrationRunModel, run_id)
+            if prompt:
+                prompt_transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + ":prompt", event_type=WorkflowEventType.INTERACTIVE_DECISION_REQUIRED, actor=request.actor, reason="Unexpected interactive prompt blocked execution", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "reason_code": "INTERACTIVE_PROMPT_DETECTED"}))
+                run = session.get(MigrationRunModel, run_id)
+            event_type = WorkflowEventType.ANGULAR_UPDATE_COMPLETED if record.status == AngularUpdateStatus.SUCCEEDED.value else WorkflowEventType.ANGULAR_UPDATE_FAILED
+            transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + ":completed", event_type=event_type, actor=request.actor, reason="Angular update execution finalized", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "status": record.status, "error_code": record.error_message}))
+            target_event = WorkflowEventType.TARGET_VERSION_VERIFIED if verified else WorkflowEventType.TARGET_VERSION_FAILED
+            target_transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=transition.next_state_version, idempotency_key=request.idempotency_key + ":target", event_type=target_event, actor=request.actor, reason="Angular target verification finalized", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "verified": verified, "evidence": evidence}))
+            record.state_version, record.event_sequence = target_transition.next_state_version, target_transition.event_sequence
+            session.flush()
+        return result
+
+    def _mark_command_start_failure(self, run_id, stage_id, execution_id, request, error):
+        with self._scope() as session:
+            record = session.scalar(select(AngularUpdateRecordModel).where(AngularUpdateRecordModel.command_execution_id == execution_id))
+            execution = session.get(CommandExecutionModel, execution_id)
+            if record is None or execution is None:
+                return
+            record.status = AngularUpdateStatus.FAILED.value
+            record.target_version_status = TargetVersionStatus.MISMATCH.value
+            record.error_message = "COMMAND_START_FAILED"
+            record.evidence = {**(record.evidence or {}), "command_start_error": type(error).__name__}
+            execution.status = CommandStatus.FAILED.value
+            run = session.get(MigrationRunModel, run_id)
+            transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + ":start-failed", event_type=WorkflowEventType.ANGULAR_UPDATE_FAILED, actor=request.actor, reason="Angular command failed to start", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "error_code": "COMMAND_START_FAILED"}))
+            target = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=transition.next_state_version, idempotency_key=request.idempotency_key + ":start-target", event_type=WorkflowEventType.TARGET_VERSION_FAILED, actor=request.actor, reason="Angular target verification blocked by command start failure", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "error_code": "COMMAND_START_FAILED"}))
+            record.state_version, record.event_sequence = target.next_state_version, target.event_sequence
             session.flush()
 
-            return self._dto(record)
+    def _run_artifact_root(self, run_id):
+        with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if not run or not run.artifact_root:
+                raise G03ApplicationError("ARTIFACT_ROOT_REQUIRED", "Run artifact root is unavailable.", status_code=409)
+            return run.artifact_root
 
     def complete_update(
         self,
@@ -328,7 +562,7 @@ class AngularUpdateApplicationService:
             record.updated_at = now
             session.flush()
 
-            return self._dto(record)
+            return self._dto_target_version(record)
 
     def _dto(self, record, *, replay=False):
         from app.api.transformation_contracts import AngularUpdateResponse
@@ -346,6 +580,26 @@ class AngularUpdateApplicationService:
             event_sequence=record.event_sequence,
             error_message=record.error_message,
             idempotent_replay=replay,
+        )
+
+    def _dto_target_version(self, record, *, replay=False):
+        from app.api.transformation_contracts import TargetVersionResponse
+
+        evidence = record.evidence or {}
+        return TargetVersionResponse(
+            run_id=record.run_id,
+            stage_id=record.stage_id,
+            target_version_status=TargetVersionStatus(record.target_version_status),
+            resolved_target_version=record.resolved_target_version,
+            evidence_sources={
+                "package_json_version": evidence.get("package_json_version") or "",
+                "lockfile_version": evidence.get("lockfile_version") or "",
+                "ng_version_output": evidence.get("ng_version_output") or "",
+                "dependency_tree_version": evidence.get("dependency_tree_version") or "",
+            },
+            all_sources_agree=evidence.get("all_sources_agree", False),
+            disagreements=evidence.get("disagreements", []),
+            artifact_ids=record.artifact_ids,
         )
 
 
