@@ -66,7 +66,7 @@ export function AngularUpdatePanel({ runId, stageId, expectedStateVersion, onSta
     }
   }, [runId, stageId, applyResult]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, expectedStateVersion]);
   useEffect(() => { if (connectionStatus === "reconnecting" || connectionStatus === "recovering") setViewState("reconnecting"); }, [connectionStatus]);
 
   useEffect(() => {
@@ -99,7 +99,8 @@ export function AngularUpdatePanel({ runId, stageId, expectedStateVersion, onSta
 
   async function verify() {
     if (submittingKind.current) return; submittingKind.current = "verify"; setSubmitting(true);
-    try { const result = await verifyTargetVersion(runId, stageId, { expected_state_version: expectedStateVersion, idempotency_key: `angular-target-verify-${runId}-${stageId}`, actor: "operator", command_execution_id: update?.command_execution_id ?? "" }); setTarget(result); setViewState(result.target_version_status === "mismatch" || result.target_version_status === "failed" ? "failure" : "pending_verification"); if (result.state_version) onStateChange?.(result.state_version); }
+    if (!update?.command_execution_id) { submittingKind.current = null; setSubmitting(false); setViewState("failure"); setError("The authoritative command execution is not available for verification."); return; }
+    try { const result = await verifyTargetVersion(runId, stageId, { expected_state_version: expectedStateVersion, idempotency_key: `angular-target-verify-${runId}-${stageId}`, actor: "operator", command_execution_id: update.command_execution_id }); setTarget(result); setViewState(result.target_version_status === "mismatch" || result.target_version_status === "failed" ? "failure" : "pending_verification"); if (result.state_version) onStateChange?.(result.state_version); }
     catch (reason: unknown) { setViewState(reason instanceof ApiClientError && reason.status === 409 ? "stale" : "failure"); setError("Target verification could not be completed."); }
     finally { submittingKind.current = null; setSubmitting(false); }
   }
