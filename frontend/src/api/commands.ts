@@ -7,9 +7,18 @@ import type {
   CommandExecuteRequestDto,
   CommandExecutionResponseDto,
   CommandExecutionListDto,
+  ArtifactRefDto,
 } from "@/types/generated/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
+
+export type CommandArtifactMetadata = {
+  artifact: ArtifactRefDto;
+  content: string;
+  created_by: string | null;
+  content_type: string;
+  filename: string | null;
+};
 
 export function listCommandTemplates(
   client: ApiClient = apiClient,
@@ -63,5 +72,14 @@ export function getCommandExecution(
 ): Promise<CommandExecutionResponseDto> {
   return client.get<CommandExecutionResponseDto>(
     `/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}`,
+  );
+}
+
+export function getCommandArtifactById(
+  artifactId: string,
+  client: ApiClient = apiClient,
+): Promise<CommandArtifactMetadata> {
+  return client.get<CommandArtifactMetadata>(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}`,
   );
 }

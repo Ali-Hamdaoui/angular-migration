@@ -101,6 +101,16 @@ class CommandExecutionResponse:
     failure_reason: str | None = None
     correlation_id: str | None = None
     request_payload_hash: str | None = None
+    stdout_artifact_id: str | None = None
+    stderr_artifact_id: str | None = None
+    command_log_artifact_id: str | None = None
+    manifest_artifact_id: str | None = None
+    result_artifact_id: str | None = None
+    executable: str | None = None
+    arguments: list[str] = field(default_factory=list)
+    safe_relative_working_directory: str | None = None
+    runtime_checksum: str | None = None
+    worker_id: str | None = None
 
 
 class CommandExecutorService:
@@ -412,6 +422,9 @@ class CommandExecutorService:
         finished = datetime.now(UTC)
         self.transition_execution(session, model, result.result.status.value, now=finished)
         model.exit_code = result.result.exit_code
+        if model.status == CommandStatus.FAILED.value and model.failure_code is None:
+            model.failure_code = "COMMAND_EXIT_NONZERO"
+            model.failure_message = "The approved command exited with a non-zero status."
         model.duration_ms = result.result.duration_ms
         model.timed_out = result.timed_out
         model.cancelled = result.cancelled

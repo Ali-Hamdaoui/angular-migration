@@ -14,6 +14,7 @@ import time
 from typing import Generator
 
 from app.api.errors import error_response
+from app.api.authentication import authenticated_actor, authorize_run
 from app.core.config import get_settings
 from app.domain.contracts import (
     CommandExecutionResponseDto,
@@ -42,10 +43,12 @@ def queue_command(
     run_id: str,
     body: CommandExecuteRequestDto,
     request: Request,
+    actor: str = Depends(authenticated_actor),
     executor: CommandExecutorService = Depends(get_executor),
 ):
     """Queue an accepted authorization for worker-owned execution."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         try:
             result = executor.queue_authorized_command(
                 session,
@@ -53,7 +56,7 @@ def queue_command(
                 authorization_decision_id=body.authorization_decision_id,
                 expected_state_version=body.expected_state_version,
                 idempotency_key=body.idempotency_key,
-                requested_by=body.requested_by,
+                requested_by=actor,
                 correlation_id=request.headers.get("x-correlation-id"),
             )
         except CommandExecutorError as error:
@@ -107,10 +110,12 @@ def get_command_execution(
     run_id: str,
     execution_id: str,
     request: Request,
+    actor: str = Depends(authenticated_actor),
     executor: CommandExecutorService = Depends(get_executor),
 ):
     """Get the details of a specific command execution."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         model = executor.get_command_execution(session, run_id, execution_id)
         if model is None:
             return error_response(
@@ -125,10 +130,12 @@ def get_command_execution(
 @router.get("/{run_id}/commands")
 def list_command_executions(
     run_id: str,
+    actor: str = Depends(authenticated_actor),
     executor: CommandExecutorService = Depends(get_executor),
 ):
     """List all command executions for a run."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         models = executor.get_list_command_executions(session, run_id)
         return {
             "run_id": run_id,
@@ -145,6 +152,7 @@ def get_command_logs(
     run_id: str,
     execution_id: str,
     request: Request,
+    actor: str = Depends(authenticated_actor),
     offset: int = 0,
     limit: int = 1000,
     stream: str | None = None,
@@ -152,6 +160,7 @@ def get_command_logs(
 ):
     """Get log chunks for a command execution."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
@@ -183,9 +192,11 @@ def get_command_log_summary(
     run_id: str,
     execution_id: str,
     request: Request,
+    actor: str = Depends(authenticated_actor),
 ):
     """Get a summary of available log streams for a command."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
@@ -197,6 +208,7 @@ def stream_command_logs(
     run_id: str,
     execution_id: str,
     request: Request,
+    actor: str = Depends(authenticated_actor),
     cursor: int = 0,
     stream: str | None = None,
     poll_interval: float = 0.5,
@@ -211,6 +223,7 @@ def stream_command_logs(
     closed gracefully.
     """
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
     log_service = CommandLogService()
@@ -256,16 +269,18 @@ def cancel_command(
     execution_id: str,
     body: CancelCommandRequestDto,
     request: Request,
+    actor: str = Depends(authenticated_actor),
     executor: CommandExecutorService = Depends(get_executor),
 ):
     """Cancel a running command execution."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         try:
             result = executor.request_cancel(
                 session,
                 run_id=run_id,
                 execution_id=execution_id,
-                actor=body.actor,
+                actor=actor,
                 idempotency_key=body.idempotency_key,
             )
         except JobSupervisorError as error:
@@ -278,9 +293,11 @@ def cancel_command(
 def get_active_command(
     run_id: str,
     request: Request,
+    actor: str = Depends(authenticated_actor),
 ):
     """Get the currently active command for a run."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         supervisor = JobSupervisorService()
         execution = supervisor.get_active_command(session, run_id)
         if execution is None:
@@ -302,9 +319,11 @@ def get_active_command(
 def get_active_lease(
     run_id: str,
     request: Request,
+    actor: str = Depends(authenticated_actor),
 ):
     """Get the active worker lease for a run."""
     with session_scope() as session:
+        authorize_run(session, run_id, actor)
         supervisor = JobSupervisorService()
         lease = supervisor.get_active_lease(session, run_id)
         if lease is None:

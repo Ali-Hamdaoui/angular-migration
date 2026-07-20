@@ -1,8 +1,12 @@
 """Versioned baseline workspace and installation endpoints."""
 from fastapi import APIRouter, Depends, HTTPException
 from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, BaselineInstallCancelRequest, BaselineInstallRequest, BaselineInstallResponse, BaselinePrequalifyRequest, BaselineResponse, BaselineWorkspaceRequest
+from app.api.authentication import authenticated_actor, authorize_run
 from app.services.baseline_application_service import BaselineApplicationError, BaselineApplicationService
 from app.services.baseline_install_application_service import BaselineInstallApplicationError, BaselineInstallApplicationService
+from app.repositories.models import CommandExecutionModel
+from app.repositories.session import session_scope
+from app.services.command_executor_service import CommandExecutorService
 from app.api.routes.compatibility import default_catalogue
 from app.services.compatibility_application_service import CompatibilityResolver
 from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
@@ -46,8 +50,16 @@ def cancel_baseline(run_id: str, execution_id: str, request: BaselineInstallCanc
     try: return service.cancel(run_id, execution_id, request)
     except BaselineInstallApplicationError as error: _raise_install(error)
 
-@router.get("/{run_id}/commands/{execution_id}", response_model=BaselineInstallResponse)
-def get_baseline_command(run_id: str, execution_id: str, service: BaselineInstallApplicationService = Depends(get_baseline_install_service)):
+@router.get("/{run_id}/commands/{execution_id}")
+def get_baseline_command(run_id: str, execution_id: str, actor: str = Depends(authenticated_actor), service: BaselineInstallApplicationService = Depends(get_baseline_install_service)):
+    # This legacy path predates S3-F02 and is registered before the command
+    # router. Preserve its baseline response while routing S3-F02 records to
+    # the authoritative command response and authorization boundary.
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        execution = session.get(CommandExecutionModel, execution_id)
+        if execution is not None and execution.run_id == run_id and execution.authorization_id:
+            return CommandExecutorService()._response_from_model(execution)
     result = service.get(run_id, execution_id)
     if result is None: raise HTTPException(status_code=404, detail={"error_code": "COMMAND_EXECUTION_NOT_FOUND", "message": "Command execution was not found."})
     return result
