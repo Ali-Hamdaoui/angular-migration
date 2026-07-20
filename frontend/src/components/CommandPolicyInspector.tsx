@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError } from "@/api/client";
 import { listCommandTemplates, validateCommandPolicy } from "@/api/commands";
 import { getStagePlan } from "@/api/plans";
+import { CommandExecutionPanel } from "./CommandExecutionPanel";
 import type {
   AuthoritativeRunStateDto,
   CommandPolicyValidateRequestDto,
@@ -165,6 +166,7 @@ export function CommandPolicyInspector({ runId, runState, stageId, stateVersion,
       {validationResult ? <><h3>Authorization decision</h3><div className={styles.dimensionGrid}><div><span>Decision</span><strong>{validationResult.decision.toUpperCase()}</strong></div><div><span>Command template</span><code>{validationResult.command_id} v{selectedTemplate?.version}</code></div><div><span>Sanitized preview</span><code>{validationResult.executable} {validationResult.arguments.join(" ")}</code></div><div><span>Execution profile</span><code>{validationResult.execution_profile_id}</code></div><div><span>Workspace alias</span><code>{validationResult.cwd_alias}</code></div><div><span>Network profile</span><code>{lastRequest?.network_profile}</code></div><div><span>State version used</span><code>{validationResult.expected_state_version}</code></div><div><span>Decision timestamp</span><code>{validationResult.decision_timestamp ?? "not supplied"}</code></div><div><span>Correlation ID</span><code>{validationResult.correlation_id ?? "not supplied"}</code></div></div>{validationResult.decision !== "accepted" ? <div role="alert"><p><strong>{validationResult.reasons[0]?.split(":")[0] ?? "POLICY_REJECTED"}</strong></p><p>{validationResult.reasons.join("; ") || "The backend rejected this command. Review the approved plan and retry."}</p></div> : null}{validationResult.artifact_id ? <p><a href={`/api/v1/artifacts/${encodeURIComponent(validationResult.artifact_id)}`} target="_blank" rel="noreferrer">Open authorization evidence {validationResult.artifact_id}</a></p> : null}{validationResult.idempotent_replay ? <p className={styles.note}>Idempotent replay: the backend returned the prior decision for this unchanged authorization attempt.</p> : null}</> : null}
       {status === "rejected" && !validationResult ? <p role="alert">{errorCode}: {message}</p> : null}
       {lastRequest && (status === "unavailable" || status === "conflict") ? <button type="button" onClick={() => selectedTemplate && beginValidation(selectedTemplate, attemptKey.current ?? undefined)}>Retry unchanged authorization</button> : null}
+      {runId ? <CommandExecutionPanel runId={runId} stateVersion={currentVersion} authorization={validationResult} refreshAuthoritativeState={refreshAuthoritativeState} /> : null}
     </section>
   );
 }
