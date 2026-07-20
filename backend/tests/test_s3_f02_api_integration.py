@@ -250,9 +250,10 @@ def test_s3_f02_api_happy_path_persists_real_execution_and_supports_replay_and_s
         assert [event.event_type for event in events] == [
             "COMMAND_QUEUED",
             "COMMAND_STARTED",
+            "COMMAND_OUTPUT_AVAILABLE",
             "COMMAND_SUCCEEDED",
         ]
-        assert [event.sequence for event in events] == [1, 2, 3]
+        assert [event.sequence for event in events] == [1, 2, 3, 4]
         metadata = list(
             session.scalars(
                 select(ArtifactMetadataModel).where(ArtifactMetadataModel.execution_id == execution_id)

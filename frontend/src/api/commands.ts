@@ -33,6 +33,26 @@ export type CommandLogSummary = {
   redaction_applied: boolean;
 };
 
+export type CommandLogChunk = {
+  sequence: number;
+  stream: "stdout" | "stderr" | "system" | string;
+  text: string;
+  redacted: boolean;
+  truncated: boolean;
+  created_at: string;
+  byte_count: number;
+  character_count: number;
+};
+
+export type CommandLogPage = {
+  execution_id: string;
+  run_id: string;
+  chunks: CommandLogChunk[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export function listCommandTemplates(
   client: ApiClient = apiClient,
 ): Promise<CommandTemplateListDto> {
@@ -104,5 +124,22 @@ export function getCommandLogSummary(
 ): Promise<CommandLogSummary> {
   return client.get<CommandLogSummary>(
     `/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/logs/summary`,
+  );
+}
+
+export function getCommandLogs(
+  runId: string,
+  executionId: string,
+  params: { offset?: number; limit?: number; stream?: "stdout" | "stderr" | "system"; cursor?: number } = {},
+  client: ApiClient = apiClient,
+): Promise<CommandLogPage> {
+  const query = new URLSearchParams();
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (params.stream !== undefined) query.set("stream", params.stream);
+  if (params.cursor !== undefined) query.set("cursor", String(params.cursor));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return client.get<CommandLogPage>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/logs${suffix}`,
   );
 }

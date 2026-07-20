@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { getCommandLogSummary } from "@/api/commands";
+import { getCommandLogSummary, getCommandLogs } from "@/api/commands";
 import { LiveCommandLogViewer, StaticLogArtifactViewer } from "@/components/LogViewer";
 
 vi.mock("@/api/commands", () => ({
   getCommandLogSummary: vi.fn(),
+  getCommandLogs: vi.fn(),
 }));
 
 type Listener = (event: MessageEvent) => void;
@@ -43,6 +44,7 @@ describe("LiveCommandLogViewer", () => {
       last_sequence: null, finalized: false, finalized_at: null,
       truncated: { stdout: false, stderr: false }, redaction_applied: false,
     });
+    vi.mocked(getCommandLogs).mockResolvedValue({ execution_id: "exec-1", run_id: "run-1", chunks: [], total: 0, offset: 0, limit: 100 });
   });
 
   afterEach(() => {
@@ -103,6 +105,36 @@ describe("LiveCommandLogViewer", () => {
     expect(screen.getByText("out")).toBeInTheDocument();
     expect(screen.queryByText("err")).not.toBeInTheDocument();
     expect(screen.getByText(/sequence 2/)).toBeInTheDocument();
+  });
+
+  it("pauses consumption and resumes from the confirmed cursor", () => {
+    render(<LiveCommandLogViewer runId="run-1" executionId="exec-1" />);
+    const source = FakeEventSource.instances[0];
+    act(() => source.emit("command_log", { sequence: 1, stream: "stdout", content: "one" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause live output" }));
+    expect(source.close).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Play live output" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Play live output" }));
+    expect(FakeEventSource.instances.at(-1)?.url).toContain("cursor=1");
+  });
+
+  it("loads stored pages and filters output with user search", async () => {
+    vi.mocked(getCommandLogs).mockResolvedValueOnce({
+      execution_id: "exec-1", run_id: "run-1", total: 1, offset: 0, limit: 100,
+      chunks: [{ sequence: 1, stream: "stdout", text: "stored match", redacted: false, truncated: true, created_at: "", byte_count: 12, character_count: 12 }],
+    });
+    render(<LiveCommandLogViewer runId="run-1" executionId="exec-1" />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search logs" }), { target: { value: "match" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Load stored logs" })); });
+    expect(getCommandLogs).toHaveBeenCalledWith("run-1", "exec-1", { offset: 0, limit: 100 });
+    expect(screen.getByText("stored match")).toBeInTheDocument();
+    expect(screen.getByText(/Output truncated/)).toBeInTheDocument();
+  });
+
+  it("shows the correlation ID for a stream failure", () => {
+    render(<LiveCommandLogViewer runId="run-1" executionId="exec-1" />);
+    act(() => FakeEventSource.instances[0].emit("stream_error", { code: "LOG_STREAM_FAILED", message: "failed", correlation_id: "corr-1" }));
+    expect(screen.getByText(/Correlation ID:/)).toHaveTextContent("corr-1");
   });
 
   it("renders static artifact content as escaped plain text", () => {

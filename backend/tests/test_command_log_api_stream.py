@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
+import asyncio
 import pytest
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
@@ -17,7 +18,7 @@ from app.services.command_log_service import CommandLogService
 def _request(path: str = "/api/v1/runs/run-1/commands/exec-1/logs") -> Request:
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
-    return Request({"type": "http", "method": "GET", "path": path, "headers": [], "receive": receive})
+    return Request({"type": "http", "method": "GET", "path": path, "headers": []}, receive)
 
 
 @pytest.fixture
@@ -57,8 +58,28 @@ def test_log_retrieval_is_run_scoped(db_session, monkeypatch):
     assert response.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatch):
+def test_log_retrieval_rejects_unknown_stream_filter(db_session, monkeypatch):
+    monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
+
+    response = run_commands.get_command_logs("run-1", "exec-1", _request(), actor="alice", stream="debug")
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 422
+    assert response.body and b"INVALID_LOG_STREAM" in response.body
+
+
+def test_log_retrieval_exposes_chunk_truncation_metadata(db_session, monkeypatch):
+    service = CommandLogService()
+    service.append_chunk(db_session, "exec-1", "run-1", "stdout", "0123456789", max_chunk_bytes=4)
+    db_session.commit()
+    monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
+
+    response = run_commands.get_command_logs("run-1", "exec-1", _request(), actor="alice")
+
+    assert response["chunks"][0].truncated is True
+
+
+def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatch):
     service = CommandLogService()
     service.append_chunk(db_session, "exec-1", "run-1", "stdout", "safe output")
     service.ensure_summary(db_session, "exec-1", "run-1")
@@ -67,8 +88,9 @@ async def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatc
     monkeypatch.setattr(run_commands, "session_scope", _scope(db_session))
 
     response = run_commands.stream_command_logs("run-1", "exec-1", _request("/logs/stream"), actor="alice", cursor=0)
-    events = [item async for item in response.body_iterator]
-    body = "".join(events)
+    async def collect():
+        return "".join([item async for item in response.body_iterator])
+    body = asyncio.run(collect())
 
     assert "id: 1\n" in body
     assert "event: command_log" in body
@@ -77,8 +99,7 @@ async def test_sse_uses_sequence_ids_and_sends_completion(db_session, monkeypatc
     assert "event: cursor" not in body
 
 
-@pytest.mark.asyncio
-async def test_explicit_cursor_is_preferred_over_last_event_id(db_session, monkeypatch):
+def test_explicit_cursor_is_preferred_over_last_event_id(db_session, monkeypatch):
     service = CommandLogService()
     for sequence in range(3):
         service.append_chunk(db_session, "exec-1", "run-1", "stdout", f"line-{sequence}")
@@ -88,7 +109,9 @@ async def test_explicit_cursor_is_preferred_over_last_event_id(db_session, monke
     response = run_commands.stream_command_logs(
         "run-1", "exec-1", _request("/logs/stream"), actor="alice", cursor=2, last_event_id="0"
     )
-    body = "".join([item async for item in response.body_iterator])
+    async def collect():
+        return "".join([item async for item in response.body_iterator])
+    body = asyncio.run(collect())
 
     assert response.media_type == "text/event-stream"
     assert "id: 3\n" in body

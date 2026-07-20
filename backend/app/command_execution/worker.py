@@ -227,8 +227,8 @@ class CommandLogWriter:
         stdout_text, stdout_truncated = self._bound_text(stdout)
         stderr_text, stderr_truncated = self._bound_text(stderr)
 
-        stdout_artifact = self._write_output_artifact(request, result, "stdout", stdout_text)
-        stderr_artifact = self._write_output_artifact(request, result, "stderr", stderr_text)
+        stdout_artifact = self._write_output_artifact(request, result, "stdout", stdout_text, truncated=stdout_truncated)
+        stderr_artifact = self._write_output_artifact(request, result, "stderr", stderr_text, truncated=stderr_truncated)
         result_with_artifacts = result.model_copy(
             update={
                 "stdout_artifact": stdout_artifact.ref if stdout_artifact else None,
@@ -289,6 +289,8 @@ class CommandLogWriter:
         result: CommandResultDto,
         stream_name: str,
         content: str,
+        *,
+        truncated: bool = False,
     ) -> StoredArtifact | None:
         return self._artifact_store.write_text_artifact(
             result.run_id,
@@ -298,7 +300,7 @@ class CommandLogWriter:
             stage_id=result.stage_id,
             created_by="command-execution-worker",
             created_at=result.finished_at or result.started_at,
-            input_hashes={"command_id": request.command_id},
+            input_hashes={"command_id": request.command_id, **({"truncated": "true"} if truncated else {})},
         )
 
     def _bound_text(self, value: str | bytes | None) -> tuple[str, bool]:

@@ -124,6 +124,27 @@ def test_worker_runs_safe_python_version_command_and_writes_command_artifacts(tm
     assert '"runtime_profile_id": "source-runtime-profile"' in stored.content
 
 
+def test_worker_registers_output_artifact_truncation_metadata(tmp_path: Path) -> None:
+    worker, _artifact_store, _sandbox_root = _worker(tmp_path)
+
+    execution = worker.run(_request())
+
+    # The version output is normally short; exercise the writer contract
+    # directly through its bounded output path in a separate fixture below.
+    writer = CommandLogWriter(LocalFilesystemArtifactStore(tmp_path / "truncated-runs"), max_output_bytes=4)
+    bounded = writer.write(
+        _request(idempotency_key="truncated-output-key"),
+        execution.result,
+        command=("python", "--version"),
+        working_directory=_sandbox_root,
+        stdout="0123456789",
+        stderr="",
+    )
+
+    assert bounded.stdout_artifact is not None
+    assert bounded.stdout_artifact.envelope.input_hashes["truncated"] == "true"
+
+
 def test_worker_rejects_unknown_command_id(tmp_path: Path) -> None:
     worker, artifact_store, _sandbox_root = _worker(tmp_path)
 

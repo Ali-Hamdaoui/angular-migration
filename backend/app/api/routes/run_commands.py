@@ -35,6 +35,7 @@ from app.services.command_log_service import CommandLogService
 from app.services.job_supervisor_service import JobSupervisorService, JobSupervisorError
 
 router = APIRouter(prefix="/runs", tags=["run-commands"])
+VALID_LOG_STREAMS = {"stdout", "stderr", "system"}
 
 
 def get_executor() -> CommandExecutorService:
@@ -167,6 +168,8 @@ def get_command_logs(
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
+        if stream is not None and stream not in VALID_LOG_STREAMS:
+            return error_response(request, status_code=422, error_code="INVALID_LOG_STREAM", message="Stream must be one of stdout, stderr, or system", details={"allowed_streams": sorted(VALID_LOG_STREAMS)})
         if offset < 0 or limit < 1 or cursor is not None and cursor < 0:
             return error_response(request, status_code=422, error_code="INVALID_LOG_CURSOR", message="Cursor, offset, and limit must be non-negative and limit must be positive")
         chunks, total = log_service.get_logs(
@@ -184,6 +187,7 @@ def get_command_logs(
                 stream=c.stream,
                 text=c.text,
                 redacted=c.redacted,
+                truncated=c.truncated,
                 created_at=c.created_at,
                 byte_count=c.byte_count,
                 character_count=c.character_count,
@@ -236,6 +240,8 @@ def stream_command_logs(
         if cursor < 0:
             return error_response(request, status_code=422, error_code="INVALID_LAST_EVENT_ID", message="Last-Event-ID must be non-negative")
     cursor = cursor or 0
+    if stream is not None and stream not in VALID_LOG_STREAMS:
+        return error_response(request, status_code=422, error_code="INVALID_LOG_STREAM", message="Stream must be one of stdout, stderr, or system", details={"allowed_streams": sorted(VALID_LOG_STREAMS)})
     poll_interval = min(max(poll_interval, 0.1), 5.0)
     with session_scope() as session:
         authorize_run(session, run_id, actor)
@@ -248,6 +254,7 @@ def stream_command_logs(
     async def generate() -> AsyncGenerator[str, None]:
         nonlocal cursor
         last_heartbeat = monotonic()
+        model = None
         try:
             while True:
                 if await request.is_disconnected():
@@ -263,7 +270,7 @@ def stream_command_logs(
                     )
                     summary = log_service.get_stream_summary(session, execution_id, run_id=run_id)
                 if model is None:
-                    yield "event: stream_error\ndata: " + json.dumps({"code": "EXECUTION_NOT_FOUND", "message": "Command execution not found"}) + "\n\n"
+                    yield "event: stream_error\ndata: " + json.dumps({"code": "EXECUTION_NOT_FOUND", "message": "Command execution not found", "correlation_id": None}) + "\n\n"
                     return
                 if chunks:
                     for chunk in chunks:
@@ -306,7 +313,8 @@ def stream_command_logs(
         except asyncio.CancelledError:
             raise
         except Exception:
-            yield "event: stream_error\ndata: " + json.dumps({"code": "LOG_STREAM_FAILED", "message": "The log stream could not be continued."}) + "\n\n"
+            correlation_id = model.correlation_id if model is not None else None
+            yield "event: stream_error\ndata: " + json.dumps({"code": "LOG_STREAM_FAILED", "message": "The log stream could not be continued.", "correlation_id": correlation_id}) + "\n\n"
 
     return StreamingResponse(
         generate(),

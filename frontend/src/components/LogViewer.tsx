@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCommandLogSummary, type CommandLogSummary } from "@/api/commands";
+import { getCommandLogSummary, getCommandLogs, type CommandLogChunk, type CommandLogSummary } from "@/api/commands";
 import styles from "./ControlTowerShell.module.css";
 
 type LogChunk = {
@@ -41,7 +41,8 @@ type ConnectionState =
   | "cursor_gap"
   | "not_found"
   | "not_owned"
-  | "failed";
+  | "failed"
+  | "paused";
 
 type StreamFilter = "all" | "stdout" | "stderr";
 
@@ -115,6 +116,13 @@ export function LiveCommandLogViewer({
   const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
   const [cursor, setCursor] = useState(0);
   const [summary, setSummary] = useState<CommandLogSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(search);
+  const [storedOffset, setStoredOffset] = useState(0);
+  const [storedTotal, setStoredTotal] = useState(0);
+  const [storedLoading, setStoredLoading] = useState(false);
+  const [failureCorrelationId, setFailureCorrelationId] = useState<string | null>(null);
   const [finalStatus, setFinalStatus] = useState(executionStatus ?? "");
   const [followingTail, setFollowingTail] = useState(true);
   const cursorRef = useRef(0);
@@ -124,6 +132,7 @@ export function LiveCommandLogViewer({
   const retryRef = useRef(0);
   const gapRetryRef = useRef(0);
   const mountedRef = useRef(true);
+  const pausedRef = useRef(false);
   const completedRef = useRef(false);
   const preRef = useRef<HTMLPreElement>(null);
 
@@ -145,7 +154,7 @@ export function LiveCommandLogViewer({
   }, []);
 
   const scheduleReconnect = useCallback((permanent = false) => {
-    if (!mountedRef.current || permanent || reconnectTimerRef.current !== null) return;
+    if (!mountedRef.current || pausedRef.current || permanent || reconnectTimerRef.current !== null) return;
     const delay = Math.min(8000, 500 * 2 ** retryRef.current);
     retryRef.current = Math.min(retryRef.current + 1, 5);
     setConnectionState("reconnecting");
@@ -158,7 +167,7 @@ export function LiveCommandLogViewer({
   }, []);
 
   const connect = useCallback(() => {
-    if (!mountedRef.current || eventSourceRef.current || completedRef.current) return;
+    if (!mountedRef.current || pausedRef.current || eventSourceRef.current || completedRef.current) return;
     if (typeof EventSource === "undefined") {
       setConnectionState("temporarily_unavailable");
       setStreamMessage("Live streaming is unavailable in this browser context. Open the finalized artifacts instead.");
@@ -174,6 +183,8 @@ export function LiveCommandLogViewer({
       if (!mountedRef.current) return;
       setConnectionState("connected");
       setStreamMessage(null);
+      setFailureCorrelationId(null);
+      setLoading(false);
       retryRef.current = 0;
     };
 
@@ -195,6 +206,7 @@ export function LiveCommandLogViewer({
       gapRetryRef.current = 0;
       processedRef.current.add(sequence);
       updateCursor(sequence);
+      setLoading(false);
       setChunks((previous) => {
         const next = [...previous, {
           sequence,
@@ -230,6 +242,7 @@ export function LiveCommandLogViewer({
     source.addEventListener("stream_error", (event) => {
       const payload = parseEvent(event as MessageEvent);
       const code = errorCode(payload?.code) ?? "LOG_STREAM_FAILED";
+      setFailureCorrelationId(typeof payload?.correlation_id === "string" ? payload.correlation_id : null);
       const permanent = code === "EXECUTION_NOT_FOUND" || code === "NOT_FOUND" || code === "NOT_OWNED" || code === "LOG_CURSOR_EXPIRED" || code === "LOG_REPLAY_GAP";
       setConnectionState(code === "EXECUTION_NOT_FOUND" ? "not_found" : code === "NOT_OWNED" ? "not_owned" : code.includes("GAP") ? "cursor_gap" : "failed");
       setStreamMessage(permanent ? `${code}: ${typeof payload?.message === "string" ? payload.message : "Reload the finalized artifacts."}` : "The log stream failed; retrying shortly.");
@@ -250,27 +263,34 @@ export function LiveCommandLogViewer({
   useEffect(() => {
     mountedRef.current = true;
     cursorRef.current = 0;
+    pausedRef.current = false;
     processedRef.current.clear();
     retryRef.current = 0;
     gapRetryRef.current = 0;
     completedRef.current = false;
     updateCursor(0);
     setChunks([]);
+    setLoading(true);
+    setIsPaused(false);
+    setSearchQuery(search);
+    setStoredOffset(0);
+    setStoredTotal(0);
+    setFailureCorrelationId(null);
     setFinalStatus(executionStatus ?? "");
-    void getCommandLogSummary(runId, executionId).then(setSummary).catch(() => undefined);
+    void getCommandLogSummary(runId, executionId).then((nextSummary) => { setSummary(nextSummary); setLoading(false); }).catch(() => { setLoading(false); setStreamMessage("The command log summary is temporarily unavailable."); });
     connect();
     return () => {
       mountedRef.current = false;
       clearReconnect();
       closeSource();
     };
-  }, [apiBase, clearReconnect, closeSource, connect, executionId, executionStatus, runId, updateCursor]);
+  }, [apiBase, clearReconnect, closeSource, connect, executionId, executionStatus, runId, search, updateCursor]);
 
+  const normalizedSearch = searchQuery.trim().toLowerCase();
   const displayedChunks = useMemo(() => chunks.filter((chunk) => streamFilter === "all" || chunk.stream === streamFilter), [chunks, streamFilter]);
-  const renderedLines = useMemo(() => displayedChunks.flatMap((chunk) => chunk.content.split(/\r?\n/).map((line) => ({ chunk, line }))), [displayedChunks]);
+  const renderedLines = useMemo(() => displayedChunks.flatMap((chunk) => chunk.content.split(/\r?\n/).map((line) => ({ chunk, line }))).filter(({ line }) => !normalizedSearch || line.toLowerCase().includes(normalizedSearch)), [displayedChunks, normalizedSearch]);
   const visibleLines = renderedLines.slice(-maxLines);
   const hiddenLineCount = Math.max(0, renderedLines.length - visibleLines.length);
-  const normalizedSearch = search.trim().toLowerCase();
 
   useEffect(() => {
     if (followingTail && preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight;
@@ -282,6 +302,47 @@ export function LiveCommandLogViewer({
     setFollowingTail(element.scrollHeight - element.scrollTop - element.clientHeight < 24);
   }
 
+  function togglePause() {
+    if (completedRef.current) return;
+    if (pausedRef.current) {
+      pausedRef.current = false;
+      setIsPaused(false);
+      setConnectionState("reconnecting");
+      connect();
+      return;
+    }
+    pausedRef.current = true;
+    clearReconnect();
+    closeSource();
+    setIsPaused(true);
+    setConnectionState("paused");
+  }
+
+  async function loadStoredPage() {
+    if (storedLoading) return;
+    setStoredLoading(true);
+    try {
+      const page = await getCommandLogs(runId, executionId, { offset: storedOffset, limit: 100 });
+      const storedChunks: LogChunk[] = page.chunks.map((chunk: CommandLogChunk) => ({
+        sequence: chunk.sequence,
+        stream: chunk.stream,
+        content: chunk.text,
+        timestamp: chunk.created_at,
+        redacted: chunk.redacted,
+        truncated: chunk.truncated,
+      }));
+      setChunks((previous) => {
+        const bySequence = new Map(previous.map((chunk) => [chunk.sequence, chunk]));
+        storedChunks.forEach((chunk) => bySequence.set(chunk.sequence, chunk));
+        return [...bySequence.values()].sort((left, right) => left.sequence - right.sequence).slice(-Math.max(maxLines * 4, 100));
+      });
+      setStoredOffset((current) => current + page.chunks.length);
+      setStoredTotal(page.total);
+    } finally {
+      setStoredLoading(false);
+    }
+  }
+
   return (
     <section className={styles.viewerShell} aria-label="Live command log viewer">
       <div className={styles.logToolbar}>
@@ -290,13 +351,22 @@ export function LiveCommandLogViewer({
         </div>
         <div className={styles.connectionStatus} role="status">{statusLabel(connectionState)} · sequence {cursor}</div>
       </div>
+      <div className={styles.logToolbar}>
+        <label>Search logs <input aria-label="Search logs" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} /></label>
+        <button type="button" onClick={togglePause} disabled={connectionState === "completed"}>{isPaused ? "Play live output" : "Pause live output"}</button>
+        <button type="button" onClick={() => void loadStoredPage()} disabled={storedLoading || (storedTotal > 0 && storedOffset >= storedTotal)}>{storedLoading ? "Loading stored logs..." : "Load stored logs"}</button>
+      </div>
+      {loading ? <p role="status">Loading command logs...</p> : null}
+      {!loading && chunks.length === 0 ? <p className={styles.note}>No log output is available yet.</p> : null}
       {streamMessage ? <p role="alert">{streamMessage}</p> : null}
-      {summary?.truncated.stdout || summary?.truncated.stderr ? <p className={styles.note}>Output truncated: {[summary.truncated.stdout ? "stdout" : "", summary.truncated.stderr ? "stderr" : ""].filter(Boolean).join(" and ")}. Open the finalized artifact for the authoritative bounded output.</p> : null}
+      {failureCorrelationId ? <p role="alert">Correlation ID: <code>{failureCorrelationId}</code></p> : null}
+      {summary?.truncated.stdout || summary?.truncated.stderr || chunks.some((chunk) => chunk.truncated) ? <p className={styles.note}>Output truncated: {[summary?.truncated.stdout ? "stdout" : "", summary?.truncated.stderr ? "stderr" : "", chunks.some((chunk) => chunk.truncated) ? "stored chunk" : ""].filter(Boolean).join(" and ")}. Open the finalized artifact for the authoritative bounded output.</p> : null}
       <pre ref={preRef} onScroll={handleScroll} className={styles.logViewer} tabIndex={0}>
         {visibleLines.map(({ chunk, line }, index) => <span className={normalizedSearch && line.toLowerCase().includes(normalizedSearch) ? styles.logMatch : undefined} key={`${chunk.sequence}-${index}`}><span className={styles.lineNumber}>{hiddenLineCount + index + 1}</span>{line || " "}{"\n"}</span>)}
       </pre>
       {hiddenLineCount > 0 ? <p className={styles.note}>{hiddenLineCount} older log lines hidden by the live tail limit.</p> : null}
       {!followingTail ? <button type="button" onClick={() => { setFollowingTail(true); if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight; }}>Return to latest output</button> : null}
+      {storedTotal > 0 && storedOffset < storedTotal ? <p className={styles.note}>{storedTotal - storedOffset} stored log chunks remain.</p> : null}
       {finalStatus ? <p className={styles.note}>Final command status: {finalStatus.replaceAll("_", " ")}</p> : null}
       <div className={styles.list}>
         {([ ["stdout", stdoutArtifactId], ["stderr", stderrArtifactId] ] as const).map(([name, artifactId]) => { const href = artifactLink(artifactId); return href ? <a className={styles.actionLink} key={name} href={href} target="_blank" rel="noreferrer">Open {name} artifact</a> : null; })}

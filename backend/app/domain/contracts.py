@@ -694,6 +694,7 @@ class LogChunkResponseDto(ContractModel):
     stream: str
     text: str
     redacted: bool = False
+    truncated: bool = False
     created_at: str = ""
     byte_count: int = 0
     character_count: int = 0
