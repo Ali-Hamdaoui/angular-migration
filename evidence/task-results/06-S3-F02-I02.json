@@ -2,22 +2,11 @@
   "task_id": "06-S3-F02-I02",
   "jira": "AMFA-159",
   "description": "Persist and expose evidence contracts for Execute one approved command",
-  "files_created": [
-    "backend/alembic/versions/20260720_11_command_execution_lineage.py",
-    "backend/tests/test_command_execution_task2.py"
-  ],
-  "files_modified": [
-    "backend/app/domain/contracts.py (CommandExecutionResponseDto)",
-    "backend/app/repositories/models/workflow.py (CommandExecutionModel)",
-    "backend/app/services/command_executor_service.py",
-    "backend/app/command_execution/worker.py",
-    "backend/app/api/routes/run_commands.py",
-    "backend/app/services/job_supervisor_service.py"
-    ,"backend/alembic/versions/20260719_09_add_authorization_id.py (downgrade index ordering)"
-  ],
-  "tests_passed": 35,
-  "evidence": "Run-scoped execution reads, normalized idempotency identity, authoritative state-version persistence, complete execution projections, separate finalized stdout/stderr/result/manifest artifacts, and migration upgrade/downgrade coverage.",
+  "files_created": ["backend/alembic/versions/20260720_12_execution_artifact_metadata.py"],
+  "files_modified": ["backend/app/repositories/models/workflow.py", "backend/app/artifact_store/local_store.py", "backend/app/api/routes/artifacts.py", "backend/app/domain/contracts.py", "backend/app/services/command_executor_service.py", "backend/app/api/routes/run_commands.py"],
+  "tests_passed": 62,
+  "evidence": "Five execution artifact types are registered in ArtifactMetadataModel with immutable/finalized metadata; ID retrieval validates ownership, path, backing-file checksum, and metadata checksum. Alembic upgrade/downgrade passed.",
   "commit_sha": null,
-  "reviewer_verdict": "PASS",
-  "verdict_notes": "Combined with T05."
+  "reviewer_verdict": "FAIL",
+  "verdict_notes": "Focused execution/artifact tests pass; full collection is blocked by an unrelated planning-test import error and stale legacy queue tests fail by design after quarantine."
 }

@@ -22,6 +22,8 @@ class ArtifactContentResponse(BaseModel):
     artifact: ArtifactRefDto
     content: str
     created_by: str | None = None
+    content_type: str = "text/plain"
+    filename: str | None = None
 
 
 def _authorize_run(session, run_id: str, actor: str) -> None:
@@ -70,6 +72,8 @@ def read_run_artifact(run_id: str, artifact_path: str, actor: str = Depends(auth
         artifact=stored_artifact.ref,
         content=stored_artifact.content,
         created_by=stored_artifact.created_by,
+        content_type=stored_artifact.envelope.content_type,
+        filename=Path(stored_artifact.ref.relative_path).name,
     )
 
 
@@ -79,6 +83,8 @@ def read_artifact_by_id(artifact_id: str, actor: str = Depends(authenticated_act
         with session_scope() as session:
             metadata = session.get(ArtifactMetadataModel, f"metadata-{artifact_id}")
             if metadata is not None:
+                if not metadata.immutable or metadata.finalized_at is None:
+                    raise ArtifactStoreError("Artifact is not finalized")
                 run = session.get(MigrationRunModel, metadata.run_id)
                 if run is None or not run.artifact_root:
                     raise ArtifactNotFoundError(artifact_id)
@@ -91,6 +97,11 @@ def read_artifact_by_id(artifact_id: str, actor: str = Depends(authenticated_act
                 _authorize_preflight(session, preflight_metadata.preflight_id, actor)
                 root = (get_settings().artifact_root / "preflights" / preflight_metadata.preflight_id).resolve()
         stored_artifact = LocalFilesystemArtifactStore(root, fixed_run_root=root).read_artifact_by_id(artifact_id)
+        if metadata is not None and (
+            metadata.checksum != stored_artifact.ref.checksum
+            or metadata.relative_path != stored_artifact.ref.relative_path
+        ):
+            raise ArtifactStoreError("Artifact metadata checksum or path mismatch")
     except ArtifactStoreError as exc:
         raise HTTPException(status_code=400, detail="Invalid artifact identifier") from exc
     except ArtifactNotFoundError as exc:
@@ -99,4 +110,6 @@ def read_artifact_by_id(artifact_id: str, actor: str = Depends(authenticated_act
         artifact=stored_artifact.ref,
         content=stored_artifact.content,
         created_by=stored_artifact.created_by,
+        content_type=stored_artifact.envelope.content_type,
+        filename=Path(stored_artifact.ref.relative_path).name,
     )

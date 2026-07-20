@@ -48,6 +48,7 @@ from app.domain.contracts import (
     CommandPolicyValidateResponseDto,
 )
 from app.repositories.models.workflow import (
+    ArtifactMetadataModel,
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
@@ -97,6 +98,7 @@ class CommandExecutionResponse:
     duration_ms: int | None = None
     exit_code: int | None = None
     failure_code: str | None = None
+    failure_reason: str | None = None
     correlation_id: str | None = None
     request_payload_hash: str | None = None
 
@@ -127,6 +129,42 @@ class CommandExecutorService:
     _worker_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="amfa-command")
     _dispatch_lock = threading.Lock()
     _dispatched_execution_ids: set[str] = set()
+
+    _LEGAL_EXECUTION_TRANSITIONS = {
+        CommandStatus.PENDING.value: {CommandStatus.QUEUED.value, CommandStatus.FAILED.value},
+        CommandStatus.QUEUED.value: {CommandStatus.RUNNING.value, CommandStatus.FAILED.value},
+        CommandStatus.RUNNING.value: {
+            CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value,
+            CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value,
+        },
+        CommandStatus.SUCCEEDED.value: set(),
+        CommandStatus.FAILED.value: set(),
+        CommandStatus.TIMED_OUT.value: set(),
+        CommandStatus.CANCELLED.value: set(),
+    }
+
+    @classmethod
+    def transition_execution(cls, session: Session, model: CommandExecutionModel, next_status: str, *, now: datetime | None = None) -> None:
+        """Apply the command-execution aggregate's legal transition table.
+
+        Command executions are a separate aggregate from migration-run state:
+        the worker owns this row after dispatch, while the run remains owned by
+        the run Transition Service. This boundary validates terminal immutability
+        and versions every execution mutation before its event is appended.
+        """
+        current = model.status
+        if next_status == current:
+            return
+        if next_status not in cls._LEGAL_EXECUTION_TRANSITIONS.get(current, set()):
+            raise CommandExecutorError("ILLEGAL_EXECUTION_TRANSITION", f"Cannot move execution from {current} to {next_status}")
+        occurred_at = now or datetime.now(UTC)
+        model.status = next_status
+        model.state_version = (model.state_version or 1) + 1
+        if next_status == CommandStatus.RUNNING.value:
+            model.started_at = occurred_at
+        if next_status in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value}:
+            model.finished_at = occurred_at
+        session.flush()
 
     def queue_authorized_command(
         self,
@@ -295,10 +333,8 @@ class CommandExecutorService:
             if run is None or authorization is None:
                 self._fail_execution(session, model, "AUTHORIZATION_STALE", "Execution inputs disappeared")
                 return
-            model.status = CommandStatus.RUNNING.value
-            model.started_at = datetime.now(UTC)
+            self.transition_execution(session, model, CommandStatus.RUNNING.value)
             model.worker_id = worker_id
-            model.state_version = (model.state_version or 1) + 1
             self._append_event(session, model.run_id, model.stage_id, f"{model.id}:started",
                                WorkflowEventType.COMMAND_STARTED, "authorized command started",
                                {"execution_id": model.id, "worker_id": worker_id})
@@ -374,9 +410,8 @@ class CommandExecutorService:
 
     def _finish_execution(self, session: Session, model: CommandExecutionModel, result, *, run, authorization, profile) -> None:
         finished = datetime.now(UTC)
-        model.status = result.result.status.value
+        self.transition_execution(session, model, result.result.status.value, now=finished)
         model.exit_code = result.result.exit_code
-        model.finished_at = finished
         model.duration_ms = result.result.duration_ms
         model.timed_out = result.timed_out
         model.cancelled = result.cancelled
@@ -395,6 +430,7 @@ class CommandExecutorService:
             run.id, f"04_workflow_state/command_executions/{model.id}.result.json",
             json.dumps(result_payload, indent=2, sort_keys=True), ArtifactType.REPORT,
             stage_id=model.stage_id, created_by="command-execution-worker", created_at=finished,
+            content_type="application/json",
         )
         manifest_payload = {
             "schema_version": "command-execution-manifest.v1", "execution_id": model.id,
@@ -417,27 +453,57 @@ class CommandExecutorService:
             json.dumps(manifest_payload, indent=2, sort_keys=True), ArtifactType.JSON,
             stage_id=model.stage_id, created_by="command-execution-worker", created_at=finished,
         )
+        all_artifacts = [
+            item for item in (result.stdout_artifact, result.stderr_artifact, result.command_log_artifact, result_artifact, manifest_artifact)
+            if item is not None
+        ]
+        for stored in all_artifacts:
+            self._register_artifact_metadata(
+                session, stored, execution_id=model.id, correlation_id=model.correlation_id,
+                truncated=bool(stored.envelope.input_hashes.get("truncated", False)),
+            )
         model.result_artifact_id = result_artifact.ref.artifact_id
         model.manifest_artifact_id = manifest_artifact.ref.artifact_id
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
         model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
-        model.state_version = (model.state_version or 1) + 1
         event_type = WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
 
+    @staticmethod
+    def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
+        payload = stored.content.encode("utf-8")
+        session.add(ArtifactMetadataModel(
+            id="metadata-" + stored.ref.artifact_id,
+            run_id=stored.ref.run_id,
+            stage_id=stored.ref.stage_id,
+            artifact_type=stored.ref.artifact_type.value,
+            relative_path=stored.ref.relative_path,
+            checksum=stored.ref.checksum,
+            schema_version=stored.envelope.schema_version,
+            created_at=stored.ref.created_at,
+            execution_id=execution_id,
+            owner_reference=execution_id,
+            mime_type=stored.envelope.content_type,
+            size_bytes=len(payload),
+            finalized_at=stored.ref.created_at,
+            immutable=True,
+            redacted=False,
+            truncated=truncated,
+            correlation_id=correlation_id,
+            safe_metadata={"filename": Path(stored.ref.relative_path).name},
+        ))
+
     def _fail_execution(self, session: Session, model: CommandExecutionModel, code: str, message: str) -> None:
-        model.status = CommandStatus.FAILED.value
-        model.finished_at = datetime.now(UTC)
+        self.transition_execution(session, model, CommandStatus.FAILED.value)
         model.failure_code = code
         model.failure_message = message[:1000]
         model.blockers = [code]
-        model.state_version = (model.state_version or 1) + 1
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:failed", WorkflowEventType.COMMAND_FAILED,
                            message, {"execution_id": model.id, "error_code": code})
 
-    def queue_command(
+    def legacy_queue_command_disabled(
         self,
         session: Session,
         run_id: str,
@@ -456,11 +522,16 @@ class CommandExecutorService:
         network_profile: str = "none",
         cancellation_policy: str = "terminate_process_tree",
     ) -> CommandExecutionResponse:
-        """Queue (and run synchronously) one approved command.
+        """Deprecated compatibility boundary; never executes commands.
 
         In Sprint 3, commands are executed synchronously within the
         request-response cycle for diagnostic commands. Async execution
         with live log streaming is added in S3-F03.
+        """
+        raise CommandExecutorError(
+            "LEGACY_EXECUTION_DISABLED",
+            "Use queue_authorized_command with an accepted authorization decision",
+        )
         """
         # Check idempotency — same key + identical payload returns cached result
         existing = session.scalar(
@@ -645,6 +716,8 @@ class CommandExecutorService:
                                {"execution_id": execution_id, "command_id": command_id, "error": str(exc)})
             return self._response_from_model(exec_model)
 
+        """
+
     def get_command_execution(
         self,
         session: Session,
@@ -769,7 +842,18 @@ class CommandExecutorService:
             duration_ms=model.duration_ms,
             exit_code=model.exit_code,
             failure_code=model.failure_code,
+            failure_reason=model.failure_message,
             correlation_id=model.correlation_id,
             artifact_ids=tuple(model.artifact_ids or []),
+            stdout_artifact_id=model.stdout_artifact_id,
+            stderr_artifact_id=model.stderr_artifact_id,
+            command_log_artifact_id=model.command_log_artifact_id,
+            manifest_artifact_id=model.manifest_artifact_id,
+            result_artifact_id=model.result_artifact_id,
+            executable=model.executable,
+            arguments=list(model.arguments or []),
+            safe_relative_working_directory=model.safe_relative_working_directory,
+            runtime_checksum=model.runtime_checksum,
+            worker_id=model.worker_id,
             request_payload_hash=model.request_payload_hash,
         )

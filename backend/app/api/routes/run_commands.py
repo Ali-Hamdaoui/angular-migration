@@ -87,6 +87,17 @@ def queue_command(
             failure_code=result.failure_code,
             correlation_id=result.correlation_id,
             artifact_ids=list(result.artifact_ids),
+            stdout_artifact_id=result.stdout_artifact_id,
+            stderr_artifact_id=result.stderr_artifact_id,
+            command_log_artifact_id=result.command_log_artifact_id,
+            manifest_artifact_id=result.manifest_artifact_id,
+            result_artifact_id=result.result_artifact_id,
+            executable=result.executable,
+            arguments=result.arguments,
+            safe_relative_working_directory=result.safe_relative_working_directory,
+            runtime_checksum=result.runtime_checksum,
+            worker_id=result.worker_id,
+            failure_reason=result.failure_reason,
             request_payload_hash=result.request_payload_hash,
         )
 

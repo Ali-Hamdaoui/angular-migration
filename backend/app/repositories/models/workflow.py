@@ -153,6 +153,16 @@ class ArtifactMetadataModel(Base):
     checksum: Mapped[str] = mapped_column(String(128), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    execution_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    owner_reference: Mapped[str | None] = mapped_column(String(128))
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    immutable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    safe_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class CommandTemplateModel(Base):

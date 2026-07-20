@@ -668,6 +668,17 @@ class CommandExecutionResponseDto(ContractModel):
     failure_code: str | None = None
     correlation_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
+    stdout_artifact_id: str | None = None
+    stderr_artifact_id: str | None = None
+    command_log_artifact_id: str | None = None
+    manifest_artifact_id: str | None = None
+    result_artifact_id: str | None = None
+    executable: str | None = None
+    arguments: list[str] = Field(default_factory=list)
+    safe_relative_working_directory: str | None = None
+    runtime_checksum: str | None = None
+    worker_id: str | None = None
+    failure_reason: str | None = None
     request_payload_hash: str | None = None
 
 

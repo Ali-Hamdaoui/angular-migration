@@ -277,6 +277,10 @@ class LocalFilesystemArtifactStore:
 
     def _read_metadata(self, artifact_path: Path) -> StoredArtifact:
         raw_metadata = json.loads(self._metadata_sidecar(artifact_path).read_text(encoding="utf-8"))
+        actual_checksum = self._checksum(artifact_path.read_bytes())
+        expected_checksum = raw_metadata.get("content_hash") or raw_metadata.get("checksum")
+        if expected_checksum != actual_checksum:
+            raise ArtifactStoreError("Artifact checksum mismatch")
         artifact_type = ArtifactType(raw_metadata["artifact_type"])
         created_at = datetime.fromisoformat(raw_metadata["created_at"])
         envelope = ArtifactEnvelope(
