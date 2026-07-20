@@ -52,6 +52,9 @@ export interface TransformationEvidenceResponse {
   event_sequence: number;
   block_reason?: string;
   idempotent_replay: boolean;
+  correlation_id?: string;
+  source_sandbox_path?: string;
+  target_sandbox_path?: string;
 }
 
 export interface TargetVersionResponse {
