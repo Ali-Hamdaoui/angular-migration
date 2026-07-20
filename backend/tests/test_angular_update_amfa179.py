@@ -8,6 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.domain.transformation import AngularUpdateStatus, TargetVersionStatus
+from app.artifact_store import ArtifactStoreError, LocalFilesystemArtifactStore
+from app.domain.contracts import ArtifactType
 from app.main import app
 
 
@@ -106,7 +108,7 @@ def seeded_db(test_db):
 
 
 class TestCompleteAngularUpdate:
-    def test_complete_happy_path(self, client, seeded_db):
+    def test_complete_rejects_non_authoritative_command(self, client, seeded_db):
         run_id, stage_id, _ = seeded_db
         response = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/angular-update/complete",
@@ -119,11 +121,8 @@ class TestCompleteAngularUpdate:
                 "command_execution_id": "exec-test-001",
             },
         )
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
-        data = response.json()
-        assert data["status"] == "succeeded"
-        assert data["stage_id"] == stage_id
-        assert data["run_id"] == run_id
+        assert response.status_code == 409, response.text
+        assert response.json()["error_code"] == "http_error"
 
     def test_complete_run_not_found(self, client, seeded_db):
         run_id, stage_id, _ = seeded_db
@@ -172,7 +171,7 @@ class TestCompleteAngularUpdate:
 
 
 class TestVerifyTargetVersion:
-    def test_verify_happy_path(self, client, seeded_db):
+    def test_verify_rejects_non_authoritative_command(self, client, seeded_db):
         run_id, stage_id, _ = seeded_db
         response = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/target-version/verify",
@@ -185,15 +184,8 @@ class TestVerifyTargetVersion:
                 "command_execution_id": "exec-verify-001",
             },
         )
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
-        data = response.json()
-        assert "target_version_status" in data
-        assert "evidence_sources" in data
-        assert "all_sources_agree" in data
-        assert "disagreements" in data
-        assert "artifact_ids" in data
-        assert data["run_id"] == run_id
-        assert data["stage_id"] == stage_id
+        assert response.status_code == 409, response.text
+        assert response.json()["error_code"] == "http_error"
 
     def test_verify_run_not_found(self, client, seeded_db):
         run_id, stage_id, _ = seeded_db
@@ -224,3 +216,11 @@ class TestVerifyTargetVersion:
             },
         )
         assert response.status_code == 404
+
+
+def test_artifact_checksum_is_verified_on_restart_read(tmp_path):
+    store = LocalFilesystemArtifactStore(tmp_path / "artifacts")
+    stored = store.write_text_artifact("run-1", "stage/stage-1/report.json", "original", ArtifactType.REPORT)
+    (tmp_path / "artifacts" / "run-1" / "stage" / "stage-1" / "report.json").write_text("tampered", encoding="utf-8")
+    with pytest.raises(ArtifactStoreError, match="checksum"):
+        store.read_artifact_by_id(stored.ref.artifact_id)

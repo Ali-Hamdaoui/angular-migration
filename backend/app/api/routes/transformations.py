@@ -43,10 +43,11 @@ def start_angular_update(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
     request: AngularUpdateRequest = None,
+    actor: str = Depends(authenticated_actor),
     service: AngularUpdateApplicationService = Depends(get_angular_update_service),
 ):
     try:
-        return service.start_update(run_id, stage_id, request)
+        return service.start_update(run_id, stage_id, request.model_copy(update={"actor": actor}))
     except G03ApplicationError as error:
         raise HTTPException(
             status_code=error.status_code,
@@ -58,6 +59,7 @@ def start_angular_update(
 def get_angular_update(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
+    actor: str = Depends(authenticated_actor),
     service: AngularUpdateApplicationService = Depends(get_angular_update_service),
 ):
     result = service.get(run_id, stage_id)
@@ -70,6 +72,7 @@ def get_angular_update(
 def get_target_version(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
+    actor: str = Depends(authenticated_actor),
     service: AngularUpdateApplicationService = Depends(get_angular_update_service),
 ):
     result = service.get_target_version(run_id, stage_id)

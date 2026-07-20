@@ -99,6 +99,22 @@ def _write_evidence(
     return stored.ref
 
 
+def _register_artifact(session, run_id: str, stage_id: str, stored) -> str:
+    """Bind one immutable filesystem artifact to its run and stage."""
+    session.add(
+        ArtifactMetadataModel(
+            id=f"metadata-{stored.ref.artifact_id}",
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_type=stored.ref.artifact_type.value,
+            relative_path=stored.ref.relative_path,
+            checksum=stored.ref.checksum,
+            created_at=stored.ref.created_at,
+        )
+    )
+    return stored.ref.artifact_id
+
+
 def _find_event(session, run_id: str, key: str):
     from app.repositories.models import WorkflowEventModel
 
@@ -385,7 +401,8 @@ class AngularUpdateApplicationService:
             record = session.scalar(select(AngularUpdateRecordModel).where(AngularUpdateRecordModel.command_execution_id == execution_id))
             execution = session.get(CommandExecutionModel, execution_id)
             record.command_execution_id = execution_id
-            record.artifact_ids = [x for x in (result.command_log_artifact.ref.artifact_id, result.stdout_artifact.ref.artifact_id if result.stdout_artifact else None, result.stderr_artifact.ref.artifact_id if result.stderr_artifact else None) if x]
+            stored_artifacts = [item for item in (result.command_log_artifact, result.stdout_artifact, result.stderr_artifact) if item]
+            artifact_ids = [_register_artifact(session, run_id, stage_id, item) for item in stored_artifacts]
             prompt = _prompt_detected(result)
             workspace_before = (record.evidence or {}).get("workspace_fingerprint")
             workspace_after = _tree_checksum(workspace)
@@ -400,9 +417,11 @@ class AngularUpdateApplicationService:
             if result.result.status is CommandStatus.SUCCEEDED and not prompt:
                 version_request = command_request.model_copy(update={"command_id": "angular-version", "arguments": ["ng", "version"], "idempotency_key": request.idempotency_key + ":version"})
                 version_result = worker.run(version_request)
+                stored_artifacts.extend(item for item in (version_result.command_log_artifact, version_result.stdout_artifact, version_result.stderr_artifact) if item)
                 ng_output = "\n".join(item.content for item in (version_result.stdout_artifact, version_result.stderr_artifact) if item is not None)
                 tree_request = command_request.model_copy(update={"command_id": "angular-dependency-tree", "executable": "npm", "arguments": ["ls", "--json", "--depth=0"], "idempotency_key": request.idempotency_key + ":tree"})
                 tree_result = worker.run(tree_request)
+                stored_artifacts.extend(item for item in (tree_result.command_log_artifact, tree_result.stdout_artifact, tree_result.stderr_artifact) if item)
                 tree_output = "\n".join(item.content for item in (tree_result.stdout_artifact, tree_result.stderr_artifact) if item is not None)
                 try:
                     dependency_tree = json.loads(tree_output)
@@ -419,8 +438,20 @@ class AngularUpdateApplicationService:
                 evidence.update({"package_json_core": package, "package_json_cli": cli, "lockfile_core": lock_core, "lockfile_cli": lock_cli, "dependency_tree_core": tree_core, "dependency_tree_cli": tree_cli, "ng_version": CommandLogWriter._redact(ng_output), "execution_profile_id": runtime_id, "execution_profile_checksum": runtime_checksum, "expected_cli_target": expected_cli})
                 versions = [package, cli, lock_core, lock_cli, tree_core, tree_cli, _version(re.search(r"Angular:\s*([^\s]+)", ng_output, re.I).group(1) if re.search(r"Angular:\s*([^\s]+)", ng_output, re.I) else None), _version(re.search(r"Angular CLI:\s*([^\s]+)", ng_output, re.I).group(1) if re.search(r"Angular CLI:\s*([^\s]+)", ng_output, re.I) else None)]
                 verified = version_result.result.status is CommandStatus.SUCCEEDED and tree_result.result.status is CommandStatus.SUCCEEDED and all(value == expected for value in versions[:1] + versions[2:]) and cli == expected_cli and lock_cli == expected_cli and tree_cli == expected_cli and versions[-1] == expected_cli
+                evidence["all_sources_agree"] = verified
+                evidence["disagreements"] = [] if verified else [name for name, value in {"package_json_core": package, "package_json_cli": cli, "lockfile_core": lock_core, "lockfile_cli": lock_cli, "dependency_tree_core": tree_core, "dependency_tree_cli": tree_cli}.items() if value is None or value != (expected_cli if name.endswith("cli") else expected)]
+                for name, content, artifact_type in (("package_json", workspace / "package.json", ArtifactType.JSON), ("package_lock", workspace / "package-lock.json", ArtifactType.JSON)):
+                    if content.is_file():
+                        stored = store.write_text_artifact(run_id, f"stage/{stage_id}/angular-update/{name}{content.suffix}", content.read_text(encoding="utf-8"), artifact_type, stage_id=stage_id, created_by="angular-update-service", created_at=self._now(), input_hashes={"workspace": workspace_after})
+                        stored_artifacts.append(stored)
+                report = store.write_text_artifact(run_id, f"stage/{stage_id}/angular-update/target-version-report.json", json.dumps({"target_version": expected, "evidence": evidence, "migrations": _scan_migrations(workspace)}, sort_keys=True, indent=2), ArtifactType.REPORT, stage_id=stage_id, created_by="angular-update-service", created_at=self._now(), input_hashes={"workspace": workspace_after})
+                stored_artifacts.append(report)
                 if not verified:
                     record.error_message = "EXACT_TARGET_MISMATCH"
+            for item in stored_artifacts:
+                if item.ref.artifact_id not in artifact_ids:
+                    artifact_ids.append(_register_artifact(session, run_id, stage_id, item))
+            record.artifact_ids = artifact_ids
             partial_mutation = source_changed or (workspace_changed and (result.result.status is not CommandStatus.SUCCEEDED or not verified))
             record.status = AngularUpdateStatus.SUCCEEDED.value if result.result.status is CommandStatus.SUCCEEDED and verified and not prompt and not source_changed else AngularUpdateStatus.FAILED.value
             record.target_version_status = TargetVersionStatus.VERIFIED.value if verified else TargetVersionStatus.MISMATCH.value
@@ -442,11 +473,11 @@ class AngularUpdateApplicationService:
             if prompt:
                 prompt_transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + ":prompt", event_type=WorkflowEventType.INTERACTIVE_DECISION_REQUIRED, actor=request.actor, reason="Unexpected interactive prompt blocked execution", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "reason_code": "INTERACTIVE_PROMPT_DETECTED"}))
                 run = session.get(MigrationRunModel, run_id)
-            event_type = WorkflowEventType.ANGULAR_UPDATE_COMPLETED if record.status == AngularUpdateStatus.SUCCEEDED.value else WorkflowEventType.ANGULAR_UPDATE_FAILED
-            transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + ":completed", event_type=event_type, actor=request.actor, reason="Angular update execution finalized", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "status": record.status, "error_code": record.error_message}))
             target_event = WorkflowEventType.TARGET_VERSION_VERIFIED if verified else WorkflowEventType.TARGET_VERSION_FAILED
-            target_transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=transition.next_state_version, idempotency_key=request.idempotency_key + ":target", event_type=target_event, actor=request.actor, reason="Angular target verification finalized", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "verified": verified, "evidence": evidence}))
-            record.state_version, record.event_sequence = target_transition.next_state_version, target_transition.event_sequence
+            target_transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=request.idempotency_key + ":target", event_type=target_event, actor=request.actor, reason="Angular target verification finalized", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "verified": verified, "evidence": evidence}))
+            event_type = WorkflowEventType.ANGULAR_UPDATE_COMPLETED if record.status == AngularUpdateStatus.SUCCEEDED.value else WorkflowEventType.ANGULAR_UPDATE_FAILED
+            transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=target_transition.next_state_version, idempotency_key=request.idempotency_key + ":completed", event_type=event_type, actor=request.actor, reason="Angular update execution finalized", occurred_at=self._now(), stage_id=stage_id, payload={"execution_id": execution_id, "status": record.status, "error_code": record.error_message}))
+            record.state_version, record.event_sequence = transition.next_state_version, transition.event_sequence
             session.flush()
         return result
 
@@ -501,6 +532,9 @@ class AngularUpdateApplicationService:
                     "NO_ACTIVE_UPDATE", "No active Angular update for this stage.", status_code=409
                 )
 
+            if _find_event(session, run_id, request.idempotency_key) is not None:
+                return self._dto(record, replay=True)
+
             if run.state_version != request.expected_state_version:
                 raise G03ApplicationError(
                     "STALE_STATE_VERSION",
@@ -508,12 +542,39 @@ class AngularUpdateApplicationService:
                     status_code=409,
                 )
 
+            if succeeded:
+                execution = session.get(CommandExecutionModel, request.command_execution_id)
+                if execution is None or execution.run_id != run_id or execution.stage_id != stage_id or record.command_execution_id != execution.id:
+                    raise G03ApplicationError("COMMAND_AUTHORITY_REQUIRED", "The completion command is not authoritative for this update.", status_code=409)
+                if execution.status != CommandStatus.SUCCEEDED.value or execution.exit_code != 0:
+                    raise G03ApplicationError("COMMAND_NOT_SUCCESSFUL", "Only a successful authoritative command may complete the update.", status_code=409)
+                if not record.artifact_ids:
+                    raise G03ApplicationError("EVIDENCE_ARTIFACTS_REQUIRED", "Registered command evidence is required before completion.", status_code=409)
+                store = LocalFilesystemArtifactStore(Path(run.artifact_root).resolve(), fixed_run_root=Path(run.artifact_root).resolve())
+                for artifact_id in record.artifact_ids:
+                    metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+                    if metadata is None or metadata.run_id != run_id or metadata.stage_id != stage_id:
+                        raise G03ApplicationError("EVIDENCE_ARTIFACT_AUTHORITY", "Completion evidence is not owned by this run and stage.", status_code=409)
+                    try:
+                        artifact = store.read_artifact_by_id(artifact_id)
+                    except (OSError, ValueError, KeyError) as error:
+                        raise G03ApplicationError("EVIDENCE_ARTIFACT_MISSING", "Completion evidence cannot be recovered.", status_code=409) from error
+                    if artifact.ref.checksum != metadata.checksum:
+                        raise G03ApplicationError("EVIDENCE_ARTIFACT_CHECKSUM", "Completion evidence checksum is invalid.", status_code=409)
+                if record.target_version_status != TargetVersionStatus.VERIFIED.value:
+                    raise G03ApplicationError("TARGET_VERSION_NOT_VERIFIED", "Exact target-version proof is required before completion.", status_code=409)
+
             event_type = (
                 WorkflowEventType.ANGULAR_UPDATE_COMPLETED
                 if succeeded
                 else WorkflowEventType.ANGULAR_UPDATE_FAILED
             )
 
+            record.status = AngularUpdateStatus.SUCCEEDED.value if succeeded else AngularUpdateStatus.FAILED.value
+            record.resolved_target_version = resolved_version
+            record.error_message = error_message
+            record.updated_at = now
+            session.flush()
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id,
@@ -524,20 +585,11 @@ class AngularUpdateApplicationService:
                     reason=f"Angular update {'completed' if succeeded else 'failed'}",
                     occurred_at=now,
                     stage_id=stage_id,
-                    payload={
-                        "succeeded": succeeded,
-                        "resolved_version": resolved_version,
-                        "stage_id": stage_id,
-                    },
+                    payload={"succeeded": succeeded, "resolved_version": resolved_version, "stage_id": stage_id},
                 )
             )
-
-            record.status = AngularUpdateStatus.SUCCEEDED.value if succeeded else AngularUpdateStatus.FAILED.value
-            record.resolved_target_version = resolved_version
-            record.error_message = error_message
             record.state_version = transition.next_state_version
             record.event_sequence = transition.event_sequence
-            record.updated_at = now
             session.flush()
 
             return self._dto(record)
@@ -567,6 +619,9 @@ class AngularUpdateApplicationService:
                     "NO_ACTIVE_UPDATE", "No Angular update record for this stage.", status_code=404
                 )
 
+            if _find_event(session, run_id, request.idempotency_key) is not None:
+                return self._dto_target_version(record, replay=True)
+
             if run.state_version != request.expected_state_version:
                 raise G03ApplicationError(
                     "STALE_STATE_VERSION",
@@ -574,14 +629,37 @@ class AngularUpdateApplicationService:
                     status_code=409,
                 )
 
-            ev = evidence or TargetVersionEvidence(resolved_target="unknown")
-            verified = ev.all_sources_agree and ev.resolved_target != "unknown"
+            execution = session.get(CommandExecutionModel, request.command_execution_id)
+            if execution is None or execution.run_id != run_id or execution.stage_id != stage_id or record.command_execution_id != execution.id:
+                raise G03ApplicationError("COMMAND_AUTHORITY_REQUIRED", "The verification command is not authoritative for this update.", status_code=409)
+            if execution.status != CommandStatus.SUCCEEDED.value or execution.exit_code != 0:
+                raise G03ApplicationError("COMMAND_NOT_SUCCESSFUL", "Only a successful authoritative command may verify the target.", status_code=409)
+            if evidence is None:
+                persisted = record.evidence or {}
+                ev = TargetVersionEvidence(
+                    package_json_version=persisted.get("package_json_core") or persisted.get("package_json_version"),
+                    lockfile_version=persisted.get("lockfile_core") or persisted.get("lockfile_version"),
+                    ng_version_output=persisted.get("ng_version") or persisted.get("ng_version_output"),
+                    dependency_tree_version=persisted.get("dependency_tree_core") or persisted.get("dependency_tree_version"),
+                    resolved_target=record.resolved_target_version or record.target_version,
+                    all_sources_agree=persisted.get("all_sources_agree", False),
+                    disagreements=persisted.get("disagreements", []),
+                )
+            else:
+                ev = evidence
+            required_sources = (ev.package_json_version, ev.lockfile_version, ev.ng_version_output, ev.dependency_tree_version)
+            verified = ev.all_sources_agree and ev.resolved_target == record.target_version and all(required_sources)
             event_type = (
                 WorkflowEventType.TARGET_VERSION_VERIFIED
                 if verified
                 else WorkflowEventType.TARGET_VERSION_FAILED
             )
 
+            record.target_version_status = TargetVersionStatus.VERIFIED.value if verified else TargetVersionStatus.MISMATCH.value
+            record.resolved_target_version = ev.resolved_target if verified else None
+            record.evidence = ev.model_dump(mode="json")
+            record.updated_at = now
+            session.flush()
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id,
@@ -592,20 +670,11 @@ class AngularUpdateApplicationService:
                     reason=f"Target version {'verified' if verified else 'mismatch'}",
                     occurred_at=now,
                     stage_id=stage_id,
-                    payload={
-                        "verified": verified,
-                        "resolved_target": ev.resolved_target,
-                        "stage_id": stage_id,
-                    },
+                    payload={"verified": verified, "resolved_target": ev.resolved_target, "stage_id": stage_id},
                 )
             )
-
-            record.target_version_status = TargetVersionStatus.VERIFIED.value if verified else TargetVersionStatus.MISMATCH.value
-            record.resolved_target_version = ev.resolved_target
-            record.evidence = ev.model_dump(mode="json")
             record.state_version = transition.next_state_version
             record.event_sequence = transition.event_sequence
-            record.updated_at = now
             session.flush()
 
             return self._dto_target_version(record)
@@ -638,10 +707,10 @@ class AngularUpdateApplicationService:
             target_version_status=TargetVersionStatus(record.target_version_status),
             resolved_target_version=record.resolved_target_version,
             evidence_sources={
-                "package_json_version": evidence.get("package_json_version") or "",
-                "lockfile_version": evidence.get("lockfile_version") or "",
-                "ng_version_output": evidence.get("ng_version_output") or "",
-                "dependency_tree_version": evidence.get("dependency_tree_version") or "",
+                "package_json_version": evidence.get("package_json_core") or evidence.get("package_json_version") or "",
+                "lockfile_version": evidence.get("lockfile_core") or evidence.get("lockfile_version") or "",
+                "ng_version_output": evidence.get("ng_version") or evidence.get("ng_version_output") or "",
+                "dependency_tree_version": evidence.get("dependency_tree_core") or evidence.get("dependency_tree_version") or "",
             },
             all_sources_agree=evidence.get("all_sources_agree", False),
             disagreements=evidence.get("disagreements", []),
@@ -1006,14 +1075,14 @@ class TransformationEvidenceApplicationService:
                     tgt_content = _normalize_line_endings(tp.read_bytes()) if tp.exists() else b""
             except (OSError, UnicodeDecodeError):
                 lines.append(f"diff --git a/{entry.file_path} b/{entry.file_path}")
-                lines.append(f"Binary files differ")
+                lines.append("Binary files differ")
                 continue
             try:
                 src_text = src_content.decode("utf-8", errors="replace").splitlines(keepends=True)
                 tgt_text = tgt_content.decode("utf-8", errors="replace").splitlines(keepends=True)
             except Exception:
                 lines.append(f"diff --git a/{entry.file_path} b/{entry.file_path}")
-                lines.append(f"Binary files differ")
+                lines.append("Binary files differ")
                 continue
             diff = list(difflib.unified_diff(
                 src_text, tgt_text,
