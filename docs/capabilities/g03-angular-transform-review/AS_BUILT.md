@@ -72,14 +72,40 @@ All G03 logic follows the existing domain → service → API pattern establishe
 - **Frontend API client tests**: 11 tests (`transformations.test.ts`) covering all 10 transformation API functions
 - **Focused regression**: 63 AMFA-181/G03 tests pass on Windows; the full repository suite still has unrelated command-runtime and S2 planning/compatibility failures
 
-### Windows Compatibility
+### Evidence Matrix
 
-All SQLite test databases use `pytest`'s `tmp_path` fixture instead of `tempfile.NamedTemporaryFile` to avoid file-locking issues on Windows. Pytest automatically cleans up `tmp_path` after each test.
+The transformation evidence captures the following artifact types for each changed file:
+
+| Artifact Type | Classification | Risk Level | Example Patterns |
+|---------------|---------------|------------|------------------|
+| TypeScript/JS source | `low_risk` | Low | `*.ts`, `*.js`, `*.html` |
+| Generated/built output | `generated` | Low | `dist/`, `build/`, `.angular/`, `node_modules/` |
+| Binary assets | `binary` | Low | `*.png`, `*.jpg`, `*.ico`, `*.exe`, `*.dll` |
+| Package lockfiles | `medium_risk` | Medium | `package-lock.json`, `yarn.lock` |
+| Auth/security files | `sensitive` | High | Paths containing `auth`, `security`, `credential` |
+| CI/CD configs | `forbidden` | Critical | `.github/workflows/`, `.gitlab-ci.yml` |
+| Credential files | `forbidden` | Critical | `.env`, `secrets`, `*.pem`, `kubeconfig` |
+| Security policy files | `forbidden` | Critical | `security/`, `.htaccess`, `snyk`, `codeql` |
+| Unknown extensions | `unknown` | Varies | `*.xyz`, unrecognized formats |
+
+Each file's content is scanned for sensitive patterns (HTTP clients, router guards, form modules, lifecycle hooks, theme configuration, deprecated APIs, DOM manipulation) and assigned a `SensitiveChangeReason` to inform the reviewer.
+
+### Security Protections
+
+| Protection | Implementation |
+|------------|----------------|
+| File size guard | Files >50MB are classified `GENERATED` and their content is not read (avoids OOM from large binary files) |
+| Binary detection | Binary extensions (`.exe`, `.dll`, `.png`, etc.) are classified `BINARY` without content scanning |
+| Credential leak prevention | Paths matching credential patterns (`.env`, `secrets`, `*.pem`, `kubeconfig`) are classified `FORBIDDEN` (critical risk) |
+| CI/CD tampering detection | CI/CD pipeline files (`.github/workflows`, `.gitlab-ci.yml`, etc.) are classified `FORBIDDEN` |
+| Security policy change detection | Security config files (`security/`, `.htaccess`, `snyk`, `codeql`) are classified `FORBIDDEN` |
+| Content-based secret scanning | Content patterns for DOM access, cookies, `eval()` usage flagged as `SECURITY_RELEVANT` |
+| State version idempotency | Evidence operations are guarded by expected state version and idempotency keys to prevent replay/stale-write attacks |
 
 ## Dependencies
 
 - Consumes contracts: `approved_stage_plan`, `stage_sandbox_ready`, `command_execution_record`, `artifact_ref`, `durable_event_envelope`
-- Provides contract: `transformation_result.schema.json`
+- Provides no standalone JSON schema; evidence is returned inline via the `/transformation-evidence` API response using the `TransformationEvidenceResult` Pydantic model as the implicit contract
 - Depends on G02 for upstream integration
 
 ## Limitations

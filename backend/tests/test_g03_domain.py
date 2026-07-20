@@ -1,6 +1,7 @@
 """Tests for G03 domain models - Angular update, transformation evidence, G08 approval."""
 
 import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -511,6 +512,16 @@ class TestClassifyFile:
         cls, _ = self.svc._classify_file("src/app/component.ts")
         assert cls == ChangedFileClassification.LOW_RISK
 
+    def test_form_content_file(self):
+        cls, reason = self.svc._classify_file("src/app/form.component.ts", b"FormsModule")
+        assert cls == ChangedFileClassification.LOW_RISK
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_theme_scss_file(self):
+        cls, reason = self.svc._classify_file("src/styles.scss", b"// theme palette")
+        assert cls == ChangedFileClassification.LOW_RISK
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
     def test_unknown_extension(self):
         cls, _ = self.svc._classify_file("src/file.xyz")
         assert cls == ChangedFileClassification.UNKNOWN
@@ -547,6 +558,86 @@ class TestDetectContentReason:
     def test_none_content(self):
         reason = self.svc._detect_content_reason("test.ts", None)
         assert reason is None
+
+    def test_forms_module(self):
+        reason = self.svc._detect_content_reason("test.ts", b"FormsModule")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_reactive_forms_module(self):
+        reason = self.svc._detect_content_reason("test.ts", b"ReactiveFormsModule")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_form_builder(self):
+        reason = self.svc._detect_content_reason("test.ts", b"FormBuilder")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_form_group(self):
+        reason = self.svc._detect_content_reason("test.ts", b"FormGroup")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_form_control(self):
+        reason = self.svc._detect_content_reason("test.ts", b"FormControl")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_theme_scss(self):
+        reason = self.svc._detect_content_reason("styles.scss", b"// theme configuration")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_palette_css(self):
+        reason = self.svc._detect_content_reason("theme.css", b":root { --primary: blue; }")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+    def test_typography_scss(self):
+        reason = self.svc._detect_content_reason("_typography.scss", b"font-family: 'Inter'; // custom typography")
+        assert reason == SensitiveChangeReason.FORM_THEME_CHANGE
+
+
+class TestLargeFileClassification:
+    def setup_method(self):
+        self.svc = TransformationEvidenceApplicationService()
+
+    def test_large_file_classified_as_generated(self, tmp_path):
+        src = tmp_path / "source"
+        tgt = tmp_path / "target"
+        src.mkdir()
+        tgt.mkdir()
+        (src / "large.bin").write_bytes(b"source content")
+        (tgt / "large.bin").write_bytes(b"target content")
+
+        real_stat = Path.stat
+        def oversized_stat(self_obj):
+            st = real_stat(self_obj)
+            if self_obj.name == "large.bin":
+                return os.stat_result((
+                    st.st_mode, st.st_ino, st.st_dev, st.st_nlink,
+                    st.st_uid, st.st_gid, 60 * 1024 * 1024,
+                    st.st_atime, st.st_mtime, st.st_ctime,
+                ))
+            return st
+
+        with mock.patch.object(Path, "stat", oversized_stat):
+            summary = self.svc._compute_diff_summary(src, tgt)
+
+        large_entry = [f for f in summary.changed_files if "large.bin" in f.file_path]
+        assert len(large_entry) == 1
+        assert large_entry[0].classification == ChangedFileClassification.GENERATED
+        assert large_entry[0].is_generated is True
+        assert large_entry[0].size_bytes == 60 * 1024 * 1024
+
+    def test_normal_size_file_not_affected(self, tmp_path):
+        src = tmp_path / "source"
+        tgt = tmp_path / "target"
+        src.mkdir()
+        tgt.mkdir()
+        (src / "normal.ts").write_text("line1\nline2\nline3\n")
+        (tgt / "normal.ts").write_text("line1\nline2 modified\nline3\nline4\n")
+
+        summary = self.svc._compute_diff_summary(src, tgt)
+
+        entry = [f for f in summary.changed_files if "normal.ts" in f.file_path]
+        assert len(entry) == 1
+        assert entry[0].classification != ChangedFileClassification.GENERATED
+        assert entry[0].is_generated is False
 
 
 class TestScanForbiddenChanges:

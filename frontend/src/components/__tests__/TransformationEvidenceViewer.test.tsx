@@ -268,4 +268,45 @@ describe("TransformationEvidenceViewer", () => {
       expect(getTransformationEvidence).toHaveBeenCalledWith("run-1", "stage-1");
     });
   });
+
+  it("shows stale state with Refresh button when GET returns 409", async () => {
+    let fetchCount = 0;
+    vi.mocked(getTransformationEvidence).mockImplementation(() => {
+      fetchCount++;
+      if (fetchCount === 1) return Promise.resolve(mockEvidence as never);
+      return Promise.reject(new ApiClientError("Conflict", 409, "GET", "/path"));
+    });
+    const { rerender } = renderViewer({ connectionStatus: "open" });
+    await screen.findByText("Transformation Evidence");
+    rerender(<TransformationEvidenceViewer {...defaultProps} connectionStatus="recovering" />);
+    expect(await screen.findByText("Evidence is stale — refresh")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+  });
+
+  it("shows missing-artifact state with Retry button when evidence disappears", async () => {
+    let fetchCount = 0;
+    vi.mocked(getTransformationEvidence).mockImplementation(() => {
+      fetchCount++;
+      if (fetchCount === 1) return Promise.resolve(mockEvidence as never);
+      return Promise.reject(new ApiClientError("Not found", 404, "GET", "/path"));
+    });
+    const { rerender } = renderViewer({ connectionStatus: "open" });
+    await screen.findByText("Transformation Evidence");
+    rerender(<TransformationEvidenceViewer {...defaultProps} connectionStatus="recovering" />);
+    expect(await screen.findByText("Evidence artifacts not found")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows binary classification badge in file list", async () => {
+    const binaryEvidence = JSON.parse(JSON.stringify(mockEvidence));
+    binaryEvidence.diff_summary.changed_files.push({
+      file_path: "assets/logo.png", change_type: "modified", classification: "binary", lines_added: 0, lines_removed: 0, is_binary: true,
+    });
+    binaryEvidence.diff_summary.files_by_classification.binary = 1;
+    binaryEvidence.total_files_changed = 6;
+    vi.mocked(getTransformationEvidence).mockImplementation(() => Promise.resolve(binaryEvidence as never));
+    renderViewer();
+    await screen.findByText("assets/logo.png");
+    expect(screen.getByText("binary")).toBeInTheDocument();
+  });
 });

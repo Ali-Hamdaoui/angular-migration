@@ -78,6 +78,8 @@ export function TransformationEvidenceViewer(props: Props) {
   const [riskFilter, setRiskFilter] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
   const fetchInFlight = useRef(false);
+  const evidenceRef = useRef(evidence);
+  useEffect(() => { evidenceRef.current = evidence; }, [evidence]);
 
   const fetchEvidence = useCallback(async () => {
     if (fetchInFlight.current) return;
@@ -88,8 +90,14 @@ export function TransformationEvidenceViewer(props: Props) {
       setViewState(result.evidence_complete ? "success" : "blocked");
     } catch (err: unknown) {
       if (err instanceof ApiClientError && err.status === 404) {
-        setEvidence(null);
-        setViewState("empty");
+        if (evidenceRef.current) {
+          setViewState("missing-artifact");
+        } else {
+          setEvidence(null);
+          setViewState("empty");
+        }
+      } else if (err instanceof ApiClientError && err.status === 409) {
+        setViewState("stale");
       } else {
         setError(err instanceof Error ? err.message : "Failed to fetch evidence");
         setViewState("failure");

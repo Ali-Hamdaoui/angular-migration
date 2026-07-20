@@ -138,6 +138,7 @@ class SensitiveChangeReason(str, Enum):
     BINARY_FILE = "binary_file"
     GENERATED_FILE = "generated_file"
     PACKAGE_LOCK_CHANGE = "package_lock_change"
+    FORM_THEME_CHANGE = "form_or_theme"
     UNKNOWN = "unknown"
 
 

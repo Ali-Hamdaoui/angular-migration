@@ -1258,6 +1258,10 @@ class TransformationEvidenceApplicationService:
             return SensitiveChangeReason.BEHAVIOR_CHANGE
         if any(p in text for p in ["@deprecated", "TODO.*migrat", "FIXME.*angular"]):
             return SensitiveChangeReason.HIDDEN_MODERNIZATION
+        if any(p in text for p in ["FormsModule", "ReactiveFormsModule", "FormBuilder", "FormGroup", "FormControl", "FormArray", "Validators."]):
+            return SensitiveChangeReason.FORM_THEME_CHANGE
+        if path.endswith((".scss", ".sass", ".css")) and any(p in text.lower() for p in ["theme", "palette", "typography", "--primary", "--secondary", "--accent"]):
+            return SensitiveChangeReason.FORM_THEME_CHANGE
         return None
 
     def _compute_package_changes(
