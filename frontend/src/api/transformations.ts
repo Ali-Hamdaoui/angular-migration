@@ -6,6 +6,7 @@ import type {
   AngularUpdateResponse,
   G08DecisionRequest,
   G08ReviewResponse,
+  TargetVersionResponse,
   TransformationEvidenceRequest,
   TransformationEvidenceResponse,
 } from "@/types/transformation";
@@ -87,6 +88,40 @@ export async function decideG08(
   return client.post<G08ReviewResponse>(
     `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/approvals/${encodeURIComponent(gateId)}/decisions`,
     request,
+  );
+}
+
+export async function completeAngularUpdate(
+  runId: string,
+  stageId: string,
+  request: { expected_state_version: number; idempotency_key: string; actor: string },
+  client: ApiClient = apiClient,
+): Promise<AngularUpdateResponse> {
+  return client.post<AngularUpdateResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/angular-update/complete`,
+    request,
+  );
+}
+
+export async function verifyTargetVersion(
+  runId: string,
+  stageId: string,
+  request: { expected_state_version: number; idempotency_key: string; actor: string },
+  client: ApiClient = apiClient,
+): Promise<AngularUpdateResponse> {
+  return client.post<AngularUpdateResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/target-version/verify`,
+    request,
+  );
+}
+
+export async function getTargetVersionTyped(
+  runId: string,
+  stageId: string,
+  client: ApiClient = apiClient,
+): Promise<TargetVersionResponse> {
+  return client.get<TargetVersionResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stageId)}/target-version`,
   );
 }
 

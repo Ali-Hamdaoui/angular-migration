@@ -1,17 +1,14 @@
 "use client";
 
-/**
- * AngularUpdatePanel — Angular update step with exact versions, live logs, migration list,
- * prompt blocker, and target verification matrix.
- */
-
-import React, { useCallback, useEffect, useState } from "react";
-import { startAngularUpdate, getAngularUpdate, getTargetVersion } from "@/api/transformations";
-import type { AngularUpdateResponse } from "@/types/transformation";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { getAngularUpdate, getTargetVersionTyped, startAngularUpdate, verifyTargetVersion } from "@/api/transformations";
+import type { AngularUpdateResponse, TargetVersionResponse } from "@/types/transformation";
+import type { WorkflowEventDto } from "@/types/generated/api";
 import { StatusPill } from "@/components/StatusPill";
 import { LogViewer } from "@/components/LogViewer";
+import styles from "./ControlTowerShell.module.css";
 
-type ViewState = "loading" | "empty" | "running" | "success" | "blocked" | "stale" | "reconnecting" | "failure";
+type ViewState = "loading" | "empty" | "running" | "success" | "blocked" | "stale" | "reconnecting" | "failure" | "cancelled" | "no_evidence";
 
 interface Props {
   runId: string;
@@ -20,6 +17,7 @@ interface Props {
   targetVersion: string;
   expectedStateVersion: number;
   onStateChange?: (newVersion: number) => void;
+  workflowEvents?: WorkflowEventDto[];
 }
 
 export function AngularUpdatePanel({
@@ -29,43 +27,107 @@ export function AngularUpdatePanel({
   targetVersion,
   expectedStateVersion,
   onStateChange,
+  workflowEvents = [],
 }: Props) {
   const [viewState, setViewState] = useState<ViewState>("loading");
   const [updateResult, setUpdateResult] = useState<AngularUpdateResponse | null>(null);
+  const [targetVersionResult, setTargetVersionResult] = useState<TargetVersionResponse | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittedRef = useRef(false);
+  const idempotencyRef = useRef<string | null>(null);
+
+  const addLog = useCallback((msg: string) => {
+    setLogs((prev) => [...prev, `[${new Date().toISOString()}] ${msg}`]);
+  }, []);
+
+  const handleStateChange = useCallback((result: AngularUpdateResponse) => {
+    if (result.target_version_status === "verified") {
+      setViewState("success");
+    } else if (result.status === "succeeded" && result.target_version_status !== "mismatch" && result.target_version_status !== "inconclusive") {
+      setViewState("success");
+    } else if (result.status === "failed" || result.target_version_status === "failed" || result.target_version_status === "mismatch") {
+      setViewState("failure");
+      setError(result.error_message ?? (result.target_version_status === "mismatch" ? "Target version mismatch" : "Angular update failed"));
+    } else if (result.status === "interactive_blocked") {
+      setViewState("blocked");
+    } else if (result.status === "running") {
+      setViewState("running");
+    } else {
+      setViewState("empty");
+    }
+    setUpdateResult(result);
+  }, []);
 
   const fetchState = useCallback(async () => {
     try {
       setViewState("reconnecting");
       const result = await getAngularUpdate(runId, stageId);
-      setUpdateResult(result);
-      if (result.status === "succeeded") {
-        setViewState("success");
-      } else if (result.status === "failed") {
-        setViewState("failure");
-        setError(result.error_message ?? "Angular update failed");
-      } else if (result.status === "running") {
-        setViewState("running");
-      } else if (result.status === "interactive_blocked") {
-        setViewState("blocked");
-      } else {
-        setViewState("empty");
+      if (!result) {
+        setViewState("no_evidence");
+        return;
       }
+      handleStateChange(result);
     } catch {
-      setViewState("empty");
+      setViewState("no_evidence");
     }
-  }, [runId, stageId]);
+  }, [runId, stageId, handleStateChange]);
 
   useEffect(() => {
     fetchState();
   }, [fetchState]);
 
+  useEffect(() => {
+    for (const event of workflowEvents) {
+      if (event.event_type === "ANGULAR_UPDATE_COMPLETED") {
+        const payload = event.payload as Record<string, unknown>;
+        if (payload.target_version_status === "verified") {
+          setViewState("success");
+          addLog("Angular update completed (SSE)");
+          if (typeof payload.state_version === "number") {
+            onStateChange?.(payload.state_version);
+          }
+        } else if (payload.target_version_status === "mismatch" || payload.target_version_status === "inconclusive") {
+          setViewState("failure");
+          setError(payload.target_version_status === "mismatch" ? "Target version mismatch" : "Target version inconclusive");
+          addLog(`Angular update completed but target version ${payload.target_version_status} (SSE)`);
+        } else {
+          setViewState("success");
+          addLog("Angular update completed (SSE)");
+        }
+      } else if (event.event_type === "ANGULAR_UPDATE_FAILED") {
+        setViewState("failure");
+        const payload = event.payload as Record<string, unknown>;
+        const isCancellation = payload.error_message && typeof payload.error_message === "string" && payload.error_message.toLowerCase().includes("cancell");
+        if (isCancellation) {
+          setViewState("cancelled");
+          setError("Angular update was cancelled");
+          addLog("Angular update cancelled (SSE)");
+        } else {
+          setError(typeof payload.error_message === "string" ? payload.error_message : "Angular update failed");
+          addLog("Angular update failed (SSE)");
+        }
+      } else if (event.event_type === "TARGET_VERSION_FAILED") {
+        setViewState("failure");
+        setError("Target version verification failed");
+        addLog("Target version verification failed (SSE)");
+      } else if (event.event_type === "INTERACTIVE_DECISION_REQUIRED") {
+        setViewState("blocked");
+        addLog("Interactive prompt detected (SSE)");
+      }
+    }
+  }, [workflowEvents, onStateChange, addLog]);
+
   const handleStartUpdate = async () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    setSubmitting(true);
     const idempotencyKey = `ang-upd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    idempotencyRef.current = idempotencyKey;
     try {
       setViewState("running");
-      setLogs((prev) => [...prev, `[${new Date().toISOString()}] Starting Angular update: ${sourceVersion} → ${targetVersion}`]);
+      addLog(`Starting Angular update: ${sourceVersion} → ${targetVersion}`);
       const result = await startAngularUpdate(runId, stageId, {
         expected_state_version: expectedStateVersion,
         idempotency_key: idempotencyKey,
@@ -74,124 +136,232 @@ export function AngularUpdatePanel({
         target_version: targetVersion,
       });
       setUpdateResult(result);
-      if (result.status === "succeeded") {
-        setViewState("success");
-        setLogs((prev) => [...prev, `[${new Date().toISOString()}] Angular update completed successfully`]);
-      } else if (result.status === "failed") {
-        setViewState("failure");
-        setError(result.error_message ?? "Update failed");
-        setLogs((prev) => [...prev, `[${new Date().toISOString()}] Angular update failed: ${result.error_message}`]);
-      } else {
-        setViewState("running");
-      }
+      handleStateChange(result);
+      addLog(result.status === "succeeded" ? "Angular update completed successfully" : `Update status: ${result.status}`);
       onStateChange?.(result.state_version);
     } catch (err: unknown) {
       setViewState("failure");
       const message = err instanceof Error ? err.message : "Failed to start Angular update";
       setError(message);
-      setLogs((prev) => [...prev, `[${new Date().toISOString()}] Error: ${message}`]);
+      addLog(`Error: ${message}`);
+    } finally {
+      setSubmitting(false);
+      setTimeout(() => { submittedRef.current = false; }, 1000);
     }
   };
 
   const handleVerifyTarget = async () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    setSubmitting(true);
+    const idempotencyKey = `ang-verify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const result = await getTargetVersion(runId, stageId);
+      const result = await verifyTargetVersion(runId, stageId, {
+        expected_state_version: expectedStateVersion,
+        idempotency_key: idempotencyKey,
+        actor: "operator",
+        command_execution_id: updateResult?.command_execution_id ?? "",
+      });
       setUpdateResult(result);
       if (result.target_version_status === "verified") {
-        setLogs((prev) => [...prev, `[${new Date().toISOString()}] Target version verified: ${result.resolved_target_version}`]);
+        addLog(`Target version verified: ${result.resolved_target_version}`);
+        onStateChange?.(result.state_version);
+      } else if (result.target_version_status === "mismatch") {
+        setViewState("failure");
+        setError(`Target version mismatch: expected ${targetVersion}, resolved ${result.resolved_target_version}`);
+        addLog("Target version mismatch");
+      } else if (result.target_version_status === "failed") {
+        setViewState("failure");
+        setError("Target version verification failed");
+        addLog("Target version verification failed");
       } else {
-        setLogs((prev) => [...prev, `[${new Date().toISOString()}] Target version mismatch detected`]);
+        addLog(`Version check completed: ${result.target_version_status}`);
       }
+      onStateChange?.(result.state_version);
     } catch (err: unknown) {
-      setLogs((prev) => [...prev, `[${new Date().toISOString()}] Version check failed: ${err instanceof Error ? err.message : "Unknown error"}`]);
+      addLog(`Version check failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setSubmitting(false);
+      setTimeout(() => { submittedRef.current = false; }, 1000);
     }
   };
 
+  const handleFetchTargetVersion = useCallback(async () => {
+    try {
+      const result = await getTargetVersionTyped(runId, stageId);
+      setTargetVersionResult(result);
+      const sourceCount = Object.keys(result.evidence_sources).length;
+      addLog(`Target version: ${result.resolved_target_version} (sources: ${sourceCount})`);
+      if (!result.all_sources_agree) {
+        setError("Target version sources disagree");
+      }
+    } catch (err: unknown) {
+      addLog(`Target version fetch failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }, [runId, stageId, addLog]);
+
+  useEffect(() => {
+    if (viewState === "success" && !targetVersionResult) {
+      handleFetchTargetVersion();
+    }
+  }, [viewState, targetVersionResult, handleFetchTargetVersion]);
+
+  const isRunning = submitting || viewState === "running";
+
   if (viewState === "loading") {
     return (
-      <div className="angular-update-panel p-4 border rounded-lg">
-        <div className="animate-pulse space-y-3">
-          <div className="h-4 bg-gray-200 rounded w-1/3" />
-          <div className="h-8 bg-gray-200 rounded w-1/2" />
-          <div className="h-4 bg-gray-200 rounded w-2/3" />
+      <section className={styles.panel} aria-labelledby="angular-update-title">
+        <div className={styles.header}>
+          <div>
+            <p className={styles.kicker}>S3-F07 angular transform</p>
+            <h2 id="angular-update-title">Angular Update</h2>
+          </div>
         </div>
-      </div>
+        <div role="status">
+          <p className={styles.note}>Loading Angular update state…</p>
+        </div>
+      </section>
     );
   }
 
   return (
-    <div className="angular-update-panel p-4 border rounded-lg space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Angular Update</h3>
-        <StatusPill value={viewState === "success" ? "PASSED" : viewState === "failure" ? "FAILED" : "RUNNING"} />
+    <section className={styles.panel} aria-labelledby="angular-update-title">
+      <div className={styles.header}>
+        <div>
+          <p className={styles.kicker}>S3-F07 angular transform</p>
+          <h2 id="angular-update-title">Angular Update</h2>
+        </div>
+        <StatusPill value={
+          viewState === "success" ? "PASSED" :
+          viewState === "failure" ? "FAILED" :
+          viewState === "cancelled" ? "FAILED" :
+          viewState === "blocked" ? "BLOCKED" :
+          viewState === "stale" ? "STALE" :
+          viewState === "no_evidence" ? "WARNING" :
+          "RUNNING"
+        } />
       </div>
 
-      {/* Version matrix */}
-      <div className="grid grid-cols-2 gap-4 p-3 bg-gray-50 rounded">
+      <div className={styles.dimensionGrid} aria-label="Version matrix">
         <div>
-          <span className="text-sm text-gray-500">Source</span>
-          <p className="font-mono text-sm">{sourceVersion}</p>
+          <span>Source</span>
+          <strong>{sourceVersion}</strong>
         </div>
         <div>
-          <span className="text-sm text-gray-500">Target</span>
-          <p className="font-mono text-sm">{targetVersion}</p>
+          <span>Target</span>
+          <strong>{targetVersion}</strong>
         </div>
         {updateResult?.resolved_target_version && (
-          <div className="col-span-2">
-            <span className="text-sm text-gray-500">Resolved target</span>
-            <p className="font-mono text-sm font-bold text-green-600">
+          <div>
+            <span>Resolved target</span>
+            <strong>
               {updateResult.resolved_target_version}
               {updateResult.target_version_status === "verified" && " ✓"}
-            </p>
+              {updateResult.target_version_status === "mismatch" && " ✗"}
+            </strong>
+          </div>
+        )}
+        {updateResult?.command_execution_id && (
+          <div>
+            <span>Execution ID</span>
+            <strong>{updateResult.command_execution_id}</strong>
+          </div>
+        )}
+        {updateResult?.artifact_ids && updateResult.artifact_ids.length > 0 && (
+          <div>
+            <span>Artifacts</span>
+            <strong>{updateResult.artifact_ids.length}</strong>
           </div>
         )}
       </div>
 
-      {/* Action controls */}
-      <div className="flex gap-2">
+      {targetVersionResult && (
+        <div className={styles.dimensionGrid} aria-label="Target verification matrix">
+          <div>
+            <span>Sources agree</span>
+            <strong>{targetVersionResult.all_sources_agree ? "Yes ✓" : "No ✗"}</strong>
+          </div>
+          {Object.entries(targetVersionResult.evidence_sources).map(([key, value]) => (
+            <div key={key}>
+              <span>{key.replace(/_/g, " ")}</span>
+              <strong>{value || "—"}</strong>
+            </div>
+          ))}
+          {targetVersionResult.disagreements.length > 0 && (
+            <div>
+              <span>Disagreements</span>
+              <strong>{targetVersionResult.disagreements.length}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className={styles.row}>
+        <span>State version {expectedStateVersion}</span>
         {viewState === "empty" && (
           <button
+            type="button"
             onClick={handleStartUpdate}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-            disabled={!sourceVersion || !targetVersion}
+            disabled={isRunning || !sourceVersion || !targetVersion}
+            aria-label="Start Angular Update"
           >
-            Start Angular Update
+            {submitting ? "Starting…" : "Start Angular Update"}
           </button>
         )}
         {viewState === "success" && (
           <button
+            type="button"
             onClick={handleVerifyTarget}
-            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+            disabled={submitting || isRunning}
+            aria-label="Verify Target Version"
           >
-            Verify Target Version
+            {submitting ? "Verifying…" : "Verify Target Version"}
           </button>
-        )}
-        {viewState === "failure" && (
-          <div className="text-red-600 text-sm p-2 bg-red-50 rounded">
-            {error || "Update failed. Review logs for details."}
-          </div>
-        )}
-        {viewState === "blocked" && (
-          <div className="text-amber-600 text-sm p-2 bg-amber-50 rounded">
-            Interactive prompt detected. Manual intervention required.
-          </div>
         )}
       </div>
 
-      {/* Live logs */}
-      {logs.length > 0 && (
-        <div>
-          <h4 className="text-sm font-medium mb-1">Logs</h4>
-          <LogViewer content={logs.join("\n")} maxLines={200} />
+      {viewState === "failure" && error && (
+        <div role="alert" className={styles.note}>
+          {error}
         </div>
       )}
 
-      {/* Stale state warning */}
-      {viewState === "stale" && (
-        <div className="p-2 bg-amber-50 border border-amber-200 rounded text-sm text-amber-700">
-          State version changed. Reloading snapshot...
+      {viewState === "cancelled" && (
+        <div role="alert" className={styles.note}>
+          {error || "Angular update was cancelled."}
         </div>
       )}
-    </div>
+
+      {viewState === "blocked" && (
+        <div role="alert" className={styles.note}>
+          Interactive prompt detected. Manual intervention required.
+        </div>
+      )}
+
+      {viewState === "stale" && (
+        <div role="alert" className={styles.note}>
+          State version changed. Reloading snapshot…
+        </div>
+      )}
+
+      {viewState === "no_evidence" && (
+        <div role="alert" className={styles.note}>
+          No Angular update evidence found for this stage.
+        </div>
+      )}
+
+      {viewState === "reconnecting" && (
+        <div role="status" className={styles.note}>
+          Reconnecting…
+        </div>
+      )}
+
+      {logs.length > 0 && (
+        <div aria-live="polite">
+          <h3 className={styles.kicker}>Logs</h3>
+          <LogViewer content={logs.join("\n")} maxLines={200} />
+        </div>
+      )}
+    </section>
   );
 }

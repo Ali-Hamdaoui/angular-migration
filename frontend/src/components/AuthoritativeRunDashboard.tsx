@@ -2,6 +2,7 @@
 
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
+import { AngularUpdatePanel } from "./AngularUpdatePanel";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
 import { G02ReviewPanel } from "./G02ReviewPanel";
 import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
@@ -62,6 +63,12 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <SourceSnapshotPanel runId={runId} initialState={state} />
       <G02ReviewPanel runId={runId} initialState={state} />
       <ExecutionProfilePanel runId={runId} initialState={state} />
+      {((): React.ReactNode => {
+        const stateWithStages = state as AuthoritativeRunStateDto & { stages?: Array<{ stage_id: string; status: string; source_angular_version: string | null; target_angular_version: string | null }> };
+        const activeStage = stateWithStages.stages?.find((s) => s.status !== "PASSED" && s.status !== "FAILED" && s.status !== "ROLLED_BACK" && s.status !== "CANCELLED");
+        if (!activeStage) return null;
+        return <AngularUpdatePanel runId={runId} stageId={activeStage.stage_id} sourceVersion={activeStage.source_angular_version ?? "unknown"} targetVersion={activeStage.target_angular_version ?? "unknown"} expectedStateVersion={state.state_version} onStateChange={() => refresh()} workflowEvents={state.workflow_events} />;
+      })()}
       <BaselinePreparationPanel runId={runId} initialState={state} />
       <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
       <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
