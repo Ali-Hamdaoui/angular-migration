@@ -15,7 +15,7 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.contracts import WorkflowEventType
@@ -109,7 +109,13 @@ class CommandLogService:
             latest = session.scalar(select(CommandLogChunkModel).where(CommandLogChunkModel.execution_id == execution_id).order_by(CommandLogChunkModel.sequence.desc()).limit(1))
             next_seq = (latest.sequence + 1) if latest else 1
             now = datetime.now(UTC)
-            chunk = CommandLogChunkModel(id=f"chunk-{uuid4().hex[:12]}", execution_id=execution_id, run_id=run_id, sequence=next_seq, stream=stream, text=safe_text, redacted=redacted or changed, created_at=now)
+            chunk = CommandLogChunkModel(
+                id=f"chunk-{uuid4().hex[:12]}", execution_id=execution_id, run_id=run_id,
+                sequence=next_seq, stream=stream, text=safe_text,
+                redacted=redacted or changed, truncated=truncated,
+                byte_count=len(safe_text.encode("utf-8")), character_count=len(safe_text),
+                correlation_id=correlation_id, created_at=now,
+            )
             session.add(chunk)
             summary.first_sequence = summary.first_sequence or next_seq
             summary.last_sequence = next_seq
@@ -182,6 +188,7 @@ class CommandLogService:
         session: Session,
         execution_id: str,
         *,
+        run_id: str | None = None,
         offset: int = 0,
         limit: int = 1000,
         stream_filter: str | None = None,
@@ -198,9 +205,10 @@ class CommandLogService:
             cursor: If set, return only chunks with sequence > cursor
                     (overrides offset for cursor-based pagination)
         """
-        base_query = select(CommandLogChunkModel).where(
-            CommandLogChunkModel.execution_id == execution_id
-        )
+        predicates = [CommandLogChunkModel.execution_id == execution_id]
+        if run_id is not None:
+            predicates.append(CommandLogChunkModel.run_id == run_id)
+        base_query = select(CommandLogChunkModel).where(*predicates)
 
         if stream_filter:
             base_query = base_query.where(CommandLogChunkModel.stream == stream_filter)
@@ -209,12 +217,10 @@ class CommandLogService:
             base_query = base_query.where(CommandLogChunkModel.sequence > cursor)
 
         # Get total count
-        count_query = select(CommandLogChunkModel).where(
-            CommandLogChunkModel.execution_id == execution_id
-        )
+        count_query = select(func.count(CommandLogChunkModel.id)).where(*predicates)
         if stream_filter:
             count_query = count_query.where(CommandLogChunkModel.stream == stream_filter)
-        total = len(list(session.scalars(count_query.with_only_columns(CommandLogChunkModel.sequence))))
+        total = session.scalar(count_query) or 0
 
         chunks = list(
             session.scalars(
@@ -230,8 +236,9 @@ class CommandLogService:
                 text=c.text,
                 redacted=c.redacted,
                 created_at=c.created_at.isoformat() if c.created_at else "",
-                byte_count=len(c.text.encode("utf-8")),
-                character_count=len(c.text),
+                byte_count=c.byte_count,
+                character_count=c.character_count,
+                truncated=c.truncated,
             )
             for c in chunks
         ], total
@@ -240,20 +247,25 @@ class CommandLogService:
         self,
         session: Session,
         execution_id: str,
+        *,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Get a summary of available log streams."""
-        rows = session.scalars(
-            select(CommandLogChunkModel)
-            .where(CommandLogChunkModel.execution_id == execution_id)
-        ).all()
+        predicates = [CommandLogChunkModel.execution_id == execution_id]
+        if run_id is not None:
+            predicates.append(CommandLogChunkModel.run_id == run_id)
+        rows = session.scalars(select(CommandLogChunkModel).where(*predicates)).all()
         total = len(rows)
         stdout_count = sum(1 for r in rows if r.stream == "stdout")
         stderr_count = sum(1 for r in rows if r.stream == "stderr")
         system_count = sum(1 for r in rows if r.stream == "system")
 
         summary = session.get(CommandLogSummaryModel, execution_id)
+        if summary is not None and run_id is not None and summary.run_id != run_id:
+            summary = None
         return {
             "execution_id": execution_id,
+            "run_id": summary.run_id if summary else run_id,
             "total_chunks": total,
             "streams": {
                 "stdout": stdout_count,

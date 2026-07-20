@@ -43,10 +43,11 @@ All external process execution must pass through the registered command template
   - `Environment sanitization` — `WorkerSupervisor._build_safe_environment()` filters out environment variables matching `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `CREDENTIAL`, `HERMES_`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`
 
 - **S3-F03 — Stream live command logs and recover after browser reconnect**
-  - `CommandLogService` — ordered chunk persistence with sequence numbers, stream type (stdout/stderr/system), offset/limit/cursor pagination
-  - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs` — retrieve log chunks with optional `stream`, `offset`, `limit`, `cursor` parameters
-  - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs/summary` — stream summary with per-stream counts
-  - `COMMAND_OUTPUT_AVAILABLE` event emitted per chunk
+  - `CommandLogService` — run-scoped ordered chunk persistence with sequence numbers, bounded cursor pagination, redaction, and durable summary state
+  - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs` — retrieve only chunks owned by the route run; `cursor=N` returns sequence `> N`
+  - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs/summary` — run-scoped summary with counts, latest cursor, truncation, and finalization
+  - `GET /api/v1/runs/{run_id}/commands/{execution_id}/logs/stream` — SSE replay/tail using explicit `cursor` or `Last-Event-ID` (explicit cursor wins)
+  - SSE events: `command_log` with `id=<log sequence>`, `log_checkpoint`, `execution_complete`, heartbeat comments, and safe `stream_error`
   - `LogViewer.tsx` — tail/pause, stdout/stderr filter buttons, search, reconnect indicator, auto-poll for live updates, scroll-to-bottom
 
 - **S3-F04 — Own commands with JobSupervisor, leases, timeout, and explicit cancellation**
@@ -245,6 +246,8 @@ All components cover: loading spinner, empty state (no templates/logs), success/
 | POST | `/api/v1/runs/{run_id}/commands` | `{ authorization_decision_id, expected_state_version, idempotency_key, requested_by? }` | `CommandExecutionResponse` | `COMMAND_QUEUED`, `STARTED`, `SUCCEEDED`/`FAILED` | `STALE_STATE_VERSION`, `AUTHORIZATION_STALE`, `IDEMPOTENCY_KEY_CONFLICT`, `AUTHORIZATION_DECISION_NOT_FOUND` | Required (key+authorization decision) |
 | GET | `/api/v1/runs/{run_id}/commands/{execution_id}` | — | `CommandExecutionModel` | — | `404` | N/A |
 | GET | `/api/v1/runs/{run_id}/commands/{execution_id}/logs` | `?offset=&limit=&stream=&cursor=` | `{ chunks: LogChunkDto[], total: number }` | — | — | N/A |
+| GET | `/api/v1/runs/{run_id}/commands/{execution_id}/logs/summary` | — | Durable cursor/count/truncation/finalization summary | — | `EXECUTION_NOT_FOUND` | N/A |
+| GET | `/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream` | `?cursor=&stream=` or `Last-Event-ID` | SSE `command_log`/checkpoint/completion/heartbeat | `COMMAND_OUTPUT_AVAILABLE` | `LOG_STREAM_FAILED`, `INVALID_LOG_CURSOR` | N/A |
 | POST | `/api/v1/runs/{run_id}/commands/{execution_id}/cancel` | `{ actor, idempotency_key }` | `{ cancelled, execution_id, ... }` | `RUN_CANCEL_REQUESTED`, `COMMAND_CANCELLED` | `EXECUTION_NOT_FOUND`, `EXECUTION_NOT_ACTIVE` | Via idempotency_key |
 | GET | `/api/v1/runs/{run_id}/active-command` | — | `{ active_command }` or null | — | — | N/A |
 | GET | `/api/v1/runs/{run_id}/active-lease` | — | `{ active_lease }` or null | — | — | N/A |
@@ -376,7 +379,7 @@ Manual validation status: `PENDING` — requires running backend on port 8301 wi
 ## 14. Known Limitations
 
 ### Branch-owned
-1. Live log streaming uses synchronous chunk append with offset/limit/cursor retrieval — not true async SSE push. The cursor parameter supports reconnect recovery but the streaming endpoint does not use Server-Sent Events protocol.
+1. Live log streaming polls durable SQLite state with bounded asynchronous SSE replay/tail, standard `id:` fields, explicit cursor support, and `Last-Event-ID` reconnect.
 2. Cancellation uses `threading.Event` + `WorkerSupervisor.terminate_process_tree()` — no dedicated async supervisor thread for hard-kill on stale leases.
 3. `CommandExecutorService.queue_command()` tests use mocked policy engine and supervisor — true integration tests requiring full backend stack are deferred to cross-goal validation.
 
@@ -385,8 +388,7 @@ Manual validation status: `PENDING` — requires running backend on port 8301 wi
 5. Full Angular fixture acceptance requires Goal 10 integration harness.
 
 ### Future improvements
-6. Add SSE `Last-Event-ID` support to log streaming for browser-native reconnect.
-7. Add async supervisor thread for lease expiry enforcement (terminate orphan processes).
+6. Add async supervisor thread for lease expiry enforcement (terminate orphan processes).
 
 ## 15. Integration Contract
 

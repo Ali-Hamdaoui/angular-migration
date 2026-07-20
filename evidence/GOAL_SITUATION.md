@@ -47,7 +47,7 @@ G01 is the sole governed external-process execution path for the Angular 18→21
 | AMFA-160 | AMFA-141 | S3-F02-I03 frontend | Command detail drawer | `commands.ts` exposes typed execute/list/get/artifact-metadata calls; `CommandExecutionPanel` renders authoritative executable, exact argv, working directory, timestamps, exit status, lifecycle details, artifact type/path/checksum metadata, and artifact links with loading/error states. | IMPLEMENTED_AND_VERIFIED |
 | AMFA-161 | AMFA-141 | S3-F02-I04 tests/security/docs | Tests + docs | `backend/tests/test_command_executor_services.py` (queue/idempotency/cancel); `backend/tests/test_command_route_authorization.py` (owner, missing-run, spoofed actor, cross-actor retrieval negatives); `backend/tests/test_s3_f02_api_integration.py` (real API, subprocess worker, SQLite persistence, events, immutable artifacts, failure, stale state, authorization, replay) | IMPLEMENTED_AND_API_VERIFIED |
 | AMFA-162 | AMFA-142 | S3-F03-I01 backend domain | Log streaming service | `backend/app/services/command_log_service.py:CommandLogService` (append_chunk/get_logs/get_stream_summary); COMMAND_OUTPUT_AVAILABLE | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
-| AMFA-163 | AMFA-142 | S3-F03-I02 db/api/events/artifacts | Log API + migration | `backend/app/api/routes/run_commands.py` (get_logs/summary/stream SSE cursor); `CommandLogChunkModel`; migration `20260719_08` | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
+| AMFA-163 | AMFA-142 | S3-F03-I02 db/api/events/artifacts | Log API + migration | `backend/app/api/routes/run_commands.py` (run-scoped logs/summary, standard-ID SSE replay, Last-Event-ID precedence, heartbeat, completion); `CommandLogChunkModel`; migrations `20260719_08`, `20260720_14` | IMPLEMENTED_NOT_RUNTIME_VERIFIED; focused pytest blocked by missing SQLAlchemy |
 | AMFA-164 | AMFA-142 | S3-F03-I03 frontend | Live log viewer w/ reconnect | `frontend/src/components/LogViewer.tsx` exists but only consumed by `ArtifactPreviewPanel` (mismatched `content` prop); not wired to command log SSE/API | PARTIALLY_IMPLEMENTED |
 | AMFA-165 | AMFA-142 | S3-F03-I04 tests/security/docs | Tests | `test_command_executor_services.py` (logs/stream/summary/append) | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-166 | AMFA-143 | S3-F04-I01 backend domain | JobSupervisor + leases | `backend/app/services/job_supervisor_service.py:JobSupervisorService` — **`acquire_lease` has zero callers; leases never created; `get_active_lease` always None** | PARTIALLY_IMPLEMENTED |
@@ -133,7 +133,7 @@ Closeout tasks (from `evidence/task-results/`):
 | GET | `/api/v1/runs/{id}/commands` | List executions | AMFA-159 | Yes | Real API integration test |
 | GET | `/api/v1/runs/{id}/commands/{eid}/logs` | Get log chunks | AMFA-163 | Yes | Service tests |
 | GET | `/api/v1/runs/{id}/commands/{eid}/logs/summary` | Stream summary | AMFA-163 | Yes | Service tests |
-| GET | `/api/v1/runs/{id}/commands/{eid}/logs/stream` | SSE log stream (cursor) | AMFA-163 | Yes | No HTTP test |
+| GET | `/api/v1/runs/{id}/commands/{eid}/logs/stream` | SSE log stream (sequence ID/cursor/Last-Event-ID) | AMFA-163 | Yes | Focused test added; runtime suite blocked by missing SQLAlchemy |
 | POST | `/api/v1/runs/{id}/commands/{eid}/cancel` | Cancel command | AMFA-167 | Yes (cannot kill process) | Service tests |
 | GET | `/api/v1/runs/{id}/active-command` | Active command | AMFA-167 | Yes | Service tests |
 | GET | `/api/v1/runs/{id}/active-lease` | Active lease | AMFA-167 | Yes (always None) | Service tests |

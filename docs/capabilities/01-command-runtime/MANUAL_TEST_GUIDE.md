@@ -230,13 +230,17 @@ curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs
 ```
 3. Retrieve with cursor (simulate reconnect at sequence 2) via the SSE streaming endpoint:
 ```bash
-curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream?cursor=2" | python3 -m json.tool
+curl -sN "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream?cursor=2"
 ```
-4. Filter by stream:
+4. Reconnect using the browser-compatible standard cursor header:
+```bash
+curl -sN -H "Last-Event-ID: 2" "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream"
+```
+5. Filter by stream:
 ```bash
 curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs?stream=stdout" | python3 -m json.tool
 ```
-5. Get stream summary:
+6. Get stream summary:
 ```bash
 curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs/summary" | python3 -m json.tool
 ```
@@ -244,8 +248,10 @@ curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs
 **Expected API behavior**:
 - Step 2: All chunks returned with sequence numbers
 - Step 3: Only chunks with sequence > 2 returned
-- Step 4: Only stdout chunks returned
-- Step 5: total_chunks and per-stream counts
+- Step 4: `Last-Event-ID` resumes at the next sequence when no explicit cursor is supplied
+- Step 5: Only stdout chunks returned
+- Step 6: total_chunks, cursor, per-stream counts, truncation, and finalization state
+- Cross-run requests return the same non-leaking not-found response and never open SSE
 
 **Expected UI behavior**: LogViewer shows live scrolling output, pause button freezes view, reconnect after refresh shows accumulated logs.
 

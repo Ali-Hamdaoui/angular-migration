@@ -695,6 +695,8 @@ class LogChunkResponseDto(ContractModel):
     text: str
     redacted: bool = False
     created_at: str = ""
+    byte_count: int = 0
+    character_count: int = 0
 
 
 class WorkerLeaseDto(ContractModel):

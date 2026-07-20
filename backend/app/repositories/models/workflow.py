@@ -230,6 +230,10 @@ class CommandLogChunkModel(Base):
     stream: Mapped[str] = mapped_column(String(16), nullable=False)  # stdout, stderr, system
     text: Mapped[str] = mapped_column(Text, nullable=False)
     redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    byte_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    character_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

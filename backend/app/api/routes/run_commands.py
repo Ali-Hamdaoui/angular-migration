@@ -6,12 +6,14 @@ All execution goes through the CommandExecutor service.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 import json
-import time
-from typing import Generator
+import asyncio
+from time import monotonic
+from typing import AsyncGenerator, Generator
 
 from app.api.errors import error_response
 from app.api.authentication import authenticated_actor, authorize_run
@@ -23,6 +25,7 @@ from app.domain.contracts import (
     LogChunkResponseDto,
 )
 from app.repositories.session import session_scope
+from app.repositories.models.workflow import CommandExecutionModel
 from app.services.command_executor_service import (
     CommandExecutorError,
     CommandExecutorService,
@@ -164,8 +167,10 @@ def get_command_logs(
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
+        if offset < 0 or limit < 1 or cursor is not None and cursor < 0:
+            return error_response(request, status_code=422, error_code="INVALID_LOG_CURSOR", message="Cursor, offset, and limit must be non-negative and limit must be positive")
         chunks, total = log_service.get_logs(
-            session, execution_id,
+            session, execution_id, run_id=run_id,
             offset=offset,
             limit=min(limit, 5000),
             stream_filter=stream,
@@ -180,10 +185,12 @@ def get_command_logs(
                 text=c.text,
                 redacted=c.redacted,
                 created_at=c.created_at,
+                byte_count=c.byte_count,
+                character_count=c.character_count,
             ) for c in chunks],
             "total": total,
             "offset": offset,
-            "limit": limit,
+            "limit": min(limit, 5000),
         }
 
 
@@ -200,7 +207,7 @@ def get_command_log_summary(
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
         log_service = CommandLogService()
-        return log_service.get_stream_summary(session, execution_id)
+        return log_service.get_stream_summary(session, execution_id, run_id=run_id)
 
 
 @router.get("/{run_id}/commands/{execution_id}/logs/stream")
@@ -209,48 +216,97 @@ def stream_command_logs(
     execution_id: str,
     request: Request,
     actor: str = Depends(authenticated_actor),
-    cursor: int = 0,
+    cursor: int | None = None,
     stream: str | None = None,
     poll_interval: float = 0.5,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
-    """SSE endpoint that streams log chunks as they become available.
+    """Replay and tail durable logs using the sequence cursor.
 
-    Accepts ?cursor=<seq> to resume from a known sequence number and
-    ?stream=stdout|stderr to filter by stream.  The connection stays
-    open and emits new chunks as ``data:`` SSE lines.
-
-    When no new data is available for 30 seconds the connection is
-    closed gracefully.
+    Explicit ``cursor`` takes precedence over ``Last-Event-ID``; absent both,
+    the stream starts at zero. Only ``sequence > cursor`` is returned.
     """
+    if cursor is not None and cursor < 0:
+        return error_response(request, status_code=422, error_code="INVALID_LOG_CURSOR", message="Cursor must be non-negative")
+    if cursor is None and last_event_id is not None:
+        try:
+            cursor = int(last_event_id)
+        except ValueError:
+            return error_response(request, status_code=422, error_code="INVALID_LAST_EVENT_ID", message="Last-Event-ID must be an integer log sequence")
+        if cursor < 0:
+            return error_response(request, status_code=422, error_code="INVALID_LAST_EVENT_ID", message="Last-Event-ID must be non-negative")
+    cursor = cursor or 0
+    poll_interval = min(max(poll_interval, 0.1), 5.0)
     with session_scope() as session:
         authorize_run(session, run_id, actor)
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
     log_service = CommandLogService()
-    idle_seconds = 0
-    max_idle = 30.0
+    heartbeat_interval = get_settings().sse_heartbeat_seconds
+    terminal_statuses = {"succeeded", "failed", "cancelled", "timed_out", "rejected"}
 
-    def generate() -> Generator[str, None, None]:
-        nonlocal cursor, idle_seconds
-        yield f"event: connected\ndata: {json.dumps({'execution_id': execution_id, 'cursor': cursor})}\n\n"
-        while idle_seconds < max_idle:
-            with session_scope() as session:
-                chunks, _total = log_service.get_logs(
-                    session, execution_id,
-                    cursor=cursor,
-                    limit=200,
-                    stream_filter=stream,
-                )
-            if chunks:
-                idle_seconds = 0
-                for chunk in chunks:
-                    cursor = chunk.sequence
-                    yield f"event: chunk\ndata: {json.dumps({'sequence': chunk.sequence, 'stream': chunk.stream, 'text': chunk.text, 'redacted': chunk.redacted})}\n\n"
-                yield f"event: cursor\ndata: {json.dumps({'cursor': cursor})}\n\n"
-            else:
-                idle_seconds += poll_interval
-            time.sleep(poll_interval)
-        yield "event: done\ndata: {}\n\n"
+    async def generate() -> AsyncGenerator[str, None]:
+        nonlocal cursor
+        last_heartbeat = monotonic()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                with session_scope() as session:
+                    model = session.scalar(select(CommandExecutionModel).where(
+                        CommandExecutionModel.id == execution_id,
+                        CommandExecutionModel.run_id == run_id,
+                    ))
+                    chunks, _total = log_service.get_logs(
+                        session, execution_id, run_id=run_id, cursor=cursor,
+                        limit=200, stream_filter=stream,
+                    )
+                    summary = log_service.get_stream_summary(session, execution_id, run_id=run_id)
+                if model is None:
+                    yield "event: stream_error\ndata: " + json.dumps({"code": "EXECUTION_NOT_FOUND", "message": "Command execution not found"}) + "\n\n"
+                    return
+                if chunks:
+                    for chunk in chunks:
+                        cursor = chunk.sequence
+                        payload = {
+                            "execution_id": execution_id,
+                            "sequence": chunk.sequence,
+                            "stream": chunk.stream,
+                            "content": chunk.text,
+                            "timestamp": chunk.created_at,
+                            "redacted": chunk.redacted,
+                            "truncated": chunk.truncated,
+                        }
+                        yield f"id: {chunk.sequence}\nevent: command_log\ndata: {json.dumps(payload)}\n\n"
+                    yield "event: log_checkpoint\ndata: " + json.dumps({
+                        "execution_id": execution_id,
+                        "earliest_sequence": summary["first_sequence"],
+                        "latest_sequence": summary["last_sequence"],
+                        "status": model.status,
+                        "truncated": summary["truncated"],
+                    }) + "\n\n"
+                    continue
+                if model.status in terminal_statuses:
+                    completion = {
+                        "execution_id": execution_id,
+                        "run_id": run_id,
+                        "status": model.status,
+                        "last_sequence": summary["last_sequence"],
+                        "stdout_artifact_id": model.stdout_artifact_id,
+                        "stderr_artifact_id": model.stderr_artifact_id,
+                        "completed_at": model.finished_at.isoformat() if model.finished_at else None,
+                    }
+                    yield "event: execution_complete\ndata: " + json.dumps(completion) + "\n\n"
+                    return
+                now = monotonic()
+                if now - last_heartbeat >= heartbeat_interval:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = now
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            yield "event: stream_error\ndata: " + json.dumps({"code": "LOG_STREAM_FAILED", "message": "The log stream could not be continued."}) + "\n\n"
 
     return StreamingResponse(
         generate(),
