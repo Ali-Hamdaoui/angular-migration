@@ -25,7 +25,7 @@ What it does NOT validate:
 - Node: as configured in the frontend environment
 - Database: SQLite (auto-created on startup)
 - Required packages: FastAPI, SQLAlchemy, Alembic, Pydantic, uvicorn (in `.venv`)
-- Backend port: 8301
+- Backend port: 8765
 - Frontend port: 3301
 - Runtime directory: `/home/ubuntu/amfa-runtime/01-command-runtime`
 - Fixture paths: synthetic Angular workspace generated externally (source ZIP in repo)
@@ -53,7 +53,7 @@ mkdir -p /home/ubuntu/amfa-runtime/01-command-runtime/artifacts
 PYTHONPATH="$PWD:$PWD/backend" alembic upgrade head
 
 # Clean stale processes
-pkill -f "uvicorn.*8301" 2>/dev/null || true
+pkill -f "uvicorn.*8765" 2>/dev/null || true
 sleep 1
 ```
 
@@ -64,12 +64,12 @@ sleep 1
 cd /home/ubuntu/amfa-worktrees/01-command-runtime
 source .venv/bin/activate
 export PYTHONPATH="$PWD:$PWD/backend"
-python3 -m uvicorn app.main:app --port 8301 --reload &
+python3 -m uvicorn app.main:app --port 8765 --reload &
 sleep 3
 
 # Check health
-curl -s http://127.0.0.1:8301/health | python3 -m json.tool
-curl -s http://127.0.0.1:8301/api/v1/version 2>/dev/null || true
+curl -s http://127.0.0.1:8765/health | python3 -m json.tool
+curl -s http://127.0.0.1:8765/api/v1/version 2>/dev/null || true
 
 # Start frontend (if applicable)
 cd frontend
@@ -93,22 +93,22 @@ Never modify the legacy source fixture directly.
 
 **Goal**: Verify operator can inspect approved command templates and see raw shell strings, forbidden flags, or invalid arguments rejected before execution.
 
-**Preconditions**: Backend running on port 8301, database seeded with default templates.
+**Preconditions**: Backend running on port 8765, database seeded with default templates.
 
 **Commands or UI steps**:
 1. List registered templates:
 ```bash
-curl -s http://127.0.0.1:8301/api/v1/operator/command-templates | python3 -m json.tool
+curl -s http://127.0.0.1:8765/api/v1/operator/command-templates | python3 -m json.tool
 ```
 2. Validate a valid command (python --version):
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/operator/command-policy/validate \
+curl -s -X POST http://127.0.0.1:8765/api/v1/operator/command-policy/validate \
   -H "Content-Type: application/json" \
   -d '{"command_id":"python-version","executable":"python","arguments":["--version"],"run_id":"test-run-1","idempotency_key":"mt001-val1"}' | python3 -m json.tool
 ```
 3. Validate a rejected command (unknown command):
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/operator/command-policy/validate \
+curl -s -X POST http://127.0.0.1:8765/api/v1/operator/command-policy/validate \
   -H "Content-Type: application/json" \
   -d '{"command_id":"unknown-cmd","executable":"malware","arguments":["--destroy"],"run_id":"test-run-1","idempotency_key":"mt001-rej1"}' | python3 -m json.tool
 ```
@@ -142,19 +142,19 @@ curl -s -X POST http://127.0.0.1:8301/api/v1/operator/command-policy/validate \
 **Commands or UI steps**:
 1. Create a test run:
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/runs \
+curl -s -X POST http://127.0.0.1:8765/api/v1/runs \
   -H "Content-Type: application/json" \
   -d '{"source_path":"/tmp/test-source","target_version":"21","idempotency_key":"mt002-run1"}' | python3 -m json.tool
 ```
 2. Execute the accepted authorization (python --version). The authorization response supplies `authorization_id`; execution does not accept executable, arguments, working-directory, profile, or shell fields from the client:
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
+curl -s -X POST http://127.0.0.1:8765/api/v1/runs/{run_id}/commands \
   -H "Content-Type: application/json" \
   -d '{"authorization_decision_id":"{authorization_id}","expected_state_version":{state_version},"idempotency_key":"mt002-exec1","requested_by":"operator"}' | python3 -m json.tool
 ```
 3. Retrieve execution record:
 ```bash
-curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id} | python3 -m json.tool
+curl -s http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id} | python3 -m json.tool
 ```
 
 **Expected API behavior**:
@@ -220,25 +220,25 @@ The response is backend-owned artifact content and metadata, including `artifact
 **Commands or UI steps**:
 1. Execute a long-running command (Python loop printing output):
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
+curl -s -X POST http://127.0.0.1:8765/api/v1/runs/{run_id}/commands \
   -H "Content-Type: application/json" \
   -d '{"authorization_decision_id":"{authorization_id_for_registered_log_fixture}","expected_state_version":{state_version},"idempotency_key":"mt003-exec1","requested_by":"operator"}' | python3 -m json.tool
 ```
 2. Retrieve logs after completion:
 ```bash
-curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs" | python3 -m json.tool
+curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs" | python3 -m json.tool
 ```
 3. Retrieve with cursor (simulate reconnect at sequence 2) via the SSE streaming endpoint:
 ```bash
-curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream?cursor=2" | python3 -m json.tool
+curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream?cursor=2" | python3 -m json.tool
 ```
 4. Filter by stream:
 ```bash
-curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs?stream=stdout" | python3 -m json.tool
+curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs?stream=stdout" | python3 -m json.tool
 ```
 5. Get stream summary:
 ```bash
-curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs/summary" | python3 -m json.tool
+curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/logs/summary" | python3 -m json.tool
 ```
 
 **Expected API behavior**:
@@ -266,23 +266,23 @@ curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/logs
 **Commands or UI steps**:
 1. Execute a long-running command (sleep 30):
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands \
+curl -s -X POST http://127.0.0.1:8765/api/v1/runs/{run_id}/commands \
   -H "Content-Type: application/json" \
   -d '{"authorization_decision_id":"{authorization_id_for_registered_cancellation_fixture}","expected_state_version":{state_version},"idempotency_key":"mt004-exec1","requested_by":"operator"}' | python3 -m json.tool
 ```
 2. Check active command:
 ```bash
-curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/active-command | python3 -m json.tool
+curl -s http://127.0.0.1:8765/api/v1/runs/{run_id}/active-command | python3 -m json.tool
 ```
 3. Cancel the command:
 ```bash
-curl -s -X POST http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id}/cancel \
+curl -s -X POST http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id}/cancel \
   -H "Content-Type: application/json" \
   -d '{"actor":"operator","idempotency_key":"mt004-cancel1"}' | python3 -m json.tool
 ```
 4. Verify cancelled state:
 ```bash
-curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/commands/{execution_id} | python3 -m json.tool
+curl -s http://127.0.0.1:8765/api/v1/runs/{run_id}/commands/{execution_id} | python3 -m json.tool
 ```
 
 **Expected API behavior**:
@@ -375,10 +375,10 @@ find /tmp/test-source -newer /home/ubuntu/amfa-worktrees/01-command-runtime/.git
 
 ```bash
 # Check event stream via API
-curl -s http://127.0.0.1:8301/api/v1/runs/{run_id}/events | python3 -m json.tool
+curl -s http://127.0.0.1:8765/api/v1/runs/{run_id}/events | python3 -m json.tool
 
 # Verify event ordering by sequence
-curl -s "http://127.0.0.1:8301/api/v1/runs/{run_id}/events?limit=10&offset=0" | python3 -c "
+curl -s "http://127.0.0.1:8765/api/v1/runs/{run_id}/events?limit=10&offset=0" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for e in data:
@@ -412,7 +412,7 @@ for e in data:
 
 ```bash
 # Stop services
-pkill -f "uvicorn.*8301" 2>/dev/null || true
+pkill -f "uvicorn.*8765" 2>/dev/null || true
 pkill -f "next dev.*3301" 2>/dev/null || true
 
 # Remove temporary runtime data
@@ -430,8 +430,8 @@ git status --short
 | Symptom | Likely cause | Diagnostic command | Resolution |
 |---|---|---|---|
 | `ModuleNotFoundError` for planning_models | Import path issue | Check `backend/app/services/command_registry_service.py` line 320 | Ensure import is `app.repositories.planning_models` not `app.repositories.models.planning_models` |
-| Backend won't start | Port conflict | `lsof -i :8301` | Kill the process on that port |
-| Templates not seeding | DB not initialized | `curl -s localhost:8301/api/v1/operator/command-templates` | First call auto-seeds |
+| Backend won't start | Port conflict | `lsof -i :8765` | Kill the process on that port |
+| Templates not seeding | DB not initialized | `curl -s localhost:8765/api/v1/operator/command-templates` | First call auto-seeds |
 | `UNIQUE constraint` on idempotency key | Duplicate key | Check DB for existing key | Use unique key per test |
 | Process not terminating | cancel_event not wired | Check `cancel_event.set()` path | Verify `_cancel_events` dict has the execution_id |
 

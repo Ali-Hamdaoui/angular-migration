@@ -46,7 +46,8 @@ Record preconditions, external fixture identity/fingerprints, exact UI/API steps
 
 - Automated frontend gates: PASS — typecheck, lint, 38 test files/104 tests, and production build.
 - Backend collection: PASS — 476 tests collected from `backend` without import errors.
-- Focused execution backend tests: PASS — 21 tests in `test_command_execution.py` and `test_command_execution_task2.py`.
-- Browser happy path: BLOCKED — no supported browser/manual runtime was available; no screenshots, API captures, execution IDs, or artifact IDs are claimed.
+- Focused execution backend tests: PASS — 47 tests in `test_command_executor_services.py`, `test_command_execution.py`, and `test_command_execution_task2.py`.
+- Full backend suite: PARTIAL — 468 passed, 5 failed, 3 skipped. The remaining failures are stale Sprint 2 planning fixtures that do not seed the now-mandatory approved G05 feasibility binding.
+- Browser happy path: BLOCKED — no supported browser executable/manual runtime is installed; no screenshots, API captures, execution IDs, or artifact IDs are claimed.
 - Browser negative path: BLOCKED for the same reason.
 - Overall manual verdict: `BLOCKED` until MT-002 and one negative case are executed in the supported runtime.

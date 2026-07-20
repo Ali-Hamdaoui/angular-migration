@@ -98,4 +98,4 @@ def test_tampered_package_is_rejected_before_g05_decision(tmp_path):
     with sessions() as session:
         assert session.query(G05ApprovalModel).count() == 1
         assert session.query(G05ApprovalModel).one().status == "pending"
-        assert session.query(WorkflowEventModel).count() == 2
+        assert session.query(WorkflowEventModel).count() == 3

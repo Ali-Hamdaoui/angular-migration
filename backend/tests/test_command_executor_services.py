@@ -320,305 +320,67 @@ class TestJobSupervisorService:
 # ===========================================================================
 
 class TestCommandExecutorQueueCommand:
-    """Tests for CommandExecutorService.queue_command().
+    """Regression coverage for the removed client-controlled execution API.
 
-    All tests use a mock policy engine to avoid requiring registered
-    command templates in the test DB.  Policy-engine integration is
-    tested separately via test_policy_rejection_raises_error.
+    Execution now requires an accepted authorization decision and is covered
+    by the authorization-bound API/service tests. These cases ensure the
+    former request shape cannot silently regain execution authority.
     """
 
+    def assert_legacy_execution_disabled(self, db_session: Session, **overrides):
+        service = CommandExecutorService()
+        request = {
+            "run_id": "run-qc-1",
+            "stage_id": None,
+            "command_id": "python-version",
+            "executable": "python",
+            "arguments": ["--version"],
+            "idempotency_key": "qc-legacy-key",
+            "requested_by": "tester",
+        }
+        request.update(overrides)
+        with pytest.raises(CommandExecutorError) as exc_info:
+            service.legacy_queue_command_disabled(db_session, **request)
+        assert exc_info.value.code == "LEGACY_EXECUTION_DISABLED"
+
     def test_successful_execution(self, db_session: Session):
-        """queue_command should execute a command and return a response."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-1",
-            requested_by="tester",
-        )
-
-        assert result.execution_id is not None
-        assert result.status == "succeeded"
-        assert result.idempotent_replay is False
-        assert result.run_id == "run-qc-1"
-        assert result.command_id == "python-version"
-        assert result.state_version >= 1
-        assert result.event_sequence >= 1
-
-        # Verify DB record
-        saved = db_session.get(CommandExecutionModel, result.execution_id)
-        assert saved is not None
-        assert saved.status == "succeeded"
-        assert saved.exit_code == 0
-        assert saved.authorization_id is not None
-        assert saved.runtime_checksum is not None
-        assert saved.runtime_checksum.startswith("sha256:")
-        assert saved.started_at is not None
-        assert saved.finished_at is not None
-        assert saved.duration_ms is not None
+        self.assert_legacy_execution_disabled(db_session)
 
     def test_idempotent_replay_returns_cached_result(self, db_session: Session):
-        """Same idempotency_key + same payload should return cached result."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result1 = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-idemp",
-            requested_by="tester",
-        )
-        assert result1.idempotent_replay is False
-
-        result2 = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-idemp",
-            requested_by="tester",
-        )
-        assert result2.idempotent_replay is True
-        assert result2.execution_id == result1.execution_id
-        assert result2.status == result1.status
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-idemp")
 
     def test_conflicting_replay_raises_error(self, db_session: Session):
         """Same idempotency_key with different payload should raise conflict."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-conflict",
-            requested_by="tester",
-        )
-
-        with pytest.raises(CommandExecutorError) as exc_info:
-            svc.queue_command(
-                db_session,
-                run_id="run-qc-1",
-                stage_id=None,
-                command_id="python-version",
-                executable="python",
-                arguments=["--different-arg"],  # different payload
-                idempotency_key="qc-test-conflict",
-                requested_by="tester",
-            )
-        assert exc_info.value.code == "IDEMPOTENCY_KEY_CONFLICT"
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-conflict", arguments=["--different-arg"])
 
     def test_policy_rejection_raises_error(self, db_session: Session):
         """Command rejected by policy engine should raise POLICY_REJECTED."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine(decision="rejected")
-
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        with pytest.raises(CommandExecutorError) as exc_info:
-            svc.queue_command(
-                db_session,
-                run_id="run-qc-1",
-                stage_id=None,
-                command_id="python-version",
-                executable="python",
-                arguments=["--version"],
-                idempotency_key="qc-test-rejected",
-                requested_by="tester",
-            )
-        assert exc_info.value.code == "POLICY_REJECTED"
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-rejected")
 
     def test_successful_execution_sets_authorization_id(self, db_session: Session):
         """The execution record should contain the authorization_id from policy engine."""
         expected_authz_id = "authz-specific-for-test-42"
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine(authorization_id=expected_authz_id)
-
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-authz",
-            requested_by="tester",
-        )
-
-        saved = db_session.get(CommandExecutionModel, result.execution_id)
-        assert saved is not None
-        assert saved.authorization_id == expected_authz_id
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-authz")
 
     def test_successful_execution_sets_runtime_checksum(self, db_session: Session):
         """The execution record should contain a valid runtime_checksum."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-checksum",
-            requested_by="tester",
-        )
-
-        saved = db_session.get(CommandExecutionModel, result.execution_id)
-        assert saved is not None
-        assert saved.runtime_checksum is not None
-        assert saved.runtime_checksum.startswith("sha256:")
-        # sha256 hex is 64 chars
-        hex_part = saved.runtime_checksum[len("sha256:"):]
-        assert len(hex_part) == 64
-        int(hex_part, 16)  # should not raise
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-checksum")
 
     def test_timeout_sets_timed_out_status(self, db_session: Session):
         """When supervisor reports timed_out, the execution should be TIMED_OUT."""
-        mock_supervisor = make_mock_supervisor(status=CommandStatus.TIMED_OUT)
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-timeout",
-            requested_by="tester",
-        )
-
-        assert result.status == "timed_out"
-
-        saved = db_session.get(CommandExecutionModel, result.execution_id)
-        assert saved is not None
-        assert saved.timed_out is True
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-timeout")
 
     def test_cancelled_sets_cancelled_status(self, db_session: Session):
         """When supervisor reports cancelled, the execution should be CANCELLED."""
-        mock_supervisor = make_mock_supervisor(status=CommandStatus.CANCELLED)
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-cancelled",
-            requested_by="tester",
-        )
-
-        assert result.status == "cancelled"
-
-        saved = db_session.get(CommandExecutionModel, result.execution_id)
-        assert saved is not None
-        assert saved.cancelled is True
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-cancelled")
 
     def test_workflow_events_emitted(self, db_session: Session):
         """queue_command should emit workflow events at each lifecycle step."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-events",
-            requested_by="tester",
-        )
-
-        events = db_session.query(WorkflowEventModel).filter(
-            WorkflowEventModel.run_id == "run-qc-1"
-        ).order_by(WorkflowEventModel.sequence).all()
-
-        event_types = [e.event_type for e in events]
-        assert "COMMAND_QUEUED" in event_types
-        assert "COMMAND_STARTED" in event_types
-        assert "COMMAND_SUCCEEDED" in event_types
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-events")
 
     def test_stale_state_error_mapping(self, db_session: Session):
         """Verify queue_command stores execution correctly."""
-        mock_supervisor = make_mock_supervisor()
-        mock_policy = make_mock_policy_engine()
-        svc = CommandExecutorService(
-            supervisor=mock_supervisor,
-            policy_engine=mock_policy,
-        )
-
-        result = svc.queue_command(
-            db_session,
-            run_id="run-qc-1",
-            stage_id=None,
-            command_id="python-version",
-            executable="python",
-            arguments=["--version"],
-            idempotency_key="qc-test-stale",
-            requested_by="tester",
-        )
-
-        # Verify execution was stored correctly
-        saved = db_session.get(CommandExecutionModel, result.execution_id)
-        assert saved is not None
-        assert saved.requested_by == "tester"
-        assert saved.command_id == "python-version"
+        self.assert_legacy_execution_disabled(db_session, idempotency_key="qc-test-stale")
 
 
 # ===========================================================================

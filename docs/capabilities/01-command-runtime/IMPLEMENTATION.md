@@ -35,7 +35,7 @@ All external process execution must pass through the registered command template
 
 - **S3-F02 — Execute one approved command and persist authoritative command evidence**
   - `CommandExecutorService.queue_command()` — full lifecycle: idempotency check (key + payload), policy validation, execution record creation (QUEUED → RUNNING → SUCCEEDED/FAILED/TIMED_OUT/CANCELLED), event emission
-  - `POST /api/v1/runs/{run_id}/commands` — queue and execute a command synchronously
+  - `POST /api/v1/runs/{run_id}/commands` — accept an authorization-bound command for queued worker execution
   - `GET /api/v1/runs/{run_id}/commands/{execution_id}` — retrieve execution record
   - `CommandExecutionModel` — stores execution metadata: `authorization_id`, `runtime_checksum`, `state_version`, idempotency lineage, process metadata, stdout/stderr artifact references
   - `runtime_checksum` — SHA-256 of combined process output, stored as `sha256:...`

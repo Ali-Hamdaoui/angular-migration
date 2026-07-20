@@ -112,7 +112,7 @@ def test_persists_six_immutable_evidence_artifacts_and_ordered_events(tmp_path):
         assert session.query(RegistrySnapshotModel).count() == 1
         assert session.query(CompatibilityResolutionModel).count() == 1
         assert session.query(G05ApprovalModel).count() == 1
-        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == ["COMPATIBILITY_RESOLUTION_STARTED", "COMPATIBILITY_RESOLUTION_COMPLETED"]
+        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == ["COMPATIBILITY_RESOLUTION_STARTED", "COMPATIBILITY_RESOLUTION_COMPLETED", "G05_CREATED"]
         assert session.query(MigrationRunModel).one().state_version == 3
     package = store.read_artifact_by_id(result.artifact_ids[-1])
     assert package.ref.checksum == result.artifact_checksums[result.artifact_ids[-1]]
