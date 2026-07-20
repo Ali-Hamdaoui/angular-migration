@@ -4,6 +4,7 @@ import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { AngularUpdatePanel } from "./AngularUpdatePanel";
 import { TransformationEvidenceViewer } from "./TransformationEvidenceViewer";
+import { G08ReviewWorkspace } from "./G08ReviewWorkspace";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
 import { G02ReviewPanel } from "./G02ReviewPanel";
 import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
@@ -71,6 +72,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
         return <>
           <AngularUpdatePanel runId={runId} stageId={activeStage.stage_id} sourceVersion={activeStage.source_angular_version ?? "unknown"} targetVersion={activeStage.target_angular_version ?? "unknown"} expectedStateVersion={state.state_version} onStateChange={() => refresh()} workflowEvents={state.workflow_events} />
           <TransformationEvidenceViewer runId={runId} stageId={activeStage.stage_id} sourceSandboxPath={state.source_path} targetSandboxPath={state.target_output_path} expectedStateVersion={state.state_version} />
+          <G08ReviewWorkspace runId={runId} stageId={activeStage.stage_id} gateId="G08" expectedStateVersion={state.state_version} />
         </>;
       })()}
       <BaselinePreparationPanel runId={runId} initialState={state} />
