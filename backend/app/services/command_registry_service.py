@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
 from typing import Any
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -88,6 +89,21 @@ class CommandRegistryService:
         if row is None:
             return None
         return self._model_to_dto(row)
+
+    def find_registered_template(
+        self, session: Session, *, template_id: str, command_id: str, version: int
+    ) -> CommandTemplateDto | None:
+        """Load the immutable template version named by an approved plan."""
+        from app.repositories.models.workflow import CommandTemplateModel
+
+        row = session.scalar(
+            select(CommandTemplateModel)
+            .where(CommandTemplateModel.id == template_id)
+            .where(CommandTemplateModel.command_id == command_id)
+            .where(CommandTemplateModel.version == version)
+            .where(CommandTemplateModel.status == CommandTemplateStatus.ACTIVE.value)
+        )
+        return self._model_to_dto(row) if row is not None else None
 
     def seed_defaults(self, session: Session) -> list[CommandTemplateDto]:
         """Seed default command templates if the registry is empty."""
@@ -172,8 +188,6 @@ class CommandPolicyEngineService:
 
     registry: CommandRegistryService = field(default_factory=CommandRegistryService)
     policy_version: str = "s3-f01-v1"
-    require_plan_membership: bool = True
-    require_stage_plan: bool = True
 
     def validate(
         self,
@@ -201,6 +215,22 @@ class CommandPolicyEngineService:
             reasons.append(f"command_id '{request.command_id}' is not registered")
         else:
             checks.append(AuthorizationCheckResult(passed=True, rule_name="command_registered"))
+
+            if request.template_id is None or request.template_version is None:
+                checks.append(AuthorizationCheckResult(
+                    passed=False, rule_name="registered_template_version",
+                    reason="TEMPLATE_VERSION_REQUIRED: exact registered template id and version are required",
+                ))
+                reasons.append("TEMPLATE_VERSION_REQUIRED: exact registered template id and version are required")
+            elif self.registry.find_registered_template(
+                session, template_id=request.template_id, command_id=request.command_id,
+                version=request.template_version,
+            ) is None:
+                checks.append(AuthorizationCheckResult(
+                    passed=False, rule_name="registered_template_version",
+                    reason="TEMPLATE_VERSION_NOT_FOUND: exact registered template version was not found",
+                ))
+                reasons.append("TEMPLATE_VERSION_NOT_FOUND: exact registered template version was not found")
 
             # 3. Executable matches template
             allowed = set(template.executable_aliases + [template.executable])
@@ -244,11 +274,10 @@ class CommandPolicyEngineService:
             reasons.append(timeout_check.reason or "timeout rejected")
 
         # 8. Plan membership if required
-        if self.require_plan_membership and request.run_id:
-            plan_check = self._check_plan_membership(session, request)
-            checks.append(plan_check)
-            if not plan_check.passed:
-                reasons.append(plan_check.reason or "plan membership rejected")
+        plan_check = self._check_plan_membership(session, request)
+        checks.append(plan_check)
+        if not plan_check.passed:
+            reasons.append(plan_check.reason or "plan membership rejected")
 
         decision = AuthorizationDecision.REJECTED if reasons else AuthorizationDecision.ACCEPTED
         response = CommandPolicyValidateResponseDto(
@@ -329,12 +358,12 @@ class CommandPolicyEngineService:
             return AuthorizationCheckResult(
                 passed=False,
                 rule_name="shell_enforcement",
-                reason="Shell execution is forbidden",
+                reason="SHELL_EXECUTION_FORBIDDEN: shell execution is forbidden",
             )
         return AuthorizationCheckResult(passed=True, rule_name="shell_enforcement")
 
     def _check_network_profile(self, profile: str) -> AuthorizationCheckResult:
-        allowed = {p.value for p in NetworkProfile}
+        allowed = {p.value for p in NetworkProfile} | {"approved-registries-only"}
         if profile not in allowed:
             return AuthorizationCheckResult(
                 passed=False,
@@ -373,27 +402,81 @@ class CommandPolicyEngineService:
         session: Session,
         request: CommandPolicyValidateRequestDto,
     ) -> AuthorizationCheckResult:
-        """Verify the command_id appears in the approved stage plan for this run."""
+        """Verify every client-supplied binding against the current approved plan."""
+        from app.repositories.models.workflow import MigrationRunModel
         from app.repositories.planning_models import MigrationPlanModel, StageExecutionPlanModel
 
-        # Look up the approved stage plan for the run
+        def reject(code: str, message: str) -> AuthorizationCheckResult:
+            return AuthorizationCheckResult(False, "plan_membership", f"{code}: {message}")
+
+        run = session.get(MigrationRunModel, request.run_id)
+        if run is None:
+            return reject("PLAN_NOT_FOUND", "run record is unavailable")
+        if run.status in {"CANCELLED", "COMPLETED", "FAILED", "CANCELLING", "CANCEL_REQUESTED"}:
+            return reject("RUN_NOT_EXECUTABLE", "run is not in an executable state")
+        if not request.stage_id or not request.plan_id or request.plan_version is None:
+            return reject("PLAN_NOT_FOUND", "run, stage, approved plan id, and version must be supplied")
+
+        migration_plan = session.scalar(
+            select(MigrationPlanModel)
+            .where(MigrationPlanModel.id == request.plan_id)
+            .where(MigrationPlanModel.run_id == request.run_id)
+        )
+        if migration_plan is None or migration_plan.run_id != request.run_id or migration_plan.version != request.plan_version:
+            return reject("PLAN_NOT_FOUND", "approved stage execution plan is unavailable")
         plan = session.scalar(
             select(StageExecutionPlanModel)
+            .where(StageExecutionPlanModel.migration_plan_id == migration_plan.id)
             .where(StageExecutionPlanModel.run_id == request.run_id)
-            .order_by(StageExecutionPlanModel.created_at.desc())
-            .limit(1)
+            .where(StageExecutionPlanModel.stage_id == request.stage_id)
+            .where(StageExecutionPlanModel.version == request.plan_version)
         )
-        if plan is None or not plan.command_refs:
-            # No plan found — soft pass if plan membership is aspirational
-            return AuthorizationCheckResult(
-                passed=True,
-                rule_name="plan_membership",
-                reason="no stage plan found; plan membership not enforced",
-            )
-        if request.command_id in (plan.command_refs or []):
-            return AuthorizationCheckResult(passed=True, rule_name="plan_membership")
-        return AuthorizationCheckResult(
-            passed=False,
-            rule_name="plan_membership",
-            reason=f"command_id '{request.command_id}' not in approved stage plan command refs",
-        )
+        if plan is None:
+            return reject("PLAN_NOT_FOUND", "authoritative migration plan is unavailable or mismatched")
+        if plan.status not in {"approved", "executable", "approved_for_execution"} or migration_plan.status not in {"approved", "executable", "approved_for_execution"}:
+            return reject("PLAN_NOT_APPROVED", "plan is not approved for execution")
+
+        stage_data = plan.stage_plan or {}
+        if stage_data.get("stage_id") != request.stage_id or stage_data.get("execution_profile_id") != request.execution_profile_id:
+            return reject("EXECUTION_PROFILE_NOT_APPROVED", "stage or execution profile does not match the approved plan")
+        if stage_data.get("plan_version") != request.plan_version:
+            return reject("PLAN_NOT_FOUND", "stage plan version is not authoritative")
+
+        refs = [ref for group in (stage_data.get("commands") or {}).values() for ref in group]
+        planned = next((ref for ref in refs if ref.get("command_id") == request.command_id), None)
+        if planned is None:
+            return reject("COMMAND_NOT_IN_APPROVED_PLAN", "command template is not in the approved plan")
+        if planned.get("working_directory_alias") != request.working_directory_alias:
+            return reject("WORKSPACE_NOT_APPROVED", "workspace alias does not match the approved planned command")
+        if request.cwd_alias is not None and request.cwd_alias != request.working_directory_alias:
+            return reject("WORKSPACE_NOT_APPROVED", "cwd alias does not match the approved workspace alias")
+        if planned.get("network_profile") != request.network_profile:
+            return reject("NETWORK_PROFILE_NOT_ALLOWED", "network profile is not explicitly permitted by the plan")
+        if (
+            planned.get("executable") != request.executable
+            or list(planned.get("arguments") or []) != list(request.arguments)
+            or planned.get("shell", False) is not False
+            or request.template_id is None
+        ):
+            return reject("COMMAND_NOT_IN_APPROVED_PLAN", "structured command does not match the approved planned command")
+        if request.shell is not False:
+            return reject("SHELL_EXECUTION_FORBIDDEN", "shell execution is forbidden")
+        if planned.get("timeout_seconds") != request.timeout_seconds:
+            return reject("COMMAND_NOT_IN_APPROVED_PLAN", "timeout does not match the approved planned command")
+        if planned.get("cancellation_policy") is not None and planned.get("cancellation_policy") != request.cancellation_policy:
+            return reject("COMMAND_NOT_IN_APPROVED_PLAN", "cancellation policy does not match the approved planned command")
+
+        aliases = run.workspace_aliases or {}
+        alias = request.working_directory_alias
+        if not alias or alias not in aliases:
+            return reject("WORKSPACE_NOT_APPROVED", "workspace alias is not approved for this run")
+        if not request.working_directory:
+            return reject("WORKSPACE_CONFINEMENT_VIOLATION", "canonical working directory is required")
+        try:
+            root = Path(str(aliases[alias])).resolve(strict=False)
+            candidate_input = Path(request.working_directory)
+            candidate = (root / candidate_input).resolve(strict=False) if not candidate_input.is_absolute() else candidate_input.resolve(strict=False)
+            candidate.relative_to(root)
+        except (OSError, ValueError, RuntimeError, TypeError):
+            return reject("WORKSPACE_CONFINEMENT_VIOLATION", "working directory is outside the run-owned workspace")
+        return AuthorizationCheckResult(True, "plan_membership")

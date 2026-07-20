@@ -22,7 +22,7 @@ G01 is the sole governed external-process execution path for the Angular 18→21
 
 - **Business:** Provide the only sanctioned path to run external commands (npm/ng build steps) for the migration, replacing arbitrary shell with a registered, policy-validated, evidence-bound runtime with durable events and live logs.
 - **Technical:** FastAPI/SQLAlchemy backend; Next.js projection. Sits between upstream S2-F07 (approved stage plan membership) and all downstream G02–G10 capabilities that consume command execution.
-- **Upstream inputs:** S2-F07 approved `StageExecutionPlanModel` (plan-membership check soft-passes when absent).
+- **Upstream inputs:** S2-F07 approved `StageExecutionPlanModel` (AMFA-140 Task 1 now rejects when authoritative plan data is absent or mismatched).
 - **Downstream outputs:** `command_authorization`, `command_execution_record`, `command_log_event`, `worker_lease` frozen schemas; command events surfaced via the generic run SSE (`backend/app/api/routes/runs.py`).
 
 ## 4. Related Jira Features
@@ -38,7 +38,7 @@ G01 is the sole governed external-process execution path for the Angular 18→21
 
 | Jira ID | Parent feature | Task description | Expected deliverable | Actual implementation | Status |
 |---|---|---|---|---|---|
-| AMFA-154 | AMFA-140 | S3-F01-I01 backend domain | Registry + policy engine domain | `backend/app/domain/command.py` (`CommandTemplate`, `DEFAULT_COMMAND_TEMPLATES`); `backend/app/services/command_registry_service.py` (`CommandRegistryService`, `CommandPolicyEngineService.validate`) | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
+| AMFA-154 | AMFA-140 | S3-F01-I01 backend domain | Registry + policy engine domain | `backend/app/domain/command.py` (`CommandTemplate`, `DEFAULT_COMMAND_TEMPLATES`); `backend/app/services/command_registry_service.py` (`CommandRegistryService`, `CommandPolicyEngineService.validate`) | IMPLEMENTED_NOT_RUNTIME_VERIFIED; fail-closed Task 1 covered by focused tests |
 | AMFA-155 | AMFA-140 | S3-F01-I02 db/api/events/artifacts | Templates/audit models, API, events | `backend/app/api/routes/commands.py`; `CommandTemplateModel`, `CommandAuthorizationAuditModel`; migration `20260719_07`; COMMAND_AUTHORIZATION_ACCEPTED/REJECTED | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-156 | AMFA-140 | S3-F01-I03 frontend | Policy inspector UI | `frontend/src/components/CommandPolicyInspector.tsx` (wired `AuthoritativeRunDashboard.tsx:69`); `frontend/src/api/commands.ts` | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
 | AMFA-157 | AMFA-140 | S3-F01-I04 tests/security/docs | Tests + docs | `backend/tests/test_command_registry_service.py` (22 tests); `docs/capabilities/01-command-runtime/`; `docs/adr/0003-structured-command-authority.md` | IMPLEMENTED_NOT_RUNTIME_VERIFIED |
@@ -171,7 +171,7 @@ Closeout tasks (from `evidence/task-results/`):
 
 | Test file | Scope | Collected tests | Passing | Failing | Jira coverage |
 |---|---|---|---|---|---|
-| `backend/tests/test_command_registry_service.py` | registry + policy engine | 22 | 22 (ran by reviewer) | 0 | AMFA-154/155/157 |
+| `backend/tests/test_command_registry_service.py` | registry + policy engine | 35 | 35 (focused run) | 0 | AMFA-154/155/157 |
 | `backend/tests/test_command_executor_services.py` | log/lease/cancel/queue/idempotency/events | 26 | 26 (ran by reviewer) | 0 | AMFA-158/161/162/165/166/169 |
 | `backend/tests/test_command_execution.py` | Sprint-0 WorkerSupervisor | 14 | N/E | N/E | upstream reuse |
 

@@ -592,10 +592,13 @@ class CommandPolicyValidateRequestDto(ContractModel):
     run_id: str = Field(min_length=1)
     stage_id: str | None = None
     command_id: str = Field(min_length=1)
+    template_id: str | None = None
+    template_version: int | None = Field(default=None, ge=1)
     executable: str = Field(min_length=1)
     arguments: list[str] = Field(default_factory=list)
     cwd_alias: str | None = None
     plan_id: str | None = None
+    plan_version: int | None = Field(default=None, ge=1)
     working_directory_alias: str | None = None
     working_directory: str | None = None
     execution_profile_id: str = "source-runtime-profile"

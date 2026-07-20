@@ -26,7 +26,8 @@ from app.domain.command import (
 )
 from app.domain.contracts import CommandPolicyValidateRequestDto
 from app.repositories.models.base import Base
-from app.repositories.models.workflow import CommandTemplateModel, CommandAuthorizationAuditModel
+from app.repositories.models.workflow import CommandTemplateModel, CommandAuthorizationAuditModel, MigrationRunModel
+from app.repositories.planning_models import MigrationPlanModel, StageExecutionPlanModel
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
@@ -50,7 +51,12 @@ def registry() -> CommandRegistryService:
 
 @pytest.fixture
 def policy_engine() -> CommandPolicyEngineService:
-    return CommandPolicyEngineService(require_plan_membership=False)
+    return CommandPolicyEngineService()
+
+
+@pytest.fixture
+def strict_policy_engine() -> CommandPolicyEngineService:
+    return CommandPolicyEngineService()
 
 
 @pytest.fixture
@@ -153,14 +159,107 @@ class TestCommandPolicyEngineService:
             **overrides,
         )
 
-    def test_accepts_known_command_with_matching_args(
+    def _approved_request(self, db_session: Session, tmp_path: Path, **overrides) -> CommandPolicyValidateRequestDto:
+        now = datetime.now(UTC)
+        workspace = tmp_path / "stage-workspace"
+        workspace.mkdir()
+        db_session.add(MigrationRunModel(
+            id="run-approved", status="RUNNING", run_phase="STAGED_MIGRATION",
+            phase_status="running", approval_status="approved", repair_status="not_required",
+            state_version=1, artifact_root=str(tmp_path / "artifacts"),
+            workspace_aliases={"stage_workspace": str(workspace)}, actor="operator",
+            created_at=now, updated_at=now,
+        ))
+        db_session.add(MigrationPlanModel(
+            id="plan-approved", run_id="run-approved", idempotency_key="plan-key",
+            request_checksum="sha256:" + "1" * 64, actor="operator", status="approved", version=1,
+            plan={}, checksum="sha256:" + "2" * 64, artifact_ids=[], artifact_checksums={},
+            state_version=1, event_sequence=1, created_at=now, updated_at=now,
+        ))
+        ref = {"command_id": "python-version", "executable": "python", "arguments": ["--version"],
+               "shell": False, "working_directory_alias": "stage_workspace", "timeout_seconds": 300,
+               "network_profile": "none"}
+        db_session.add(StageExecutionPlanModel(
+            id="stage-plan-approved", run_id="run-approved", migration_plan_id="plan-approved",
+            stage_id="stage-1", idempotency_key="stage-key", request_checksum="sha256:" + "3" * 64,
+            actor="operator", status="approved", version=1,
+            stage_plan={"stage_id": "stage-1", "plan_version": 1, "execution_profile_id": "profile-1",
+                        "commands": {"checks": [ref]}}, checksum="sha256:" + "4" * 64,
+            artifact_ids=[], artifact_checksums={}, state_version=1, event_sequence=1,
+            created_at=now, updated_at=now,
+        ))
+        db_session.flush()
+        values = dict(
+            run_id="run-approved", stage_id="stage-1", plan_id="plan-approved", plan_version=1,
+            template_id="tpl-python-version", template_version=1, command_id="python-version",
+            executable="python", arguments=["--version"], working_directory_alias="stage_workspace",
+            working_directory=str(workspace), execution_profile_id="profile-1", network_profile="none",
+            timeout_seconds=300,
+        )
+        values.update(overrides)
+        return CommandPolicyValidateRequestDto(idempotency_key=f"auth-{uuid4().hex[:8]}", **values)
+
+    def test_approved_command_in_approved_plan_is_accepted(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        result = strict_policy_engine.validate(db_session, self._approved_request(db_session, tmp_path))
+        assert result.decision == "accepted"
+
+    @pytest.mark.parametrize("change,code", [
+        ({"plan_id": "missing"}, "PLAN_NOT_FOUND"),
+        ({"stage_id": "other-stage"}, "PLAN_NOT_FOUND"),
+        ({"command_id": "npm-ci-bootstrap"}, "COMMAND_NOT_IN_APPROVED_PLAN"),
+        ({"execution_profile_id": "profile-2"}, "EXECUTION_PROFILE_NOT_APPROVED"),
+        ({"working_directory_alias": "other"}, "WORKSPACE_NOT_APPROVED"),
+        ({"network_profile": "full"}, "NETWORK_PROFILE_NOT_ALLOWED"),
+        ({"template_version": 99}, "TEMPLATE_VERSION_NOT_FOUND"),
+    ])
+    def test_authorization_context_mismatches_reject(self, strict_policy_engine, db_session, seeded_registry, tmp_path, change, code):
+        result = strict_policy_engine.validate(db_session, self._approved_request(db_session, tmp_path, **change))
+        assert result.decision == "rejected"
+        assert any(reason.startswith(code) for reason in result.reasons)
+
+    def test_missing_plan_never_soft_passes(self, strict_policy_engine, db_session, seeded_registry):
+        result = strict_policy_engine.validate(db_session, self._validate_request())
+        assert result.decision == "rejected"
+        assert any(reason.startswith("PLAN_NOT_FOUND") for reason in result.reasons)
+
+    def test_plan_state_must_be_approved(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        request = self._approved_request(db_session, tmp_path)
+        db_session.query(StageExecutionPlanModel).one().status = "generated"
+        result = strict_policy_engine.validate(db_session, request)
+        assert any(reason.startswith("PLAN_NOT_APPROVED") for reason in result.reasons)
+
+    @pytest.mark.parametrize("path", ["../outside", "C:\\unauthorized\\path"])
+    def test_workspace_confinement_rejects_escape(self, strict_policy_engine, db_session, seeded_registry, tmp_path, path):
+        result = strict_policy_engine.validate(db_session, self._approved_request(db_session, tmp_path, working_directory=path))
+        assert any(reason.startswith("WORKSPACE_CONFINEMENT_VIOLATION") for reason in result.reasons)
+
+    def test_symlink_escape_is_rejected(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = tmp_path / "stage-workspace" / "escape"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are unavailable")
+        result = strict_policy_engine.validate(db_session, self._approved_request(db_session, tmp_path, working_directory=str(link)))
+        assert any(reason.startswith("WORKSPACE_CONFINEMENT_VIOLATION") for reason in result.reasons)
+
+    def test_shell_and_client_command_override_are_rejected(self, strict_policy_engine, db_session, seeded_registry, tmp_path):
+        result = strict_policy_engine.validate(db_session, self._approved_request(
+            db_session, tmp_path, shell=True, executable="cmd.exe", arguments=["/c", "whoami"]
+        ))
+        assert result.decision == "rejected"
+        assert any(reason.startswith("SHELL_EXECUTION_FORBIDDEN") for reason in result.reasons)
+        assert any(reason.startswith("COMMAND_NOT_IN_APPROVED_PLAN") for reason in result.reasons)
+
+    def test_rejects_known_command_without_approved_plan(
         self, policy_engine: CommandPolicyEngineService, db_session: Session, seeded_registry
     ):
-        """A well-formed command request should be accepted."""
+        """A well-formed command is still rejected without authoritative plan data."""
         request = self._validate_request()
         result = policy_engine.validate(db_session, request)
-        assert result.decision == "accepted"
-        assert len(result.reasons) == 0
+        assert result.decision == "rejected"
+        assert any(reason.startswith("PLAN_NOT_FOUND") for reason in result.reasons)
 
     def test_rejects_unknown_command_id(
         self, policy_engine: CommandPolicyEngineService, db_session: Session
@@ -236,15 +335,15 @@ class TestCommandPolicyEngineService:
         assert result.executable == request.executable
         assert result.arguments == request.arguments
 
-    def test_windows_executable_alias_is_accepted(
+    def test_windows_executable_alias_requires_approved_plan(
         self, policy_engine: CommandPolicyEngineService, db_session: Session, seeded_registry
     ):
         """Windows executable aliases (e.g., python.exe) should be accepted."""
         request = self._validate_request(executable="python.exe")
         result = policy_engine.validate(db_session, request)
-        assert result.decision == "accepted"
+        assert result.decision == "rejected"
 
-    def test_npm_ci_command_accepts_bootstrap(
+    def test_npm_ci_command_requires_approved_plan(
         self, policy_engine: CommandPolicyEngineService, db_session: Session, seeded_registry
     ):
         """The npm-ci bootstrap command should be accepted with 'ci' arguments."""
@@ -254,9 +353,9 @@ class TestCommandPolicyEngineService:
             arguments=["ci"],
         )
         result = policy_engine.validate(db_session, request)
-        assert result.decision == "accepted"
+        assert result.decision == "rejected"
 
-    def test_accepts_windows_npm_alias(
+    def test_windows_npm_alias_requires_approved_plan(
         self, policy_engine: CommandPolicyEngineService, db_session: Session, seeded_registry
     ):
         """The npm.cmd alias should be accepted."""
@@ -266,4 +365,4 @@ class TestCommandPolicyEngineService:
             arguments=["ci"],
         )
         result = policy_engine.validate(db_session, request)
-        assert result.decision == "accepted"
+        assert result.decision == "rejected"
