@@ -1,9 +1,7 @@
 """API integration tests for AMFA-179: Angular update completion and target version verification routes."""
 
 import json
-import tempfile
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -19,7 +17,7 @@ def client():
 
 
 @pytest.fixture
-def test_db():
+def test_db(tmp_path):
     from app.domain.contracts import RunPhase, RunStatus, StageStatus
     from app.repositories.models import MigrationRunModel, MigrationStageModel
     from app.repositories.models.base import Base
@@ -28,13 +26,14 @@ def test_db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
-    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp_db.close()
+    db_path = tmp_path / "test.db"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
 
     original_engine = session_module.engine
     original_session_local = session_module.SessionLocal
 
-    test_engine = create_engine(f"sqlite:///{tmp_db.name}", echo=False)
+    test_engine = create_engine(f"sqlite:///{db_path}", echo=False)
     session_module.engine = test_engine
     session_module.SessionLocal = sessionmaker(
         bind=test_engine, autocommit=False, autoflush=False, expire_on_commit=False
@@ -52,7 +51,7 @@ def test_db():
             phase_status="running",
             state_version=1,
             source_path="/tmp/source",
-            artifact_root=tempfile.mkdtemp(prefix="artifacts_"),
+            artifact_root=str(artifact_root),
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -67,7 +66,7 @@ def test_db():
         s.add(stage)
 
     try:
-        yield run_id, stage_id, tmp_db.name
+        yield run_id, stage_id, str(db_path)
     finally:
         try:
             Base.metadata.drop_all(bind=test_engine)
@@ -75,7 +74,6 @@ def test_db():
             test_engine.dispose()
             session_module.engine = original_engine
             session_module.SessionLocal = original_session_local
-            Path(tmp_db.name).unlink(missing_ok=True)
 
 
 @pytest.fixture

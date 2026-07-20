@@ -26,26 +26,27 @@ def client():
 
 
 @pytest.fixture
-def test_db():
-    """Create a temporary SQLite database for testing."""
+def test_db(tmp_path):
+    """Create a temporary SQLite database for testing (tmp_path avoids Windows file locking)."""
     from app.domain.contracts import RunPhase, RunStatus, StageStatus, StepStatus
     from app.repositories.models import (
         MigrationRunModel, MigrationStageModel, StageStepModel,
         AngularUpdateRecordModel, TransformationEvidenceModel, G08ApprovalModel,
     )
     from app.repositories.models.base import Base
-    from app.repositories.session import engine, session_scope
+    from app.repositories import session as session_module
+    from app.repositories.session import session_scope
 
-    # Use a temporary database
-    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp_db.close()
+    db_path = tmp_path / "test.db"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
 
-    old_engine = engine.url
+    old_engine = session_module.engine
+    old_session_local = session_module.SessionLocal
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from app.repositories import session as session_module
 
-    test_engine = create_engine(f"sqlite:///{tmp_db.name}", echo=False)
+    test_engine = create_engine(f"sqlite:///{db_path}", echo=False)
     session_module.engine = test_engine
     session_module.SessionLocal = sessionmaker(bind=test_engine, autocommit=False, autoflush=False, expire_on_commit=False)
     Base.metadata.create_all(bind=test_engine)
@@ -66,7 +67,7 @@ def test_db():
             phase_status="running",
             state_version=1,
             source_path="/tmp/source",
-            artifact_root=tempfile.mkdtemp(prefix="artifacts_"),
+            artifact_root=str(artifact_root),
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -93,12 +94,15 @@ def test_db():
             )
         s.add(step)
 
-    yield run_id, stage_id, tmp_db.name
-
-    Base.metadata.drop_all(bind=test_engine)
-    Path(tmp_db.name).unlink(missing_ok=True)
-    session_module.engine = create_engine(str(old_engine))
-    session_module.SessionLocal = sessionmaker(bind=session_module.engine, autocommit=False, autoflush=False, expire_on_commit=False)
+    try:
+        yield run_id, stage_id, str(db_path)
+    finally:
+        try:
+            Base.metadata.drop_all(bind=test_engine)
+        finally:
+            test_engine.dispose()
+            session_module.engine = old_engine
+            session_module.SessionLocal = old_session_local
 
 
 class TestAngularUpdateAPI:
@@ -155,6 +159,103 @@ class TestAngularUpdateAPI:
         run_id, _, _ = test_db
         response = client.get(f"/api/v1/runs/{run_id}/stages/nonexistent/angular-update")
         assert response.status_code == 404
+
+    def test_get_target_version_returns_target_version_shape(self, client, test_db):
+        run_id, stage_id, _ = test_db
+        from app.repositories.session import session_scope
+        from app.repositories.transformation_models import AngularUpdateRecordModel
+        from datetime import UTC, datetime
+        with session_scope() as s:
+            record = AngularUpdateRecordModel(
+                id=f"ang-tv-{stage_id}", run_id=run_id, stage_id=stage_id,
+                idempotency_key="tv-test", actor="tester",
+                status=AngularUpdateStatus.SUCCEEDED.value,
+                target_version_status=TargetVersionStatus.VERIFIED.value,
+                resolved_target_version="18.2.0",
+                source_version="17.0.0", target_version="18.0.0",
+                evidence={"package_json_version": "18.2.0", "ng_version_output": "18.2.0",
+                          "all_sources_agree": True, "disagreements": []},
+                artifact_ids=["art-1"], state_version=2, event_sequence=1,
+                created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+            )
+            s.add(record)
+        response = client.get(f"/api/v1/runs/{run_id}/stages/{stage_id}/target-version")
+        assert response.status_code == 200
+        data = response.json()
+        assert "evidence_sources" in data
+        assert "all_sources_agree" in data
+        assert "disagreements" in data
+        assert data["all_sources_agree"] is True
+
+    def test_get_target_version_not_found(self, client, test_db):
+        run_id, _, _ = test_db
+        response = client.get(f"/api/v1/runs/{run_id}/stages/nonexistent/target-version")
+        assert response.status_code == 404
+
+    def test_complete_angular_update_calls_through(self, client, test_db):
+        run_id, stage_id, _ = test_db
+        from app.repositories.session import session_scope
+        from app.repositories.transformation_models import AngularUpdateRecordModel
+        from datetime import UTC, datetime
+        with session_scope() as s:
+            record = AngularUpdateRecordModel(
+                id=f"ang-comp-{stage_id}", run_id=run_id, stage_id=stage_id,
+                idempotency_key="comp-api-test", actor="tester",
+                status=AngularUpdateStatus.RUNNING.value,
+                target_version_status=TargetVersionStatus.INCONCLUSIVE.value,
+                source_version="17.0.0", target_version="18.0.0",
+                command_execution_id="exec-api-comp",
+                artifact_ids=[], state_version=1, event_sequence=1,
+                created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+            )
+            s.add(record)
+        response = client.post(
+            f"/api/v1/runs/{run_id}/stages/{stage_id}/angular-update/complete",
+            json={"run_id": run_id, "stage_id": stage_id,
+                  "expected_state_version": 1, "idempotency_key": "comp-api-001",
+                  "actor": "tester", "command_execution_id": "exec-api-comp"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "succeeded"
+
+    def test_verify_target_version_returns_shape(self, client, test_db):
+        """Verify the target-version/verify endpoint returns TargetVersionResponse shape."""
+        run_id, stage_id, _ = test_db
+        from app.repositories.session import session_scope
+        from app.repositories.transformation_models import AngularUpdateRecordModel
+        from datetime import UTC, datetime
+        target_version = "18.2.0"
+        with session_scope() as s:
+            record = AngularUpdateRecordModel(
+                id=f"ang-ver-{stage_id}", run_id=run_id, stage_id=stage_id,
+                idempotency_key="ver-api-test", actor="tester",
+                status=AngularUpdateStatus.SUCCEEDED.value,
+                target_version_status=TargetVersionStatus.VERIFIED.value,
+                resolved_target_version=target_version,
+                source_version="17.0.0", target_version="18.0.0",
+                command_execution_id="exec-api-ver",
+                evidence={"package_json_version": target_version,
+                          "lockfile_version": target_version,
+                          "ng_version_output": target_version,
+                          "dependency_tree_version": target_version,
+                          "all_sources_agree": True, "disagreements": []},
+                artifact_ids=["art-ver"], state_version=1, event_sequence=1,
+                created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+            )
+            s.add(record)
+        response = client.post(
+            f"/api/v1/runs/{run_id}/stages/{stage_id}/target-version/verify",
+            json={"run_id": run_id, "stage_id": stage_id,
+                  "expected_state_version": 1, "idempotency_key": "ver-api-001",
+                  "actor": "tester", "command_execution_id": "exec-api-ver"},
+        )
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        data = response.json()
+        assert "target_version_status" in data
+        assert "evidence_sources" in data
+        assert "all_sources_agree" in data
+        assert "disagreements" in data
 
 
 class TestTransformationEvidenceAPI:

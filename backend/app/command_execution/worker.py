@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import shutil
@@ -190,6 +191,20 @@ class CommandPolicy:
 
 class CommandLogWriter:
     """Persist command execution records and bounded output artifacts."""
+
+    _SECRET_PATTERNS: list[tuple[str, str]] = [
+        (r"(?i)(token\s*[:=]\s*)\S+", r"\1***"),
+        (r"(?i)(password\s*[:=]\s*)\S+", r"\1***"),
+        (r"(?i)(secret\s*[:=]\s*)\S+", r"\1***"),
+        (r"(?i)(api[_-]?key\s*[:=]\s*)\S+", r"\1***"),
+        (r"(?i)(auth\s*[:=]\s*)\S+", r"\1***"),
+    ]
+
+    @staticmethod
+    def _redact(text: str) -> str:
+        for pattern, replacement in CommandLogWriter._SECRET_PATTERNS:
+            text = re.sub(pattern, replacement, text)
+        return text
 
     def __init__(
         self, artifact_store: LocalFilesystemArtifactStore, *, max_output_bytes: int | None = 1_000_000

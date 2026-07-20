@@ -18,7 +18,7 @@ All G03 logic follows the existing domain → service → API pattern establishe
 | Domain | `domain/transformation.py` | Pure Pydantic models and checksum-bound builders with zero persistence side effects |
 | Contracts | `api/transformation_contracts.py` | FastAPI request/response DTOs for all G03 endpoints |
 | Service | `services/transformation_application_service.py` | AMFA-178 locked-plan validation, worker dispatch, bounded output, and exact target evidence; sibling evidence/approval services unchanged |
-| API | `api/routes/transformations.py` | 9 REST endpoints registered under `/runs/{id}/stages/{stageId}/` |
+| API | `api/routes/transformations.py` | 10 REST endpoints registered under `/runs/{id}/stages/{stageId}/` |
 | DB | `repositories/transformation_models.py` | 3 SQLAlchemy models: `AngularUpdateRecordModel`, `TransformationEvidenceModel`, `G08ApprovalModel` |
 | Migration | `alembic/versions/20260719_07_*` | Append-only schema migration |
 
@@ -63,9 +63,18 @@ All G03 logic follows the existing domain → service → API pattern establishe
 
 ## Test Coverage
 
-|- **Domain unit tests**: 21 tests covering all domain models, builders, and decision rules
-- **API integration tests**: 9 tests covering happy paths, stale state, 404s, G08 approve/reject flows
-- **Regression**: 33 existing tests continue to pass with no changes required
+|- **Domain unit tests**: 21 tests (`test_g03_domain.py`) covering all domain models, builders, and decision rules
+- **API integration tests**: 13 tests (`test_g03_api.py`) covering angular update, transformation evidence, and G08 approval flows
+- **AMFA-178 service tests**: 12 tests (`test_angular_update_amfa178.py`) covering worker dispatch, idempotency, prompts, timeout, cancellation
+- **AMFA-179 API tests**: 7 tests (`test_angular_update_amfa179.py`) covering complete/verify routes
+- **Policy tests**: 3 tests (`test_angular_update_policy_amfa178.py`) covering forbidden CLI flags and registration
+- **Frontend component tests**: 17 tests (`AngularUpdatePanel.test.tsx`) covering all view states, SSE transitions, accessibility
+- **Frontend API client tests**: 11 tests (`transformations.test.ts`) covering all 10 transformation API functions
+- **Regression**: Existing tests continue to pass with no regressions from G03 changes
+
+### Windows Compatibility
+
+All SQLite test databases use `pytest`'s `tmp_path` fixture instead of `tempfile.NamedTemporaryFile` to avoid file-locking issues on Windows. Pytest automatically cleans up `tmp_path` after each test.
 
 ## Dependencies
 
