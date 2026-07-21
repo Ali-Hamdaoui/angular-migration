@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { ApiClientError, getBackendBaseUrl } from "@/api/client";
 import { decideG08, getG08Approval, initializeG08 } from "@/api/transformations";
 import type { AuthoritativeConnectionStatus } from "@/hooks/useAuthoritativeRun";
-import type { G08Decision, G08EvidencePackage, G08ReviewResponse } from "@/types/transformation";
+import type { G08Decision, G08ReviewResponse } from "@/types/transformation";
 import { StatusPill } from "@/components/StatusPill";
 
 type ViewState =
@@ -347,15 +347,15 @@ export function G08ReviewWorkspace({
           )}
 
           {/* Immutable evidence artifact list */}
-          {review.package?.artifacts && review.package.artifacts.length > 0 && (
+          {review.package?.artifact_refs && review.package.artifact_refs.length > 0 && (
             <div className="space-y-1 text-sm">
               <h4 className="font-medium">Evidence Artifacts</h4>
               <ul className="divide-y divide-gray-200 border rounded">
-                {review.package.artifacts.map((artifact) => (
+                {review.package.artifact_refs.map((artifact) => (
                   <li key={artifact.artifact_id} className="flex items-center justify-between p-2 hover:bg-gray-50">
                     <div className="flex-1 min-w-0">
                       <p className="font-mono text-xs truncate">{artifact.relative_path}</p>
-                      <p className="text-xs text-gray-500">{artifact.kind}</p>
+                      <p className="text-xs text-gray-500">{artifact.artifact_type}</p>
                     </div>
                     <div className="flex items-center gap-2 ml-2">
                       <span className="text-xs text-gray-400">{artifact.checksum.slice(0, 12)}…</span>

@@ -769,18 +769,18 @@ class TestG08ApprovalAPI:
         assert resp.status_code == 200
         new_state_version = resp.json()["state_version"]
 
-    modification_without_comment = self._decision_payload(
-        new_state_version, decision="modification_requested", idempotency_key="mod-no-comment", init_data=resp.json()
-    )
+        modification_without_comment = self._decision_payload(
+            new_state_version, decision="modification_requested", idempotency_key="mod-no-comment", init_data=resp.json()
+        )
         resp_mod = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
             json=modification_without_comment,
         )
         assert resp_mod.status_code == 422, f"Expected 422, got {resp_mod.status_code}: {resp_mod.text}"
 
-    modification_with_comment = self._decision_payload(
-        new_state_version, decision="modification_requested", idempotency_key="mod-with-comment", init_data=resp.json()
-    )
+        modification_with_comment = self._decision_payload(
+            new_state_version, decision="modification_requested", idempotency_key="mod-with-comment", init_data=resp.json()
+        )
         modification_with_comment["comment"] = "Please fix the test fixture"
         resp_mod2 = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",

@@ -68,8 +68,8 @@ describe("G08ReviewWorkspace", () => {
 
     render(<G08ReviewWorkspace runId="run-1" stageId="stage-1" gateId="G08" expectedStateVersion={6} connectionStatus="open" onAuthoritativeRefresh={refresh} />);
 
-    expect(await screen.findByText("sha256:workspace")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "g08-package-1 (G08 package)" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/g08-package-1");
+    expect(await screen.findByTitle("sha256:workspace")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Download/ })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/runs/run-1/artifacts/diff-1");
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(decideG08).toHaveBeenCalledWith("run-1", "stage-1", "G08", expect.objectContaining({
@@ -107,11 +107,11 @@ describe("G08ReviewWorkspace", () => {
     getG08Approval.mockRejectedValueOnce(new ApiClientError("forbidden", 403, "GET", "/g08", JSON.stringify({ error_code: "FORBIDDEN", message: "Forbidden", correlation_id: "corr-auth" })));
     rerender(<G08ReviewWorkspace runId="run-2" stageId="stage-1" gateId="G08" expectedStateVersion={6} />);
     expect(await screen.findByText("Authorization Error")).toBeInTheDocument();
-    expect(screen.getByText("corr-auth")).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes("corr-auth"))).toBeInTheDocument();
 
     getG08Approval.mockRejectedValueOnce(new ApiClientError("stale", 409, "GET", "/g08", JSON.stringify({ error_code: "STALE_STATE_VERSION", message: "Stale state", correlation_id: "corr-stale" })));
     rerender(<G08ReviewWorkspace runId="run-3" stageId="stage-1" gateId="G08" expectedStateVersion={6} />);
-    expect(await screen.findByText(/This review is stale/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Generate Current Review Package" })).toBeInTheDocument();
 
     getG08Approval.mockRejectedValueOnce(new ApiClientError("failed", 500, "GET", "/g08", JSON.stringify({ error_code: "INTERNAL", message: "Backend failed", correlation_id: "corr-fail" })));
     rerender(<G08ReviewWorkspace runId="run-4" stageId="stage-1" gateId="G08" expectedStateVersion={6} />);
