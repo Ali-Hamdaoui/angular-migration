@@ -30,6 +30,19 @@ Angular 18 to 19 migration commands.
 10. Recalculate the original source fingerprint and compare it with the G01
     boundary. The source must remain byte-for-byte unchanged.
 
+## Opt-in automated integration test
+
+`backend/tests/test_authoritative_angular18_integration.py` runs the same
+start-to-G03 path against an external fixture and an existing compatible
+runtime. Generate or provide a pinned Angular 18 workspace outside this
+repository, then set `AMF_RUN_ANGULAR18_INTEGRATION=1`,
+`AMF_ANGULAR18_SOURCE`, and `AMF_ANGULAR18_TARGET_PARENT`; set
+`AMF_ANGULAR18_RUNTIME_ROOT` when the compatible Node installation is not
+already first on `PATH`. Run it from `backend` with
+`python -m pytest tests/test_authoritative_angular18_integration.py -q`.
+The test skips when these external prerequisites are absent and never creates
+a synthetic compatible runtime or modifies the supplied source.
+
 ## Evidence layout
 
 Run evidence is stored under the registered run artifact root. Source intake
