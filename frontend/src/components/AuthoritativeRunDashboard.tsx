@@ -8,6 +8,8 @@ import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
 import { BaselinePreparationPanel } from "./BaselinePreparationPanel";
 import { BaselineInstallationPanel } from "./BaselineInstallationPanel";
 import { BaselineParityPanel } from "./BaselineParityPanel";
+import { BaselineValidationPanel } from "./BaselineValidationPanel";
+import { BaselineQualificationPanel } from "./BaselineQualificationPanel";
 import { DiscoveryFindingsPanel } from "./DiscoveryFindingsPanel";
 import { ParityBaselinePanel } from "./ParityBaselinePanel";
 import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
@@ -19,11 +21,17 @@ import styles from "./ControlTowerShell.module.css";
 import { CommandPolicyInspector } from "./CommandPolicyInspector";
 import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
 const pipelineSteps = [
-  { label: 'Preflight', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type.includes('PREFLIGHT')) },
-  { label: 'Snapshot', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'SNAPSHOT_CREATED') },
-  { label: 'Integrity', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'G02_APPROVED') },
-  { label: 'Baseline', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type.startsWith('BASELINE_') && !event.event_type.endsWith('FAILED')) },
-  { label: 'Verify', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type.includes('VALIDATION') && event.event_type.endsWith('COMPLETED')) },
+  { label: 'Source intake', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'SOURCE_INTAKE_COMPLETED') },
+  { label: 'Source snapshot', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'SNAPSHOT_CREATED') },
+  { label: 'G02 approval', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'G02_APPROVED') },
+  { label: 'Runtime validation', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'EXECUTION_PROFILE_RESOLVED' || event.event_type === 'EXECUTION_PROFILE_SELECTED') },
+  { label: 'Baseline preparation', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'BASELINE_WORKSPACE_READY') },
+  { label: 'Dependency installation', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'BASELINE_INSTALL_SUCCEEDED') },
+  { label: 'Build', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'BASELINE_BUILD_COMPLETED') },
+  { label: 'Tests', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'BASELINE_TESTS_COMPLETED') },
+  { label: 'Lint', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'BASELINE_LINT_COMPLETED') },
+  { label: 'Baseline qualification', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'BASELINE_QUALIFIED' || event.event_type === 'BASELINE_QUALIFIED_WITH_KNOWN_FAILURES') },
+  { label: 'G03 readiness', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'G03_CREATED') },
 ];
 
 export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
@@ -68,6 +76,8 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <ExecutionProfilePanel runId={runId} initialState={state} />
       <BaselinePreparationPanel runId={runId} initialState={state} />
       <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
+      <BaselineValidationPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
+      <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} />
       <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
       <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
       </div>
