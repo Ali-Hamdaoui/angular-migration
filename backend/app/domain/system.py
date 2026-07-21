@@ -62,6 +62,7 @@ class EnvironmentCapabilitySnapshot(BaseModel):
     network: CorporateNetworkReadiness
     blockers: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    controlled_probes: dict[str, dict[str, str | None]] = Field(default_factory=dict)
     checksum: str
 
 

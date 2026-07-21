@@ -52,8 +52,37 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByText("Live ? authoritative state")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "C:/source ? C:/target" })).toBeInTheDocument();
     expect(screen.getByText("RUN_CREATED")).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toHaveTextContent("pending");
     expect(screen.getByText("00_job_setup/create_run_request.json")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "00_job_setup/create_run_request.json" })).toHaveAttribute("href", expect.stringContaining("artifact-create-request"));
     expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
+    expect(screen.queryByRole("listitem", { name: /G03 readiness/ })).not.toBeInTheDocument();
+  });
+
+  it("renders the complete baseline timeline only after qualification evidence is authoritative", () => {
+    const events = [
+      "SOURCE_INTAKE_COMPLETED", "SNAPSHOT_CREATED", "G02_APPROVED", "EXECUTION_PROFILE_SELECTED",
+      "BASELINE_WORKSPACE_READY", "BASELINE_INSTALL_SUCCEEDED", "BASELINE_BUILD_COMPLETED",
+      "BASELINE_TESTS_COMPLETED", "BASELINE_LINT_COMPLETED", "BASELINE_QUALIFIED", "G03_CREATED",
+    ].map((event_type, index) => ({
+      event_id: `event-${event_type}`,
+      run_id: initialState.run_id,
+      stage_id: null,
+      event_type,
+      occurred_at: `2026-07-15T10:${String(index + 1).padStart(2, "0")}:00Z`,
+      sequence: index + 2,
+      payload: {},
+    }));
+
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
+
+    expect(screen.getByRole("listitem", { name: "Source intake: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Dependency installation: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Build: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Tests: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Lint: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "G03 readiness: completed" })).toBeInTheDocument();
   });
 });

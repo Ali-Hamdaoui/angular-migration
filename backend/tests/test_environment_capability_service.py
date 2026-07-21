@@ -81,14 +81,16 @@ def test_diagnose_reports_paired_runtimes_and_persists_redacted_artifacts(tmp_pa
     assert result.snapshot.python_ready is True
     assert result.snapshot.network.proxy_configured is True
     assert result.snapshot.network.custom_ca_configured is True
-    assert len(worker.requests) == 5
+    assert len(worker.requests) == 7
+    assert result.snapshot.controlled_probes["node_exec_path"]["status"] == "passed"
+    assert result.snapshot.controlled_probes["npm_registry"]["status"] == "passed"
     assert result.artifact is not None
     assert "secret" not in result.snapshot.model_dump_json()
     assert result.snapshot.checksum
     assert result.artifact["summary"].startswith("artifact-")
 
 
-def test_diagnose_blocks_mixed_node_npm_npx_installation_roots(tmp_path, monkeypatch):
+def test_diagnose_accepts_valid_probes_from_mixed_node_npm_npx_installation_roots(tmp_path, monkeypatch):
     root = tmp_path / "nodejs"
     other_root = tmp_path / "other-nodejs"
     locations = {
@@ -103,9 +105,9 @@ def test_diagnose_blocks_mixed_node_npm_npx_installation_roots(tmp_path, monkeyp
     service, _ = make_service(tmp_path, locations)
     result = service.diagnose("mismatch-refresh")
 
-    assert result.snapshot.status == "blocked"
-    assert result.snapshot.node_npm_npx_paired is False
-    assert "RUNTIME_PAIR_MISMATCH" in result.snapshot.blockers
+    assert result.snapshot.status == "available"
+    assert result.snapshot.node_npm_npx_paired is True
+    assert "RUNTIME_PAIR_MISMATCH" not in result.snapshot.blockers
 
 
 def test_diagnose_reports_missing_worker_runtime_and_rejects_blank_idempotency(tmp_path):
@@ -141,7 +143,7 @@ def test_windows_discovery_uses_executable_extensions_and_py_fallback(tmp_path, 
     result = service.diagnose("windows-refresh")
 
     assert result.snapshot.status == "available"
-    assert [request.executable for request in worker.requests] == ["node.exe", "npm.cmd", "npx.cmd", "git.exe", "py"]
+    assert [request.executable for request in worker.requests[:5]] == ["node.exe", "npm.cmd", "npx.cmd", "git.exe", "py"]
     assert result.snapshot.runtimes[-1].executable == str(locations["py"])
     assert result.snapshot.runtimes[-1].attempted_executable == "py"
 

@@ -11,9 +11,9 @@ def candidate(**changes):
     values={"profile_id":"node-20","node_executable":r"C:\Tools\node20\node.exe","node_exact":"20.11.1","npm_executable":r"C:\Tools\node20\npm.cmd","npm_exact":"10.2.4","npx_executable":r"C:\Tools\node20\npx.cmd","npx_exact":"10.2.4","angular_cli_exact":"18.2.3"}; values.update(changes); return RuntimeCandidate(**values)
 def request(c): return RuntimeResolutionRequest(source_angular_exact="18.2.3",source_typescript_exact="5.5.4",source_rxjs_exact="7.8.1",candidates=(c,),validated_at=NOW)
 
-def test_mixed_node_npm_npx_installation_is_rejected():
-    with pytest.raises(ValueError, match="one installation"):
-        candidate(npm_executable=r"C:\OtherNode\npm.cmd")
+def test_mixed_node_npm_npx_installation_is_allowed_when_probes_are_valid():
+    resolved = candidate(npm_executable=r"C:\OtherNode\npm.cmd")
+    assert resolved.npm_executable == r"C:\OtherNode\npm.cmd"
 
 def test_executable_replacement_invalidates_selected_profile():
     resolver=SourceRuntimeResolver(); profile=resolver.resolve(request(candidate())).selected_profile

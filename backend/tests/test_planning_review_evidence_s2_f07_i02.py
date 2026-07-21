@@ -278,7 +278,7 @@ def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
         "operator",
     )
     assert explanation.gate_status == "pending"
-    assert len(explanation.artifact_ids) == 6
+    assert len(explanation.artifact_ids) == 9
     with sessions() as session:
         assert session.query(PlanRevisionModel).count() == 1
         assert session.query(PlanningReviewModel).one().status == "completed"

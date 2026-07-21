@@ -37,7 +37,7 @@ def test_g02_approval_persists_boundary_events_evidence_and_replays(tmp_path: Pa
     assert result.status == "approved"; assert result.baseline_input_boundary.startswith("snapshot-"); assert replay.idempotent_replay is True
     with sessions() as session:
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence))); record = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == "run-1"))
-        assert [event.event_type for event in events] == ["SNAPSHOT_STARTED", "SNAPSHOT_PROGRESS_UPDATED", "SNAPSHOT_CREATED", "G02_CREATED", "SOURCE_INTEGRITY_VERIFIED", "G02_APPROVED"]; assert record is not None; assert len(record.artifact_ids) == 10; assert record.baseline_input_boundary == result.baseline_input_boundary
+        assert [event.event_type for event in events] == ["SNAPSHOT_STARTED", "SNAPSHOT_PROGRESS_UPDATED", "SNAPSHOT_CREATED", "G02_CREATED", "SOURCE_INTEGRITY_VERIFIED", "G02_APPROVED"]; assert record is not None; assert len(record.artifact_ids) == 11; assert record.baseline_input_boundary == result.baseline_input_boundary
     engine.dispose()
 
 def test_changed_source_marks_g02_stale_and_never_establishes_boundary(tmp_path: Path):

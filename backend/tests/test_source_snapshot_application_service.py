@@ -79,7 +79,7 @@ def test_create_snapshot_persists_artifacts_events_and_replays_idempotently(tmp_
     replay = service.create("run-1", request)
 
     assert result.status is SnapshotStatus.CREATED
-    assert len(result.artifacts) == 6
+    assert len(result.artifacts) == 7
     assert replay.idempotent_replay is True
     assert replay.snapshot_id == result.snapshot_id
     assert result.state_version == 4
@@ -103,8 +103,9 @@ def test_create_snapshot_persists_artifacts_events_and_replays_idempotently(tmp_
             "source_git_metadata.json",
             "snapshot_manifest.json",
             "exclusion_policy_snapshot.json",
-            "snapshot_copy_report.json",
-            "snapshot_fingerprint.json",
+        "snapshot_copy_report.json",
+        "snapshot_fingerprint.json",
+        "source_validation_result.json",
         }
 
     inspected = service.get("run-1", result.snapshot_id)

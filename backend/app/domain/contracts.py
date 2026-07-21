@@ -292,6 +292,10 @@ class WorkflowEventType(str, Enum):
     RUN_START_ACCEPTED = "RUN_START_ACCEPTED"
     RUN_STARTED = "RUN_STARTED"
     RUN_START_REJECTED = "RUN_START_REJECTED"
+    SOURCE_INTAKE_QUEUED = "SOURCE_INTAKE_QUEUED"
+    SOURCE_INTAKE_STARTED = "SOURCE_INTAKE_STARTED"
+    SOURCE_INTAKE_COMPLETED = "SOURCE_INTAKE_COMPLETED"
+    SOURCE_INTAKE_FAILED = "SOURCE_INTAKE_FAILED"
     RUN_RECONSTRUCTED = "RUN_RECONSTRUCTED"
     SNAPSHOT_STARTED = "SNAPSHOT_STARTED"
     SNAPSHOT_CREATED = "SNAPSHOT_CREATED"
@@ -943,6 +947,7 @@ class AuthoritativeRunStateDto(ContractModel):
 
 class AuthoritativeRunMutationResultDto(ContractModel):
     run_id: str
+    job_id: str | None = None
     status: RunStatus
     state_version: int = Field(ge=1)
     event_sequence: int = Field(ge=1)

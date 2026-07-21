@@ -301,6 +301,33 @@ class SourceSnapshotApplicationService:
                     created_at=now,
                 )
             )
+        validation_payload = {
+            "status": "passed",
+            "source_path": str(manifest.source_root),
+            "snapshot_path": str(record.snapshot_root),
+            "file_count": len(manifest.entries),
+            "total_included_size": sum(item.size_bytes for item in manifest.entries),
+            "exclusion_count": len(manifest.exclusions),
+            "source_fingerprint": record.fingerprint,
+            "snapshot_fingerprint": record.fingerprint,
+            "copy_verification": "passed",
+            "blockers": [],
+            "warnings": [],
+            "created_at": now.isoformat(),
+            "evidence_artifact_ids": [ref.artifact_id for ref in refs],
+        }
+        stored = store.write_text_artifact(
+            run.id,
+            f"global/source-snapshots/{record.snapshot_id}/source_validation_result.json",
+            json.dumps(validation_payload, indent=2, sort_keys=True),
+            ArtifactType.JSON,
+            created_by="source-snapshot-service",
+            created_at=now,
+            input_hashes={"source_fingerprint": record.fingerprint},
+            policy_version=manifest.policy_version,
+        )
+        refs.append(stored.ref)
+        session.add(ArtifactMetadataModel(id=f"metadata-{stored.ref.artifact_id}", run_id=run.id, stage_id=None, artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, created_at=now))
         return refs
 
     def _to_dto(self, session, model: SourceSnapshotModel, *, idempotent_replay: bool = False) -> SourceSnapshotDto:

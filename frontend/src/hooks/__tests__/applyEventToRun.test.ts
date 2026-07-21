@@ -80,6 +80,14 @@ describe("applyEventToRun", () => {
     expect(updated.artifacts.at(-1)?.artifact_type).toBe("patch");
   });
 
+  it("does not invent an artifact checksum when the event is incomplete", () => {
+    const updated = applyEventToRun(
+      mockMigrationRun,
+      event("artifact_created", { artifact_id: "artifact-incomplete", artifact_type: "json", relative_path: "01_baseline/incomplete.json" }, "evt-incomplete"),
+    );
+    expect(updated.artifacts).toEqual(mockMigrationRun.artifacts);
+  });
+
   it("appends a new approval event on approval_required", () => {
     const updated = applyEventToRun(
       mockMigrationRun,

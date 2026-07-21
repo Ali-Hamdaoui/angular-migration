@@ -66,9 +66,9 @@ class RuntimeCandidate(_ImmutableModel):
 
     @model_validator(mode="after")
     def require_paired_installation(self) -> "RuntimeCandidate":
-        roots = {self._root(path) for path in (self.node_executable, self.npm_executable, self.npx_executable)}
-        if len(roots) != 1:
-            raise ValueError("node, npm, and npx must belong to one installation")
+        # npm and npx may be shims or independently resolved executables.  The
+        # runtime is proven by the recorded probes and versions, not by
+        # brittle directory equality.
         return self
 
     @staticmethod

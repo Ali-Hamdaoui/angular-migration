@@ -9,10 +9,12 @@ from sqlalchemy.orm import sessionmaker
 
 from app.domain.preflight import PreflightSnapshot
 from app.domain.contracts import RunStatus
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, Base, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, Base, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
 from app.core.config import Settings
+from app.orchestration.source_intake import SourceIntakeDispatcher
+import app.orchestration.source_intake as source_intake_module
 
 
 class RecordingGraph:
@@ -66,6 +68,11 @@ def test_create_and_start_use_authoritative_transitions(tmp_path: Path):
     started = service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="start-1", actor="operator")
     assert started.status == "SOURCE_VALIDATION_RUNNING"
     assert graph.calls == [(created.run_id, created.graph_thread_id)]
+    replayed_start = service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="start-1", actor="operator")
+    assert replayed_start.idempotent_replay is True
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == created.run_id)))
+        assert len(jobs) == 1 and jobs[0].status == "queued"
     replay = service.create(_request())
     assert replay.idempotent_replay is True
 
@@ -139,8 +146,118 @@ def test_graph_handoff_failure_rolls_back_accepted_transition(tmp_path: Path):
     with scope() as session:
         run = session.get(MigrationRunModel, created.run_id)
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == created.run_id).order_by(WorkflowEventModel.sequence)))
-        assert run is not None and run.status == "CREATED" and run.state_version == created.state_version
-        assert [event.event_type for event in events] == ["RUN_CREATED"]
+        assert run is not None and run.status == RunStatus.FAILED.value
+        assert [event.event_type for event in events][-2:] == ["SOURCE_INTAKE_QUEUED", "SOURCE_INTAKE_FAILED"]
+
+
+def test_start_rejects_when_run_owned_target_claim_is_missing(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("missing-claim-create"))
+    with scope() as session:
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id))
+        assert claim is not None
+        session.delete(claim)
+
+    with pytest.raises(MigrationRunError, match="target reservation"):
+        service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="missing-claim-start", actor="operator")
+
+
+def test_start_rejects_when_g01_is_no_longer_approved(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("revoked-g01-create"))
+    with scope() as session:
+        gate = session.scalar(select(ApprovalGateModel).where(ApprovalGateModel.preflight_id == "preflight-1", ApprovalGateModel.gate_id == "G01"))
+        assert gate is not None
+        gate.status = "stale"
+
+    with pytest.raises(MigrationRunError, match="G01"):
+        service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="revoked-g01-start", actor="operator")
+
+
+def test_source_intake_failure_finalization_marks_run_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("worker-failure-create"))
+    with scope() as session:
+        session.add(SourceIntakeJobModel(
+            id="intake-worker-failure",
+            run_id=created.run_id,
+            thread_id=created.graph_thread_id,
+            status="running",
+            actor="operator",
+            idempotency_key="worker-failure-start",
+            attempt=1,
+            queued_at=datetime.now(UTC),
+            started_at=datetime.now(UTC),
+            state_version=created.state_version,
+        ))
+    monkeypatch.setattr(source_intake_module, "session_scope", scope)
+    dispatcher = SourceIntakeDispatcher(Settings(_env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes"))
+    try:
+        dispatcher._fail("intake-worker-failure", "SNAPSHOT_CREATION_FAILED", "source disappeared")
+    finally:
+        dispatcher._executor.shutdown(wait=True)
+
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        job = session.get(SourceIntakeJobModel, "intake-worker-failure")
+        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == created.run_id)))
+        assert run is not None and run.status == RunStatus.FAILED.value
+        assert job is not None and job.status == "failed"
+        assert events[-1].event_type == "SOURCE_INTAKE_FAILED"
+
+
+def test_source_intake_retry_preserves_failed_attempt_and_queues_new_job(tmp_path: Path):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("retry-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.FAILED.value
+        session.add(SourceIntakeJobModel(
+            id="intake-failed-attempt",
+            run_id=created.run_id,
+            thread_id=created.graph_thread_id,
+            status="failed",
+            actor="operator",
+            idempotency_key="failed-attempt",
+            attempt=1,
+            queued_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+            last_error_code="SNAPSHOT_CREATION_FAILED",
+            last_error_message="source disappeared",
+            state_version=run.state_version,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(run_id=created.run_id, expected_state_version=expected_version, idempotency_key="retry-source-1", actor="operator")
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    assert retried.job_id != "intake-failed-attempt"
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == created.run_id).order_by(SourceIntakeJobModel.attempt)))
+        assert len(jobs) == 2
+        assert jobs[0].status == "failed"
+        assert jobs[1].status == "queued"
+        assert jobs[1].attempt == 2
+
+
+def test_source_intake_attempt_identity_does_not_change_when_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("stable-attempt-create"))
+    with scope() as session:
+        job = SourceIntakeJobModel(
+            id="intake-stable-attempt", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="queued", actor="operator", idempotency_key="stable-attempt-start", attempt=2,
+            queued_at=datetime.now(UTC), state_version=created.state_version,
+        )
+        session.add(job)
+    monkeypatch.setattr(source_intake_module, "session_scope", scope)
+    dispatcher = SourceIntakeDispatcher(Settings(_env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes"))
+    try:
+        claimed = dispatcher._claim(created.run_id)
+    finally:
+        dispatcher._executor.shutdown(wait=True)
+    assert claimed is not None and claimed.attempt == 2
 
 
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):

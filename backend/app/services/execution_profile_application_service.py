@@ -1,6 +1,6 @@
 """Durable application service for S1-F09 execution-profile resolution."""
 from __future__ import annotations
-import hashlib, json
+import hashlib, json, os
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -43,7 +43,7 @@ class ExecutionProfileApplicationService:
             self._require_g02(session,run_id)
             if run.state_version != request.expected_state_version: raise ExecutionProfileApplicationError("STALE_STATE_VERSION","The run state version is stale.",409)
             resolution=self._resolver.resolve(RuntimeResolutionRequest(source_angular_exact=request.source_angular_exact,source_typescript_exact=request.source_typescript_exact,source_rxjs_exact=request.source_rxjs_exact,candidates=candidates,validated_at=request.validated_at))
-            artifact_ids=self._write_artifacts(session,run,resolution,request_checksum,now)
+            artifact_ids=self._write_artifacts(session,run,resolution,request,request_checksum,now)
             started=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=run.state_version,idempotency_key=request.idempotency_key+":started",event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLUTION_STARTED,actor=request.actor,reason="execution profile resolution started",occurred_at=now,payload={"source_angular_exact":request.source_angular_exact}))
             event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLVED if resolution.status != "blocked" else WorkflowEventType.EXECUTION_PROFILE_BLOCKED
             finished=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=started.next_state_version,idempotency_key=request.idempotency_key,event_type=event_type,actor=request.actor,reason="execution profile resolution completed",occurred_at=now,payload={"status":resolution.status,"policy_version":resolution.policy_version}))
@@ -98,10 +98,10 @@ class ExecutionProfileApplicationService:
         required = [runtimes.get(name) for name in ("node", "npm", "npx")]
         if snapshot.get("status") == "blocked" or any(not item or item.get("status") != "available" or not item.get("executable") or not item.get("version") for item in required):
             return (), environment.checksum
-        roots = {str(item.get("installation_root", "")).lower() for item in required}
-        if len(roots) != 1:
-            return (), environment.checksum
         network = snapshot.get("network", {})
+        controlled = snapshot.get("controlled_probes", {})
+        if any(controlled.get(name, {}).get("status") != "passed" for name in ("node_exec_path", "npm_registry")):
+            return (), environment.checksum
         candidate = RuntimeCandidate(profile_id=f"environment-{environment.id}", operating_system="windows", architecture="amd64", node_executable=required[0]["executable"], node_exact=required[0]["version"], npm_executable=required[1]["executable"], npm_exact=required[1]["version"], npx_executable=required[2]["executable"], npx_exact=required[2]["version"], registry_configured=bool(network.get("registry_configured")), proxy_configured=bool(network.get("proxy_configured")), certificate_valid=bool(network.get("strict_ssl")), environment_allowlist_valid=bool(network.get("credentials_redacted", True)), cache_policy_valid=True, network_policy="approved-registries-only", available=True)
         return (candidate,), environment.checksum
 
@@ -115,14 +115,39 @@ class ExecutionProfileApplicationService:
         if run is None: raise ExecutionProfileApplicationError("RUN_NOT_FOUND","Migration run does not exist.",404)
         return run
 
-    def _write_artifacts(self,session,run,resolution,request_checksum,now):
+    def _write_artifacts(self,session,run,resolution,request,request_checksum,now):
         root=Path(run.artifact_root or "").resolve(); store=LocalFilesystemArtifactStore(root,fixed_run_root=root); store.ensure_run_layout(run.id); ids=[]
+        environment = session.scalar(select(EnvironmentCapabilityModel).order_by(EnvironmentCapabilityModel.created_at.desc()))
+        environment_snapshot = environment.snapshot if environment else {}
+        controlled_probes = environment_snapshot.get("controlled_probes", {})
+        runtimes = {item.get("name"): item for item in environment_snapshot.get("runtimes", []) if isinstance(item, dict)}
         payload={"status":resolution.status,"policy_version":resolution.policy_version,"compatible_profiles":[p.model_dump(mode="json") for p in resolution.compatible_profiles],"blockers":list(resolution.blockers),"guidance":list(resolution.guidance)}
-        for name,data in (("source_runtime_resolution.json",payload),("runtime_validation_report.json",{"status":resolution.status,"blockers":list(resolution.blockers),"policy_version":resolution.policy_version}),("runtime_environment_redacted.json",{"redacted":True,"policy_version":resolution.policy_version})): 
+        probe_report = {"status": resolution.status, "policy_version": resolution.policy_version, "probes": ["node --version", "npm --version", "npx --version", "node -p process.execPath", "npm config get registry"], "observed_runtimes": runtimes, "controlled_probes": controlled_probes, "probe_artifact_ids": [value.get("artifact_id") for value in controlled_probes.values() if value.get("artifact_id")], "compatible_profiles": [p.model_dump(mode="json") for p in resolution.compatible_profiles], "blockers": list(resolution.blockers)}
+        compatibility = {"source_request_checksum": request_checksum, "source_angular_exact": request.source_angular_exact, "source_typescript_exact": request.source_typescript_exact, "source_rxjs_exact": request.source_rxjs_exact, "status": resolution.status, "blockers": list(resolution.blockers), "policy_version": resolution.policy_version}
+        selected = resolution.selected_profile
+        executable_paths = [item for item in ((selected.node_executable, selected.package_manager_executable, selected.npx_executable) if selected else ()) if item]
+        runtime_directories = list(dict.fromkeys(str(Path(item).parent) for item in executable_paths))
+        effective_path = os.pathsep.join([*runtime_directories, os.environ.get("PATH", "")]) if runtime_directories else os.environ.get("PATH", "")
+        binding = {"status": "bound" if selected else resolution.status, "selected_profile_id": selected.profile_id if selected else None, "selected_checksum": selected.checksum if selected else None, "working_directory_policy": "BASELINE_SANDBOX", "environment_allowlist": list(selected.environment_allowlist) if selected else [], "effective_path": effective_path, "executable_checksums": {label: self._executable_checksum(path) for label, path in (("node", selected.node_executable if selected else None), ("npm", selected.package_manager_executable if selected else None), ("npx", selected.npx_executable if selected else None))}}
+        registry_observation = controlled_probes.get("npm_registry", {})
+        registry_probe = {"status": "configured" if registry_observation.get("status") == "passed" else "not_configured", "registry": registry_observation.get("value"), "probe_artifact_id": registry_observation.get("artifact_id"), "credentials_redacted": True, "network_policy": "approved-registries-only"}
+        for name,data in (("source_runtime_resolution.json",payload),("runtime_probe_report.json",probe_report),("angular_version_compatibility.json",compatibility),("runtime_binding_manifest.json",binding),("npm_registry_probe.json",registry_probe)):
             stored=store.write_text_artifact(run.id,"global/execution-profile/"+name,json.dumps(data,sort_keys=True,indent=2,default=str),ArtifactType.JSON,created_by="execution-profile-service",created_at=now,input_hashes={"request":request_checksum},policy_version=resolution.policy_version); ids.append(stored.ref.artifact_id); session.add(ArtifactMetadataModel(id="metadata-"+stored.ref.artifact_id,run_id=run.id,stage_id=None,artifact_type=stored.ref.artifact_type.value,relative_path=stored.ref.relative_path,checksum=stored.ref.checksum,created_at=now))
         if resolution.selected_profile:
-            stored=store.write_text_artifact(run.id,"global/execution-profile/execution_profile.json",json.dumps(resolution.selected_profile.model_dump(mode="json"),sort_keys=True,indent=2,default=str),ArtifactType.JSON,created_by="execution-profile-service",created_at=now,input_hashes={"request":request_checksum},policy_version=resolution.policy_version); ids.append(stored.ref.artifact_id); session.add(ArtifactMetadataModel(id="metadata-"+stored.ref.artifact_id,run_id=run.id,stage_id=None,artifact_type=stored.ref.artifact_type.value,relative_path=stored.ref.relative_path,checksum=stored.ref.checksum,created_at=now))
+            profile_payload = json.dumps(resolution.selected_profile.model_dump(mode="json"),sort_keys=True,indent=2,default=str)
+            for relative_path in ("global/execution-profile/runtime_profile.json", "global/execution-profile/execution_profile.json"):
+                stored=store.write_text_artifact(run.id,relative_path,profile_payload,ArtifactType.JSON,created_by="execution-profile-service",created_at=now,input_hashes={"request":request_checksum},policy_version=resolution.policy_version); ids.append(stored.ref.artifact_id); session.add(ArtifactMetadataModel(id="metadata-"+stored.ref.artifact_id,run_id=run.id,stage_id=None,artifact_type=stored.ref.artifact_type.value,relative_path=stored.ref.relative_path,checksum=stored.ref.checksum,created_at=now))
         return ids
+
+    @staticmethod
+    def _executable_checksum(path):
+        if not path:
+            return None
+        try:
+            candidate = Path(path)
+            return "sha256:" + hashlib.sha256(candidate.read_bytes()).hexdigest() if candidate.is_file() else None
+        except OSError:
+            return None
 
     @staticmethod
     def _checksum(payload): return "sha256:"+hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
