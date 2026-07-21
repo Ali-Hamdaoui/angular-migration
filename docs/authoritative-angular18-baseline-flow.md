@@ -62,7 +62,7 @@ working directories.
 ## Failure and recovery
 
 Missing or changed source, unsafe links, snapshot verification failures,
-missing lockfiles, incompatible runtimes, registry failures, unauthorized
+missing or invalid `package-lock.json`/`npm-shrinkwrap.json`, incompatible runtimes, registry failures, unauthorized
 commands, command failures, and artifact failures leave a durable failed or
 blocked record with evidence. A repeated Start request replays the same job
 and does not copy a second snapshot. Backend startup re-dispatches queued,
