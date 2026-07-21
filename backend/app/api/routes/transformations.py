@@ -1,12 +1,15 @@
 """G03 transformation, evidence, and G08 approval API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import JSONResponse
 
 from app.api.authentication import authenticated_actor
+from app.api.errors import error_response
 from app.api.transformation_contracts import (
     AngularUpdateRequest,
     AngularUpdateResponse,
     G08DecisionRequest,
+    G08InitializeRequest,
     G08ReviewResponse,
     TargetVersionResponse,
     TransformationEvidenceRequest,
@@ -33,6 +36,38 @@ def get_transformation_evidence_service() -> TransformationEvidenceApplicationSe
 
 def get_g08_service() -> G08ApprovalApplicationService:
     return G08ApprovalApplicationService()
+
+
+def _g08_error(
+    request: Request,
+    error: G03ApplicationError,
+) -> JSONResponse:
+    return error_response(
+        request,
+        status_code=error.status_code,
+        error_code=error.code,
+        message=error.message,
+    )
+
+
+def _g08_backend_failure(request: Request, message: str) -> JSONResponse:
+    return error_response(
+        request,
+        status_code=500,
+        error_code="G08_BACKEND_FAILURE",
+        message=message,
+    )
+
+
+def _g08_result_or_404(request: Request, result, detail: str = "G08 approval package not found") -> JSONResponse:
+    if result is None:
+        return error_response(
+            request,
+            status_code=404,
+            error_code="G08_NOT_FOUND",
+            message=detail,
+        )
+    return result
 
 
 # ── S3-F07 — Angular Update ──────────────────────────────────────────────
@@ -174,12 +209,17 @@ def inspect_g08(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
     gate_id: str = Path(min_length=1),
+    http_request: Request = None,
+    actor: str = Depends(authenticated_actor),
     service: G08ApprovalApplicationService = Depends(get_g08_service),
 ):
-    result = service.get(run_id, stage_id, gate_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="G08 approval package not found")
-    return result
+    try:
+        result = service.get(run_id, stage_id, gate_id, actor=actor)
+    except G03ApplicationError as error:
+        return _g08_error(http_request, error)
+    except Exception:
+        return _g08_backend_failure(http_request, "Unexpected backend failure in inspect_g08")
+    return _g08_result_or_404(http_request, result)
 
 
 @router.post("/{run_id}/stages/{stage_id}/approvals/{gate_id}/decisions", response_model=G08ReviewResponse)
@@ -188,17 +228,23 @@ def decide_g08(
     stage_id: str = Path(min_length=1),
     gate_id: str = Path(min_length=1),
     request: G08DecisionRequest = None,
+    http_request: Request = None,
+    actor: str = Depends(authenticated_actor),
     service: G08ApprovalApplicationService = Depends(get_g08_service),
 ):
     if request.gate_id != gate_id:
-        raise HTTPException(status_code=400, detail="gate_id in body does not match path")
+        return error_response(
+            http_request,
+            status_code=400,
+            error_code="GATE_ID_MISMATCH",
+            message="gate_id in body does not match path",
+        )
     try:
-        return service.decide(run_id, stage_id, request)
+        return service.decide(run_id, stage_id, request, actor=actor)
     except G03ApplicationError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail={"error_code": error.code, "message": error.message},
-        ) from error
+        return _g08_error(http_request, error)
+    except Exception:
+        return _g08_backend_failure(http_request, "Unexpected backend failure in decide_g08")
 
 
 @router.post("/{run_id}/stages/{stage_id}/approvals/{gate_id}/package", response_model=G08ReviewResponse)
@@ -206,15 +252,86 @@ def initialize_g08(
     run_id: str = Path(min_length=1),
     stage_id: str = Path(min_length=1),
     gate_id: str = Path(min_length=1),
-    request: G08DecisionRequest = None,
+    request: G08InitializeRequest = None,
+    http_request: Request = None,
+    actor: str = Depends(authenticated_actor),
     service: G08ApprovalApplicationService = Depends(get_g08_service),
 ):
     if request.gate_id != gate_id:
-        raise HTTPException(status_code=400, detail="gate_id in body does not match path")
+        return error_response(
+            http_request,
+            status_code=400,
+            error_code="GATE_ID_MISMATCH",
+            message="gate_id in body does not match path",
+        )
     try:
-        return service.initialize(run_id, stage_id, request)
+        return service.initialize(run_id, stage_id, request, actor=actor)
     except G03ApplicationError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail={"error_code": error.code, "message": error.message},
-        ) from error
+        return _g08_error(http_request, error)
+    except Exception:
+        return _g08_backend_failure(http_request, "Unexpected backend failure in initialize_g08")
+
+
+# ── Source-contract alias routes (fixed G08, no stage_id in path) ────────
+
+
+@router.get("/{run_id}/approvals/G08", response_model=G08ReviewResponse)
+def inspect_current_g08(
+    run_id: str = Path(min_length=1),
+    http_request: Request = None,
+    actor: str = Depends(authenticated_actor),
+    service: G08ApprovalApplicationService = Depends(get_g08_service),
+):
+    try:
+        result = service.get(run_id=run_id, stage_id=None, gate_id="G08", actor=actor)
+    except G03ApplicationError as error:
+        return _g08_error(http_request, error)
+    except Exception:
+        return _g08_backend_failure(http_request, "Unexpected backend failure in inspect_current_g08")
+    return _g08_result_or_404(http_request, result)
+
+
+@router.post("/{run_id}/approvals/G08/decisions", response_model=G08ReviewResponse)
+def decide_current_g08(
+    run_id: str = Path(min_length=1),
+    request: G08DecisionRequest = None,
+    http_request: Request = None,
+    actor: str = Depends(authenticated_actor),
+    service: G08ApprovalApplicationService = Depends(get_g08_service),
+):
+    if request.gate_id != "G08":
+        return error_response(
+            http_request,
+            status_code=400,
+            error_code="GATE_ID_MISMATCH",
+            message="gate_id in body does not match path",
+        )
+    try:
+        return service.decide(run_id, stage_id=None, request=request, actor=actor)
+    except G03ApplicationError as error:
+        return _g08_error(http_request, error)
+    except Exception:
+        return _g08_backend_failure(http_request, "Unexpected backend failure in decide_current_g08")
+
+
+@router.post("/{run_id}/approvals/G08/package", response_model=G08ReviewResponse)
+def initialize_current_g08(
+    run_id: str = Path(min_length=1),
+    request: G08InitializeRequest = None,
+    http_request: Request = None,
+    actor: str = Depends(authenticated_actor),
+    service: G08ApprovalApplicationService = Depends(get_g08_service),
+):
+    if request.gate_id != "G08":
+        return error_response(
+            http_request,
+            status_code=400,
+            error_code="GATE_ID_MISMATCH",
+            message="gate_id in body does not match path",
+        )
+    try:
+        return service.initialize(run_id, stage_id=None, request=request, actor=actor)
+    except G03ApplicationError as error:
+        return _g08_error(http_request, error)
+    except Exception:
+        return _g08_backend_failure(http_request, "Unexpected backend failure in initialize_current_g08")

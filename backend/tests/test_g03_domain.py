@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from app.domain.contracts import RiskLevel
+from app.domain.contracts import ArtifactRefDto, ArtifactType, RiskLevel
 from app.domain.transformation import (
     AngularUpdateCommand,
     AngularUpdateResult,
@@ -39,7 +39,6 @@ _VALID_SHA256_C = "sha256:" + "c" * 64
 _VALID_SHA256_D = "sha256:" + "d" * 64
 _VALID_SHA256_E = "sha256:" + "e" * 64
 _VALID_SHA256_F = "sha256:" + "f" * 64
-_VALID_SHA256_G = "sha256:" + "0" * 64
 _VALID_SHA256_G = "sha256:" + "0" * 64
 
 
@@ -214,6 +213,19 @@ class TestForbiddenChangeEntry:
         assert entry.risk_level == RiskLevel.CRITICAL
 
 
+def _g08_artifact(artifact_id: str, checksum: str = _VALID_SHA256) -> ArtifactRefDto:
+    from datetime import UTC, datetime
+    return ArtifactRefDto(
+        artifact_id=artifact_id,
+        run_id="run-1",
+        stage_id="stage-1",
+        artifact_type=ArtifactType.JSON,
+        relative_path=f"artifacts/{artifact_id}.json",
+        created_at=datetime.now(UTC),
+        checksum=checksum,
+    )
+
+
 class TestG08ApprovalService:
     def test_approve_complete_evidence(self):
         pkg = G08EvidencePackage(
@@ -238,9 +250,12 @@ class TestG08ApprovalService:
                 evidence_complete=True,
                 overall_risk_level=RiskLevel.LOW,
             ),
+            artifact_refs=(_g08_artifact("art-1"), _g08_artifact("art-2")),
             artifact_set_checksum="sha256:artifacts",
             workspace_fingerprint="sha256:workspace",
             package_checksum="sha256:package",
+            transformation_record_id="tr-1",
+            evidence_id="ev-1",
         )
         result = G08ApprovalService().decide(pkg, G08Decision.APPROVED)
         assert result.decision == G08Decision.APPROVED
@@ -268,9 +283,12 @@ class TestG08ApprovalService:
                 evidence_complete=False,
                 overall_risk_level=RiskLevel.HIGH,
             ),
+            artifact_refs=(),
             artifact_set_checksum="sha256:empty",
             workspace_fingerprint="sha256:empty",
             package_checksum="sha256:empty",
+            transformation_record_id="tr-1",
+            evidence_id="ev-1",
         )
         result = G08ApprovalService().decide(pkg, G08Decision.APPROVED)
         assert result.stale
@@ -299,9 +317,12 @@ class TestG08ApprovalService:
                 evidence_complete=True,
                 overall_risk_level=RiskLevel.CRITICAL,
             ),
+            artifact_refs=(_g08_artifact("art-3"),),
             artifact_set_checksum="sha256:artifacts2",
             workspace_fingerprint="sha256:workspace2",
             package_checksum="sha256:package2",
+            transformation_record_id="tr-1",
+            evidence_id="ev-2",
         )
         result = G08ApprovalService().decide(pkg, G08Decision.APPROVED)
         assert not result.stale
@@ -330,13 +351,82 @@ class TestG08ApprovalService:
                 evidence_complete=True,
                 overall_risk_level=RiskLevel.LOW,
             ),
+            artifact_refs=(_g08_artifact("art-4"),),
             artifact_set_checksum="sha256:arts",
             workspace_fingerprint="sha256:ws",
             package_checksum="sha256:pkg",
+            transformation_record_id="tr-1",
+            evidence_id="ev-3",
         )
         result = G08ApprovalService().decide(pkg, G08Decision.MODIFICATION_REQUESTED, comment="Please fix line endings")
         assert result.decision == G08Decision.MODIFICATION_REQUESTED
         assert "Please fix line endings" in result.reason
+
+    def test_rejects_target_mismatch_even_when_evidence_is_complete(self):
+        pkg = G08EvidencePackage(
+            run_id="run-1",
+            stage_id="stage-1",
+            gate_version="g08-v1",
+            state_version=1,
+            actor="tester",
+            transformation_result=AngularUpdateResult(
+                run_id="run-1", stage_id="stage-1",
+                update_status=AngularUpdateStatus.FAILED,
+                target_version_status=TargetVersionStatus.MISMATCH,
+            ),
+            evidence_result=TransformationEvidenceResult(
+                run_id="run-1", stage_id="stage-1",
+                diff=DiffSummary(
+                    total_files_changed=10, total_lines_added=100,
+                    total_lines_removed=50, diff_checksum=_VALID_SHA256,
+                    inventory_checksum=_VALID_SHA256,
+                ),
+                evidence_complete=True,
+                overall_risk_level=RiskLevel.LOW,
+            ),
+            artifact_refs=(_g08_artifact("art-5"),),
+            artifact_set_checksum="sha256:arts5",
+            workspace_fingerprint="sha256:ws5",
+            package_checksum="sha256:pkg5",
+            transformation_record_id="tr-1",
+            evidence_id="ev-4",
+        )
+        result = G08ApprovalService().decide(pkg, G08Decision.APPROVED)
+        assert result.stale
+        assert result.decision == G08Decision.REJECTED
+        assert "angular update did not succeed" in result.reason
+
+    def test_modification_request_requires_comment(self):
+        pkg = G08EvidencePackage(
+            run_id="run-1",
+            stage_id="stage-1",
+            gate_version="g08-v1",
+            state_version=1,
+            actor="tester",
+            transformation_result=AngularUpdateResult(
+                run_id="run-1", stage_id="stage-1",
+                update_status=AngularUpdateStatus.SUCCEEDED,
+                target_version_status=TargetVersionStatus.VERIFIED,
+            ),
+            evidence_result=TransformationEvidenceResult(
+                run_id="run-1", stage_id="stage-1",
+                diff=DiffSummary(
+                    total_files_changed=10, total_lines_added=100,
+                    total_lines_removed=50, diff_checksum=_VALID_SHA256,
+                    inventory_checksum=_VALID_SHA256,
+                ),
+                evidence_complete=True,
+                overall_risk_level=RiskLevel.LOW,
+            ),
+            artifact_refs=(_g08_artifact("art-6"),),
+            artifact_set_checksum="sha256:arts6",
+            workspace_fingerprint="sha256:ws6",
+            package_checksum="sha256:pkg6",
+            transformation_record_id="tr-1",
+            evidence_id="ev-5",
+        )
+        with pytest.raises(ValueError, match="modification_requested requires a non-empty comment"):
+            G08ApprovalService().decide(pkg, G08Decision.MODIFICATION_REQUESTED, comment=None)
 
 
 class TestG08EvidencePackageBuilder:
@@ -365,6 +455,10 @@ class TestG08EvidencePackageBuilder:
             transformation_result=transform_result,
             evidence_result=evidence_result,
             workspace_fingerprint="sha256:workspace",
+            transformation_record_id="tr-1",
+            evidence_id="ev-1",
+            plan_version=1,
+            plan_checksum=_VALID_SHA256,
         )
         pkg2 = builder.build(
             run_id="run-1", stage_id="stage-1",
@@ -373,10 +467,18 @@ class TestG08EvidencePackageBuilder:
             transformation_result=transform_result,
             evidence_result=evidence_result,
             workspace_fingerprint="sha256:workspace",
+            transformation_record_id="tr-1",
+            evidence_id="ev-1",
+            plan_version=1,
+            plan_checksum=_VALID_SHA256,
         )
         assert pkg1.package_checksum == pkg2.package_checksum
         assert pkg1.artifact_set_checksum == pkg2.artifact_set_checksum
         assert pkg1.gate_id == "G08"
+        assert pkg1.transformation_record_id == "tr-1"
+        assert pkg1.evidence_id == "ev-1"
+        assert pkg1.plan_version == 1
+        assert pkg1.plan_checksum == _VALID_SHA256
 
 
 class TestNormalizeLineEndings:

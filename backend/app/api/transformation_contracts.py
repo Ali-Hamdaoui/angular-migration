@@ -112,18 +112,30 @@ class TransformationEvidenceResponse(ContractModel):
 # ── S3-F09 — G08 Approval ────────────────────────────────────────────────
 
 
+class G08InitializeRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    gate_id: str = Field(default="G08", min_length=1, max_length=16)
+
+
 class G08DecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
+    actor: str | None = Field(default=None, min_length=1, max_length=128)
     decision: G08Decision
     comment: str | None = Field(default=None, max_length=4000)
     gate_id: str = Field(default="G08", min_length=1, max_length=16)
+    gate_version: str | None = Field(default=None, max_length=64)
+    package_checksum: str | None = Field(default=None, max_length=128)
+    artifact_set_checksum: str | None = Field(default=None, max_length=128)
+    workspace_fingerprint: str | None = Field(default=None, max_length=128)
+    plan_version: int | None = Field(default=None, ge=1)
+    plan_checksum: str | None = Field(default=None, max_length=128)
 
 
 class G08ReviewResponse(ContractModel):
     run_id: str
-    stage_id: str
+    stage_id: str | None = None
     gate_id: str
     gate_version: str
     status: str
@@ -137,3 +149,10 @@ class G08ReviewResponse(ContractModel):
     idempotent_replay: bool = False
     stale_reason: str | None = None
     comment: str | None = None
+    plan_version: int | None = None
+    plan_checksum: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    artifact_links: dict[str, str] = Field(default_factory=dict)
+    package_artifact_id: str | None = None
+    technical_blockers: list[str] = Field(default_factory=list)
+    correlation_id: str | None = None

@@ -331,6 +331,11 @@ class G08EvidencePackage(ContractModel):
     artifact_set_checksum: str = Field(min_length=1)
     workspace_fingerprint: str = Field(min_length=1)
     package_checksum: str = Field(min_length=1)
+    transformation_record_id: str | None = None
+    evidence_id: str | None = None
+    plan_version: int | None = None
+    plan_checksum: str | None = None
+    technical_blockers: list[str] = Field(default_factory=list)
 
 
 class G08DecisionResult(ContractModel):
@@ -357,8 +362,15 @@ class G08EvidencePackageBuilder:
         evidence_result: TransformationEvidenceResult,
         artifacts: list[ArtifactRefDto] | tuple[ArtifactRefDto, ...] = (),
         workspace_fingerprint: str,
+        transformation_record_id: str | None = None,
+        evidence_id: str | None = None,
+        plan_version: int | None = None,
+        plan_checksum: str | None = None,
+        technical_blockers: list[str] | None = None,
     ) -> G08EvidencePackage:
-        artifact_set_checksum = _artifact_set_checksum(artifacts)
+        sorted_artifacts = list(artifacts)
+        sorted_artifacts.sort(key=lambda v: v.artifact_id)
+        artifact_set_checksum = _artifact_set_checksum(sorted_artifacts)
         unsigned: dict[str, Any] = {
             "run_id": run_id,
             "stage_id": stage_id,
@@ -369,7 +381,7 @@ class G08EvidencePackageBuilder:
             "transformation_result": transformation_result.model_dump(mode="json"),
             "evidence_result": evidence_result.model_dump(mode="json"),
             "artifact_set_checksum": artifact_set_checksum,
-            "artifact_payload": [item.model_dump(mode="json") for item in artifacts],
+            "artifact_payload": [item.model_dump(mode="json") for item in sorted_artifacts],
             "workspace_fingerprint": workspace_fingerprint,
         }
         package_checksum = _checksum(unsigned)
@@ -381,10 +393,15 @@ class G08EvidencePackageBuilder:
             actor=actor,
             transformation_result=transformation_result,
             evidence_result=evidence_result,
-            artifact_refs=tuple(artifacts),
+            artifact_refs=tuple(sorted_artifacts),
             artifact_set_checksum=artifact_set_checksum,
             workspace_fingerprint=workspace_fingerprint,
             package_checksum=package_checksum,
+            transformation_record_id=transformation_record_id,
+            evidence_id=evidence_id,
+            plan_version=plan_version,
+            plan_checksum=plan_checksum,
+            technical_blockers=technical_blockers or [],
         )
 
 
@@ -398,7 +415,12 @@ class G08ApprovalService:
         *,
         comment: str | None = None,
     ) -> G08DecisionResult:
+        normalized_comment = comment.strip() if comment else None
+
         if decision in {G08Decision.APPROVED, G08Decision.APPROVED_WITH_COMMENT}:
+            if decision is G08Decision.APPROVED_WITH_COMMENT and not normalized_comment:
+                raise ValueError("approved_with_comment requires a non-empty comment")
+
             if not package.evidence_result.evidence_complete:
                 return G08DecisionResult(
                     package_checksum=package.package_checksum,
@@ -406,6 +428,7 @@ class G08ApprovalService:
                     stale=True,
                     reason="transformation evidence is incomplete",
                 )
+
             if package.evidence_result.overall_risk_level == RiskLevel.CRITICAL:
                 return G08DecisionResult(
                     package_checksum=package.package_checksum,
@@ -413,17 +436,39 @@ class G08ApprovalService:
                     stale=False,
                     reason="critical risk in transformation evidence requires remediation before approval",
                 )
-            if decision is G08Decision.APPROVED_WITH_COMMENT and not comment:
+
+            # Blockers: check update_status and target_version before approving
+            blockers: list[str] = []
+            if package.transformation_result.update_status != AngularUpdateStatus.SUCCEEDED:
+                blockers.append("angular update did not succeed")
+            if package.transformation_result.target_version_status != TargetVersionStatus.VERIFIED:
+                blockers.append("target version is not verified")
+            if package.evidence_result.overall_risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+                blockers.append(f"overall risk level is {package.evidence_result.overall_risk_level.value}")
+
+            if blockers:
+                return G08DecisionResult(
+                    package_checksum=package.package_checksum,
+                    decision=G08Decision.REJECTED,
+                    stale=True,
+                    reason="; ".join(blockers),
+                )
+
+            if decision is G08Decision.APPROVED_WITH_COMMENT and not normalized_comment:
                 raise ValueError("approved_with_comment requires a non-empty comment")
             return G08DecisionResult(
                 package_checksum=package.package_checksum,
                 decision=decision,
-                reason=comment,
+                reason=normalized_comment,
             )
+
+        if decision is G08Decision.MODIFICATION_REQUESTED and not normalized_comment:
+            raise ValueError("modification_requested requires a non-empty comment")
+
         return G08DecisionResult(
             package_checksum=package.package_checksum,
             decision=decision,
-            reason=comment,
+            reason=normalized_comment,
         )
 
 

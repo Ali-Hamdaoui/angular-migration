@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
 from app.command_execution import CommandLogWriter, CommandPolicy, CommandRegistry, ExecutionWorker
 from app.domain.contracts import CancellationPolicy, CommandRequestDto, CommandStatus
 from app.domain.contracts import ArtifactRefDto, ArtifactType, RiskLevel, WorkflowEventType
@@ -1627,223 +1627,417 @@ class TransformationEvidenceApplicationService:
 
 class G08ApprovalApplicationService:
     GATE_ID = "G08"
-    GATE_VERSION = "g08-v1"
+    GATE_VERSION = "g08-v2"
 
-    def __init__(self, *, session_scope_factory=session_scope, now_provider=None) -> None:
+    def __init__(
+        self,
+        *,
+        session_scope_factory=session_scope,
+        now_provider=None,
+    ) -> None:
         self._scope = session_scope_factory
         self._now = now_provider or (lambda: datetime.now(UTC))
 
-    def get(self, run_id: str, stage_id: str, gate_id: str):
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    def get(self, run_id: str, stage_id: str | None, gate_id: str, *, actor: str | None = None):
         if gate_id != self.GATE_ID:
             return None
         with self._scope() as session:
-            record = session.scalar(
-                select(G08ApprovalModel)
-                .where(G08ApprovalModel.run_id == run_id)
-                .where(G08ApprovalModel.stage_id == stage_id)
-                .order_by(G08ApprovalModel.created_at.desc())
-            )
+            run = self._authorized_run(session, run_id, actor)
+            record = self._latest_record(session, run_id, stage_id)
             return self._dto(record) if record else None
 
-    def initialize(self, run_id: str, stage_id: str, request) -> object:
+    def initialize(self, run_id: str, stage_id: str | None, request, *, actor: str | None = None) -> object:
         if request.gate_id != self.GATE_ID:
             raise G03ApplicationError("GATE_NOT_FOUND", "Only G08 is supported by this endpoint.", status_code=404)
         now = self._now()
         with self._scope() as session:
-            run = session.get(MigrationRunModel, run_id)
-            if run is None:
-                raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            run = self._authorized_run(session, run_id, actor)
+            resolved_stage_id = self.resolve_stage_id(session, run_id, stage_id)
 
-            existing = session.scalar(
+            request_checksum = self._checksum(request.model_dump(mode="json"))
+
+            existing_by_key = session.scalar(
                 select(G08ApprovalModel)
                 .where(G08ApprovalModel.run_id == run_id)
-                .where(G08ApprovalModel.stage_id == stage_id)
+                .where(G08ApprovalModel.stage_id == resolved_stage_id)
+                .where(G08ApprovalModel.idempotency_key == request.idempotency_key)
+            )
+            if existing_by_key is not None:
+                self._require_idempotent_payload(existing_by_key, request_checksum, run.state_version)
+                return self._dto(existing_by_key, replay=True)
+
+            self._require_state(run, request.expected_state_version)
+
+            # Load current authoritative inputs
+            inputs = self._load_current_inputs(session, run_id, resolved_stage_id)
+
+            # Stale: if a previous record exists but with a different idempotency key
+            previous = session.scalar(
+                select(G08ApprovalModel)
+                .where(G08ApprovalModel.run_id == run_id)
+                .where(G08ApprovalModel.stage_id == resolved_stage_id)
                 .order_by(G08ApprovalModel.created_at.desc())
             )
-            if existing is not None:
-                return self._dto(existing, replay=True)
+            if previous is not None:
+                record = self._record_stale(session, previous, run, now, "A new G08 package supersedes the previous pending package")
+            else:
+                record = None
 
-            if run.state_version != request.expected_state_version:
-                raise G03ApplicationError("STALE_STATE_VERSION", "The run state version is stale.", status_code=409)
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
+            ) if run.artifact_root else None
 
-            record = self._create_pending_record(session, run, stage_id, request.actor, request.idempotency_key, now)
-            return self._dto(record)
+            # Build evidence artifact refs
+            artifact_refs, artifact_ids = self._collect_artifact_refs(
+                session, store, run_id, resolved_stage_id, now
+            )
 
-    def decide(self, run_id: str, stage_id: str, request) -> object:
+            # Build G08 evidence index artifact
+            evidence_idx_id = None
+            if store:
+                g08_payload = {
+                    "gate_version": self.GATE_VERSION,
+                    "transform_record_id": inputs["transform_record"].id if inputs["transform_record"] else None,
+                    "evidence_record_id": inputs["evidence_record"].id if inputs["evidence_record"] else None,
+                    "transform_artifact_ids": (inputs["transform_record"].artifact_ids or []) if inputs["transform_record"] else [],
+                    "evidence_artifact_ids": (inputs["evidence_record"].artifact_ids or []) if inputs["evidence_record"] else [],
+                }
+                idx_ref = _write_evidence(
+                    store, session, run_id, f"g08_evidence_index_{resolved_stage_id}.json",
+                    g08_payload,
+                    stage_id=resolved_stage_id,
+                    created_by="g08-approval-service",
+                    created_at=now,
+                )
+                artifact_refs.append(idx_ref)
+                artifact_ids.append(idx_ref.artifact_id)
+                evidence_idx_id = idx_ref.artifact_id
+
+            package = G08EvidencePackageBuilder().build(
+                run_id=run_id,
+                stage_id=resolved_stage_id,
+                state_version=run.state_version,
+                actor=actor or request.idempotency_key,
+                gate_version=self.GATE_VERSION,
+                transformation_result=inputs["transform_result"],
+                evidence_result=inputs["ev_result"],
+                artifacts=artifact_refs,
+                workspace_fingerprint=inputs["workspace_fingerprint"],
+                transformation_record_id=inputs["transform_record"].id if inputs["transform_record"] else None,
+                evidence_id=inputs["evidence_record"].id if inputs["evidence_record"] else None,
+                plan_version=inputs["plan_version"],
+                plan_checksum=inputs["plan_checksum"],
+            )
+
+            # Write the evidence package as an artifact
+            package_artifact_id = None
+            if store:
+                try:
+                    pkg_ref = store.write_text_artifact(
+                        run_id,
+                        f"stage/{resolved_stage_id}/g08/evidence_package.json",
+                        json.dumps(package.model_dump(mode="json"), sort_keys=True, indent=2),
+                        ArtifactType.JSON,
+                        created_by="g08-approval-service",
+                        created_at=now,
+                    )
+                    session.add(ArtifactMetadataModel(
+                        id=f"metadata-{pkg_ref.ref.artifact_id}",
+                        run_id=run_id,
+                        stage_id=resolved_stage_id,
+                        artifact_type=pkg_ref.ref.artifact_type.value,
+                        relative_path=pkg_ref.ref.relative_path,
+                        checksum=pkg_ref.ref.checksum,
+                        created_at=now,
+                    ))
+                    artifact_ids.append(pkg_ref.ref.artifact_id)
+                    package_artifact_id = pkg_ref.ref.artifact_id
+                except (OSError, ValueError) as exc:
+                    raise G03ApplicationError("G08_PACKAGE_WRITE_FAILED", str(exc), status_code=500)
+
+            try:
+                transition = StateTransitionService(session).apply_transition(
+                    TransitionRequest(
+                        run_id=run_id,
+                        expected_state_version=run.state_version,
+                        idempotency_key=request.idempotency_key,
+                        event_type=WorkflowEventType.APPROVAL_GATE_CREATED,
+                        actor=actor or request.idempotency_key,
+                        reason="G08 evidence package initialized",
+                        occurred_at=now,
+                        stage_id=resolved_stage_id,
+                        payload={
+                            "gate_version": self.GATE_VERSION,
+                            "stage_id": resolved_stage_id,
+                            "package_checksum": package.package_checksum,
+                        },
+                    )
+                )
+            except Exception:
+                if package_artifact_id:
+                    try:
+                        store.delete_artifact(package_artifact_id) if hasattr(store, 'delete_artifact') else None
+                    except Exception:
+                        pass
+                raise
+
+            # Append-only record (never mutate existing)
+            new_record = G08ApprovalModel(
+                id=f"g08-{uuid4().hex[:12]}",
+                run_id=run_id,
+                stage_id=resolved_stage_id,
+                gate_id=self.GATE_ID,
+                gate_version=package.gate_version,
+                idempotency_key=request.idempotency_key,
+                request_checksum=request_checksum,
+                correlation_id=getattr(request, 'correlation_id', None),
+                actor=actor or request.idempotency_key,
+                status="pending",
+                package_checksum=package.package_checksum,
+                artifact_set_checksum=package.artifact_set_checksum,
+                workspace_fingerprint=package.workspace_fingerprint,
+                state_version=transition.next_state_version,
+                event_sequence=transition.event_sequence,
+                package=package.model_dump(mode="json"),
+                artifact_ids=artifact_ids,
+                plan_version=package.plan_version,
+                plan_checksum=package.plan_checksum,
+                package_artifact_id=package_artifact_id,
+                parent_gate_record_id=previous.id if previous else None,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(new_record)
+            session.flush()
+            return self._dto(new_record)
+
+    def decide(self, run_id: str, stage_id: str | None, request, *, actor: str | None = None) -> object:
         if request.gate_id != self.GATE_ID:
             raise G03ApplicationError("GATE_NOT_FOUND", "Only G08 is supported by this endpoint.", status_code=404)
         now = self._now()
         with self._scope() as session:
-            run = session.get(MigrationRunModel, run_id)
-            if run is None:
-                raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            run = self._authorized_run(session, run_id, actor)
+            resolved_stage_id = self.resolve_stage_id(session, run_id, stage_id)
+
+            request_checksum = self._checksum(request.model_dump(mode="json"))
 
             existing_event = _find_event(session, run_id, request.idempotency_key)
             if existing_event:
                 record = session.scalar(
                     select(G08ApprovalModel)
                     .where(G08ApprovalModel.run_id == run_id)
+                    .where(G08ApprovalModel.stage_id == resolved_stage_id)
                     .order_by(G08ApprovalModel.created_at.desc())
                 )
                 if record is None:
                     raise G03ApplicationError("STALE_EVIDENCE", "G08 approval record not found.", status_code=409)
                 return self._dto(record, replay=True)
 
-            if run.state_version != request.expected_state_version:
-                raise G03ApplicationError("STALE_STATE_VERSION", "The run state version is stale.", status_code=409)
+            self._require_state(run, request.expected_state_version)
 
-            record = session.scalar(
-                select(G08ApprovalModel)
-                .where(G08ApprovalModel.run_id == run_id)
-                .where(G08ApprovalModel.stage_id == stage_id)
-                .order_by(G08ApprovalModel.created_at.desc())
-            )
-
+            record = self._latest_record(session, run_id, resolved_stage_id)
             if record is None:
-                record = self._create_pending_record(session, run, stage_id, request.actor, request.idempotency_key, now)
+                raise G03ApplicationError(
+                    "G08_NOT_INITIALIZED",
+                    "G08 package must be initialized before a decision can be recorded.",
+                    status_code=409,
+                )
 
-            # Build the package from stored evidence
-            transformation_record = session.scalar(
-                select(AngularUpdateRecordModel)
-                .where(AngularUpdateRecordModel.run_id == run_id)
-                .where(AngularUpdateRecordModel.stage_id == stage_id)
-                .order_by(AngularUpdateRecordModel.created_at.desc())
-            )
-            evidence_record = session.scalar(
-                select(TransformationEvidenceModel)
-                .where(TransformationEvidenceModel.run_id == run_id)
-                .where(TransformationEvidenceModel.stage_id == stage_id)
-                .order_by(TransformationEvidenceModel.created_at.desc())
-            )
+            # Gate status check
+            if record.status == "approved":
+                raise G03ApplicationError(
+                    "G08_ALREADY_APPROVED",
+                    "G08 gate has already been approved and cannot be decided again.",
+                    status_code=409,
+                )
 
-            transform_result = AngularUpdateResult(
-                run_id=run_id,
-                stage_id=stage_id,
-                update_status=AngularUpdateStatus(transformation_record.status) if transformation_record else AngularUpdateStatus.FAILED,
-                target_version_status=TargetVersionStatus(transformation_record.target_version_status) if transformation_record else TargetVersionStatus.INCONCLUSIVE,
-                resolved_target_version=transformation_record.resolved_target_version if transformation_record else None,
-            )
-            ev_result = TransformationEvidenceResult(
-                run_id=run_id,
-                stage_id=stage_id,
-                diff=DiffSummary(total_files_changed=evidence_record.total_files_changed if evidence_record else 0, total_lines_added=0, total_lines_removed=0, diff_checksum=evidence_record.diff_checksum if evidence_record else "sha256:" + "0" * 64, inventory_checksum=(evidence_record.inventory_checksum or evidence_record.diff_checksum) if evidence_record else "sha256:" + "0" * 64),
-                evidence_complete=evidence_record.evidence_complete if evidence_record else False,
-                overall_risk_level=RiskLevel(evidence_record.overall_risk_level) if evidence_record else RiskLevel.HIGH,
+            stale_recording = False
+
+            # Stale: state drift
+            if not self._record_matches_inputs(record, run, request):
+                record = self._record_stale(session, record, run, now, "Run state version has changed since package creation")
+                stale_recording = True
+
+            # Stale: binding / evidence drift
+            inputs = self._load_current_inputs(session, run_id, resolved_stage_id)
+            if not stale_recording:
+                drift_detected = False
+                if inputs.get("workspace_fingerprint") and record.workspace_fingerprint and record.workspace_fingerprint != inputs["workspace_fingerprint"]:
+                    drift_detected = True
+                if inputs.get("plan_checksum") and record.plan_checksum and record.plan_checksum != inputs["plan_checksum"]:
+                    drift_detected = True
+                if inputs.get("ev_result"):
+                    pkg_ev = record.package.get("evidence_result", {}) if record.package else {}
+                    current_ev_checksum = inputs["ev_result"].diff.diff_checksum
+                    stored_ev_checksum = pkg_ev.get("diff", {}).get("diff_checksum") if isinstance(pkg_ev, dict) else None
+                    if stored_ev_checksum and current_ev_checksum and current_ev_checksum != stored_ev_checksum:
+                        drift_detected = True
+                if drift_detected:
+                    record = self._record_stale(session, record, run, now, "Evidence drift detected: workspace, plan, or evidence checksum changed since package creation")
+                    stale_recording = True
+
+            # Package integrity verification
+            if not stale_recording:
+                self._verify_package_integrity(session, record, run)
+
+            # Build package for decision
+            decision_package = G08EvidencePackage(
+                run_id=record.run_id,
+                stage_id=record.stage_id,
+                gate_version=record.gate_version,
+                state_version=record.state_version,
+                actor=record.actor,
+                transformation_result=inputs["transform_result"],
+                evidence_result=inputs["ev_result"],
+                artifact_refs=(),
+                artifact_set_checksum=record.artifact_set_checksum,
+                workspace_fingerprint=record.workspace_fingerprint,
+                package_checksum=record.package_checksum,
+                transformation_record_id=inputs["transform_record"].id if inputs["transform_record"] else None,
+                evidence_id=inputs["evidence_record"].id if inputs["evidence_record"] else None,
+                plan_version=inputs["plan_version"],
+                plan_checksum=inputs["plan_checksum"],
             )
 
             result: G08DecisionResult = G08ApprovalService().decide(
-                G08EvidencePackage(
-                    run_id=run_id,
-                    stage_id=stage_id,
-                    gate_version=self.GATE_VERSION,
-                    state_version=run.state_version,
-                    actor=request.actor,
-                    transformation_result=transform_result,
-                    evidence_result=ev_result,
-                    artifact_set_checksum=record.artifact_set_checksum,
-                    workspace_fingerprint=record.workspace_fingerprint,
-                    package_checksum=record.package_checksum,
-                ),
+                decision_package,
                 request.decision,
                 comment=request.comment,
             )
 
-            event_type = self._decision_event_type(result.decision)
+            event_type = self._decision_event_type(result.decision, result.stale)
+
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id,
                     expected_state_version=run.state_version,
                     idempotency_key=request.idempotency_key,
                     event_type=event_type,
-                    actor=request.actor,
+                    actor=actor or record.actor,
                     reason=result.reason or f"G08 decision: {result.decision.value}",
                     occurred_at=now,
-                    stage_id=stage_id,
+                    stage_id=resolved_stage_id,
                     payload={
                         "package_checksum": record.package_checksum,
                         "decision": result.decision.value,
-                        "stage_id": stage_id,
+                        "stage_id": resolved_stage_id,
                     },
                 )
             )
 
-            record.status = "stale" if result.stale else result.decision.value
-            record.decision = result.decision.value
-            record.state_version = transition.next_state_version
-            record.event_sequence = transition.event_sequence
-            record.updated_at = now
+            # Append-only decision record
+            decision_record = G08ApprovalModel(
+                id=f"g08-{uuid4().hex[:12]}",
+                run_id=run_id,
+                stage_id=resolved_stage_id,
+                gate_id=self.GATE_ID,
+                gate_version=record.gate_version,
+                idempotency_key=request.idempotency_key,
+                request_checksum=request_checksum,
+                correlation_id=getattr(request, 'correlation_id', None),
+                actor=actor or record.actor,
+                status="stale" if result.stale else result.decision.value,
+                decision=result.decision.value,
+                package_checksum=record.package_checksum,
+                artifact_set_checksum=record.artifact_set_checksum,
+                workspace_fingerprint=record.workspace_fingerprint,
+                state_version=transition.next_state_version,
+                event_sequence=transition.event_sequence,
+                package=record.package,
+                artifact_ids=record.artifact_ids or [],
+                plan_version=inputs["plan_version"],
+                plan_checksum=inputs["plan_checksum"],
+                package_artifact_id=record.package_artifact_id,
+                parent_gate_record_id=record.id,
+                stale_reason=result.reason if result.stale else None,
+                comment=request.comment,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(decision_record)
             session.flush()
-            return self._dto(record)
+            return self._dto(decision_record)
 
-    def _create_pending_record(self, session, run, stage_id: str, actor: str, idempotency_key: str, now: datetime):
-        """Create a pending G08 approval record with evidence package."""
-        store = LocalFilesystemArtifactStore(
-            Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
-        ) if run.artifact_root else None
+    def require_approved_g08(self, run_id: str, stage_id: str | None, *, actor: str | None = None) -> bool:
+        """Raise G03ApplicationError unless the latest G08 record is approved."""
+        with self._scope() as session:
+            run = self._authorized_run(session, run_id, actor)
+            resolved_stage_id = self.resolve_stage_id(session, run_id, stage_id)
+            record = self._latest_record(session, run_id, resolved_stage_id)
+            if record is None:
+                raise G03ApplicationError(
+                    "G08_NOT_FOUND",
+                    "No G08 approval record found for this stage.",
+                    status_code=409,
+                )
+            if record.status != "approved":
+                raise G03ApplicationError(
+                    "G08_NOT_APPROVED",
+                    f"G08 gate is in status '{record.status}', expected 'approved'.",
+                    status_code=409,
+                )
+            if record.stale_reason:
+                raise G03ApplicationError(
+                    "G08_STALE",
+                    f"G08 approval is stale: {record.stale_reason}",
+                    status_code=409,
+                )
+            return True
 
-        # Collect artifact refs from transformation and evidence records
+    # ── Resolution helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def resolve_stage_id(session, run_id: str, stage_id: str | None) -> str:
+        if stage_id is not None:
+            return stage_id
+        record = session.scalar(
+            select(AngularUpdateRecordModel)
+            .where(AngularUpdateRecordModel.run_id == run_id)
+            .order_by(AngularUpdateRecordModel.created_at.desc())
+        )
+        if record is not None:
+            return record.stage_id
+        stage = session.scalar(
+            select(MigrationStageModel)
+            .where(MigrationStageModel.run_id == run_id)
+            .order_by(MigrationStageModel.created_at.desc())
+        )
+        if stage is not None:
+            return stage.id
+        raise G03ApplicationError("STAGE_NOT_FOUND", "Cannot resolve stage for run.", status_code=404)
+
+    # ── Internal helpers ────────────────────────────────────────────────────
+
+    def _load_current_inputs(self, session, run_id: str, stage_id: str) -> dict:
         transform_record = session.scalar(
             select(AngularUpdateRecordModel)
-            .where(AngularUpdateRecordModel.run_id == run.id)
+            .where(AngularUpdateRecordModel.run_id == run_id)
             .where(AngularUpdateRecordModel.stage_id == stage_id)
             .order_by(AngularUpdateRecordModel.created_at.desc())
         )
         evidence_record = session.scalar(
             select(TransformationEvidenceModel)
-            .where(TransformationEvidenceModel.run_id == run.id)
+            .where(TransformationEvidenceModel.run_id == run_id)
             .where(TransformationEvidenceModel.stage_id == stage_id)
             .order_by(TransformationEvidenceModel.created_at.desc())
         )
 
-        artifact_refs: list[ArtifactRefDto] = []
-        artifact_ids: list[str] = []
-
-        # Emit G08_CREATED event to get a real event sequence
-        creation_transition = StateTransitionService(session).apply_transition(
-            TransitionRequest(
-                run_id=run.id,
-                expected_state_version=run.state_version,
-                idempotency_key=f"{idempotency_key}:g08-created",
-                event_type=WorkflowEventType.G08_CREATED,
-                actor=actor,
-                reason="G08 evidence package initialized",
-                occurred_at=now,
-                stage_id=stage_id,
-                payload={"gate_version": self.GATE_VERSION, "stage_id": stage_id},
-            ),
-        )
-
-        if store:
-            # Build G08 evidence index artifact
-            g08_payload = {
-                "gate_version": self.GATE_VERSION,
-                "transform_record_id": transform_record.id if transform_record else None,
-                "evidence_record_id": evidence_record.id if evidence_record else None,
-                "transform_artifact_ids": (transform_record.artifact_ids or []) if transform_record else [],
-                "evidence_artifact_ids": (evidence_record.artifact_ids or []) if evidence_record else [],
-            }
-            ref = _write_evidence(
-                store, session, run.id, f"g08_evidence_index_{stage_id}.json",
-                g08_payload,
-                stage_id=stage_id,
-                created_by="g08-approval-service",
-                created_at=now,
-            )
-            artifact_refs.append(ref)
-            artifact_ids.append(ref.artifact_id)
-
-        # Build the evidence package
         transform_result = AngularUpdateResult(
-            run_id=run.id, stage_id=stage_id,
+            run_id=run_id,
+            stage_id=stage_id,
             update_status=AngularUpdateStatus(transform_record.status) if transform_record else AngularUpdateStatus.FAILED,
             target_version_status=TargetVersionStatus(transform_record.target_version_status) if transform_record else TargetVersionStatus.INCONCLUSIVE,
             resolved_target_version=transform_record.resolved_target_version if transform_record else None,
         )
         ev_result = TransformationEvidenceResult(
-            run_id=run.id, stage_id=stage_id,
+            run_id=run_id,
+            stage_id=stage_id,
             diff=DiffSummary(
                 total_files_changed=evidence_record.total_files_changed if evidence_record else 0,
-                total_lines_added=0, total_lines_removed=0,
+                total_lines_added=0,
+                total_lines_removed=0,
                 diff_checksum=evidence_record.diff_checksum if evidence_record else "sha256:" + "0" * 64,
                 inventory_checksum=(evidence_record.inventory_checksum or evidence_record.diff_checksum) if evidence_record else "sha256:" + "0" * 64,
             ),
@@ -1851,40 +2045,230 @@ class G08ApprovalApplicationService:
             overall_risk_level=RiskLevel(evidence_record.overall_risk_level) if evidence_record else RiskLevel.HIGH,
         )
 
-        package = G08EvidencePackageBuilder().build(
-            run_id=run.id, stage_id=stage_id,
-            state_version=run.state_version, actor=actor,
-            gate_version=self.GATE_VERSION,
-            transformation_result=transform_result,
-            evidence_result=ev_result,
-            artifacts=artifact_refs,
-            workspace_fingerprint=f"sha256:{uuid4().hex}",
+        run = session.get(MigrationRunModel, run_id)
+        workspace_fingerprint = "sha256:" + "0" * 64
+        if run and run.artifact_root:
+            try:
+                store = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
+                )
+                aliases = run.workspace_aliases or {}
+                target_raw = aliases.get("STAGE_SANDBOX")
+                if target_raw:
+                    target_path = Path(target_raw).resolve()
+                    if target_path.is_dir():
+                        workspace_fingerprint = _tree_checksum(target_path)
+            except (OSError, ValueError):
+                pass
+
+        plan_version = None
+        plan_checksum = None
+        if transform_record and transform_record.evidence:
+            plan_checksum = transform_record.evidence.get("plan_checksum")
+            plan_version = transform_record.evidence.get("plan_version")
+
+        return {
+            "transform_record": transform_record,
+            "evidence_record": evidence_record,
+            "transform_result": transform_result,
+            "ev_result": ev_result,
+            "workspace_fingerprint": workspace_fingerprint,
+            "plan_version": plan_version,
+            "plan_checksum": plan_checksum,
+        }
+
+    def _collect_artifact_refs(
+        self,
+        session,
+        store,
+        run_id: str,
+        stage_id: str,
+        now: datetime,
+    ) -> tuple[list[ArtifactRefDto], list[str]]:
+        artifact_refs: list[ArtifactRefDto] = []
+        artifact_ids: list[str] = []
+
+        transform_record = session.scalar(
+            select(AngularUpdateRecordModel)
+            .where(AngularUpdateRecordModel.run_id == run_id)
+            .where(AngularUpdateRecordModel.stage_id == stage_id)
+            .order_by(AngularUpdateRecordModel.created_at.desc())
+        )
+        evidence_record = session.scalar(
+            select(TransformationEvidenceModel)
+            .where(TransformationEvidenceModel.run_id == run_id)
+            .where(TransformationEvidenceModel.stage_id == stage_id)
+            .order_by(TransformationEvidenceModel.created_at.desc())
         )
 
-        record = G08ApprovalModel(
+        if store:
+            for aid in (transform_record.artifact_ids or []) if transform_record else []:
+                try:
+                    metadata = session.get(ArtifactMetadataModel, f"metadata-{aid}")
+                    if metadata:
+                        stored = store.read_artifact_by_id(aid)
+                        if stored.ref.checksum == metadata.checksum:
+                            artifact_refs.append(stored.ref)
+                            artifact_ids.append(aid)
+                except (ArtifactNotFoundError, OSError, ValueError):
+                    pass
+
+            for aid in (evidence_record.artifact_ids or []) if evidence_record else []:
+                try:
+                    metadata = session.get(ArtifactMetadataModel, f"metadata-{aid}")
+                    if metadata:
+                        stored = store.read_artifact_by_id(aid)
+                        if stored.ref.checksum == metadata.checksum:
+                            artifact_refs.append(stored.ref)
+                            artifact_ids.append(aid)
+                    elif aid not in artifact_ids:
+                        artifact_ids.append(aid)
+                except (ArtifactNotFoundError, OSError, ValueError):
+                    if aid not in artifact_ids:
+                        artifact_ids.append(aid)
+
+        return artifact_refs, artifact_ids
+
+    def _verify_package_integrity(self, session, record, run):
+        if not record.package_artifact_id:
+            return
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
+            ) if run.artifact_root else None
+            if store is None:
+                return
+            stored = store.read_artifact_by_id(record.package_artifact_id)
+            metadata = session.get(ArtifactMetadataModel, f"metadata-{record.package_artifact_id}")
+            if metadata and stored.ref.checksum != metadata.checksum:
+                raise G03ApplicationError(
+                    "G08_PACKAGE_TAMPERED",
+                    "G08 package artifact checksum mismatch: evidence has been tampered with.",
+                    status_code=409,
+                )
+        except ArtifactNotFoundError:
+            raise G03ApplicationError(
+                "G08_PACKAGE_MISSING",
+                "G08 package artifact is missing from the artifact store.",
+                status_code=409,
+            )
+        except G03ApplicationError:
+            raise
+        except Exception as exc:
+            raise G03ApplicationError(
+                "G08_PACKAGE_INTEGRITY_FAILURE",
+                str(exc),
+                status_code=500,
+            )
+
+    @staticmethod
+    def _record_matches_inputs(record, run, request) -> bool:
+        if record.state_version != run.state_version:
+            return False
+        return True
+
+    def _record_stale(self, session, record, run, now: datetime, reason: str):
+        transition = StateTransitionService(session).apply_transition(
+            TransitionRequest(
+                run_id=run.id,
+                expected_state_version=run.state_version,
+                idempotency_key=f"stale-{record.id}-{now.timestamp()}",
+                event_type=WorkflowEventType.G08_STALE,
+                actor="system",
+                reason=reason,
+                occurred_at=now,
+                stage_id=record.stage_id,
+                payload={"record_id": record.id},
+            )
+        )
+        stale_record = G08ApprovalModel(
             id=f"g08-{uuid4().hex[:12]}",
-            run_id=run.id,
-            stage_id=stage_id,
+            run_id=record.run_id,
+            stage_id=record.stage_id,
             gate_id=self.GATE_ID,
-            gate_version=package.gate_version,
-            idempotency_key=idempotency_key,
-            actor=actor,
-            status="pending",
-            package_checksum=package.package_checksum,
-            artifact_set_checksum=package.artifact_set_checksum,
-            workspace_fingerprint=package.workspace_fingerprint,
-            state_version=creation_transition.next_state_version,
-            event_sequence=creation_transition.event_sequence,
-            package=package.model_dump(mode="json"),
-            artifact_ids=artifact_ids,
+            gate_version=record.gate_version,
+            idempotency_key=record.idempotency_key + ":stale",
+            request_checksum=record.request_checksum,
+            actor="system",
+            status="stale",
+            decision=record.decision,
+            package_checksum=record.package_checksum,
+            artifact_set_checksum=record.artifact_set_checksum,
+            workspace_fingerprint=record.workspace_fingerprint,
+            state_version=transition.next_state_version,
+            event_sequence=transition.event_sequence,
+            package=record.package,
+            artifact_ids=record.artifact_ids or [],
+            stale_reason=reason,
+            parent_gate_record_id=record.id,
             created_at=now,
             updated_at=now,
         )
-        session.add(record)
+        session.add(stale_record)
         session.flush()
-        return record
+        return stale_record
 
-    def _decision_event_type(self, decision: G08Decision) -> WorkflowEventType:
+    @staticmethod
+    def _latest_record(session, run_id: str, stage_id: str):
+        return session.scalar(
+            select(G08ApprovalModel)
+            .where(G08ApprovalModel.run_id == run_id)
+            .where(G08ApprovalModel.stage_id == stage_id)
+            .order_by(G08ApprovalModel.created_at.desc())
+        )
+
+    @staticmethod
+    def _authorized_run(session, run_id: str, actor: str | None):
+        run = session.get(MigrationRunModel, run_id)
+        if run is None:
+            raise G03ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+        if actor is not None:
+            if run.actor and run.actor != actor:
+                raise G03ApplicationError(
+                    "RUN_FORBIDDEN",
+                    "Actor is not authorized for this run.",
+                    status_code=403,
+                )
+        return run
+
+    @staticmethod
+    def _require_state(run, expected_state_version: int) -> None:
+        if run.state_version != expected_state_version:
+            raise G03ApplicationError(
+                "STALE_STATE_VERSION",
+                f"The run state version is stale (expected {expected_state_version}, got {run.state_version}).",
+                status_code=409,
+            )
+
+    @staticmethod
+    def _require_idempotent_payload(existing, request_checksum: str, current_state_version: int) -> None:
+        if existing.request_checksum is not None and existing.request_checksum != "sha256:" + "0" * 64:
+            if existing.request_checksum != request_checksum:
+                raise G03ApplicationError(
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "Idempotency key payload differs from previous request.",
+                    status_code=409,
+                )
+        if existing.state_version != current_state_version:
+            raise G03ApplicationError(
+                "IDEMPOTENCY_STATE_VERSION_CHANGED",
+                "State version changed since previous idempotent request.",
+                status_code=409,
+            )
+
+    @staticmethod
+    def _artifact_set_checksum(artifacts: list | tuple) -> str:
+        return _artifact_set_checksum(list(artifacts))
+
+    @staticmethod
+    def _checksum(value: dict | list | str) -> str:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+        return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _decision_event_type(decision: G08Decision, stale: bool = False) -> WorkflowEventType:
+        if stale:
+            return WorkflowEventType.G08_STALE
         mapping = {
             G08Decision.APPROVED: WorkflowEventType.G08_APPROVED,
             G08Decision.APPROVED_WITH_COMMENT: WorkflowEventType.G08_APPROVED,
@@ -1912,4 +2296,9 @@ class G08ApprovalApplicationService:
             idempotent_replay=replay,
             stale_reason=record.stale_reason,
             comment=record.comment,
+            plan_version=record.plan_version,
+            plan_checksum=record.plan_checksum,
+            artifact_ids=record.artifact_ids or [],
+            package_artifact_id=record.package_artifact_id,
+            correlation_id=record.correlation_id,
         )
