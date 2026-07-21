@@ -8,7 +8,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.preflight import PreflightSnapshot
-from app.repositories.models import ArtifactMetadataModel, Base, MigrationRunModel, WorkflowEventModel
+from app.domain.contracts import RunStatus
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, Base, MigrationRunModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
 from app.core.config import Settings
@@ -74,6 +75,23 @@ def test_second_active_run_is_rejected(tmp_path: Path):
     service.create(_request())
     with pytest.raises(MigrationRunError, match="Only one mutating"):
         service.create(_request("create-2"))
+
+
+def test_stale_target_claim_is_replaced_before_new_claim_is_created(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    stale = service.create(_request("stale-owner"))
+
+    with scope() as session:
+        run = session.get(MigrationRunModel, stale.run_id)
+        assert run is not None
+        run.status = RunStatus.FAILED.value
+
+    created = service.create(_request("replacement-owner"))
+
+    with scope() as session:
+        claims = list(session.scalars(select(ActiveRunClaimModel)))
+        assert len(claims) == 1
+        assert claims[0].run_id == created.run_id
 
 
 def test_rejected_stale_preflight_does_not_create_run_or_artifacts(tmp_path: Path):

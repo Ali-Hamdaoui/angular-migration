@@ -117,6 +117,9 @@ class MigrationRunService:
                 if previous_run is not None and previous_run.status in self._MUTATING_STATUSES:
                     raise MigrationRunError("TARGET_OWNERSHIP_EXISTS", "The target is owned by an active migration run.")
                 session.delete(previous_claim)
+                # SQLite enforces the unique target claim immediately. Flush
+                # the stale claim deletion before inserting its replacement.
+                session.flush()
             session.add(ActiveRunClaimModel(id=f"claim-{uuid4().hex[:12]}", run_id=run_id, target_output_path=target_path, lease_owner=request.actor, acquired_at=now, expires_at=now + timedelta(seconds=self._lease_seconds)))
             evidence = {
                 "create_run_request.json": {"preflight_id": request.preflight_id, "input_checksum": request.input_checksum, "artifact_set_checksum": request.artifact_set_checksum, "idempotency_key": request.idempotency_key, "actor": request.actor},
