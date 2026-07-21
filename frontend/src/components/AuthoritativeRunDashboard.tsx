@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
+import { retryAuthoritativeSourceIntake } from "@/api/runs";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
 import { G02ReviewPanel } from "./G02ReviewPanel";
 import { ExecutionProfilePanel } from "./ExecutionProfilePanel";
@@ -48,6 +50,8 @@ function pipelineState(step: PipelineStep, events: AuthoritativeRunStateDto['wor
 
 export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
   const { state, status, error, refresh } = useAuthoritativeRun(runId, initialState);
+  const [retryingSourceIntake, setRetryingSourceIntake] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const connectionLabel = {
     loading: "Loading authoritative state?", connecting: "Connecting to backend events?", open: "Live ? authoritative state", reconnecting: "Connection lost ? reconnecting?", recovering: "Refreshing authoritative snapshot?", failed: "Unable to refresh authoritative state",
   }[status];
@@ -55,6 +59,16 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
   const pipelineStates = pipelineSteps.map((step) => pipelineState(step, state.workflow_events));
   const completedPipelineSteps = pipelineStates.filter((step) => step.status === 'completed').length;
   const activePipelineStep = Math.min(completedPipelineSteps, pipelineSteps.length - 1);
+
+  async function retrySourceIntake() {
+    setRetryingSourceIntake(true); setRetryError(null);
+    try {
+      await retryAuthoritativeSourceIntake(runId, { expected_state_version: state.state_version, idempotency_key: `retry-source-intake-${runId}-${state.state_version}`, actor: "control-tower" });
+      await refresh();
+    } catch {
+      setRetryError("The source-intake retry could not be started. Refresh the authoritative state and inspect the failure evidence.");
+    } finally { setRetryingSourceIntake(false); }
+  }
 
   return (
     <main className={styles.shell}>
@@ -68,11 +82,12 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       </header>
       <section className={styles.pipeline} aria-label={'Migration workflow progress'}>
         <div className={styles.pipelineHeading}><p className={styles.kicker}>Evolution pipeline</p><span>{completedPipelineSteps} of {pipelineSteps.length} stages complete</span></div>
+        {retryError ? <p role="alert">{retryError}</p> : null}
         <ol className={styles.pipelineList}>{pipelineSteps.map((step, index) => {
           const current = pipelineStates[index];
           const active = current.status === 'running' || (current.status === 'pending' && index === activePipelineStep);
           const className = current.status === 'completed' ? styles.pipelineComplete : current.status === 'failed' ? styles.pipelineFailed : current.status === 'blocked' ? styles.pipelineBlocked : active ? styles.pipelineActive : styles.pipelinePending;
-          return <li className={className} key={step.label} aria-label={`${step.label}: ${current.status}`}><span>{current.status === 'completed' ? 'âœ“' : String(index + 1).padStart(2, '0')}</span><strong>{step.label}</strong><small className={styles.pipelineMeta}>{current.status}{current.event ? ` · ${current.event.occurred_at}` : ''}</small></li>;
+          return <li className={className} key={step.label} aria-label={`${step.label}: ${current.status}`}><span>{current.status === 'completed' ? 'âœ“' : String(index + 1).padStart(2, '0')}</span><strong>{step.label}</strong><small className={styles.pipelineMeta}>{current.status}{current.event ? ` · ${current.event.occurred_at}` : ''}</small>{index === 0 && current.status === 'failed' ? <button type="button" onClick={() => void retrySourceIntake()} disabled={retryingSourceIntake}>{retryingSourceIntake ? 'Retrying…' : 'Retry source intake'}</button> : null}</li>;
         })}</ol>
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
