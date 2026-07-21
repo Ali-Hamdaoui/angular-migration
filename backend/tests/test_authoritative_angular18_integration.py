@@ -57,8 +57,12 @@ def _tree_fingerprint(root: Path) -> dict[str, str]:
     reason="set AMF_RUN_ANGULAR18_INTEGRATION=1 with an external Angular 18 fixture to run",
 )
 def test_real_angular18_start_to_g03_preserves_external_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = Path(os.environ.get("AMF_ANGULAR18_SOURCE", "")).expanduser().resolve()
-    target_parent = Path(os.environ.get("AMF_ANGULAR18_TARGET_PARENT", "")).expanduser().resolve()
+    source_value = os.getenv("AMF_ANGULAR18_SOURCE", "").strip()
+    target_parent_value = os.getenv("AMF_ANGULAR18_TARGET_PARENT", "").strip()
+    if not source_value or not target_parent_value:
+        pytest.skip("AMF_ANGULAR18_SOURCE and AMF_ANGULAR18_TARGET_PARENT must point to existing external directories")
+    source = Path(source_value).expanduser().resolve()
+    target_parent = Path(target_parent_value).expanduser().resolve()
     if not source.is_dir() or not target_parent.is_dir():
         pytest.skip("AMF_ANGULAR18_SOURCE and AMF_ANGULAR18_TARGET_PARENT must point to existing external directories")
 
