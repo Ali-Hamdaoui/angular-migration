@@ -53,6 +53,7 @@ class G07ReviewResponse(ContractModel):
     idempotent_replay: bool = False
     stale_reason: str | None = None
     comment: str | None = None
+    decision_id: str | None = None
 
 
 class StageSandboxRequest(ContractModel):

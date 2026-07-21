@@ -45,6 +45,7 @@ from app.services.planning_review_evidence_application_service import PlanningRe
 from app.repositories.session import session_scope
 from app.repositories.stage_workspace_models import (
     G07ApprovalModel,
+    G07DecisionHistoryModel,
     StageWorkspaceModel,
 )
 from app.state.transition_service import StateTransitionService, TransitionRequest
@@ -99,6 +100,7 @@ class StagePreparationApplicationService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise StageApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            self._authorize_run(run, request.actor)
             if run.state_version != request.expected_state_version and session.scalar(
                 select(MigrationStageModel).where(MigrationStageModel.run_id == run_id)
             ) is None:
@@ -311,6 +313,9 @@ class StagePreparationApplicationService:
             "stage_plan": {"id": stage_plan.id, "version": stage_plan.version, "checksum": stage_plan.checksum},
             "g06": {"id": g06.id, "gate_version": g06.gate_version, "package_checksum": g06.package_checksum},
             "input_snapshot": {"id": snapshot.id, "fingerprint": input_fingerprint},
+            "input_source_path": snapshot.snapshot_path,
+            "input_file_count": snapshot.file_count,
+            "input_total_size_bytes": snapshot.total_size_bytes,
             "profile": stage_plan.stage_plan.get("execution_profile_id"),
             "approved_commands": stage_plan.stage_plan.get("commands", {}),
             "destination": destination, "workspace_alias": self.WORKSPACE_ALIAS,
@@ -532,13 +537,14 @@ class StagePreparationApplicationService:
 
     @staticmethod
     def _stage_artifacts(session, run_id: str, stage_id: str):
+        rows = session.scalars(select(ArtifactMetadataModel).where(
+            ArtifactMetadataModel.run_id == run_id, ArtifactMetadataModel.stage_id == stage_id,
+        ))
         return [ArtifactRefDto(
             artifact_id=row.id.removeprefix("metadata-"), run_id=run_id, stage_id=stage_id,
             artifact_type=ArtifactType(row.artifact_type), relative_path=row.relative_path,
             created_at=row.created_at, checksum=row.checksum,
-        ) for row in session.scalars(select(ArtifactMetadataModel).where(
-            ArtifactMetadataModel.run_id == run_id, ArtifactMetadataModel.stage_id == stage_id,
-        ))]
+        ) for row in rows if not Path(row.relative_path).stem.startswith(("sandbox_copy_report", "sandbox_verification"))]
 
     def _locked_bindings(self, run, stage, plan, stage_plan, g06, input_fingerprint, destination, actor=None, artifact_set_checksum=None):
         return {
@@ -586,6 +592,7 @@ class StagePreparationApplicationService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise StageApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            self._authorize_run(run, request.actor)
             stage = session.get(MigrationStageModel, stage_id)
             if stage is None or stage.run_id != run_id:
                 raise StageApplicationError("STAGE_NOT_FOUND", "Stage does not exist.", status_code=404)
@@ -647,13 +654,22 @@ class StagePreparationApplicationService:
                     if (recovered.fingerprint != expected_fingerprint or existing.file_count != expected_count
                             or existing.total_size_bytes != expected_size):
                         self._fail("SANDBOX_FINGERPRINT_MISMATCH", "Reconstructed sandbox verification failed.", status_code=409)
+                    pre = StageFingerprint(workspace_path=str(snapshot.snapshot_path), fingerprint=input_fingerprint,
+                                           policy_version=self._policy_version, file_count=expected_count, total_size_bytes=expected_size)
+                    post = StageFingerprint(workspace_path=str(recovered.sandbox_path), fingerprint=recovered.fingerprint,
+                                            policy_version=self._policy_version, file_count=existing.file_count, total_size_bytes=existing.total_size_bytes)
+                    verification = StageSandboxVerification(
+                        stage_id=stage.id, sandbox_path=str(recovered.sandbox_path), pre_fingerprint=pre, post_fingerprint=post,
+                        verification_checksum=self._checksum({"pre": pre.model_dump(), "post": post.model_dump()}), verified=True,
+                    )
+                    existing.completed_at = now
+                    self._persist_sandbox_evidence(
+                        session, run, stage, existing, verification,
+                        source_path=str(snapshot.snapshot_path), reconstruction=True,
+                    )
                     existing.copy_status = "verified"
-                    existing.verification = {
-                        "status": "verified", "sandbox_fingerprint": recovered.fingerprint,
-                        "file_count": existing.file_count, "total_size_bytes": existing.total_size_bytes,
-                        "bindings_checksum": existing.request_binding_checksum,
-                    }
-                    existing.verification_checksum = self._checksum(existing.verification)
+                    existing.verification = verification.model_dump(mode="json")
+                    existing.verification_checksum = verification.verification_checksum
                     session.flush()
                     session.commit()
                     transition = StateTransitionService(session).apply_transition(TransitionRequest(
@@ -671,6 +687,7 @@ class StagePreparationApplicationService:
                 actual = self._content_fingerprint(Path(existing.sandbox_path))
                 if actual == "sha256:unavailable" or actual != existing.workspace_fingerprint:
                     self._fail("SANDBOX_REPLAY_MISMATCH", "The persisted sandbox contents drifted or cannot be fingerprinted.", status_code=409)
+                self._verify_sandbox_evidence(run, existing)
                 verification = existing.verification
                 if verification is None:
                     verification = self._verification_from_workspace(existing).model_dump(mode="json")
@@ -750,10 +767,14 @@ class StagePreparationApplicationService:
             )
             workspace.workspace_fingerprint = record.fingerprint
             workspace.file_count, workspace.total_size_bytes = file_count, total_size
+            workspace.completed_at = now
+            self._persist_sandbox_evidence(
+                session, run, stage, workspace, verification,
+                source_path=str(snapshot_root), reconstruction=False,
+            )
             workspace.verification = verification.model_dump(mode="json")
             workspace.verification_checksum = verification.verification_checksum
             workspace.copy_status = "verified"
-            workspace.completed_at = now
             session.flush()
             transition = StateTransitionService(session).apply_transition(TransitionRequest(
                 run_id=run.id, expected_state_version=run.state_version, idempotency_key=f"{request.idempotency_key}:sandbox-ready",
@@ -787,6 +808,95 @@ class StagePreparationApplicationService:
         files = [item for item in path.rglob("*") if item.is_file()]
         return len(files), sum(item.stat().st_size for item in files)
 
+    def _persist_sandbox_evidence(self, session, run, stage, workspace, verification, *, source_path: str, reconstruction: bool) -> None:
+        """Write checksum-bound sandbox evidence before the ready transition."""
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+        copy_payload = {
+            "run_id": run.id,
+            "stage_id": stage.id,
+            "workspace_id": workspace.id,
+            "correlation_id": stage.id,
+            "source": {"path": source_path, "fingerprint": workspace.source_fingerprint},
+            "workspace": {"path": workspace.sandbox_path, "fingerprint": workspace.workspace_fingerprint},
+            "copy_result": "verified",
+            "file_count": workspace.file_count,
+            "total_size_bytes": workspace.total_size_bytes,
+            "reconstruction": reconstruction,
+            "recovery": {"detected_incomplete": reconstruction, "reconstruction_invoked": reconstruction},
+            "created_at": workspace.created_at.isoformat(),
+        }
+        copy_stored = store.write_text_artifact(
+            run.id, f"stages/{stage.id}/sandbox_copy_report.json",
+            json.dumps(copy_payload, sort_keys=True, separators=(",", ":"), default=str), ArtifactType.JSON,
+            stage_id=stage.id, created_by="stage-preparation-service", created_at=workspace.created_at,
+            input_hashes={"source_fingerprint": workspace.source_fingerprint}, policy_version=self._policy_version,
+        )
+        self._verify_stored_artifact(copy_stored, copy_stored.ref.checksum)
+        self._persist_artifact_metadata(session, copy_stored)
+        verification_payload = {
+            "run_id": run.id,
+            "stage_id": stage.id,
+            "workspace_id": workspace.id,
+            "correlation_id": stage.id,
+            "source_fingerprint": verification.pre_fingerprint.fingerprint,
+            "sandbox_fingerprint": verification.post_fingerprint.fingerprint,
+            "file_count": verification.post_fingerprint.file_count,
+            "total_size_bytes": verification.post_fingerprint.total_size_bytes,
+            "verified": verification.verified,
+            "workspace_path": verification.sandbox_path,
+            "copy_report_artifact_id": copy_stored.ref.artifact_id,
+            "copy_report_checksum": copy_stored.ref.checksum,
+            "recovery": {"detected_incomplete": reconstruction, "reconstruction_invoked": reconstruction},
+        }
+        verification_stored = store.write_text_artifact(
+            run.id, f"stages/{stage.id}/sandbox_verification.json",
+            json.dumps(verification_payload, sort_keys=True, separators=(",", ":"), default=str), ArtifactType.JSON,
+            stage_id=stage.id, created_by="stage-preparation-service", created_at=workspace.completed_at,
+            input_hashes={"copy_report_checksum": copy_stored.ref.checksum}, policy_version=self._policy_version,
+        )
+        self._verify_stored_artifact(verification_stored, verification_stored.ref.checksum)
+        self._persist_artifact_metadata(session, verification_stored)
+        workspace.copy_report_artifact_id = copy_stored.ref.artifact_id
+        workspace.copy_report_artifact_checksum = copy_stored.ref.checksum
+        workspace.verification_artifact_id = verification_stored.ref.artifact_id
+        workspace.verification_artifact_checksum = verification_stored.ref.checksum
+        session.flush()
+
+    def _verify_sandbox_evidence(self, run, workspace) -> None:
+        if not all((workspace.copy_report_artifact_id, workspace.copy_report_artifact_checksum,
+                    workspace.verification_artifact_id, workspace.verification_artifact_checksum)):
+            self._fail("SANDBOX_EVIDENCE_MISSING", "The verified sandbox has no immutable evidence references.", status_code=409)
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+        try:
+            copy_stored = store.read_artifact_by_id(workspace.copy_report_artifact_id)
+            verification_stored = store.read_artifact_by_id(workspace.verification_artifact_id)
+        except (FileNotFoundError, OSError, ValueError) as error:
+            self._fail("SANDBOX_EVIDENCE_MISSING", str(error), status_code=409)
+        self._verify_stored_artifact(copy_stored, workspace.copy_report_artifact_checksum)
+        self._verify_stored_artifact(verification_stored, workspace.verification_artifact_checksum)
+        try:
+            copy_payload = json.loads(copy_stored.content)
+            verification_payload = json.loads(verification_stored.content)
+        except json.JSONDecodeError as error:
+            self._fail("SANDBOX_EVIDENCE_INVALID", str(error), status_code=409)
+        if (copy_payload.get("correlation_id") != workspace.stage_id or
+                verification_payload.get("correlation_id") != workspace.stage_id or
+                verification_payload.get("copy_report_artifact_id") != workspace.copy_report_artifact_id or
+                verification_payload.get("copy_report_checksum") != workspace.copy_report_artifact_checksum):
+            self._fail("SANDBOX_EVIDENCE_INVALID", "Sandbox evidence does not match the durable workspace chain.", status_code=409)
+
+    def _persist_artifact_metadata(self, session, stored) -> None:
+        metadata_id = f"metadata-{stored.ref.artifact_id}"
+        session.add(ArtifactMetadataModel(
+            id=metadata_id, run_id=stored.ref.run_id, stage_id=stored.ref.stage_id,
+            artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path,
+            checksum=stored.ref.checksum, created_at=stored.ref.created_at,
+        ))
+
+    def _verify_stored_artifact(self, stored, expected_checksum: str) -> None:
+        if stored.ref.checksum != expected_checksum or self._content_checksum(stored.content) != expected_checksum:
+            self._fail("ARTIFACT_TAMPERED", "Sandbox evidence checksum verification failed.", status_code=409)
+
     @staticmethod
     def _copy_tree_stats(path: Path) -> tuple[int, int]:
         files = [
@@ -803,9 +913,14 @@ class StagePreparationApplicationService:
         except (OSError, ValueError):
             return "sha256:unavailable"
 
-    def get_g07(self, run_id: str, stage_id: str) -> G07ReviewResponse | None:
+    def get_g07(self, run_id: str, stage_id: str, actor: str | None = None) -> G07ReviewResponse | None:
         """Get the current G07 gate status for a stage."""
         with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                raise StageApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            if actor is not None:
+                self._authorize_run(run, actor)
             record = session.scalar(
                 select(G07ApprovalModel)
                 .where(G07ApprovalModel.run_id == run_id, G07ApprovalModel.stage_id == stage_id)
@@ -822,6 +937,7 @@ class StagePreparationApplicationService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise StageApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
+            self._authorize_run(run, request.actor)
             stage = session.get(MigrationStageModel, stage_id)
             if stage is None or stage.run_id != run_id:
                 raise StageApplicationError("STAGE_NOT_FOUND", "Stage does not exist.", status_code=404)
@@ -837,24 +953,29 @@ class StagePreparationApplicationService:
             plan, active_stage_plan, current_g06, input_fingerprint, snapshot = active
 
             # Check for existing idempotent decision only after current authority validation.
-            existing = session.scalar(
-                select(G07ApprovalModel)
-                .where(G07ApprovalModel.run_id == run_id, G07ApprovalModel.decision_idempotency_key == request.idempotency_key)
+            history = session.scalar(
+                select(G07DecisionHistoryModel).where(
+                    G07DecisionHistoryModel.run_id == run_id,
+                    G07DecisionHistoryModel.idempotency_key == request.idempotency_key,
+                )
             )
-            if existing is not None:
+            if history is not None:
+                existing = session.get(G07ApprovalModel, history.gate_id)
+                if existing is None:
+                    self._fail("G07_HISTORY_GATE_MISSING", "The historical decision gate is missing.", status_code=409)
                 package = G07ApprovalPackage.model_validate(existing.package)
                 checksum = self._checksum({
                     "run_id": run_id, "stage_id": stage_id, "actor": request.actor,
                     "decision": request.decision.value, "comment": request.comment,
                     "package_checksum": package.package_checksum,
                 })
-                if existing.decision_request_checksum != checksum:
+                if history.request_checksum != checksum:
                     self._fail("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key was already used with a different payload.", status_code=409)
                 self._validate_current_g07(
                     session, existing, run, stage, plan, active_stage_plan, current_g06,
                     input_fingerprint, snapshot.id, require_approved=False,
                 )
-                return self._g07_dto(existing, replay=True)
+                return self._g07_dto(existing, replay=True, decision_id=history.id)
             if run.state_version != request.expected_state_version:
                 raise StageApplicationError("STALE_STATE_VERSION", "The run state version is stale.", status_code=409)
 
@@ -890,6 +1011,23 @@ class StagePreparationApplicationService:
                 }[result.decision]
                 if result.stale:
                     event_type = WorkflowEventType.G07_STALE
+                decision_id = f"g07d-{hashlib.sha256(f'{run_id}:{request.idempotency_key}'.encode()).hexdigest()[:48]}"
+                session.add(G07DecisionHistoryModel(
+                    id=decision_id,
+                    run_id=run_id,
+                    stage_id=stage_id,
+                    gate_id=gate.id,
+                    gate_version=gate.gate_version,
+                    decision=result.decision.value,
+                    actor=request.actor,
+                    comment=request.comment,
+                    payload_checksum=package.package_checksum,
+                    request_checksum=decision_checksum,
+                    idempotency_key=request.idempotency_key,
+                    correlation_id=stage_id,
+                    bindings=package.model_dump(mode="json"),
+                    created_at=now,
+                ))
                 gate.status = result.decision.value if not result.stale else "stale"
                 gate.decision = result.decision.value
                 gate.actor = request.actor
@@ -907,13 +1045,13 @@ class StagePreparationApplicationService:
                 gate.state_version = transition.next_state_version
                 gate.event_sequence = transition.event_sequence
                 session.flush()
-                return self._g07_dto(gate)
+                return self._g07_dto(gate, decision_id=decision_id)
             finally:
                 if "lease" in locals():
                     StateTransitionService(session).release_lease(lease_id=lease.id, worker_id=lease.worker_id)
 
 
-    def _g07_dto(self, record: G07ApprovalModel, *, replay: bool = False) -> G07ReviewResponse:
+    def _g07_dto(self, record: G07ApprovalModel, *, replay: bool = False, decision_id: str | None = None) -> G07ReviewResponse:
         return G07ReviewResponse(
             run_id=record.run_id, stage_id=record.stage_id,
             gate_id=record.gate_id, gate_version=record.gate_version,
@@ -922,7 +1060,13 @@ class StagePreparationApplicationService:
             event_sequence=record.event_sequence,
             idempotent_replay=replay, stale_reason=record.stale_reason,
             comment=record.comment,
+            decision_id=decision_id,
         )
+
+    @staticmethod
+    def _authorize_run(run, actor: str) -> None:
+        if run.actor and run.actor != actor:
+            raise StageApplicationError("RUN_NOT_AUTHORIZED", "Authenticated actor is not authorized for this run.", status_code=403)
 
     def _dir_fingerprint(self, path: Path) -> str:
         """Compute a content-bound directory fingerprint."""

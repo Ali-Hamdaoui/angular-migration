@@ -42,6 +42,28 @@ class G07ApprovalModel(Base):
     prepare_request_checksum: Mapped[str | None] = mapped_column(String(128))
 
 
+class G07DecisionHistoryModel(Base):
+    """Immutable business-decision history; the G07 approval remains a current projection."""
+
+    __tablename__ = "g07_decision_history"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_g07_decision_history_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(ForeignKey("g07_approvals.id"), nullable=False, index=True)
+    gate_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    payload_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    bindings: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class StageWorkspaceModel(Base):
     """Tracks stage workspace sandbox creation and fingerprint records."""
 
@@ -63,6 +85,10 @@ class StageWorkspaceModel(Base):
     locked_bindings: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     verification: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     verification_checksum: Mapped[str | None] = mapped_column(String(128))
+    copy_report_artifact_id: Mapped[str | None] = mapped_column(String(64))
+    copy_report_artifact_checksum: Mapped[str | None] = mapped_column(String(128))
+    verification_artifact_id: Mapped[str | None] = mapped_column(String(64))
+    verification_artifact_checksum: Mapped[str | None] = mapped_column(String(128))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

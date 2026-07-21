@@ -59,7 +59,7 @@ from app.repositories.planning_review_models import (
     PlanRevisionModel,
     PlanningReviewModel,
 )
-from app.repositories.stage_workspace_models import G07ApprovalModel, StageWorkspaceModel
+from app.repositories.stage_workspace_models import G07ApprovalModel, G07DecisionHistoryModel, StageWorkspaceModel
 
 __all__ = [
     "AnalysisMetadataModel",
@@ -114,5 +114,6 @@ __all__ = [
     "PreflightModel",
     "UserDecisionModel",
     "G07ApprovalModel",
+    "G07DecisionHistoryModel",
     "StageWorkspaceModel",
 ]
