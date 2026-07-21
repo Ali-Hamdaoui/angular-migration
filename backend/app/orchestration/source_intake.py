@@ -67,10 +67,10 @@ class SourceIntakeDispatcher:
         """Re-dispatch jobs left queued, running, or waiting at restart."""
         with session_scope() as session:
             jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"}))))
-            # A new backend instance owns recovery.  Requeue work owned by a
-            # previous process before dispatching it; the unique run job and
-            # idempotency keys keep the resumed steps from creating a second
-            # authoritative snapshot or approval package.
+            # A new backend instance owns recovery. Requeue work owned by a
+            # previous process before dispatching it; attempt-specific
+            # idempotency keys keep resumed steps from creating duplicate
+            # authoritative evidence.
             for job in jobs:
                 if job.status == "running" and job.worker_id != self._worker_id:
                     job.status = "queued"
@@ -339,7 +339,7 @@ class SourceIntakeDispatcher:
 
     def _claim(self, run_id: str) -> SourceIntakeJobModel | None:
         with session_scope() as session:
-            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id))
+            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "waiting_g02", "waiting_runtime_selection"})).order_by(SourceIntakeJobModel.queued_at.desc()))
             if job is None or job.status not in {"queued", "waiting_g02", "waiting_runtime_selection"}:
                 return None
             job.status = "running"

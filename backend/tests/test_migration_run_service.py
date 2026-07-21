@@ -206,6 +206,41 @@ def test_source_intake_failure_finalization_marks_run_failed(tmp_path: Path, mon
         assert events[-1].event_type == "SOURCE_INTAKE_FAILED"
 
 
+def test_source_intake_retry_preserves_failed_attempt_and_queues_new_job(tmp_path: Path):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("retry-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.FAILED.value
+        session.add(SourceIntakeJobModel(
+            id="intake-failed-attempt",
+            run_id=created.run_id,
+            thread_id=created.graph_thread_id,
+            status="failed",
+            actor="operator",
+            idempotency_key="failed-attempt",
+            attempt=1,
+            queued_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+            last_error_code="SNAPSHOT_CREATION_FAILED",
+            last_error_message="source disappeared",
+            state_version=run.state_version,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(run_id=created.run_id, expected_state_version=expected_version, idempotency_key="retry-source-1", actor="operator")
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    assert retried.job_id != "intake-failed-attempt"
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == created.run_id).order_by(SourceIntakeJobModel.attempt)))
+        assert len(jobs) == 2
+        assert jobs[0].status == "failed"
+        assert jobs[1].status == "queued"
+        assert jobs[1].attempt == 2
+
+
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):
     service, scope, _ = _service(tmp_path)
     created = service.create(_request("evidence-1"))

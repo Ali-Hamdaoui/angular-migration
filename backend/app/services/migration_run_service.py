@@ -190,25 +190,72 @@ class MigrationRunService:
         try:
             self._graph.start(run_id=run_id, thread_id=thread_id)
         except Exception as error:
-            with self._scope() as failure_session:
-                job = failure_session.get(SourceIntakeJobModel, queued.id)
-                run = failure_session.get(MigrationRunModel, run_id)
-                if job is not None:
-                    job.status = "failed"
-                    job.finished_at = self._now()
-                    job.last_error_code = "GRAPH_HANDOFF_FAILED"
-                    job.last_error_message = "Source-intake worker dispatch failed."
-                if run is not None:
-                    StateTransitionService(failure_session).apply_transition(TransitionRequest(
-                        run_id=run_id, idempotency_key=f"{idempotency_key}:dispatch-failed",
-                        expected_state_version=run.state_version,
-                        event_type=WorkflowEventType.SOURCE_INTAKE_FAILED, actor=actor,
-                        next_run_status=RunStatus.FAILED,
-                        reason="source-intake worker dispatch failed",
-                        occurred_at=self._now(), payload={"job_id": queued.id, "error_code": "GRAPH_HANDOFF_FAILED"},
-                    ))
+            self._record_dispatch_failure(queued.id, run_id, idempotency_key, actor)
             raise MigrationRunError("GRAPH_HANDOFF_FAILED", "Source-intake handoff failed safely; the durable job records the failure.") from error
         return result
+
+    def retry_source_intake(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
+        """Explicitly retry a failed source-intake attempt without erasing history."""
+        with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            existing = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.idempotency_key.in_({idempotency_key, idempotency_key + ":accepted"})).order_by(WorkflowEventModel.sequence.desc()))
+            if existing is not None:
+                return self._result_from_event(session, existing, replay=True)
+            if run.status != RunStatus.FAILED.value:
+                raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
+            previous = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id).order_by(SourceIntakeJobModel.attempt.desc()))
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING"}
+            if previous is None or previous.status != "failed" or previous.last_error_code not in retryable_codes:
+                raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
+            self._validate_start_boundary(session, run)
+            if run.state_version != expected_state_version:
+                raise MigrationRunError("STALE_STATE_VERSION", "The run state changed. Refresh the authoritative state and retry.")
+            active_job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"})))
+            if active_job is not None:
+                raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
+            thread_id = previous.thread_id
+            accepted = StateTransitionService(session).apply_transition(TransitionRequest(
+                run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
+                event_type=WorkflowEventType.RUN_STATE_CHANGED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
+                actor=actor, reason="explicit source-intake retry accepted", payload={"previous_job_id": previous.id, "attempt": previous.attempt + 1}, occurred_at=self._now()))
+            queued = SourceIntakeJobModel(
+                id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
+                status="queued", actor=actor, idempotency_key=idempotency_key,
+                attempt=previous.attempt + 1, queued_at=self._now(), state_version=accepted.next_state_version,
+            )
+            session.add(queued)
+            StateTransitionService(session).append_audit_event(
+                run_id=run_id, idempotency_key=f"{idempotency_key}:queued", event_type=WorkflowEventType.SOURCE_INTAKE_QUEUED,
+                actor=actor, reason="retry source-intake work item persisted before dispatch", occurred_at=self._now(),
+                payload={"job_id": queued.id, "previous_job_id": previous.id, "attempt": queued.attempt},
+            )
+            session.flush()
+            result = RunResult(run_id, accepted.status, accepted.next_state_version, accepted.event_sequence, thread_id, artifacts=tuple(self._artifacts_for_run(session, run_id)), job_id=queued.id)
+        try:
+            self._graph.start(run_id=run_id, thread_id=thread_id)
+        except Exception as error:
+            self._record_dispatch_failure(queued.id, run_id, idempotency_key, actor)
+            raise MigrationRunError("GRAPH_HANDOFF_FAILED", "Source-intake retry handoff failed safely; the new attempt records the failure.") from error
+        return result
+
+    def _record_dispatch_failure(self, job_id: str, run_id: str, idempotency_key: str, actor: str) -> None:
+        with self._scope() as failure_session:
+            job = failure_session.get(SourceIntakeJobModel, job_id)
+            run = failure_session.get(MigrationRunModel, run_id)
+            if job is not None:
+                job.status = "failed"
+                job.finished_at = self._now()
+                job.last_error_code = "GRAPH_HANDOFF_FAILED"
+                job.last_error_message = "Source-intake worker dispatch failed."
+            if run is not None:
+                StateTransitionService(failure_session).apply_transition(TransitionRequest(
+                    run_id=run_id, idempotency_key=f"{idempotency_key}:dispatch-failed", expected_state_version=run.state_version,
+                    event_type=WorkflowEventType.SOURCE_INTAKE_FAILED, actor=actor, next_run_status=RunStatus.FAILED,
+                    reason="source-intake worker dispatch failed", occurred_at=self._now(),
+                    payload={"job_id": job_id, "error_code": "GRAPH_HANDOFF_FAILED"},
+                ))
 
     def _validate_start_boundary(self, session, run: MigrationRunModel) -> None:
         """Revalidate G01 and ownership immediately before durable dispatch."""
@@ -329,7 +376,7 @@ class MigrationRunService:
     @staticmethod
     def _result_from_event(session, event: WorkflowEventModel, *, replay: bool) -> RunResult:
         run = session.get(MigrationRunModel, event.run_id)
-        job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == event.run_id))
+        job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == event.run_id).order_by(SourceIntakeJobModel.attempt.desc()))
         payload = event.payload
         return RunResult(event.run_id, run.status if run else str(payload.get("next_run_status", RunStatus.CREATED.value)), run.state_version if run else int(payload.get("next_state_version", 1)), event.sequence, str(payload.get("graph_thread_id") or f"source-intake-{event.run_id}"), replay, tuple(MigrationRunService._artifacts_for_run(session, event.run_id)), job.id if job else None)
 

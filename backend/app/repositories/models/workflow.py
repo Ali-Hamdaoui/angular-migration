@@ -122,9 +122,7 @@ class SourceIntakeJobModel(Base):
     """Durable work item for the run-owned source-intake pipeline."""
 
     __tablename__ = "source_intake_jobs"
-    __table_args__ = (
-        UniqueConstraint("run_id", name="uq_source_intake_jobs_run"),
-    )
+    __table_args__ = ()
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
