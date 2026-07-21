@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError, getBackendBaseUrl } from "@/api/client";
-import { executeApprovedCommand, getCommandArtifactById, getCommandExecution, listCommandExecutions } from "@/api/commands";
+import { cancelCommand, executeApprovedCommand, getCommandArtifactById, getCommandExecution, listCommandExecutions } from "@/api/commands";
 import type { CommandArtifactMetadata } from "@/api/commands";
 import type { CommandExecutionResponseDto, CommandPolicyValidateResponseDto, WorkflowEventDto } from "@/types/generated/api";
 import { LiveCommandLogViewer } from "./LogViewer";
@@ -37,6 +37,7 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, conn
   const [selected, setSelected] = useState<CommandExecutionResponseDto | null>(null);
   const [viewStatus, setViewStatus] = useState<"loading" | "ready" | "unavailable" | "reconnecting">("loading");
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitting" | "failed">("idle");
+  const [cancelStatus, setCancelStatus] = useState<"idle" | "cancelling" | "failed">("idle");
   const [error, setError] = useState<ReturnType<typeof details> | null>(null);
   const [artifactMetadata, setArtifactMetadata] = useState<Record<string, CommandArtifactMetadata["artifact"]>>({});
   const [artifactMetadataStatus, setArtifactMetadataStatus] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
@@ -104,6 +105,21 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, conn
     }
   }
 
+  async function cancel() {
+    if (!selected || FINAL_STATUSES.has(selected.status) || cancelStatus === "cancelling") return;
+    if (typeof window !== "undefined" && !window.confirm("Cancel this command? The process tree will be terminated and partial evidence will be retained.")) return;
+    setCancelStatus("cancelling"); setError(null);
+    try {
+      await cancelCommand(runId, selected.execution_id, { idempotency_key: `cancel:${selected.execution_id}`, actor: "control-tower" });
+      setCancelStatus("idle");
+      const current = await getCommandExecution(runId, selected.execution_id);
+      setSelected(current);
+      setExecutions((items) => items.map((item) => item.execution_id === current.execution_id ? current : item));
+    } catch (reason: unknown) {
+      setError(details(reason)); setCancelStatus("failed");
+    }
+  }
+
   return <section className={styles.panel} aria-label="Command executions">
     <div className={styles.previewHeader}><div><p className={styles.kicker}>S3-F02</p><h2>Command executions</h2><p className={styles.note}>Authoritative worker status and finalized evidence.</p></div><strong>{viewStatus}</strong></div>
     {authorization?.decision === "accepted" ? <button type="button" onClick={execute} disabled={submitStatus === "submitting" || authorization.expected_state_version !== stateVersion}>{submitStatus === "submitting" ? "Submitting..." : "Execute command"}</button> : <p className={styles.note}>Execution is available only after an accepted, current authorization decision.</p>}
@@ -116,6 +132,9 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, conn
     {executions.length > 0 ? <ul className={styles.list}>{executions.map((execution) => <li key={execution.execution_id}><button type="button" onClick={() => setSelected(execution)}>{execution.command_id} · {label(execution.status)}</button><code>{execution.execution_id}</code></li>)}</ul> : null}
     {selected ? <article className={styles.previewPanel} aria-label="Command execution detail">
       <h3>Execution detail</h3>
+      {!FINAL_STATUSES.has(selected.status) ? <button type="button" onClick={cancel} disabled={cancelStatus === "cancelling"}>{cancelStatus === "cancelling" ? "Cancelling..." : "Cancel command"}</button> : null}
+      {cancelStatus === "cancelling" ? <p role="status">Cancellation requested. Waiting for process-tree termination and durable evidence...</p> : null}
+      {selected.status === "cancelled" || selected.status === "timed_out" ? <p role="status">Partial evidence was retained; this execution cannot be published as successful work.</p> : null}
       <div className={styles.dimensionGrid}>
         <div><span>Execution ID</span><code>{selected.execution_id}</code></div><div><span>Run ID</span><code>{selected.run_id}</code></div><div><span>Status</span><strong>{label(selected.status)}</strong></div><div><span>Exit status</span><code>{selected.exit_code ?? "not supplied"}</code></div>
         <div><span>Command template</span><code>{selected.template_id ?? selected.command_id}{selected.template_version ? ` v${selected.template_version}` : ""}</code></div><div><span>Executable</span><code>{selected.executable ?? "not supplied"}</code></div><div><span>Working directory alias</span><code>{selected.workspace_alias ?? "not supplied"}</code></div><div><span>Safe working directory</span><code>{selected.safe_relative_working_directory ?? "not supplied"}</code></div><div><span>Execution profile</span><code>{selected.execution_profile_id ?? "not supplied"}</code></div><div><span>State version</span><code>{selected.state_version}</code></div><div><span>Correlation ID</span><code>{selected.correlation_id ?? "not supplied"}</code></div>

@@ -68,7 +68,9 @@ All external process execution must pass through the registered command template
 ### Known limitations
 
 - SSE tailing uses an async generator with bounded polling over durable log chunks; chunk persistence itself is synchronous and transaction-scoped.
-- Hard-kill supervisor thread for stale leases (cancellation relies on `cancel_event` + `process.wait(timeout=1)`)
+- Process-owned cancellation uses `cancel_event` plus
+  `WorkerSupervisor.terminate_process_tree()`; the worker acquires, renews,
+  and releases its lease around subprocess execution.
 
 ### Explicitly Out of Scope
 
@@ -380,7 +382,7 @@ Manual validation status: `PENDING` — requires running backend on port 8301 wi
 
 ### Branch-owned
 1. Live log streaming polls durable SQLite state with bounded asynchronous SSE replay/tail, standard `id:` fields, explicit cursor support, and `Last-Event-ID` reconnect.
-2. Cancellation uses `threading.Event` + `WorkerSupervisor.terminate_process_tree()` — no dedicated async supervisor thread for hard-kill on stale leases.
+2. Cancellation uses `threading.Event` + `WorkerSupervisor.terminate_process_tree()` and is independent of the browser connection. A dedicated cross-instance reaper for orphaned workers is not part of this runtime process.
 3. `CommandExecutorService.queue_command()` tests use mocked policy engine and supervisor — true integration tests requiring full backend stack are deferred to cross-goal validation.
 
 ### External dependencies
@@ -388,7 +390,7 @@ Manual validation status: `PENDING` — requires running backend on port 8301 wi
 5. Full Angular fixture acceptance requires Goal 10 integration harness.
 
 ### Future improvements
-6. Add async supervisor thread for lease expiry enforcement (terminate orphan processes).
+6. Add deployment-level lease expiry enforcement for orphan processes after a backend instance crash.
 
 ## 15. Integration Contract
 

@@ -46,6 +46,7 @@ from app.domain.contracts import (
     WorkflowEventType,
     CommandPolicyValidateRequestDto,
     CommandPolicyValidateResponseDto,
+    RunStatus,
 )
 from app.repositories.models.workflow import (
     ArtifactMetadataModel,
@@ -112,6 +113,10 @@ class CommandExecutionResponse:
     safe_relative_working_directory: str | None = None
     runtime_checksum: str | None = None
     worker_id: str | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_requested_by: str | None = None
+    cancelled: bool = False
+    timed_out: bool = False
 
 
 class CommandExecutorService:
@@ -132,6 +137,9 @@ class CommandExecutorService:
         self._registry_service = registry_service or CommandRegistryService()
         self._supervisor = supervisor or WorkerSupervisor()
         self._default_timeout_seconds = default_timeout_seconds
+        self._job_supervisor = JobSupervisorService()
+        # Retained for the disabled legacy path; authoritative execution uses
+        # JobSupervisorService's process-owned registry above.
         self._cancel_events: dict[str, threading.Event] = {}
 
     # The executor is process-owned, not request-owned.  This is deliberately
@@ -351,7 +359,9 @@ class CommandExecutorService:
                                {"execution_id": model.id, "worker_id": worker_id})
 
         cancel_event = threading.Event()
-        self._cancel_events[execution_id] = cancel_event
+        lease_id: str | None = None
+        heartbeat_stop = threading.Event()
+        self._job_supervisor.register_cancel_event(execution_id, cancel_event)
         try:
             # Read and validate all process inputs in a short transaction. The
             # subprocess must never run while a repository session is open.
@@ -392,6 +402,12 @@ class CommandExecutorService:
                 )
                 if selected_profile is None:
                     raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
+                lease = self._job_supervisor.acquire_lease(
+                    session, run_id, execution_id, worker_id, worker_id,
+                )
+                lease_id = lease.lease_id
+                if model.cancel_requested_at is not None:
+                    cancel_event.set()
                 artifact_root = Path(run.artifact_root)
                 policy = CommandPolicy(
                     sandbox_root=root,
@@ -419,6 +435,20 @@ class CommandExecutorService:
                     requested_at=requested_at,
                 )
 
+            def renew_lease() -> None:
+                from app.repositories.session import session_scope
+                interval = max(1, self._job_supervisor._lease_seconds // 3)
+                while not heartbeat_stop.wait(interval):
+                    try:
+                        with session_scope() as lease_session:
+                            self._job_supervisor.renew_lease(lease_session, lease_id, worker_id)
+                    except Exception:
+                        cancel_event.set()
+                        return
+
+            heartbeat = threading.Thread(target=renew_lease, name=f"lease-heartbeat-{execution_id}", daemon=True)
+            heartbeat.start()
+
             def persist_output(stream: str, text: str) -> None:
                 from app.repositories.session import session_scope
                 with session_scope() as log_session:
@@ -442,7 +472,14 @@ class CommandExecutorService:
                 if model is not None and model.status not in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
                     self._fail_execution(session, model, "EXECUTION_FAILED", str(exc))
         finally:
-            self._cancel_events.pop(execution_id, None)
+            heartbeat_stop.set()
+            self._job_supervisor.unregister_cancel_event(execution_id)
+            if lease_id is not None:
+                try:
+                    with session_scope() as lease_session:
+                        self._job_supervisor.release_lease(lease_session, lease_id, worker_id)
+                except Exception:
+                    pass
 
     @staticmethod
     def _stage_belongs_to_run(session: Session, stage_id: str, run_id: str) -> bool:
@@ -456,11 +493,18 @@ class CommandExecutorService:
         log_service = CommandLogService()
         log_service.ensure_summary(session, model.id, model.run_id, correlation_id=model.correlation_id)
         log_service.finalize(session, model.id, finalized_at=finished)
-        self.transition_execution(session, model, result.result.status.value, now=finished)
+        final_status = CommandStatus.TIMED_OUT.value if result.timed_out else result.result.status.value
+        self.transition_execution(session, model, final_status, now=finished)
         model.exit_code = result.result.exit_code
         if model.status == CommandStatus.FAILED.value and model.failure_code is None:
             model.failure_code = "COMMAND_EXIT_NONZERO"
             model.failure_message = "The approved command exited with a non-zero status."
+        if model.status == CommandStatus.CANCELLED.value:
+            model.failure_code = "COMMAND_CANCELLED"
+            model.failure_message = "Command cancelled; partial output was preserved."
+        if model.status == CommandStatus.TIMED_OUT.value:
+            model.failure_code = "COMMAND_TIMED_OUT"
+            model.failure_message = "Command timed out; partial output was preserved."
         model.duration_ms = result.result.duration_ms
         model.timed_out = result.timed_out
         model.cancelled = result.cancelled
@@ -473,7 +517,9 @@ class CommandExecutorService:
             "schema_version": "command-execution-result.v1", "execution_id": model.id,
             "run_id": model.run_id, "status": model.status, "exit_code": model.exit_code,
             "duration_ms": model.duration_ms, "timed_out": bool(model.timed_out),
-            "failure_code": model.failure_code, "artifact_ids": [ref.artifact_id for ref in output_refs],
+            "cancelled": bool(model.cancelled), "failure_code": model.failure_code,
+            "partial_evidence": bool(model.cancelled or model.timed_out),
+            "artifact_ids": [ref.artifact_id for ref in output_refs],
         }
         result_artifact = store.write_text_artifact(
             run.id, f"04_workflow_state/command_executions/{model.id}.result.json",
@@ -494,6 +540,7 @@ class CommandExecutorService:
             "worker_id": model.worker_id, "started_at": model.started_at.isoformat() if model.started_at else None,
             "ended_at": finished.isoformat(), "duration_ms": model.duration_ms, "status": model.status,
             "exit_code": model.exit_code, "artifact_ids": [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id],
+            "cancellation": {"requested": model.cancel_requested_at is not None, "cancelled": bool(model.cancelled), "timed_out": bool(model.timed_out), "partial_evidence": bool(model.cancelled or model.timed_out)},
             "runtime_identity": {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None},
             "correlation_id": model.correlation_id,
         }
@@ -515,10 +562,24 @@ class CommandExecutorService:
         model.manifest_artifact_id = manifest_artifact.ref.artifact_id
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
         model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
-        event_type = WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED
+        event_type = (WorkflowEventType.COMMAND_CANCELLED if model.status == CommandStatus.CANCELLED.value else WorkflowEventType.COMMAND_INTERRUPTED if model.status == CommandStatus.TIMED_OUT.value else WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED)
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
+        if model.status in {CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
+            current_run = session.get(MigrationRunModel, model.run_id)
+            if current_run is not None and current_run.status == "CANCELLING":
+                from app.state.transition_service import StateTransitionService, TransitionRequest
+                StateTransitionService(session).apply_transition(TransitionRequest(
+                    run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
+                    expected_state_version=current_run.state_version,
+                    event_type=WorkflowEventType.RUN_CANCELLED,
+                    next_run_status=RunStatus.CANCELLED,
+                    actor="command-execution-worker",
+                    reason="command cancellation completed; partial evidence retained",
+                    occurred_at=finished,
+                    payload={"execution_id": model.id, "partial_evidence": 1},
+                ))
 
     @staticmethod
     def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
@@ -793,20 +854,18 @@ class CommandExecutorService:
         Sets the cancel event to terminate the OS process, then updates
         DB state and emits events via JobSupervisorService.
         """
-        # Set the cancel event for process termination
-        cancel_event = self._cancel_events.get(execution_id)
-        if cancel_event is not None:
-            cancel_event.set()
-
-        # Delegate to supervisor for DB updates and event emission
-        supervisor = JobSupervisorService()
-        return supervisor.cancel_command(
+        supervisor = self._job_supervisor
+        legacy_event = self._cancel_events.get(execution_id)
+        if legacy_event is not None:
+            legacy_event.set()
+        result = supervisor.cancel_command(
             session,
             run_id=run_id,
             execution_id=execution_id,
             actor=actor,
             idempotency_key=idempotency_key,
         )
+        return result
 
     def get_list_command_executions(
         self,
@@ -904,5 +963,9 @@ class CommandExecutorService:
             safe_relative_working_directory=model.safe_relative_working_directory,
             runtime_checksum=model.runtime_checksum,
             worker_id=model.worker_id,
+            cancel_requested_at=model.cancel_requested_at,
+            cancel_requested_by=model.cancel_requested_by,
+            cancelled=bool(model.cancelled),
+            timed_out=bool(model.timed_out),
             request_payload_hash=model.request_payload_hash,
         )

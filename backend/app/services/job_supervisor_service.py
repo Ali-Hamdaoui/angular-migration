@@ -37,6 +37,9 @@ class JobSupervisorError(ValueError):
         self.message = message
 
 
+_CANCEL_EVENTS: dict[str, Any] = {}
+
+
 @dataclass(frozen=True)
 class LeaseResult:
     """Result of a lease operation."""
@@ -56,6 +59,19 @@ class JobSupervisorService:
 
     def __init__(self, lease_seconds: int = 120) -> None:
         self._lease_seconds = lease_seconds
+
+    def register_cancel_event(self, execution_id: str, event: Any) -> None:
+        _CANCEL_EVENTS[execution_id] = event
+
+    def unregister_cancel_event(self, execution_id: str) -> None:
+        _CANCEL_EVENTS.pop(execution_id, None)
+
+    def signal_cancel(self, execution_id: str) -> bool:
+        event = _CANCEL_EVENTS.get(execution_id)
+        if event is None:
+            return False
+        event.set()
+        return True
 
     def acquire_lease(
         self,
@@ -172,6 +188,8 @@ class JobSupervisorService:
             .where(WorkflowEventModel.idempotency_key == idempotency_key)
         )
         if existing is not None:
+            if (existing.payload or {}).get("execution_id") != execution_id:
+                raise JobSupervisorError("IDEMPOTENCY_KEY_CONFLICT", "Cancellation idempotency key belongs to another execution")
             return {"idempotent_replay": True, "event_id": existing.id}
 
         # Find the command execution
@@ -188,28 +206,22 @@ class JobSupervisorService:
             )
 
         # Update the execution record
+        # ``cancelled`` is a durable request marker until the worker records
+        # its terminal status; status itself remains RUNNING during teardown.
         exec_model.cancelled = True
         exec_model.cancel_requested_at = now
         exec_model.cancel_requested_by = actor
         exec_model.cancel_idempotency_key = idempotency_key
         session.flush()
 
-        # Emit RUN_CANCEL_REQUESTED event
-        self._append_event(session, run_id, idempotency_key,
-                           WorkflowEventType.RUN_CANCEL_REQUESTED,
-                           f"cancellation requested by {actor}",
-                           {"execution_id": execution_id, "actor": actor})
-
-        # Emit COMMAND_CANCELLED event
-        self._append_event(session, run_id, idempotency_key + ":cancelled",
-                           WorkflowEventType.COMMAND_CANCELLED,
-                           f"command cancelled by {actor}",
-                           {"execution_id": execution_id, "actor": actor})
+        # The worker emits the terminal command event after process-tree
+        # termination and artifact finalization.
+        signalled = self.signal_cancel(execution_id)
 
         # Update run status to CANCELLING via Transition Service
         run = session.get(MigrationRunModel, run_id)
         if run is not None and run.status in {"CREATED", "RUNNING", "WAITING"}:
-            transition = StateTransitionService(session).apply_transition(
+            StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id,
                     idempotency_key=idempotency_key + ":transition",
@@ -219,13 +231,29 @@ class JobSupervisorService:
                     actor=actor,
                     reason=f"cancellation requested by {actor}",
                     occurred_at=now,
+                    payload={"execution_id": execution_id, "signal_delivered": int(signalled)},
                 )
             )
+        else:
+            run = session.get(MigrationRunModel, run_id)
+            if run is not None:
+                StateTransitionService(session).append_audit_event(
+                    run_id=run_id, idempotency_key=idempotency_key,
+                    event_type=WorkflowEventType.RUN_CANCEL_REQUESTED,
+                    actor=actor, reason=f"cancellation requested by {actor}",
+                    occurred_at=now, payload={"execution_id": execution_id, "signal_delivered": int(signalled)},
+                )
+            else:
+                self._append_event(session, run_id, idempotency_key,
+                                   WorkflowEventType.RUN_CANCEL_REQUESTED,
+                                   f"cancellation requested by {actor}",
+                                   {"execution_id": execution_id, "actor": actor})
 
         return {
             "execution_id": execution_id,
             "run_id": run_id,
             "cancelled": True,
+            "signal_delivered": signalled,
             "cancel_requested_at": now.isoformat(),
             "idempotent_replay": False,
         }

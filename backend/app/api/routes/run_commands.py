@@ -106,6 +106,10 @@ def queue_command(
             worker_id=result.worker_id,
             failure_reason=result.failure_reason,
             request_payload_hash=result.request_payload_hash,
+            cancel_requested_at=getattr(result, "cancel_requested_at", None),
+            cancel_requested_by=getattr(result, "cancel_requested_by", None),
+            cancelled=bool(getattr(result, "cancelled", False)),
+            timed_out=bool(getattr(result, "timed_out", False)),
         )
 
 

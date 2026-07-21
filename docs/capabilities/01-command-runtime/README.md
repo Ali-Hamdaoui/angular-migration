@@ -94,8 +94,11 @@ ownership with leases, timeout, and cancellation.
 1. CommandExecutor uses Sprint 0 WorkerSupervisor with in-memory idempotency
 2. Live log streaming uses synchronous append — async SSE streaming for
    bounded chunks synchronously in short transactions and exposes them through asynchronous reconnectable SSE cursor replay
-3. JobSupervisor cancellation operates through DB flags — real process-tree
-   kill requires an async supervisor thread
+3. JobSupervisor cancellation is connected to the process-owned worker: the
+   API records the request, signals the live worker, and the worker terminates
+   the process tree before recording terminal evidence. A separate
+   deployment-level reaper for a crashed backend instance remains an
+   operational hardening item.
 4. Cross-goal integration requires G02-G05 branches
 
 ## Audit

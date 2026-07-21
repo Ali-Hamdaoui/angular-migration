@@ -108,6 +108,27 @@ export function getCommandExecution(
   );
 }
 
+export type CancelCommandResponse = {
+  execution_id: string;
+  run_id: string;
+  cancelled: boolean;
+  signal_delivered: boolean;
+  cancel_requested_at: string;
+  idempotent_replay: boolean;
+};
+
+export function cancelCommand(
+  runId: string,
+  executionId: string,
+  request: { idempotency_key: string; actor: string },
+  client: ApiClient = apiClient,
+): Promise<CancelCommandResponse> {
+  return client.post<CancelCommandResponse>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/cancel`,
+    request,
+  );
+}
+
 export function getCommandArtifactById(
   artifactId: string,
   client: ApiClient = apiClient,

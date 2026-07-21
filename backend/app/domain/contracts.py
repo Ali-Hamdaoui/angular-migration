@@ -684,6 +684,10 @@ class CommandExecutionResponseDto(ContractModel):
     worker_id: str | None = None
     failure_reason: str | None = None
     request_payload_hash: str | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_requested_by: str | None = None
+    cancelled: bool = False
+    timed_out: bool = False
 
 
 class CancelCommandRequestDto(ContractModel):
