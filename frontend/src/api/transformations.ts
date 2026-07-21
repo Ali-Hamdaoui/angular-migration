@@ -5,6 +5,7 @@ import type {
   AngularUpdateRequest,
   AngularUpdateResponse,
   G08DecisionRequest,
+  G08InitializeRequest,
   G08ReviewResponse,
   TargetVersionResponse,
   TransformationEvidenceRequest,
@@ -129,7 +130,7 @@ export async function initializeG08(
   runId: string,
   stageId: string,
   gateId: string,
-  request: G08DecisionRequest,
+  request: G08InitializeRequest,
   client: ApiClient = apiClient,
 ): Promise<G08ReviewResponse> {
   return client.post<G08ReviewResponse>(

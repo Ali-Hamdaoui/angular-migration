@@ -107,13 +107,43 @@ export interface TargetVersionResponse {
 
 export type G08Decision = "approved" | "approved_with_comment" | "modification_requested" | "rejected";
 
+export interface G08InitializeRequest {
+  expected_state_version: number;
+  idempotency_key: string;
+  gate_id: string;
+}
+
 export interface G08DecisionRequest {
   expected_state_version: number;
   idempotency_key: string;
-  actor: string;
+  actor?: string;
   decision: G08Decision;
   comment?: string;
   gate_id: string;
+  gate_version: string;
+  package_checksum: string;
+  artifact_set_checksum: string;
+  workspace_fingerprint: string;
+  plan_version?: string;
+  plan_checksum?: string;
+}
+
+export interface G08ArtifactRef {
+  artifact_id: string;
+  kind: string;
+  relative_path: string;
+  checksum: string;
+  size_bytes: number;
+}
+
+export interface G08EvidencePackage {
+  package_id: string;
+  transformation_result?: Record<string, unknown>;
+  evidence_result?: Record<string, unknown>;
+  angular_update_record_id?: string;
+  angular_update_binding_checksum?: string;
+  artifacts: G08ArtifactRef[];
+  created_at: string;
 }
 
 export interface G08ReviewResponse {
@@ -123,7 +153,7 @@ export interface G08ReviewResponse {
   gate_version: string;
   status: string;
   decision?: string;
-  package: Record<string, unknown>;
+  package: G08EvidencePackage;
   package_checksum: string;
   artifact_set_checksum: string;
   workspace_fingerprint: string;
@@ -132,4 +162,11 @@ export interface G08ReviewResponse {
   idempotent_replay: boolean;
   stale_reason?: string;
   comment?: string;
+  plan_version?: string;
+  plan_checksum?: string;
+  artifact_ids?: string[];
+  artifact_links?: Record<string, string>;
+  package_artifact_id?: string;
+  technical_blockers?: string[];
+  correlation_id?: string;
 }

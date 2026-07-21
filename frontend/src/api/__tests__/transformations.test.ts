@@ -111,6 +111,8 @@ describe("transformations API client", () => {
     await decideG08(runId, stageId, gateId, {
       expected_state_version: 1, idempotency_key: "g08-1", actor: "tester",
       decision: "approved", gate_id: "G08",
+      gate_version: "v1", package_checksum: "sha256:abc",
+      artifact_set_checksum: "sha256:def", workspace_fingerprint: "fp-1",
     }, client);
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -152,8 +154,7 @@ describe("transformations API client", () => {
     const client = createApiClient("http://backend.test", fetchMock);
 
     await initializeG08(runId, stageId, gateId, {
-      expected_state_version: 1, idempotency_key: "init-1", actor: "tester",
-      decision: "approved", gate_id: "G08",
+      expected_state_version: 1, idempotency_key: "init-1", gate_id: "G08",
     }, client);
 
     expect(fetchMock).toHaveBeenCalledWith(

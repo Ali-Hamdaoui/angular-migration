@@ -75,7 +75,7 @@ export function AuthoritativeRunDashboard({ runId, initialState, initialMigratio
         return <>
           <AngularUpdatePanel runId={runId} stageId={activeStage.stage_id} expectedStateVersion={state.state_version} onStateChange={() => refresh()} workflowEvents={state.workflow_events} connectionStatus={status} artifacts={state.artifacts} />
           <TransformationEvidenceViewer runId={runId} stageId={activeStage.stage_id} expectedStateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} onAuthoritativeRefresh={refresh} />
-          <G08ReviewWorkspace runId={runId} stageId={activeStage.stage_id} gateId="G08" expectedStateVersion={state.state_version} />
+          <G08ReviewWorkspace runId={runId} stageId={activeStage.stage_id} gateId="G08" expectedStateVersion={state.state_version} connectionStatus={status} onAuthoritativeRefresh={refresh} />
         </>;
       })()}
       <BaselinePreparationPanel runId={runId} initialState={state} />
