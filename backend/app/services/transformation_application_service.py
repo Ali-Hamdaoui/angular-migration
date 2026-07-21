@@ -1648,7 +1648,7 @@ class G08ApprovalApplicationService:
             record = self._latest_record(session, run_id, stage_id)
             return self._dto(record) if record else None
 
-    def initialize(self, run_id: str, stage_id: str | None, request, *, actor: str | None = None) -> object:
+    def initialize(self, run_id: str, stage_id: str | None, request, *, actor: str | None = None, correlation_id: str | None = None) -> object:
         if request.gate_id != self.GATE_ID:
             raise G03ApplicationError("GATE_NOT_FOUND", "Only G08 is supported by this endpoint.", status_code=404)
         now = self._now()
@@ -1813,7 +1813,7 @@ class G08ApprovalApplicationService:
             session.flush()
             return self._dto(new_record)
 
-    def decide(self, run_id: str, stage_id: str | None, request, *, actor: str | None = None) -> object:
+    def decide(self, run_id: str, stage_id: str | None, request, *, actor: str | None = None, correlation_id: str | None = None) -> object:
         if request.gate_id != self.GATE_ID:
             raise G03ApplicationError("GATE_NOT_FOUND", "Only G08 is supported by this endpoint.", status_code=404)
         now = self._now()
