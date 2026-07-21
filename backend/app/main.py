@@ -26,6 +26,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     except OperationalError:
         # Older test/development databases may predate the command columns.
         pass
+    from app.orchestration.source_intake import default_source_intake_graph, recover_source_intake_jobs
+    default_source_intake_graph(get_settings())
+    try:
+        recover_source_intake_jobs()
+    except OperationalError:
+        # Older test/development databases may predate durable source intake.
+        pass
     yield
 
 

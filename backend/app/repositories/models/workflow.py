@@ -118,6 +118,31 @@ class WorkflowEventModel(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SourceIntakeJobModel(Base):
+    """Durable work item for the run-owned source-intake pipeline."""
+
+    __tablename__ = "source_intake_jobs"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_source_intake_jobs_run"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    snapshot_id: Mapped[str | None] = mapped_column(String(64))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ApprovalEventModel(Base):
     __tablename__ = "approval_events"
 
