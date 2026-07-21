@@ -148,6 +148,30 @@ def test_graph_handoff_failure_rolls_back_accepted_transition(tmp_path: Path):
         assert [event.event_type for event in events][-2:] == ["SOURCE_INTAKE_QUEUED", "SOURCE_INTAKE_FAILED"]
 
 
+def test_start_rejects_when_run_owned_target_claim_is_missing(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("missing-claim-create"))
+    with scope() as session:
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id))
+        assert claim is not None
+        session.delete(claim)
+
+    with pytest.raises(MigrationRunError, match="target reservation"):
+        service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="missing-claim-start", actor="operator")
+
+
+def test_start_rejects_when_g01_is_no_longer_approved(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("revoked-g01-create"))
+    with scope() as session:
+        gate = session.scalar(select(ApprovalGateModel).where(ApprovalGateModel.preflight_id == "preflight-1", ApprovalGateModel.gate_id == "G01"))
+        assert gate is not None
+        gate.status = "stale"
+
+    with pytest.raises(MigrationRunError, match="G01"):
+        service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="revoked-g01-start", actor="operator")
+
+
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):
     service, scope, _ = _service(tmp_path)
     created = service.create(_request("evidence-1"))

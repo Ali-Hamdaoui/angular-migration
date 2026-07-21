@@ -15,7 +15,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
@@ -164,6 +164,7 @@ class MigrationRunService:
                 return self._result_from_event(session, existing, replay=True)
             if run.status != RunStatus.CREATED.value:
                 raise MigrationRunError("RUN_NOT_STARTABLE", "Only a newly created run can be started.")
+            self._validate_start_boundary(session, run)
             active_job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"})))
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
@@ -206,6 +207,30 @@ class MigrationRunService:
                     )
             raise MigrationRunError("GRAPH_HANDOFF_FAILED", "Source-intake handoff failed safely; the durable job records the failure.") from error
         return result
+
+    def _validate_start_boundary(self, session, run: MigrationRunModel) -> None:
+        """Revalidate G01 and ownership immediately before durable dispatch."""
+        preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
+        gate = session.scalar(select(ApprovalGateModel).where(ApprovalGateModel.preflight_id == run.preflight_id, ApprovalGateModel.gate_id == "G01")) if run.preflight_id else None
+        if preflight is None or gate is None or gate.status not in {"approved", "approved_with_comment"}:
+            raise MigrationRunError("G01_NOT_APPROVED", "Start requires a currently approved G01 gate.")
+        try:
+            snapshot = PreflightSnapshot.model_validate(preflight.snapshot)
+        except Exception as error:
+            raise MigrationRunError("G01_EVIDENCE_INVALID", "The approved G01 snapshot could not be revalidated.") from error
+        if snapshot.source_path != run.source_path or snapshot.target_output_path != run.target_output_path:
+            raise MigrationRunError("G01_BOUNDARY_CHANGED", "The approved source or target boundary no longer matches the run.")
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == run.id, ActiveRunClaimModel.target_output_path == run.target_output_path))
+        if claim is None or self._utc(claim.expires_at) <= self._utc(self._now()):
+            raise MigrationRunError("TARGET_RESERVATION_INVALID", "The run no longer owns a live target reservation.")
+        if snapshot.target_reservation_id:
+            reservation = session.get(TargetReservationModel, snapshot.target_reservation_id)
+            if reservation is None or reservation.target_path != run.target_output_path or reservation.status not in {"reserved", "eligible"} or self._utc(reservation.expires_at) <= self._utc(self._now()):
+                raise MigrationRunError("TARGET_RESERVATION_INVALID", "The approved target reservation is missing, expired, or owned by another boundary.")
+
+    @staticmethod
+    def _utc(value: datetime) -> datetime:
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
 
     def cancel(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
         """Cancel a quiescent run and atomically release its active-run claim.
