@@ -124,26 +124,49 @@ export interface G08DecisionRequest {
   package_checksum: string;
   artifact_set_checksum: string;
   workspace_fingerprint: string;
-  plan_version?: string;
+  plan_version?: number;
   plan_checksum?: string;
 }
 
 export interface G08ArtifactRef {
   artifact_id: string;
-  kind: string;
+  run_id: string;
+  stage_id?: string;
+  artifact_type: string;
   relative_path: string;
+  created_at: string;
   checksum: string;
-  size_bytes: number;
 }
 
 export interface G08EvidencePackage {
-  package_id: string;
-  transformation_result?: Record<string, unknown>;
-  evidence_result?: Record<string, unknown>;
-  angular_update_record_id?: string;
-  angular_update_binding_checksum?: string;
-  artifacts: G08ArtifactRef[];
-  created_at: string;
+  run_id: string;
+  stage_id: string;
+  gate_id: string;
+  gate_version: string;
+  state_version: number;
+  actor: string;
+  transformation_record_id: string;
+  evidence_id: string;
+  plan_version?: number;
+  plan_checksum?: string;
+  transformation_result: {
+    update_status?: string;
+    target_version_status?: string;
+    resolved_target_version?: string;
+    [key: string]: unknown;
+  };
+  evidence_result: {
+    overall_risk_level?: string;
+    evidence_complete?: boolean;
+    total_files_changed?: number;
+    diff_summary?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  artifact_refs: G08ArtifactRef[];
+  artifact_set_checksum: string;
+  workspace_fingerprint: string;
+  technical_blockers: string[];
+  package_checksum: string;
 }
 
 export interface G08ReviewResponse {
@@ -157,16 +180,16 @@ export interface G08ReviewResponse {
   package_checksum: string;
   artifact_set_checksum: string;
   workspace_fingerprint: string;
+  plan_version?: number;
+  plan_checksum?: string;
+  artifact_ids: string[];
+  artifact_links: Record<string, string>;
+  package_artifact_id?: string;
+  technical_blockers: string[];
   state_version: number;
   event_sequence: number;
   idempotent_replay: boolean;
   stale_reason?: string;
   comment?: string;
-  plan_version?: string;
-  plan_checksum?: string;
-  artifact_ids?: string[];
-  artifact_links?: Record<string, string>;
-  package_artifact_id?: string;
-  technical_blockers?: string[];
   correlation_id?: string;
 }

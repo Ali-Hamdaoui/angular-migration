@@ -240,7 +240,13 @@ def decide_g08(
             message="gate_id in body does not match path",
         )
     try:
-        return service.decide(run_id, stage_id, request, actor=actor)
+        return service.decide(
+            run_id,
+            stage_id,
+            request,
+            actor=actor,
+            correlation_id=get_correlation_id(http_request),
+        )
     except G03ApplicationError as error:
         return _g08_error(http_request, error)
     except Exception:
@@ -265,7 +271,13 @@ def initialize_g08(
             message="gate_id in body does not match path",
         )
     try:
-        return service.initialize(run_id, stage_id, request, actor=actor)
+        return service.initialize(
+            run_id,
+            stage_id,
+            request,
+            actor=actor,
+            correlation_id=get_correlation_id(http_request),
+        )
     except G03ApplicationError as error:
         return _g08_error(http_request, error)
     except Exception:
@@ -283,12 +295,12 @@ def inspect_current_g08(
     service: G08ApprovalApplicationService = Depends(get_g08_service),
 ):
     try:
-        result = service.get(run_id=run_id, stage_id=None, gate_id="G08", actor=actor)
+        stage_id = service.resolve_stage_id(run_id, actor=actor)
     except G03ApplicationError as error:
         return _g08_error(http_request, error)
     except Exception:
         return _g08_backend_failure(http_request, "Unexpected backend failure in inspect_current_g08")
-    return _g08_result_or_404(http_request, result)
+    return _g08_result_or_404(http_request, service.get(run_id, stage_id, "G08", actor=actor))
 
 
 @router.post("/{run_id}/approvals/G08/decisions", response_model=G08ReviewResponse)
@@ -307,7 +319,8 @@ def decide_current_g08(
             message="gate_id in body does not match path",
         )
     try:
-        return service.decide(run_id, stage_id=None, request=request, actor=actor)
+        stage_id = service.resolve_stage_id(run_id, actor=actor)
+        return service.decide(run_id, stage_id, request, actor=actor, correlation_id=get_correlation_id(http_request))
     except G03ApplicationError as error:
         return _g08_error(http_request, error)
     except Exception:
@@ -330,7 +343,10 @@ def initialize_current_g08(
             message="gate_id in body does not match path",
         )
     try:
-        return service.initialize(run_id, stage_id=None, request=request, actor=actor)
+        stage_id = service.resolve_stage_id(run_id, actor=actor)
+        return service.initialize(
+            run_id, stage_id, request, actor=actor, correlation_id=get_correlation_id(http_request)
+        )
     except G03ApplicationError as error:
         return _g08_error(http_request, error)
     except Exception:

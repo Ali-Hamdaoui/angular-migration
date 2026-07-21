@@ -2280,6 +2280,8 @@ class G08ApprovalApplicationService:
     def _dto(self, record, *, replay=False):
         from app.api.transformation_contracts import G08ReviewResponse
 
+        package = record.package or {}
+        blockers = [str(item) for item in package.get("technical_blockers", [])]
         return G08ReviewResponse(
             run_id=record.run_id,
             stage_id=record.stage_id,
@@ -2287,18 +2289,22 @@ class G08ApprovalApplicationService:
             gate_version=record.gate_version,
             status=record.status,
             decision=record.decision,
-            package=record.package,
+            package=package,
             package_checksum=record.package_checksum,
             artifact_set_checksum=record.artifact_set_checksum,
             workspace_fingerprint=record.workspace_fingerprint,
+            plan_version=record.plan_version,
+            plan_checksum=record.plan_checksum,
+            artifact_ids=list(record.artifact_ids or []),
+            artifact_links={
+                artifact_id: f"/api/v1/artifacts/{artifact_id}" for artifact_id in (record.artifact_ids or [])
+            },
+            package_artifact_id=record.package_artifact_id,
+            technical_blockers=blockers,
             state_version=record.state_version,
             event_sequence=record.event_sequence,
             idempotent_replay=replay,
             stale_reason=record.stale_reason,
             comment=record.comment,
-            plan_version=record.plan_version,
-            plan_checksum=record.plan_checksum,
-            artifact_ids=record.artifact_ids or [],
-            package_artifact_id=record.package_artifact_id,
             correlation_id=record.correlation_id,
         )

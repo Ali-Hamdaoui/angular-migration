@@ -125,10 +125,10 @@ class G08DecisionRequest(ContractModel):
     decision: G08Decision
     comment: str | None = Field(default=None, max_length=4000)
     gate_id: str = Field(default="G08", min_length=1, max_length=16)
-    gate_version: str | None = Field(default=None, max_length=64)
-    package_checksum: str | None = Field(default=None, max_length=128)
-    artifact_set_checksum: str | None = Field(default=None, max_length=128)
-    workspace_fingerprint: str | None = Field(default=None, max_length=128)
+    gate_version: str = Field(min_length=1, max_length=64)
+    package_checksum: str = Field(min_length=1, max_length=128)
+    artifact_set_checksum: str = Field(min_length=1, max_length=128)
+    workspace_fingerprint: str = Field(min_length=1, max_length=128)
     plan_version: int | None = Field(default=None, ge=1)
     plan_checksum: str | None = Field(default=None, max_length=128)
 
