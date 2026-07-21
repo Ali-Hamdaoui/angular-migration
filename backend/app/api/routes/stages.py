@@ -14,7 +14,7 @@ from app.api.stage_contracts import (
     StageSandboxResponse,
 )
 from app.services.stage_preparation_service import StageApplicationError, StagePreparationApplicationService
-from app.services.stage_bootstrap_service import StageBootstrapApplicationService
+from app.services.stage_bootstrap_service import StageApplicationError as BootstrapStageApplicationError, StageBootstrapApplicationService
 
 router = APIRouter(prefix="/runs", tags=["stages"])
 
@@ -70,7 +70,7 @@ def decide_g07(run_id: str, request: G07DecisionRequest, service: StagePreparati
 def bootstrap_install(run_id: str, stage_id: str, request: StageBootstrapInstallRequest, service: StageBootstrapApplicationService = Depends(get_bootstrap_service)):
     try:
         return service.run_bootstrap_install(run_id, stage_id, request)
-    except StageApplicationError as e:
+    except BootstrapStageApplicationError as e:
         raise HTTPException(status_code=e.status_code, detail={"error_code": e.code, "message": e.message}) from e
 
 

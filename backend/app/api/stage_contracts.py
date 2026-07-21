@@ -76,13 +76,13 @@ class StageBootstrapInstallRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
     actor: str = Field(min_length=1, max_length=128)
-    profile: str | None = Field(default=None, max_length=64)
 
 
-class StageBootstrapInstallResponse(ContractModel):
+class StageBootstrapStatusResponse(ContractModel):
     run_id: str
     stage_id: str
     step_id: str
+    name: str = "bootstrap_install"
     status: str
     command: str | None = None
     exit_code: int | None = None
@@ -91,17 +91,19 @@ class StageBootstrapInstallResponse(ContractModel):
     state_version: int = Field(ge=1)
     event_sequence: int = Field(ge=1)
     artifact_ids: list[str] = Field(default_factory=list)
+    runtime_profile: str | None = None
+    stage_sandbox: str | None = None
+    g07_status: str | None = None
+    lifecycle_script_audit_ref: str | None = None
+    pre_fingerprint: str | None = None
+    post_fingerprint: str | None = None
+    failure_classification: str | None = None
+    blocker_code: str | None = None
+    retry_eligible: bool = False
+    recovery_required: bool = False
+    reconstruction_guidance: str | None = None
+    correlation_id: str | None = None
+
+
+class StageBootstrapInstallResponse(StageBootstrapStatusResponse):
     idempotent_replay: bool = False
-
-
-class StageBootstrapStatusResponse(ContractModel):
-    run_id: str
-    stage_id: str
-    step_id: str
-    name: str
-    status: str
-    command: str | None = None
-    exit_code: int | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    artifact_ids: list[str] = Field(default_factory=list)

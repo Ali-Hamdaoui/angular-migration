@@ -6,7 +6,8 @@ import { getBootstrapInstallStatus, runBootstrapInstall } from "@/api/stages";
 import type { StageBootstrapInstallResponse, StageBootstrapStatusResponse } from "@/api/stages";
 import styles from "./BootstrapInstallPanel.module.css";
 
-const TERMINAL = new Set(["completed", "failed", "cancelled", "skipped"]);
+const TERMINAL = new Set(["COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED", "BLOCKED", "STALE", "RECOVERY_REQUIRED"]);
+const RUNNING_STATES = new Set(["RUNNING", "in_progress", "QUEUED", "STARTING"]);
 const POLL_INTERVAL_MS = 3000;
 
 function formattedDuration(ms: number): string {
@@ -76,36 +77,35 @@ export function BootstrapInstallPanel({
     setError(null);
     setStale(false);
     try {
+      const stableKey = `bootstrap-install-${runId}-${stageId}`;
       const result = await runBootstrapInstall(runId, stageId, {
-        expected_state_version: installation?.state_version ?? runStateVersion ?? 1,
-        idempotency_key: `bootstrap-install-${runId}-${stageId}-${Date.now()}`,
+        expected_state_version: step?.state_version ?? installation?.state_version ?? runStateVersion ?? 1,
+        idempotency_key: stableKey,
         actor: "control-tower",
       });
       setInstallation(result);
-      setStep({
-        run_id: result.run_id,
-        stage_id: result.stage_id,
-        step_id: result.step_id,
-        name: "bootstrap-install",
-        status: result.status,
-        command: result.command,
-        exit_code: result.exit_code,
-        started_at: result.started_at,
-        completed_at: result.completed_at,
-        artifact_ids: result.artifact_ids,
-      });
+      setStep(result);
     } catch (reason: unknown) {
-      if (reason instanceof ApiClientError && reason.status === 409) setStale(true);
-      else setError("Bootstrap installation could not be started.");
+      if (reason instanceof ApiClientError && reason.status === 409) {
+        const body = reason.responseBody ? JSON.parse(reason.responseBody) : null;
+        const code = body?.detail?.error_code;
+        if (code === "STALE_STATE_VERSION") setStale(true);
+        else setError(`Bootstrap installation blocked: ${body?.detail?.message ?? reason.message}`);
+      } else {
+        setError("Bootstrap installation could not be started.");
+      }
     } finally {
       setWorking(false);
     }
   }
 
   const status = step?.status ?? "not_started";
-  const isRunning = status === "RUNNING" || status === "in_progress" || status === "QUEUED";
-  const isComplete = status === "completed" || status === "SUCCEEDED" || status === "PASSED";
-  const isFailed = status === "failed" || status === "FAILED";
+  const isRunning = RUNNING_STATES.has(status);
+  const isComplete = status === "COMPLETED" || status === "SUCCEEDED" || status === "PASSED";
+  const isFailed = status === "FAILED" || status === "CANCELLED" || status === "INTERRUPTED";
+  const isCancelled = status === "CANCELLED";
+  const isInterrupted = status === "INTERRUPTED";
+  const isRecoveryRequired = status === "RECOVERY_REQUIRED" || step?.recovery_required === true;
   const isBlocked = status === "BLOCKED" || status === "blocked";
   const isTerminal = TERMINAL.has(status);
 
@@ -128,10 +128,13 @@ export function BootstrapInstallPanel({
         <span className={`${styles.status} ${
           isComplete ? styles.statusSuccess :
           isFailed ? styles.statusFailure :
+          isCancelled ? styles.statusFailure :
+          isInterrupted ? styles.statusBlocked :
+          isRecoveryRequired ? styles.statusBlocked :
           isRunning ? styles.statusRunning :
           isBlocked ? styles.statusBlocked :
           ""
-        }`}>
+        }`} role="status" aria-live="polite">
           {status.replaceAll("_", " ").toLowerCase()}
         </span>
       </div>
@@ -256,7 +259,7 @@ export function BootstrapInstallPanel({
       ) : null}
 
       {/* Failure state with retry guidance */}
-      {isFailed && step ? (
+      {isFailed && step && step.retry_eligible && !step.recovery_required ? (
         <div className={styles.failureBlock}>
           <h3>Installation failed</h3>
           <p role="alert" className={styles.errorMessage}>
@@ -276,6 +279,16 @@ export function BootstrapInstallPanel({
               <li>After resolving the issue, click <strong>Retry bootstrap install</strong> below.</li>
             </ul>
           </div>
+        </div>
+      ) : null}
+
+      {isFailed && step && !step.retry_eligible && !step.recovery_required ? (
+        <div className={styles.failureBlock}>
+          <h3>Installation failed</h3>
+          <p role="alert" className={styles.errorMessage}>
+            {step.failure_classification ?? "The bootstrap command failed."} Retry is not authorized for this workspace state.
+          </p>
+          {logUrl ? <p><a href={logUrl} target="_blank" rel="noreferrer">View full logs</a></p> : null}
         </div>
       ) : null}
 
@@ -300,11 +313,46 @@ export function BootstrapInstallPanel({
         </div>
       ) : null}
 
+      {step ? (
+        <div className={styles.resultBlock}>
+          <h3>Authority and recovery</h3>
+          <dl className={styles.metadataGrid}>
+            <div><dt>Runtime profile</dt><dd>{step.runtime_profile ?? "—"}</dd></div>
+            <div><dt>Stage sandbox</dt><dd>{step.stage_sandbox ?? "—"}</dd></div>
+            <div><dt>G07</dt>
+              <dd className={step.g07_status === "approved" || step.g07_status === "approved_with_comment" ? styles.exitOk : styles.exitFail}>
+                {step.g07_status ?? "—"}
+              </dd>
+            </div>
+            <div><dt>Lifecycle audit</dt><dd>{step.lifecycle_script_audit_ref ?? "—"}</dd></div>
+            <div><dt>Pre-fingerprint</dt><dd><code>{step.pre_fingerprint ?? "—"}</code></dd></div>
+            <div><dt>Post-fingerprint</dt><dd><code>{step.post_fingerprint ?? "—"}</code></dd></div>
+            <div><dt>Correlation ID</dt><dd><code>{step.correlation_id ?? "—"}</code></dd></div>
+            <div><dt>Failure classification</dt><dd className={step.failure_classification ? styles.exitFail : ""}>{step.failure_classification ?? "—"}</dd></div>
+          </dl>
+          {step.recovery_required || isRecoveryRequired ? (
+            <p role="alert" className={styles.warningMessage}>
+              {step.reconstruction_guidance ?? "The stage sandbox must be reconstructed before another install."}
+            </p>
+          ) : null}
+          {step.g07_status === "missing" ? (
+            <p role="alert" className={styles.errorMessage}>
+              G07 authorization record is missing. Bootstrap must have an approved G07 gate to proceed.
+            </p>
+          ) : null}
+          {step.g07_status && step.g07_status !== "approved" && step.g07_status !== "approved_with_comment" && step.g07_status !== "missing" ? (
+            <p role="alert" className={styles.warningMessage}>
+              G07 status is "{step.g07_status}". Bootstrap authorization may be revoked or stale.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Action buttons */}
       <div className={styles.actions}>
         <span>Step: {step?.step_id ?? "—"}</span>
         <div className={styles.actionButtons}>
-          {(status === "not_started" || isFailed || isBlocked) && !isRunning ? (
+          {(status === "not_started" || step?.retry_eligible) && !isRunning ? (
             <button
               type="button"
               className={`${styles.actionButton} ${styles.primaryButton}`}
@@ -313,7 +361,7 @@ export function BootstrapInstallPanel({
             >
               {working
                 ? "Starting…"
-                : isFailed || isBlocked
+                : step?.retry_eligible
                   ? "Retry bootstrap install"
                   : "Start bootstrap install"}
             </button>

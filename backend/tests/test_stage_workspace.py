@@ -8,9 +8,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.contracts import WorkflowEventType
@@ -37,6 +38,7 @@ from app.repositories.models.workflow import (
     MigrationStageModel,
     StageStepModel,
 )
+from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.stage_workspace_models import G07ApprovalModel, StageWorkspaceModel
 from app.services.stage_bootstrap_service import StageApplicationError as BootstrapError
 from app.services.stage_bootstrap_service import StageBootstrapApplicationService
@@ -464,36 +466,43 @@ class TestStageBootstrapApplicationService(_ServiceTestBase):
         return prep.stage_id, prep.state_version
 
     def _setup_workspace_and_g07(self, db, now, tmp_path):
-        """Create a run, stage, workspace, and G07 approval for bootstrap."""
-        self._create_run(db)
+        """Create an authoritative sandbox, locked plan, profile, and G07 approval."""
+        run = self._create_run(db)
+        sandbox = tmp_path / "stage-sandbox"
+        artifacts = tmp_path / "artifacts"
+        sandbox.mkdir(parents=True)
+        artifacts.mkdir(parents=True)
+        (sandbox / "package.json").write_text('{"name":"fixture","version":"1.0.0"}', encoding="utf-8")
+        (sandbox / "package-lock.json").write_text('{"name":"fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture","version":"1.0.0"}}}', encoding="utf-8")
+        run.artifact_root = str(artifacts)
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox), "IMMUTABLE_SOURCE": str(tmp_path / "source")}
         svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
         prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="bs-ws-setup"))
-
-        # Workspace record
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
         ws = StageWorkspaceModel(
             id="wksp-bs", run_id="run-001", stage_id=prep.stage_id,
-            sandbox_path="/tmp/sandbox",
-            source_fingerprint="sha256:src", workspace_fingerprint="sha256:ws",
-            policy_version="v1", file_count=0, total_size_bytes=0,
-            copy_status="completed",
-            state_version=prep.state_version, event_sequence=3,
-            created_at=now, completed_at=now,
+            sandbox_path=str(sandbox), source_fingerprint="sha256:src", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=2, total_size_bytes=1, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now,
         )
         db.add(ws)
-
-        # G07 Approval record
+        plan = StageExecutionPlan(stage_key="18-to-19", source_version_family="angular_18", target_version_family="angular_19", plan_version="v1")
         g07 = G07ApprovalModel(
-            id="g07-bs", run_id="run-001", stage_id=prep.stage_id,
-            gate_id="G07", gate_version="g07-v1",
-            idempotency_key="bs-g07-approve", actor="operator",
-            status="approved", decision="approved",
-            package_checksum="sha256:pkg", artifact_set_checksum="sha256:art",
-            stage_key="18-to-19", plan_version="v1",
+            id="g07-bs", run_id="run-001", stage_id=prep.stage_id, gate_id="G07", gate_version="g07-v1",
+            idempotency_key="bs-g07-approve", actor="operator", status="approved", decision="approved",
+            package_checksum="sha256:pkg", artifact_set_checksum="sha256:art", stage_key="18-to-19", plan_version="v1",
             state_version=prep.state_version, event_sequence=3,
-            package={"key": "val"}, artifact_ids=[],
-            created_at=now, updated_at=now,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": plan.model_dump(mode="json")}, "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "artifact-lifecycle"},
+            artifact_ids=[], created_at=now, updated_at=now,
         )
         db.add(g07)
+        db.add(ExecutionProfileModel(
+            id="profile-1", run_id="run-001", idempotency_key="profile-key", request_checksum="sha256:req",
+            policy_version="v1", status="selected", source_angular_exact="18.0.0", selected_profile_id="npm-profile",
+            selected_checksum="sha256:profile", profiles=[{"profile_id":"npm-profile","checksum":"sha256:profile","package_manager":"npm","node_version":"20","npm_version":"10"}],
+            blockers=[], guidance=[], artifact_ids=[], state_version=prep.state_version, event_sequence=3,
+            created_at=now, updated_at=now,
+        ))
         db.flush()
         return prep.stage_id, prep.state_version
 
@@ -525,13 +534,346 @@ class TestStageBootstrapApplicationService(_ServiceTestBase):
         # Start bootstrap install
         req = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-status-run")
         result = bs.run_bootstrap_install("run-001", sid, req)
-        assert result.status == "QUEUED"
+        assert result.status == "COMPLETED"
 
         # Check status
         status = bs.get_bootstrap_status("run-001", sid)
         assert status is not None
         assert status.run_id == "run-001"
-        assert status.status == "QUEUED"
+        assert status.status == "COMPLETED"
+
+    def test_raises_if_g07_missing(self, db, now, tmp_path):
+        sid, sv = self._setup_base_stage(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-no-g07")
+        with pytest.raises(BootstrapError, match="STAGE_SANDBOX_MISSING"):
+            bs.run_bootstrap_install("run-001", sid, req)
+
+    def _add_profile(self, db, now, stage_id):
+        """Add a basic execution profile for test setup."""
+        db.add(ExecutionProfileModel(
+            id=f"profile-{uuid4().hex[:8]}", run_id="run-001", idempotency_key="profile-key", request_checksum="sha256:req",
+            policy_version="v1", status="selected", source_angular_exact="18.0.0", selected_profile_id="npm-profile",
+            selected_checksum="sha256:profile", profiles=[{"profile_id":"npm-profile","checksum":"sha256:profile","package_manager":"npm","node_version":"20","npm_version":"10"}],
+            blockers=[], guidance=[], artifact_ids=[], state_version=stage_id, event_sequence=3,
+            created_at=now, updated_at=now,
+        ))
+        db.flush()
+
+    def test_raises_if_g07_not_approved(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="g07-rej-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="w-rej", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-rej", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="g07-rej-key", actor="op", status="rejected", decision="rejected",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-rej-g07")
+        with pytest.raises(BootstrapError, match="G07 is not approved"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_stale_g07(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-stale"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="g07-stale-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-stale", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-stale", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="g07-stale-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": "sha256:changed-fp", "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-stale-g07")
+        with pytest.raises(BootstrapError, match="STALE_G07_DECISION"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_lifecycle_script_missing(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-lc-missing"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="lc-miss-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-lc-miss", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-lc-miss", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="lc-miss-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")}},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-lc-miss")
+        with pytest.raises(BootstrapError, match="LIFECYCLE_SCRIPT_AUDIT_MISSING"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_lifecycle_script_blocked(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-lc-blocked"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="lc-block-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-lc-block", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-lc-block", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="lc-block-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "blocked", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-lc-block")
+        with pytest.raises(BootstrapError, match="LIFECYCLE_SCRIPT_BLOCKED"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_sandbox_alias_missing(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-no-alias"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="no-alias-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-no-alias", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-no-alias", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="no-alias-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-no-alias")
+        with pytest.raises(BootstrapError, match="STAGE_SANDBOX_MISSING"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_sandbox_is_source(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sandbox-is-source"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox), "IMMUTABLE_SOURCE": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="src-is-sb-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-src-is-sb", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-src-is-sb", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="src-is-sb-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-src-is-sb")
+        with pytest.raises(BootstrapError, match="SOURCE_SAFETY_VIOLATION"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_lockfile_missing(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-no-lock"
+        sandbox.mkdir()
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="no-lock-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-no-lock", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-no-lock", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="no-lock-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-no-lock")
+        with pytest.raises(BootstrapError, match="LOCKFILE_MISSING"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_lockfile_version_too_low(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-low-lock"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":1}')
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="low-lock-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-low-lock", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-low-lock", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="low-lock-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-low-lock")
+        with pytest.raises(BootstrapError, match="LOCKFILE_MISMATCH"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_raises_if_preexisting_node_modules(self, db, now, tmp_path):
+        run = self._create_run(db)
+        sandbox = tmp_path / "sb-nm"
+        sandbox.mkdir(); (sandbox / "package.json").write_text('{"name":"t"}')
+        (sandbox / "package-lock.json").write_text('{"name":"t","lockfileVersion":3,"packages":{}}')
+        (sandbox / "node_modules").mkdir()
+        run.artifact_root = str(tmp_path / "artifacts")
+        run.workspace_aliases = {"STAGE_SANDBOX": str(sandbox)}
+        svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="nm-prep"))
+        fingerprint = StageBootstrapApplicationService._dir_fingerprint(sandbox)
+        ws = StageWorkspaceModel(id="ws-nm", run_id="run-001", stage_id=prep.stage_id,
+            sandbox_path=str(sandbox), source_fingerprint="s", workspace_fingerprint=fingerprint,
+            policy_version="v1", file_count=0, total_size_bytes=0, copy_status="completed",
+            state_version=prep.state_version, event_sequence=3, created_at=now, completed_at=now)
+        db.add(ws); db.flush()
+        g07 = G07ApprovalModel(id="g07-nm", run_id="run-001", stage_id=prep.stage_id, gate_id="G07",
+            gate_version="v1", idempotency_key="nm-key", actor="op", status="approved", decision="approved",
+            package_checksum="s", artifact_set_checksum="s", stage_key="k", plan_version="v1",
+            state_version=prep.state_version, event_sequence=3,
+            package={"workspace_fingerprint": fingerprint, "input_manifest": {"plan": StageExecutionPlan(
+                stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1").model_dump(mode="json")},
+                "lifecycle_script_status": "approved", "lifecycle_script_audit_ref": "ref"},
+            artifact_ids=[], created_at=now, updated_at=now)
+        db.add(g07); db.flush()
+        self._add_profile(db, now, prep.state_version)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=prep.state_version, idempotency_key="bs-nm")
+        with pytest.raises(BootstrapError, match="PREEXISTING_DEPENDENCY_STATE"):
+            bs.run_bootstrap_install("run-001", prep.stage_id, req)
+
+    def test_idempotent_replay_returns_same_status(self, db, now, tmp_path):
+        sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-idempotent")
+        result1 = bs.run_bootstrap_install("run-001", sid, req)
+        assert result1.status == "COMPLETED"
+        result2 = bs.run_bootstrap_install("run-001", sid, req)
+        assert result2.idempotent_replay is True
+        assert result2.status == result1.status
+
+    def test_conflicting_idempotency_key_rejected(self, db, now, tmp_path):
+        sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req1 = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-conflict")
+        result1 = bs.run_bootstrap_install("run-001", sid, req1)
+        execution_rec = db.scalar(select(CommandExecutionModel).where(
+            CommandExecutionModel.idempotency_key == "bs-conflict"
+        ))
+        execution_rec.stage_id = "other-stage"
+        db.flush()
+        sv_after = result1.state_version
+        req2 = self._make_simple_req(expected_state_version=sv_after, idempotency_key="bs-conflict")
+        with pytest.raises(BootstrapError, match="IDEMPOTENCY_PAYLOAD_MISMATCH"):
+            bs.run_bootstrap_install("run-001", sid, req2)
+
+    def test_stale_state_version_rejected(self, db, now, tmp_path):
+        sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=999, idempotency_key="bs-stale-state")
+        with pytest.raises(BootstrapError, match="STALE_STATE_VERSION"):
+            bs.run_bootstrap_install("run-001", sid, req)
+
+    def test_g07_status_reconstructed_from_db(self, db, now, tmp_path):
+        sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-g07-check")
+        result = bs.run_bootstrap_install("run-001", sid, req)
+        assert result.status == "COMPLETED"
+        status = bs.get_bootstrap_status("run-001", sid)
+        assert status.g07_status == "approved"
+
+    def test_no_permanent_running(self, db, now, tmp_path):
+        sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        req = self._make_simple_req(expected_state_version=sv, idempotency_key="bs-no-running")
+        result = bs.run_bootstrap_install("run-001", sid, req)
+        assert result.status != "RUNNING"
+        assert result.status != "STARTING"
 
 
 class TestEdgeCases:

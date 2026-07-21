@@ -67,22 +67,6 @@ export interface StageBootstrapInstallRequest {
   expected_state_version: number;
   idempotency_key: string;
   actor: string;
-  profile?: string | null;
-}
-
-export interface StageBootstrapInstallResponse {
-  run_id: string;
-  stage_id: string;
-  step_id: string;
-  status: string;
-  command: string | null;
-  exit_code: number | null;
-  started_at: string | null;
-  completed_at: string | null;
-  state_version: number;
-  event_sequence: number;
-  artifact_ids: string[];
-  idempotent_replay: boolean;
 }
 
 export interface StageBootstrapStatusResponse {
@@ -95,7 +79,25 @@ export interface StageBootstrapStatusResponse {
   exit_code: number | null;
   started_at: string | null;
   completed_at: string | null;
+  state_version: number;
+  event_sequence: number;
   artifact_ids: string[];
+  runtime_profile: string | null;
+  stage_sandbox: string | null;
+  g07_status: string | null;
+  lifecycle_script_audit_ref: string | null;
+  pre_fingerprint: string | null;
+  post_fingerprint: string | null;
+  failure_classification: string | null;
+  blocker_code: string | null;
+  retry_eligible: boolean;
+  recovery_required: boolean;
+  reconstruction_guidance: string | null;
+  correlation_id: string | null;
+}
+
+export interface StageBootstrapInstallResponse extends StageBootstrapStatusResponse {
+  idempotent_replay: boolean;
 }
 
 type ApiClient = ReturnType<typeof createApiClient>;
