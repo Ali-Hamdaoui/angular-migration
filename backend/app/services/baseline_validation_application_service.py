@@ -65,6 +65,7 @@ class BaselineValidationApplicationService:
             targets = bound_targets
         cancel_event = threading.Event(); self._ACTIVE[(run_id, kind)] = cancel_event
         results: list[BaselineTargetResult] = []; executed: list[tuple[BaselineTargetResult, object, CommandRequestDto]] = []
+        output_sequence = 0
         execution_error: Exception | None = None
         try:
             for index, target in enumerate(targets):
@@ -75,7 +76,11 @@ class BaselineValidationApplicationService:
                     results.append(normalize_command_result(target, exit_code=None, duration_ms=None)); continue
                 command_request = CommandRequestDto(command_id=target.command_id, run_id=run_id, executable=target.executable, arguments=list(target.arguments), shell=False, working_directory_alias=target.working_directory_alias, runtime_profile_id=runtime_id, timeout_seconds=3600, network_profile="none", cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE, idempotency_key=f"{request.idempotency_key}:{target.target_id}", requested_by=request.actor, requester=request.actor, requested_at=self._now())
                 try:
-                    execution = worker.run(command_request, cancel_event=cancel_event); output = self._execution_output(execution, run_id)
+                    def output_callback(stream, chunk):
+                        nonlocal output_sequence
+                        output_sequence += 1
+                        self._persist_output_chunk(run_id, request, kind, target.command_id, stream, chunk, output_sequence)
+                    execution = worker.run(command_request, cancel_event=cancel_event, output_callback=output_callback); output = self._execution_output(execution, run_id)
                 except Exception as error:
                     execution_error = error
                     failed = normalize_command_result(target, exit_code=None, duration_ms=None, warnings=(str(error),), failed_tests=())
@@ -172,6 +177,16 @@ class BaselineValidationApplicationService:
         for artifact in (execution.stdout_artifact, execution.stderr_artifact):
             if artifact: values.append(store.read_artifact(run_id, artifact.ref.relative_path).content)
         return "\n".join(values)
+    def _persist_output_chunk(self, run_id, request, kind, command_id, stream, chunk, sequence):
+        safe = self._redact_live_output(chunk)
+        if not safe:
+            return
+        with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                return
+            transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=f"{request.idempotency_key}:output:{sequence}", event_type=WorkflowEventType.COMMAND_OUTPUT_CHUNK, actor=request.actor, reason="baseline validation command output chunk", occurred_at=self._now(), payload={"kind": kind, "command_id": command_id, "stream": stream, "chunk": safe, "sequence": sequence}))
+            session.flush()
     def _run_root(self, run_id):
         with self._scope() as session:
             run = session.get(MigrationRunModel, run_id)
@@ -179,6 +194,14 @@ class BaselineValidationApplicationService:
             return run.artifact_root
     @staticmethod
     def _warnings(output): return tuple(line.strip() for line in output.splitlines() if "warning" in line.lower())
+    @staticmethod
+    def _redact_live_output(value: str, limit: int = 64_000) -> str:
+        redacted = re.sub(r"(?i)((?:token|password|secret|authorization|api[_-]?key|npm_config_\w+)\s*(?:=|:)\s*)(?:Bearer\s+)?([^\s'\"]+)", r"\1[REDACTED]", value)
+        encoded = redacted.encode("utf-8")
+        if len(encoded) <= limit:
+            return redacted
+        suffix = "\n[output chunk truncated]"
+        return encoded[:max(0, limit - len(suffix.encode("utf-8")))].decode("utf-8", errors="replace") + suffix
     @staticmethod
     def _test_count(output):
         match = re.search(r"(\d+)\s+(?:tests?\s+)?(?:passed|failed)", output, re.IGNORECASE); return int(match.group(1)) if match else None
