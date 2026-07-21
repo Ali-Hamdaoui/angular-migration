@@ -17,10 +17,17 @@ def authorize_run(session, run_id: str, actor: str) -> MigrationRunModel:
     """Authorize an authenticated actor for one persisted migration run."""
     run = session.get(MigrationRunModel, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="Migration run does not exist.")
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "RUN_NOT_FOUND", "message": "Migration run does not exist.", "details": {}},
+        )
     if run.actor and run.actor != actor:
         raise HTTPException(
             status_code=403,
-            detail="Authenticated actor is not authorized for this run.",
+            detail={
+                "error_code": "RUN_ACCESS_FORBIDDEN",
+                "message": "Authenticated actor is not authorized for this run.",
+                "details": {},
+            },
         )
     return run

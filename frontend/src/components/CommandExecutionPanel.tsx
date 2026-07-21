@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiClientError } from "@/api/client";
+import { ApiClientError, getBackendBaseUrl } from "@/api/client";
 import { executeApprovedCommand, getCommandArtifactById, getCommandExecution, listCommandExecutions } from "@/api/commands";
 import type { CommandArtifactMetadata } from "@/api/commands";
 import type { CommandExecutionResponseDto, CommandPolicyValidateResponseDto, WorkflowEventDto } from "@/types/generated/api";
@@ -13,8 +13,10 @@ const FINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled",
 function details(error: unknown) {
   if (!(error instanceof ApiClientError)) return { code: "BACKEND_UNAVAILABLE", message: "The execution service is temporarily unavailable.", correlationId: null, requested: null, current: null };
   try {
-    const payload = JSON.parse(error.responseBody ?? "{}") as { error_code?: string; message?: string; correlation_id?: string; details?: { requested_version?: number; current_version?: number } };
-    return { code: payload.error_code ?? "BACKEND_UNAVAILABLE", message: payload.message ?? error.message, correlationId: payload.correlation_id ?? null, requested: payload.details?.requested_version ?? null, current: payload.details?.current_version ?? null };
+    const payload = JSON.parse(error.responseBody ?? "{}") as { error_code?: string; message?: string; correlation_id?: string; detail?: { error_code?: string; message?: string; details?: { requested_version?: number; current_version?: number } }; details?: { requested_version?: number; current_version?: number } };
+    const detail = payload.detail ?? {};
+    const detailInfo = detail.details ?? {};
+    return { code: payload.error_code ?? detail.error_code ?? "BACKEND_UNAVAILABLE", message: payload.message ?? detail.message ?? error.message, correlationId: payload.correlation_id ?? null, requested: payload.details?.requested_version ?? detailInfo.requested_version ?? null, current: payload.details?.current_version ?? detailInfo.current_version ?? null };
   } catch { return { code: "BACKEND_UNAVAILABLE", message: error.message, correlationId: null, requested: null, current: null }; }
 }
 
@@ -91,7 +93,7 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, conn
   async function execute() {
     if (!authorization || authorization.decision !== "accepted" || submitStatus === "submitting") return;
     if (typeof window !== "undefined" && !window.confirm("Execute this accepted command? The backend will use the immutable authorization decision.")) return;
-    const key = attemptKey.current ?? `command-execution:${runId}:${authorization.authorization_id}:${stateVersion}:${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+    const key = attemptKey.current ?? authorization.idempotency_key ?? `command-execution:${runId}:${authorization.authorization_id}:${stateVersion}:${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
     attemptKey.current = key; setSubmitStatus("submitting"); setError(null);
     try {
       const result = await executeApprovedCommand(runId, { authorization_decision_id: authorization.authorization_id, expected_state_version: authorization.expected_state_version, idempotency_key: key, requested_by: "control-tower" });
@@ -123,7 +125,7 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, conn
       {selected.idempotent_replay ? <p className={styles.note}>Idempotent replay: this is the existing execution, not a new process.</p> : null}
       <LiveCommandLogViewer runId={runId} executionId={selected.execution_id} executionStatus={selected.status} stdoutArtifactId={selected.stdout_artifact_id} stderrArtifactId={selected.stderr_artifact_id} />
       <h4>Finalized evidence</h4>
-      {selected.artifact_ids.length === 0 ? <p className={styles.note}>Evidence is not available until the worker finalizes the execution.</p> : artifactMetadataStatus === "loading" ? <p role="status">Loading evidence metadata...</p> : artifactMetadataStatus === "unavailable" ? <p role="alert">Evidence metadata is temporarily unavailable. Artifact links remain available.</p> : <ul className={styles.list}>{selected.artifact_ids.map((artifactId) => { const artifact = artifactMetadata[artifactId]; return <li key={artifactId}><a className={styles.actionLink} href={`/api/v1/artifacts/${encodeURIComponent(artifactId)}`} target="_blank" rel="noreferrer">Open artifact {artifactId}</a>{artifact ? <div><span>{artifact.artifact_type} · {artifact.relative_path}</span><code>SHA-256: {artifact.checksum}</code></div> : null}</li>; })}</ul>}
+      {selected.artifact_ids.length === 0 ? <p className={styles.note}>Evidence is not available until the worker finalizes the execution.</p> : artifactMetadataStatus === "loading" ? <p role="status">Loading evidence metadata...</p> : artifactMetadataStatus === "unavailable" ? <p role="alert">Evidence metadata is temporarily unavailable. Artifact links remain available.</p> : <ul className={styles.list}>{selected.artifact_ids.map((artifactId) => { const artifact = artifactMetadata[artifactId]; return <li key={artifactId}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifactId)}`} target="_blank" rel="noreferrer">Open artifact {artifactId}</a>{artifact ? <div><span>{artifact.artifact_type} · {artifact.relative_path}</span><code>SHA-256: {artifact.checksum}</code></div> : null}</li>; })}</ul>}
     </article> : null}
   </section>;
 }

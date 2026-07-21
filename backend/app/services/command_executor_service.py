@@ -298,7 +298,7 @@ class CommandExecutorService:
         )
         session.add(model)
         session.flush()
-        self._append_event(session, run_id, authorization.stage_id, idempotency_key,
+        self._append_event(session, run_id, authorization.stage_id, f"{idempotency_key}:queued",
                            WorkflowEventType.COMMAND_QUEUED, "authorized command queued",
                            {"execution_id": execution_id, "authorization_id": authorization.id,
                             "command_id": authorization.command_id, "state_version": run.state_version})
@@ -353,6 +353,8 @@ class CommandExecutorService:
         cancel_event = threading.Event()
         self._cancel_events[execution_id] = cancel_event
         try:
+            # Read and validate all process inputs in a short transaction. The
+            # subprocess must never run while a repository session is open.
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
                 run = session.get(MigrationRunModel, model.run_id) if model else None
@@ -360,6 +362,18 @@ class CommandExecutorService:
                 if model is None or run is None or authorization is None:
                     return
                 root = Path(run.run_root).resolve(strict=True)
+                run_id = run.id
+                stage_id = authorization.stage_id
+                command_id = authorization.command_id
+                executable = authorization.executable
+                arguments = list(authorization.arguments or [])
+                workspace_alias = authorization.workspace_alias
+                execution_profile_id = authorization.execution_profile_id or ""
+                timeout_seconds = model.timeout_seconds or self._default_timeout_seconds
+                network_profile = authorization.network_profile or "none"
+                idempotency_key = model.idempotency_key
+                requested_at = model.requested_at
+                correlation_id = model.correlation_id
                 aliases = {
                     name: (root / path if not Path(path).is_absolute() else Path(path))
                     for name, path in (run.workspace_aliases or {}).items()
@@ -378,45 +392,49 @@ class CommandExecutorService:
                 )
                 if selected_profile is None:
                     raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
+                artifact_root = Path(run.artifact_root)
                 policy = CommandPolicy(
                     sandbox_root=root,
                     registry=CommandRegistry(),
                     working_directory_aliases=aliases,
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
                 )
-                store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
+                store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
                 worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)
                 request = CommandRequestDto(
-                    command_id=authorization.command_id,
-                    run_id=run.id,
-                    stage_id=authorization.stage_id,
+                    command_id=command_id,
+                    run_id=run_id,
+                    stage_id=stage_id,
                     requested_by=authorization.actor,
                     requester=authorization.actor,
-                    executable=authorization.executable,
-                    arguments=list(authorization.arguments or []),
+                    executable=executable,
+                    arguments=arguments,
                     shell=False,
-                    working_directory_alias=authorization.workspace_alias,
-                    runtime_profile_id=authorization.execution_profile_id or "",
-                    timeout_seconds=model.timeout_seconds or self._default_timeout_seconds,
-                    network_profile=authorization.network_profile or "none",
+                    working_directory_alias=workspace_alias,
+                    runtime_profile_id=execution_profile_id,
+                    timeout_seconds=timeout_seconds,
+                    network_profile=network_profile,
                     cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
-                    idempotency_key=model.idempotency_key,
-                    requested_at=model.requested_at,
+                    idempotency_key=idempotency_key,
+                    requested_at=requested_at,
                 )
-                correlation_id = model.correlation_id
 
-                def persist_output(stream: str, text: str) -> None:
-                    # Each callback uses a short-lived transaction. The process
-                    # worker never owns a database transaction while it runs.
-                    from app.repositories.session import session_scope
-                    with session_scope() as log_session:
-                        CommandLogService().append_chunk(
-                            log_session, execution_id, run.id, stream, text,
-                            correlation_id=correlation_id,
-                            strict_ownership=True,
-                        )
+            def persist_output(stream: str, text: str) -> None:
+                from app.repositories.session import session_scope
+                with session_scope() as log_session:
+                    CommandLogService().append_chunk(
+                        log_session, execution_id, run_id, stream, text,
+                        correlation_id=correlation_id,
+                        strict_ownership=True,
+                    )
 
-                result = worker.run(request, cancel_event=cancel_event, output_callback=persist_output)
+            result = worker.run(request, cancel_event=cancel_event, output_callback=persist_output)
+            with session_scope() as session:
+                model = session.get(CommandExecutionModel, execution_id)
+                run = session.get(MigrationRunModel, run_id)
+                authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id) if model else None
+                if model is None or run is None or authorization is None:
+                    return
                 self._finish_execution(session, model, result, run=run, authorization=authorization, profile=selected_profile)
         except Exception as exc:
             with session_scope() as session:

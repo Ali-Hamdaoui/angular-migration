@@ -65,9 +65,9 @@ All external process execution must pass through the registered command template
 - Sprint 2 `MigrationRunModel`, `StageExecutionPlanModel` — run/workflow context
 - Sprint 2 frozen schemas in `goals/shared/contracts/` — `approved_stage_plan`, `artifact_ref`, `durable_event_envelope`
 
-### Not Implemented
+### Known limitations
 
-- Async SSE streaming for continuous log output (current implementation uses synchronous chunk append + offset-based client polling)
+- SSE tailing uses an async generator with bounded polling over durable log chunks; chunk persistence itself is synchronous and transaction-scoped.
 - Hard-kill supervisor thread for stale leases (cancellation relies on `cancel_event` + `process.wait(timeout=1)`)
 
 ### Explicitly Out of Scope

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCommandLogSummary, getCommandLogs, type CommandLogChunk, type CommandLogSummary } from "@/api/commands";
+import { getBackendBaseUrl } from "@/api/client";
 import styles from "./ControlTowerShell.module.css";
 
 type LogChunk = {
@@ -96,8 +97,8 @@ function statusLabel(value: ConnectionState): string {
   return value.replaceAll("_", " ");
 }
 
-function artifactLink(artifactId: string | null | undefined): string | null {
-  return artifactId ? `/api/v1/artifacts/${encodeURIComponent(artifactId)}` : null;
+function artifactLink(apiBase: string, artifactId: string | null | undefined): string | null {
+  return artifactId ? `${apiBase}/artifacts/${encodeURIComponent(artifactId)}` : null;
 }
 
 export function LiveCommandLogViewer({
@@ -108,7 +109,7 @@ export function LiveCommandLogViewer({
   stderrArtifactId,
   search = "",
   maxLines = 500,
-  apiBase = "/api/v1",
+  apiBase = `${getBackendBaseUrl()}/api/v1`,
 }: LiveCommandLogViewerProps) {
   const [chunks, setChunks] = useState<LogChunk[]>([]);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
@@ -369,7 +370,7 @@ export function LiveCommandLogViewer({
       {storedTotal > 0 && storedOffset < storedTotal ? <p className={styles.note}>{storedTotal - storedOffset} stored log chunks remain.</p> : null}
       {finalStatus ? <p className={styles.note}>Final command status: {finalStatus.replaceAll("_", " ")}</p> : null}
       <div className={styles.list}>
-        {([ ["stdout", stdoutArtifactId], ["stderr", stderrArtifactId] ] as const).map(([name, artifactId]) => { const href = artifactLink(artifactId); return href ? <a className={styles.actionLink} key={name} href={href} target="_blank" rel="noreferrer">Open {name} artifact</a> : null; })}
+        {([ ["stdout", stdoutArtifactId], ["stderr", stderrArtifactId] ] as const).map(([name, artifactId]) => { const href = artifactLink(apiBase, artifactId); return href ? <a className={styles.actionLink} key={name} href={href} target="_blank" rel="noreferrer">Open {name} artifact</a> : null; })}
       </div>
     </section>
   );

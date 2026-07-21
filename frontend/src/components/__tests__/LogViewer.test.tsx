@@ -55,7 +55,7 @@ describe("LiveCommandLogViewer", () => {
   it("connects in live mode, deduplicates sequences, and retains ordered output", async () => {
     render(<LiveCommandLogViewer runId="run-1" executionId="exec-1" maxLines={10} />);
     const source = FakeEventSource.instances[0];
-    expect(source.url).toContain("/runs/run-1/commands/exec-1/logs/stream?cursor=0");
+    expect(source.url).toContain("http://127.0.0.1:8000/api/v1/runs/run-1/commands/exec-1/logs/stream?cursor=0");
 
     act(() => {
       source.onopen?.();
@@ -79,7 +79,7 @@ describe("LiveCommandLogViewer", () => {
       vi.advanceTimersByTime(500);
     });
     expect(FakeEventSource.instances).toHaveLength(2);
-    expect(FakeEventSource.instances[1].url).toContain("cursor=1");
+    expect(FakeEventSource.instances[1].url).toContain("http://127.0.0.1:8000/api/v1/runs/run-1/commands/exec-1/logs/stream?cursor=1");
   });
 
   it("keeps output visible and exposes artifact links after completion", async () => {
@@ -91,7 +91,7 @@ describe("LiveCommandLogViewer", () => {
     });
     expect(screen.getByText("failure output")).toBeInTheDocument();
     expect(screen.getByText(/Final command status: failed/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open stdout artifact" })).toHaveAttribute("href", "/api/v1/artifacts/stdout-1");
+    expect(screen.getByRole("link", { name: "Open stdout artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/stdout-1");
   });
 
   it("filters locally without changing the global cursor", () => {

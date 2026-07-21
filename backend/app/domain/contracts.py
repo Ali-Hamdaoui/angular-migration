@@ -635,6 +635,7 @@ class CommandPolicyValidateResponseDto(ContractModel):
     artifact_id: str | None = None
     correlation_id: str | None = None
     request_payload_hash: str | None = None
+    idempotency_key: str | None = None
     decision_timestamp: datetime | None = None
 
 

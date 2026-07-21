@@ -21,7 +21,7 @@ describe("CommandExecutionPanel", () => {
     await screen.findByText("QUEUED");
     expect(vi.mocked(executeApprovedCommand)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(executeApprovedCommand)).toHaveBeenCalledWith("run-1", expect.objectContaining({ authorization_decision_id: "auth-1", expected_state_version: 7, idempotency_key: expect.any(String) }));
-    expect(screen.getByRole("link", { name: /Open artifact manifest-1/ })).toHaveAttribute("href", "/api/v1/artifacts/manifest-1");
+    expect(screen.getByRole("link", { name: /Open artifact manifest-1/ })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/manifest-1");
     expect(screen.getByText("npm")).toBeInTheDocument();
     expect(screen.getByText("--ignore-scripts")).toBeInTheDocument();
     expect(screen.getByText("stage/workspace")).toBeInTheDocument();

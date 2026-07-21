@@ -49,7 +49,7 @@ describe("CommandPolicyInspector", () => {
     fireEvent.click((await screen.findAllByRole("button", { name: "Validate against policy" }))[0]);
     expect(await screen.findByText("COMMAND_NOT_IN_APPROVED_PLAN")).toBeInTheDocument();
     expect(screen.getByText(/corr-reject/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open authorization evidence/ })).toHaveAttribute("href", "/api/v1/artifacts/reject-evidence");
+    expect(screen.getByRole("link", { name: /Open authorization evidence/ })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/reject-evidence");
   });
 
   it("does not resubmit stale state and refreshes the authoritative run", async () => {

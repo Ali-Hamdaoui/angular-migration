@@ -51,10 +51,12 @@ def test_authorize_run_requires_the_persisted_run_owner(db_session: Session):
     with pytest.raises(HTTPException) as unauthorized:
         authorize_run(db_session, "run-owned", "bob")
     assert unauthorized.value.status_code == 403
+    assert unauthorized.value.detail["error_code"] == "RUN_ACCESS_FORBIDDEN"
 
     with pytest.raises(HTTPException) as missing:
         authorize_run(db_session, "missing", "alice")
     assert missing.value.status_code == 404
+    assert missing.value.detail["error_code"] == "RUN_NOT_FOUND"
 
 
 def test_queue_route_uses_authenticated_actor_not_client_requested_by(

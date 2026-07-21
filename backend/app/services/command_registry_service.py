@@ -452,7 +452,7 @@ class CommandPolicyEngineService:
                 "correlation_id": correlation_id,
                 "request_payload_hash": payload_hash,
                 "artifact_ids": list(audit.artifact_ids),
-                "artifact_checksums": ({audit.artifact_ids[0]: session.get(ArtifactMetadataModel, f"metadata-{audit.artifact_ids[0]}").checksum} if audit.artifact_ids else {}),
+                "artifact_checksums": ({audit.artifact_ids[0]: stored.ref.checksum} if audit.artifact_ids else {}),
             },
             occurred_at=now,
         )
@@ -477,6 +477,7 @@ class CommandPolicyEngineService:
             idempotent_replay=replay, expected_state_version=audit.expected_state_version,
             authoritative_state_version=audit.state_version, artifact_id=(audit.artifact_ids or [None])[0],
             correlation_id=audit.correlation_id, request_payload_hash=audit.request_payload_hash,
+            idempotency_key=audit.idempotency_key,
             decision_timestamp=audit.created_at,
         )
 

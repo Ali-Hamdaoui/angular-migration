@@ -35,6 +35,10 @@ CommandRequest = CommandRequestDto
 
 _DEFAULT_RUNTIME_PROFILE: Final = "source-runtime-profile"
 _DEFAULT_NETWORK_PROFILE: Final = "none"
+_LIVE_LOG_FIXTURE_ARGUMENTS: Final = (
+    "-c",
+    "import sys,time; [print(f'MT-003 live line {i}', flush=True) or time.sleep(0.7) for i in range(1,13)]",
+)
 _MUTABLE_WORKSPACE_ALIASES: Final = frozenset(
     {
         "run_workspace",
@@ -109,6 +113,7 @@ class CommandRegistry:
 
     definitions: tuple[CommandDefinition, ...] = (
         CommandDefinition("python-version", "python", ("--version",), ("python.exe", "py", "py.exe")),
+        CommandDefinition("python-stream", "python", _LIVE_LOG_FIXTURE_ARGUMENTS, ("python.exe", "py", "py.exe")),
         CommandDefinition("node-version", "node", ("--version",), ("node.exe",)),
         CommandDefinition("npm-version", "npm", ("--version",), ("npm.cmd",)),
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),

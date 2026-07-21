@@ -29,13 +29,27 @@ class ArtifactContentResponse(BaseModel):
 def _authorize_run(session, run_id: str, actor: str) -> None:
     run = session.get(MigrationRunModel, run_id)
     if run is not None and run.actor and run.actor != actor:
-        raise HTTPException(status_code=403, detail='Authenticated actor is not authorized for this run.')
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "RUN_ACCESS_FORBIDDEN",
+                "message": "Authenticated actor is not authorized for this run.",
+                "details": {},
+            },
+        )
 
 
 def _authorize_preflight(session, preflight_id: str, actor: str) -> None:
     preflight = session.get(PreflightModel, preflight_id)
     if preflight is not None and getattr(preflight, 'actor', None) and preflight.actor != actor:
-        raise HTTPException(status_code=403, detail='Authenticated actor is not authorized for this preflight.')
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "PREFLIGHT_ACCESS_FORBIDDEN",
+                "message": "Authenticated actor is not authorized for this preflight.",
+                "details": {},
+            },
+        )
 
 def get_artifact_store(run_id: str) -> LocalFilesystemArtifactStore:
     with session_scope() as session:
