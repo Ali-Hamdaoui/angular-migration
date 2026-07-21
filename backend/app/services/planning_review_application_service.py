@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.contracts import AgentKind
 from app.domain.planning import (
+    APPROVED_BUILDERS,
+    APPROVED_CATALOGUE_VERSIONS,
+    APPROVED_EXECUTION_PROFILE_PREFIX,
+    APPROVED_RECOVERY_POLICIES,
+    APPROVED_REPAIR_POLICIES,
+    APPROVED_VALIDATION_POLICIES,
     BuildSystemDecision,
     MigrationPlan,
     StageExecutionPlan,
@@ -269,6 +275,8 @@ class PlanRevisionService:
             plan.run_id != request.run_id
             or stage.plan_version != plan.version
             or stage.checksum != request.stage_plan.get("checksum")
+            or plan.checksum != checksum_model(plan)
+            or stage.checksum != checksum_model(stage)
         ):
             raise PlanningReviewApplicationError(
                 "PLAN_BINDING_MISMATCH", "The migration and stage plans are not consistently bound.", 409
@@ -303,8 +311,12 @@ class PlanRevisionService:
         plan_values = plan.model_dump(mode="python", exclude={"checksum", "version", "plan_id"})
         stage_values = stage.model_dump(mode="python", exclude={"checksum", "plan_version", "stage_plan_id"})
         if changes.catalogue_version is not None:
+            if changes.catalogue_version not in APPROVED_CATALOGUE_VERSIONS:
+                raise PlanningReviewApplicationError("UNAPPROVED_CATALOGUE", "The catalogue is not approved.", 409)
             plan_values["catalogue_version"] = changes.catalogue_version
         if changes.execution_profile_id is not None:
+            if not changes.execution_profile_id.startswith(APPROVED_EXECUTION_PROFILE_PREFIX):
+                raise PlanningReviewApplicationError("UNAPPROVED_EXECUTION_PROFILE", "The execution profile is not approved.", 409)
             stage_values["execution_profile_id"] = changes.execution_profile_id
         if changes.target_cli_exact is not None:
             stage_values["target_cli_exact"] = changes.target_cli_exact
@@ -323,14 +335,20 @@ class PlanRevisionService:
             commands["angular_update"] = (update,)
             stage_values["commands"] = commands
         if changes.validation_policy_id is not None:
+            if changes.validation_policy_id not in APPROVED_VALIDATION_POLICIES:
+                raise PlanningReviewApplicationError("UNAPPROVED_VALIDATION_POLICY", "The validation policy is not approved.", 409)
             stage_values["validation_policy"]["policy_id"] = changes.validation_policy_id
         if changes.recovery_policy_id is not None:
+            if changes.recovery_policy_id not in APPROVED_RECOVERY_POLICIES:
+                raise PlanningReviewApplicationError("UNAPPROVED_RECOVERY_POLICY", "The recovery policy is not approved.", 409)
             stage_values["recovery_policy"]["policy_id"] = changes.recovery_policy_id
         if changes.repair_policy_id is not None:
+            if changes.repair_policy_id not in APPROVED_REPAIR_POLICIES:
+                raise PlanningReviewApplicationError("UNAPPROVED_REPAIR_POLICY", "The repair policy is not approved.", 409)
             plan_values["repair_policy"]["policy_id"] = changes.repair_policy_id
             stage_values["repair_policy"]["policy_id"] = changes.repair_policy_id
         if changes.builder is not None:
-            if not changes.builder.startswith("@angular-devkit/build-angular:"):
+            if changes.builder not in APPROVED_BUILDERS:
                 raise PlanningReviewApplicationError(
                     "UNSUPPORTED_BUILD_SYSTEM",
                     "Unsupported custom builder cannot be introduced by a plan revision.",

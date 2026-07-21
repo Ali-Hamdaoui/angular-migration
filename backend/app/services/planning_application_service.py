@@ -33,7 +33,8 @@ class BuildSystemDecisionService:
     """Make the builder decision deterministically from observed builder data."""
 
     def decide(self, *, builder: str, decision_id: str) -> BuildSystemDecision:
-        if not builder.startswith("@angular-devkit/build-angular:"):
+        from app.domain.planning import APPROVED_BUILDERS
+        if builder not in APPROVED_BUILDERS:
             return BuildSystemDecision.create(decision_id=decision_id, builder=builder, action="blocked", rationale="Unsupported custom builder requires manual preparation.")
         return BuildSystemDecision.create(decision_id=decision_id, builder=builder, action="preserve", rationale="Preserve the existing supported Angular builder; modernization is not part of this plan.")
 
@@ -97,6 +98,8 @@ class PlanningApplicationService:
         if self._state_version_reader and self._state_version_reader(request.run_id) != request.expected_state_version:
             raise PlanningApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
         self._validate_prerequisites(request)
+        if request.builder not in __import__("app.domain.planning", fromlist=["APPROVED_BUILDERS"]).APPROVED_BUILDERS:
+            raise PlanningApplicationError("UNSUPPORTED_BUILD_SYSTEM", "Unsupported custom builder requires manual preparation.", 409)
         try:
             plan = self._migration_plans.create(request, plan_version=plan_version)
             stage = self._stage_plans.create(request, plan_version=plan_version)

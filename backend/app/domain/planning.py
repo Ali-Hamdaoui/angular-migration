@@ -22,6 +22,17 @@ from app.domain.contracts import ContractModel
 _CHECKSUM = r"^sha256:[0-9a-f]{64}$"
 _SHELL_TOKENS = re.compile(r"[;&|<>`$()\r\n]")
 _EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+APPROVED_CATALOGUE_VERSIONS = frozenset({"catalog-v1", "catalog-v2"})
+APPROVED_EXECUTION_PROFILE_PREFIX = "profile-"
+APPROVED_VALIDATION_POLICIES = frozenset({"angular-stage-standard-v2"})
+APPROVED_RECOVERY_POLICIES = frozenset({"safe-boundary-v1"})
+APPROVED_REPAIR_POLICIES = frozenset({"proposer-reviewer-human-v1"})
+APPROVED_BUILDERS = frozenset({
+    "@angular-devkit/build-angular:application",
+    "@angular-devkit/build-angular:browser",
+    "@angular-devkit/build-angular:browser-esbuild",
+    "@angular-devkit/build-angular:server",
+})
 
 
 class PlanArtifactInput(ContractModel):
@@ -157,7 +168,10 @@ class PlanGenerationRequest(ContractModel):
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     execution_profile_id: str = Field(min_length=1, max_length=128)
     stage_route: tuple[tuple[str, ...], ...] = Field(min_length=1)
-    target_cli_exact: str = Field(min_length=1, max_length=64)
+    # Older callers and the public F06 contract omit this when the first
+    # route entry carries the exact CLI version.  The stage planner derives
+    # it from that entry, while still validating an explicitly supplied value.
+    target_cli_exact: str | None = Field(default=None, max_length=64)
     builder: str = Field(min_length=1, max_length=256)
     prerequisite_artifacts: tuple[PlanArtifactInput, ...] = ()
     validation_policy_id: str = "angular-stage-standard-v2"
@@ -166,6 +180,16 @@ class PlanGenerationRequest(ContractModel):
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":
+        if self.catalogue_version not in APPROVED_CATALOGUE_VERSIONS:
+            raise ValueError("catalogue version is not approved")
+        if not self.execution_profile_id.startswith(APPROVED_EXECUTION_PROFILE_PREFIX):
+            raise ValueError("execution profile is not approved")
+        if self.validation_policy_id not in APPROVED_VALIDATION_POLICIES:
+            raise ValueError("validation policy is not approved")
+        if self.recovery_policy_id not in APPROVED_RECOVERY_POLICIES:
+            raise ValueError("recovery policy is not approved")
+        if self.repair_policy_id not in APPROVED_REPAIR_POLICIES:
+            raise ValueError("repair policy is not approved")
         if any(len(route) not in {4, 5} for route in self.stage_route):
             raise ValueError("stage route entries must contain Angular and CLI exact versions")
         if any(_SHELL_TOKENS.search(value) for route in self.stage_route for value in route):
