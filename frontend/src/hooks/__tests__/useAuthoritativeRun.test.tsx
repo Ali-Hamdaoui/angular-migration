@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getAuthoritativeRunState } from "@/api/runs";
 import { AUTHORITATIVE_EVENT_TYPES, PARITY_BASELINE_EVENT_TYPES, useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import { STAGE_G07_EVENT_TYPES } from "@/hooks/stageWorkflowEvents";
 
 vi.mock("@/api/runs", () => ({ getAuthoritativeRunState: vi.fn().mockResolvedValue({ workflow_events: [], updated_at: "initial" }) }));
 vi.mock("@/api/client", () => ({ getBackendBaseUrl: () => "http://backend" }));
@@ -49,6 +50,7 @@ describe("useAuthoritativeRun Feature 13 SSE", () => {
       "COMPATIBILITY_RESOLUTION_BLOCKED",
       "G05_APPROVED",
     ]));
+    expect(AUTHORITATIVE_EVENT_TYPES).toEqual(expect.arrayContaining([...STAGE_G07_EVENT_TYPES]));
     act(() => {
       source!.emit("BASELINE_BACKEND_ANCHOR_CREATED", { event_id: "e3", event_type: "BASELINE_BACKEND_ANCHOR_CREATED", sequence: 3, occurred_at: "3" });
       source!.emit("BASELINE_FAILURES_FINGERPRINTED", { event_id: "e1", event_type: "BASELINE_FAILURES_FINGERPRINTED", sequence: 1, occurred_at: "1" });

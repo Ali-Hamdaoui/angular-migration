@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBackendBaseUrl } from "@/api/client";
 import type { MigrationEventDto } from "@/types/generated/api";
+import { STAGE_G07_EVENT_TYPES } from "./stageWorkflowEvents";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "recovering" | "closed";
 
@@ -31,6 +32,7 @@ const WORKFLOW_EVENT_TYPES: string[] = [
   "SNAPSHOT_PROGRESS_UPDATED",
   "SNAPSHOT_QUARANTINED",
   "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED", "COMMAND_QUEUED", "COMMAND_STARTED", "COMMAND_OUTPUT_AVAILABLE", "COMMAND_OUTPUT_CHUNK", "BASELINE_INSTALL_SUCCEEDED", "BASELINE_INSTALL_FAILED", "COMMAND_CANCELLED", "COMMAND_INTERRUPTED", "BASELINE_TARGETS_DISCOVERED", "BASELINE_BUILD_STARTED", "BASELINE_BUILD_COMPLETED", "BASELINE_TESTS_STARTED", "BASELINE_TESTS_COMPLETED", "BASELINE_LINT_STARTED", "BASELINE_LINT_COMPLETED", "G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE",
+  ...STAGE_G07_EVENT_TYPES,
 ];
 
 const MAX_LIVE_EVENTS = 200;

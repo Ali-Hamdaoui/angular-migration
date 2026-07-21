@@ -26,7 +26,7 @@ export interface G07DecisionRequest {
   idempotency_key: string;
   actor: string;
   stage_id: string;
-  decision: string;
+  decision: "approved" | "approved_with_comment" | "modification_requested" | "rejected";
   comment?: string | null;
   gate_id?: string;
 }
@@ -44,6 +44,7 @@ export interface G07ReviewResponse {
   idempotent_replay: boolean;
   stale_reason: string | null;
   comment: string | null;
+  decision_id?: string | null;
 }
 
 export interface StageSandboxRequest {

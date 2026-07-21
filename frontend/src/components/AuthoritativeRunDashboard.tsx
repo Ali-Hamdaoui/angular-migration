@@ -30,7 +30,20 @@ const pipelineSteps = [
 
 export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
   const { state, status, error, refresh } = useAuthoritativeRun(runId, initialState);
-  const stageId = useMemo(() => `stage-${runId.slice(0, 12)}`, [runId]);
+  const stageId = useMemo(() => {
+    const event = [...state.workflow_events].reverse().find((item) => item.stage_id);
+    if (event?.stage_id) return event.stage_id;
+    return state.artifacts.find((item) => item.stage_id)?.stage_id ?? undefined;
+  }, [state.workflow_events, state.artifacts]);
+  const prepareBindings = useMemo(() => {
+    const payload = [...state.workflow_events].reverse().find((item) => item.payload?.stage_key)?.payload;
+    return payload ? {
+      stage_key: typeof payload.stage_key === "string" ? payload.stage_key : undefined,
+      source_version_family: typeof payload.source_version_family === "string" ? payload.source_version_family : undefined,
+      target_version_family: typeof payload.target_version_family === "string" ? payload.target_version_family : undefined,
+      plan_version: typeof payload.plan_version === "string" ? payload.plan_version : undefined,
+    } : undefined;
+  }, [state.workflow_events]);
   const connectionLabel = {
     loading: "Loading authoritative state?", connecting: "Connecting to backend events?", open: "Live ? authoritative state", reconnecting: "Connection lost ? reconnecting?", recovering: "Refreshing authoritative snapshot?", failed: "Unable to refresh authoritative state",
   }[status];
@@ -67,8 +80,8 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />
       <G02ReviewPanel runId={runId} initialState={state} />
-      <StagePreparationPanel runId={runId} stageId={stageId} initialState={state} />
-      <BootstrapInstallPanel runId={runId} stageId={stageId} runStateVersion={state.state_version} />
+      <StagePreparationPanel runId={runId} stageId={stageId} prepareBindings={prepareBindings} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} />
+      {stageId ? <BootstrapInstallPanel runId={runId} stageId={stageId} runStateVersion={state.state_version} /> : null}
       <ExecutionProfilePanel runId={runId} initialState={state} />
       <BaselinePreparationPanel runId={runId} initialState={state} />
       <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
