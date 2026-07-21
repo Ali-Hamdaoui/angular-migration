@@ -15,7 +15,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
@@ -51,6 +51,7 @@ class RunResult:
     graph_thread_id: str
     idempotent_replay: bool = False
     artifacts: tuple[ArtifactRefDto, ...] = ()
+    job_id: str | None = None
 
 
 class MigrationRunService:
@@ -150,29 +151,61 @@ class MigrationRunService:
             return RunResult(run_id, run.status, transition.next_state_version, transition.event_sequence, thread_id, artifacts=artifact_refs)
 
     def start(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
+        thread_id = ""
         with self._scope() as session:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
-            existing = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.idempotency_key == idempotency_key))
+            existing = session.scalar(select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == run_id,
+                WorkflowEventModel.idempotency_key.in_({idempotency_key, idempotency_key + ":accepted"}),
+            ).order_by(WorkflowEventModel.sequence.desc()))
             if existing is not None:
                 return self._result_from_event(session, existing, replay=True)
             if run.status != RunStatus.CREATED.value:
                 raise MigrationRunError("RUN_NOT_STARTABLE", "Only a newly created run can be started.")
+            active_job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"})))
+            if active_job is not None:
+                raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = self._thread_id(session, run_id)
             accepted = StateTransitionService(session).apply_transition(TransitionRequest(
                 run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
                 event_type=WorkflowEventType.RUN_START_ACCEPTED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
                 actor=actor, reason="source-intake handoff accepted", payload={"graph_thread_id": thread_id}, occurred_at=self._now()))
-            try:
-                self._graph.start(run_id=run_id, thread_id=thread_id)
-            except Exception as error:
-                raise MigrationRunError("GRAPH_HANDOFF_FAILED", "Source-intake graph handoff failed safely.") from error
-            started = StateTransitionService(session).apply_transition(TransitionRequest(
-                run_id=run_id, expected_state_version=accepted.next_state_version, idempotency_key=idempotency_key,
-                event_type=WorkflowEventType.RUN_STARTED, actor=actor, reason="source-intake graph started",
-                payload={"graph_thread_id": thread_id}, occurred_at=self._now()))
-            return RunResult(run_id, started.status, started.next_state_version, started.event_sequence, thread_id, artifacts=tuple(self._artifacts_for_run(session, run_id)))
+            queued = SourceIntakeJobModel(
+                id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
+                status="queued", actor=actor, idempotency_key=idempotency_key,
+                attempt=0, queued_at=self._now(), state_version=accepted.next_state_version,
+            )
+            session.add(queued)
+            StateTransitionService(session).append_audit_event(
+                run_id=run_id, idempotency_key=f"{idempotency_key}:queued",
+                event_type=WorkflowEventType.SOURCE_INTAKE_QUEUED, actor=actor,
+                reason="source-intake work item persisted before dispatch",
+                occurred_at=self._now(), payload={"job_id": queued.id, "graph_thread_id": thread_id},
+            )
+            session.flush()
+            result = RunResult(run_id, accepted.status, accepted.next_state_version, accepted.event_sequence, thread_id, artifacts=tuple(self._artifacts_for_run(session, run_id)), job_id=queued.id)
+        try:
+            self._graph.start(run_id=run_id, thread_id=thread_id)
+        except Exception as error:
+            with self._scope() as failure_session:
+                job = failure_session.get(SourceIntakeJobModel, queued.id)
+                run = failure_session.get(MigrationRunModel, run_id)
+                if job is not None:
+                    job.status = "failed"
+                    job.finished_at = self._now()
+                    job.last_error_code = "GRAPH_HANDOFF_FAILED"
+                    job.last_error_message = "Source-intake worker dispatch failed."
+                if run is not None:
+                    StateTransitionService(failure_session).append_audit_event(
+                        run_id=run_id, idempotency_key=f"{idempotency_key}:dispatch-failed",
+                        event_type=WorkflowEventType.SOURCE_INTAKE_FAILED, actor=actor,
+                        reason="source-intake worker dispatch failed",
+                        occurred_at=self._now(), payload={"job_id": queued.id, "error_code": "GRAPH_HANDOFF_FAILED"},
+                    )
+            raise MigrationRunError("GRAPH_HANDOFF_FAILED", "Source-intake handoff failed safely; the durable job records the failure.") from error
+        return result
 
     def cancel(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
         """Cancel a quiescent run and atomically release its active-run claim.
@@ -269,8 +302,9 @@ class MigrationRunService:
     @staticmethod
     def _result_from_event(session, event: WorkflowEventModel, *, replay: bool) -> RunResult:
         run = session.get(MigrationRunModel, event.run_id)
+        job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == event.run_id))
         payload = event.payload
-        return RunResult(event.run_id, run.status if run else str(payload.get("next_run_status", RunStatus.CREATED.value)), run.state_version if run else int(payload.get("next_state_version", 1)), event.sequence, str(payload.get("graph_thread_id") or f"source-intake-{event.run_id}"), replay, tuple(MigrationRunService._artifacts_for_run(session, event.run_id)))
+        return RunResult(event.run_id, run.status if run else str(payload.get("next_run_status", RunStatus.CREATED.value)), run.state_version if run else int(payload.get("next_state_version", 1)), event.sequence, str(payload.get("graph_thread_id") or f"source-intake-{event.run_id}"), replay, tuple(MigrationRunService._artifacts_for_run(session, event.run_id)), job.id if job else None)
 
     def _write_evidence(self, artifacts: LocalFilesystemArtifactStore, session, run_id: str, evidence: dict[str, object], now: datetime, input_checksum: str) -> list[ArtifactRefDto]:
         refs: list[ArtifactRefDto] = []

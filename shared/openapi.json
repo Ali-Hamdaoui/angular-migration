@@ -866,6 +866,18 @@
             "title": "Idempotent Replay",
             "type": "boolean"
           },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Id"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"

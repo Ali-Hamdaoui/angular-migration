@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.domain.preflight import PreflightSnapshot
 from app.domain.contracts import RunStatus
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, Base, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, Base, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
 from app.core.config import Settings
@@ -66,6 +66,11 @@ def test_create_and_start_use_authoritative_transitions(tmp_path: Path):
     started = service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="start-1", actor="operator")
     assert started.status == "SOURCE_VALIDATION_RUNNING"
     assert graph.calls == [(created.run_id, created.graph_thread_id)]
+    replayed_start = service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="start-1", actor="operator")
+    assert replayed_start.idempotent_replay is True
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == created.run_id)))
+        assert len(jobs) == 1 and jobs[0].status == "queued"
     replay = service.create(_request())
     assert replay.idempotent_replay is True
 
@@ -139,8 +144,8 @@ def test_graph_handoff_failure_rolls_back_accepted_transition(tmp_path: Path):
     with scope() as session:
         run = session.get(MigrationRunModel, created.run_id)
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == created.run_id).order_by(WorkflowEventModel.sequence)))
-        assert run is not None and run.status == "CREATED" and run.state_version == created.state_version
-        assert [event.event_type for event in events] == ["RUN_CREATED"]
+        assert run is not None and run.status == "SOURCE_VALIDATION_RUNNING"
+        assert [event.event_type for event in events][-2:] == ["SOURCE_INTAKE_QUEUED", "SOURCE_INTAKE_FAILED"]
 
 
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):
