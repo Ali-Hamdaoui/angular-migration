@@ -69,9 +69,12 @@ class FrozenBaselineCommandPolicy:
     COMMAND_ID = "npm-ci-bootstrap"
     POLICY_VERSION = "baseline-install-v1"
 
+    def __init__(self, executable: str = "npm") -> None:
+        self.executable = executable
+
     def create(self) -> FrozenBaselineCommand:
         return FrozenBaselineCommand(
-            command_id=self.COMMAND_ID, executable="npm", arguments=("ci",), shell=False,
+            command_id=self.COMMAND_ID, executable=self.executable, arguments=("ci",), shell=False,
             working_directory_alias="BASELINE_SANDBOX",
             network_profile="approved-registries-only",
             recovery_category="reconstruct-baseline-sandbox",

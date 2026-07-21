@@ -4,6 +4,8 @@ from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, Base
 from app.api.authentication import authenticated_actor, authorize_run
 from app.services.baseline_application_service import BaselineApplicationError, BaselineApplicationService
 from app.services.baseline_install_application_service import BaselineInstallApplicationError, BaselineInstallApplicationService
+from app.services.execution_profile_application_service import ExecutionProfileApplicationService
+from app.services.g02_application_service import G02ApprovalApplicationService
 from app.repositories.models import CommandExecutionModel
 from app.repositories.session import session_scope
 from app.services.command_executor_service import CommandExecutorService
@@ -14,7 +16,11 @@ from app.services.compatibility_evidence_application_service import Compatibilit
 router = APIRouter(prefix="/runs", tags=["baseline"])
 _install_service = BaselineInstallApplicationService(g05_service=CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(default_catalogue())))
 
-def get_baseline_service() -> BaselineApplicationService: return BaselineApplicationService()
+def get_baseline_service() -> BaselineApplicationService:
+    return BaselineApplicationService(
+        g02_service=G02ApprovalApplicationService(),
+        execution_profile_service=ExecutionProfileApplicationService(),
+    )
 def get_baseline_install_service() -> BaselineInstallApplicationService: return _install_service
 def _raise(error: BaselineApplicationError): raise HTTPException(status_code=error.status_code, detail={"error_code": error.code, "message": error.message})
 def _raise_install(error: BaselineInstallApplicationError): raise HTTPException(status_code=error.status_code, detail={"error_code": error.code, "message": error.message})

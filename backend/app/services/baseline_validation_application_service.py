@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 import threading
 from dataclasses import asdict, replace
@@ -58,7 +59,10 @@ class BaselineValidationApplicationService:
             started = self._transition(session, run, request, self._EVENTS[kind][0], f"baseline {kind} validation started", {"kind": kind, "target_count": len(targets)})
             validation = BaselineValidationModel(id=f"validation-{uuid4().hex[:12]}", run_id=run_id, idempotency_key=request.idempotency_key, actor=request.actor, kind=kind, status="running", targets=[self._target_dict(t) for t in targets], results=[], parser_summary=None, artifact_ids=[], artifact_checksums={}, prerequisite_artifact_ids=list(request.prerequisite_artifact_ids), baseline_checksum=baseline.checksum, state_version=started.next_state_version, event_sequence=started.event_sequence, created_at=self._now(), updated_at=self._now())
             session.add(validation); session.flush(); sandbox = Path(baseline.sandbox_path); profile = self._profile(session, run_id); runtime_id = profile.selected_profile_id if profile and profile.selected_profile_id else "source-runtime-profile"; runtime_checksum = profile.selected_checksum if profile else None
-            definitions = tuple(CommandDefinition(t.command_id, t.executable, t.arguments) for t in targets if t.supported); worker = self._worker(run, sandbox, definitions, runtime_id)
+            bound_targets = [self._bind_runtime_target(target, profile) for target in targets]
+            validation.targets = [self._target_dict(target) for target in bound_targets]
+            definitions = tuple(CommandDefinition(t.command_id, t.executable, t.arguments) for t in bound_targets if t.supported); worker = self._worker(run, sandbox, definitions, runtime_id, self._runtime_environment(profile))
+            targets = bound_targets
         cancel_event = threading.Event(); self._ACTIVE[(run_id, kind)] = cancel_event
         results: list[BaselineTargetResult] = []; executed: list[tuple[BaselineTargetResult, object, CommandRequestDto]] = []
         execution_error: Exception | None = None
@@ -96,8 +100,38 @@ class BaselineValidationApplicationService:
             status = "blocked" if any(r.status is BaselineTargetStatus.BLOCKED for r in results) and not any(r.status is BaselineTargetStatus.FAILED for r in results) else "failed" if execution_error is not None or any(r.status in {BaselineTargetStatus.FAILED, BaselineTargetStatus.CANCELLED, BaselineTargetStatus.INTERRUPTED} for r in results) else "passed"
             completed = self._transition(session, run, request, self._EVENTS[kind][1], f"baseline {kind} validation completed", {"kind": kind, "status": status, "artifact_count": len(artifact_ids)}, expected_state_version=run.state_version)
             record.status, record.results, record.parser_summary, record.artifact_ids = status, result_dicts, summary, artifact_ids; record.artifact_checksums = {artifact_id: self._artifact_checksum(run, artifact_id) for artifact_id in artifact_ids}; record.state_version, record.event_sequence, record.updated_at = completed.next_state_version, completed.event_sequence, self._now(); session.flush(); self._ACTIVE.pop((run_id, kind), None); return self._response(record)
-    def _worker(self, run, sandbox, definitions, runtime_id):
-        root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root); policy = CommandPolicy(sandbox_root=sandbox, registry=CommandRegistry(definitions=definitions), working_directory_aliases={"BASELINE_SANDBOX": sandbox}, runtime_profiles=frozenset({runtime_id}), network_profiles=frozenset({"none"})); return ExecutionWorker(policy, CommandLogWriter(store), timeout_seconds=3600)
+    def _worker(self, run, sandbox, definitions, runtime_id, environment_overrides=None):
+        root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root); policy = CommandPolicy(sandbox_root=sandbox, registry=CommandRegistry(definitions=definitions), working_directory_aliases={"BASELINE_SANDBOX": sandbox}, runtime_profiles=frozenset({runtime_id}), network_profiles=frozenset({"none"}), environment_overrides=environment_overrides or {}); return ExecutionWorker(policy, CommandLogWriter(store), timeout_seconds=3600)
+    @staticmethod
+    def _runtime_environment(profile):
+        if profile is None:
+            return {}
+        selected = next((item for item in (profile.profiles or []) if item.get("profile_id") == profile.selected_profile_id and item.get("checksum") == profile.selected_checksum), None)
+        if selected is None:
+            return {}
+        executables = [selected.get("node_executable"), selected.get("package_manager_executable"), selected.get("npx_executable")]
+        directories = []
+        for executable in executables:
+            if executable:
+                directory = str(Path(executable).parent)
+                if directory not in directories:
+                    directories.append(directory)
+        current_path = os.environ.get("PATH", "")
+        return {"PATH": os.pathsep.join([*directories, current_path]) if current_path else os.pathsep.join(directories)}
+    @staticmethod
+    def _bind_runtime_target(target, profile):
+        """Replace PATH-resolved npm/npx shims with the selected profile paths."""
+        if profile is None:
+            return target
+        selected = next((item for item in (profile.profiles or []) if item.get("profile_id") == profile.selected_profile_id and item.get("checksum") == profile.selected_checksum), None)
+        if selected is None:
+            return target
+        executable = target.executable
+        if executable in {"npm", "npm.cmd"}:
+            executable = selected.get("package_manager_executable") or executable
+        elif executable in {"npx", "npx.cmd"}:
+            executable = selected.get("npx_executable") or executable
+        return replace(target, executable=executable)
     def _discover(self, baseline):
         try: return self._discovery.discover(Path(baseline.sandbox_path))
         except (OSError, ValueError) as error: raise BaselineValidationApplicationError("BASELINE_TARGET_DISCOVERY_FAILED", str(error), 422) from error
