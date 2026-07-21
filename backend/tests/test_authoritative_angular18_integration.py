@@ -11,7 +11,11 @@ then run with ``AMF_RUN_ANGULAR18_INTEGRATION=1``.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
+import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -52,6 +56,70 @@ def _tree_fingerprint(root: Path) -> dict[str, str]:
     }
 
 
+def _validate_external_angular18_fixture(source: Path) -> None:
+    package_path = source / "package.json"
+    workspace_path = source / "angular.json"
+    lockfile_path = source / "package-lock.json"
+    shrinkwrap_path = source / "npm-shrinkwrap.json"
+    if not package_path.is_file() or not workspace_path.is_file() or not (lockfile_path.is_file() or shrinkwrap_path.is_file()):
+        pytest.fail("The configured Angular 18 fixture must contain package.json, angular.json, and package-lock.json or npm-shrinkwrap.json.")
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+        workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+        lockfile = json.loads((lockfile_path if lockfile_path.is_file() else shrinkwrap_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        pytest.fail(f"The configured Angular 18 fixture metadata is not valid JSON: {error}")
+    dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
+    required = {
+        "@angular/core": r"^(?:\^|~|>=)?18\.",
+        "@angular/cli": r"^(?:\^|~|>=)?18\.",
+        "typescript": r"^(?:\^|~|>=)?5\.[45]\.",
+        "rxjs": r"^(?:\^|~|>=)?(?:6\.|7\.)",
+    }
+    for name, pattern in required.items():
+        value = dependencies.get(name)
+        if not isinstance(value, str) or re.match(pattern, value) is None:
+            pytest.fail(f"The configured fixture must declare a compatible {name} version; found {value!r}.")
+    if not isinstance(lockfile, dict) or not isinstance(lockfile.get("lockfileVersion"), int):
+        pytest.fail("The configured Angular 18 fixture lockfile must contain a numeric lockfileVersion.")
+    projects = workspace.get("projects") if isinstance(workspace, dict) else None
+    if not isinstance(projects, dict) or not projects:
+        pytest.fail("The configured Angular 18 fixture must define at least one Angular workspace project.")
+    if not any(isinstance(project, dict) and isinstance(project.get("architect", project.get("targets", {})), dict) for project in projects.values()):
+        pytest.fail("The configured Angular 18 fixture must define Angular Architect/target configuration.")
+
+
+def _generate_external_angular18_fixture(destination: Path) -> Path:
+    npx = shutil.which("npx.cmd") or shutil.which("npx")
+    if not npx:
+        pytest.fail("AMF_ANGULAR18_GENERATE_FIXTURE=1 requires an existing npx executable.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        npx,
+        "--yes",
+        "@angular/cli@18.2.12",
+        "new",
+        "angular18-baseline",
+        "--directory",
+        str(destination),
+        "--routing",
+        "--style",
+        "css",
+        "--package-manager",
+        "npm",
+        "--skip-git",
+        "--defaults",
+    ]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        pytest.fail(f"The pinned Angular 18 fixture generator could not complete: {error}")
+    if result.returncode != 0:
+        pytest.fail(f"The pinned Angular 18 fixture generator failed with exit code {result.returncode}: {result.stderr[-4000:]}")
+    _validate_external_angular18_fixture(destination)
+    return destination
+
+
 @pytest.mark.skipif(
     os.getenv("AMF_RUN_ANGULAR18_INTEGRATION") != "1",
     reason="set AMF_RUN_ANGULAR18_INTEGRATION=1 with an external Angular 18 fixture to run",
@@ -59,12 +127,17 @@ def _tree_fingerprint(root: Path) -> dict[str, str]:
 def test_real_angular18_start_to_g03_preserves_external_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source_value = os.getenv("AMF_ANGULAR18_SOURCE", "").strip()
     target_parent_value = os.getenv("AMF_ANGULAR18_TARGET_PARENT", "").strip()
-    if not source_value or not target_parent_value:
-        pytest.skip("AMF_ANGULAR18_SOURCE and AMF_ANGULAR18_TARGET_PARENT must point to existing external directories")
-    source = Path(source_value).expanduser().resolve()
+    generate_fixture = os.getenv("AMF_ANGULAR18_GENERATE_FIXTURE") == "1"
+    if not target_parent_value or (not source_value and not generate_fixture):
+        pytest.skip("Set AMF_ANGULAR18_SOURCE or AMF_ANGULAR18_GENERATE_FIXTURE=1, plus AMF_ANGULAR18_TARGET_PARENT")
     target_parent = Path(target_parent_value).expanduser().resolve()
-    if not source.is_dir() or not target_parent.is_dir():
-        pytest.skip("AMF_ANGULAR18_SOURCE and AMF_ANGULAR18_TARGET_PARENT must point to existing external directories")
+    if not target_parent.is_dir():
+        pytest.fail("AMF_ANGULAR18_TARGET_PARENT must point to an existing external directory")
+    source = Path(source_value).expanduser().resolve() if source_value else (tmp_path / "external-angular18-baseline").resolve()
+    if source_value:
+        if not source.is_dir():
+            pytest.fail("AMF_ANGULAR18_SOURCE must point to an existing external directory")
+        _validate_external_angular18_fixture(source)
 
     runtime_root = os.getenv("AMF_ANGULAR18_RUNTIME_ROOT")
     if runtime_root:
@@ -108,6 +181,10 @@ def test_real_angular18_start_to_g03_preserves_external_source(tmp_path: Path, m
         if any(item.version and item.version.startswith("v24.") for item in environment.snapshot.runtimes if item.name == "node"):
             pytest.skip("Node 24 is intentionally incompatible with the Angular 18 baseline policy")
 
+        if generate_fixture:
+            source = _generate_external_angular18_fixture(source)
+
+        before_source = _tree_fingerprint(source)
         now = datetime.now(UTC)
         input_checksum = "sha256:angular18-integration-input"
         artifact_checksum = "sha256:angular18-integration-artifacts"
