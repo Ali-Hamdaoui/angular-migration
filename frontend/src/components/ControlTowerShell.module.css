@@ -104,6 +104,11 @@
 .pipelineActive { color: #a1c9ff !important; }
 .pipelineActive > span { border-color: #55a7ff !important; background: #55a7ff !important; box-shadow: 0 0 0 5px rgba(85, 167, 255, .15); color: #00325a; font-weight: 800; }
 .pipelinePending { opacity: .72; }
+.pipelineFailed { color: #ff9f9f !important; }
+.pipelineFailed > span { border-color: #ff7676 !important; background: #5a2025 !important; color: #ffd6d6; font-weight: 800; }
+.pipelineBlocked { color: #ffd27d !important; }
+.pipelineBlocked > span { border-color: #e9ac4b !important; background: #5a3d16 !important; color: #ffe9b7; font-weight: 800; }
+.pipelineMeta { color: #9db0c8; font-size: .62rem; font-weight: 400; white-space: nowrap; }
 
 @media (max-width: 900px) {
   .dashboardGrid { grid-template-columns: 1fr; }

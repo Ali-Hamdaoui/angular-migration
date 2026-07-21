@@ -52,6 +52,8 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByText("Live ? authoritative state")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "C:/source ? C:/target" })).toBeInTheDocument();
     expect(screen.getByText("RUN_CREATED")).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toHaveTextContent("pending");
     expect(screen.getByText("00_job_setup/create_run_request.json")).toBeInTheDocument();
     expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
