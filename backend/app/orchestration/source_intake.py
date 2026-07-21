@@ -22,7 +22,7 @@ from app.api.baseline_g03_contracts import BaselineQualifyRequest
 from app.api.baseline_matrix_contracts import BaselineValidationRequest
 from app.api.execution_profile_contracts import ExecutionProfileResolveRequest
 from app.api.g02_initialization import G02PackageInitializationRequest
-from app.domain.contracts import WorkflowEventType
+from app.domain.contracts import RunStatus, WorkflowEventType
 from app.domain.snapshot import CreateSourceSnapshotRequest
 from app.repositories.models import ExecutionProfileModel, G02ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.session import session_scope
@@ -33,7 +33,7 @@ from app.services.baseline_install_application_service import BaselineInstallApp
 from app.services.baseline_validation_application_service import BaselineValidationApplicationService
 from app.services.execution_profile_application_service import ExecutionProfileApplicationService
 from app.services.source_snapshot_application_service import SourceSnapshotApplicationService
-from app.state.transition_service import StateTransitionService
+from app.state.transition_service import StateTransitionService, TransitionRequest
 
 
 class SourceIntakeGraph(Protocol):
@@ -367,15 +367,17 @@ class SourceIntakeDispatcher:
             job.last_error_message = message[:4000]
             run = session.get(MigrationRunModel, job.run_id)
             if run is not None:
-                StateTransitionService(session).append_audit_event(
+                StateTransitionService(session).apply_transition(TransitionRequest(
                     run_id=run.id,
+                    expected_state_version=run.state_version,
                     idempotency_key=f"{job.idempotency_key}:failed:{job.attempt}",
                     event_type=WorkflowEventType.SOURCE_INTAKE_FAILED,
+                    next_run_status=RunStatus.FAILED,
                     actor=job.actor,
                     reason="durable source-intake worker failed",
                     occurred_at=datetime.now(UTC),
                     payload={"job_id": job.id, "error_code": code, "message": message[:1000]},
-                )
+                ))
 
 
 _dispatcher: SourceIntakeDispatcher | None = None

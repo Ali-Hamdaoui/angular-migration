@@ -199,12 +199,14 @@ class MigrationRunService:
                     job.last_error_code = "GRAPH_HANDOFF_FAILED"
                     job.last_error_message = "Source-intake worker dispatch failed."
                 if run is not None:
-                    StateTransitionService(failure_session).append_audit_event(
+                    StateTransitionService(failure_session).apply_transition(TransitionRequest(
                         run_id=run_id, idempotency_key=f"{idempotency_key}:dispatch-failed",
+                        expected_state_version=run.state_version,
                         event_type=WorkflowEventType.SOURCE_INTAKE_FAILED, actor=actor,
+                        next_run_status=RunStatus.FAILED,
                         reason="source-intake worker dispatch failed",
                         occurred_at=self._now(), payload={"job_id": queued.id, "error_code": "GRAPH_HANDOFF_FAILED"},
-                    )
+                    ))
             raise MigrationRunError("GRAPH_HANDOFF_FAILED", "Source-intake handoff failed safely; the durable job records the failure.") from error
         return result
 

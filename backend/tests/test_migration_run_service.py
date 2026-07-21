@@ -13,6 +13,8 @@ from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, 
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
 from app.core.config import Settings
+from app.orchestration.source_intake import SourceIntakeDispatcher
+import app.orchestration.source_intake as source_intake_module
 
 
 class RecordingGraph:
@@ -144,7 +146,7 @@ def test_graph_handoff_failure_rolls_back_accepted_transition(tmp_path: Path):
     with scope() as session:
         run = session.get(MigrationRunModel, created.run_id)
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == created.run_id).order_by(WorkflowEventModel.sequence)))
-        assert run is not None and run.status == "SOURCE_VALIDATION_RUNNING"
+        assert run is not None and run.status == RunStatus.FAILED.value
         assert [event.event_type for event in events][-2:] == ["SOURCE_INTAKE_QUEUED", "SOURCE_INTAKE_FAILED"]
 
 
@@ -170,6 +172,38 @@ def test_start_rejects_when_g01_is_no_longer_approved(tmp_path: Path):
 
     with pytest.raises(MigrationRunError, match="G01"):
         service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="revoked-g01-start", actor="operator")
+
+
+def test_source_intake_failure_finalization_marks_run_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("worker-failure-create"))
+    with scope() as session:
+        session.add(SourceIntakeJobModel(
+            id="intake-worker-failure",
+            run_id=created.run_id,
+            thread_id=created.graph_thread_id,
+            status="running",
+            actor="operator",
+            idempotency_key="worker-failure-start",
+            attempt=1,
+            queued_at=datetime.now(UTC),
+            started_at=datetime.now(UTC),
+            state_version=created.state_version,
+        ))
+    monkeypatch.setattr(source_intake_module, "session_scope", scope)
+    dispatcher = SourceIntakeDispatcher(Settings(_env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes"))
+    try:
+        dispatcher._fail("intake-worker-failure", "SNAPSHOT_CREATION_FAILED", "source disappeared")
+    finally:
+        dispatcher._executor.shutdown(wait=True)
+
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        job = session.get(SourceIntakeJobModel, "intake-worker-failure")
+        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == created.run_id)))
+        assert run is not None and run.status == RunStatus.FAILED.value
+        assert job is not None and job.status == "failed"
+        assert events[-1].event_type == "SOURCE_INTAKE_FAILED"
 
 
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):
