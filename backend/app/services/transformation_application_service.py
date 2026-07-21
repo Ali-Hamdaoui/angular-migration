@@ -1914,7 +1914,6 @@ class G08ApprovalApplicationService:
                 raise G03ApplicationError("VALIDATION_ERROR", str(exc), status_code=422) from exc
 
             event_type = self._decision_event_type(result.decision, result.stale)
-
             transition = StateTransitionService(session).apply_transition(
                 TransitionRequest(
                     run_id=run_id,

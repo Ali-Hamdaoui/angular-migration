@@ -577,7 +577,7 @@ class TestG08ApprovalAPI:
         )
 
     def _decision_payload(self, new_state_version, decision="approved", idempotency_key="g08-decision", init_data=None):
-        payload = {
+        return {
             "expected_state_version": new_state_version,
             "idempotency_key": idempotency_key,
             "decision": decision,
@@ -587,7 +587,6 @@ class TestG08ApprovalAPI:
             "artifact_set_checksum": (init_data or {}).get("artifact_set_checksum", "sha256:artifacts"),
             "workspace_fingerprint": (init_data or {}).get("workspace_fingerprint", "sha256:workspace"),
         }
-        return payload
 
     def test_get_g08_not_found_returns_stable_error(self, client, test_db):
         run_id, stage_id, _, _ = test_db
@@ -770,18 +769,18 @@ class TestG08ApprovalAPI:
         assert resp.status_code == 200
         new_state_version = resp.json()["state_version"]
 
-        modification_without_comment = self._decision_payload(
-            new_state_version, decision="modification_requested", idempotency_key="mod-no-comment", init_data=resp.json()
-        )
+    modification_without_comment = self._decision_payload(
+        new_state_version, decision="modification_requested", idempotency_key="mod-no-comment", init_data=resp.json()
+    )
         resp_mod = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
             json=modification_without_comment,
         )
         assert resp_mod.status_code == 422, f"Expected 422, got {resp_mod.status_code}: {resp_mod.text}"
 
-        modification_with_comment = self._decision_payload(
-            new_state_version, decision="modification_requested", idempotency_key="mod-with-comment", init_data=resp.json()
-        )
+    modification_with_comment = self._decision_payload(
+        new_state_version, decision="modification_requested", idempotency_key="mod-with-comment", init_data=resp.json()
+    )
         modification_with_comment["comment"] = "Please fix the test fixture"
         resp_mod2 = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",

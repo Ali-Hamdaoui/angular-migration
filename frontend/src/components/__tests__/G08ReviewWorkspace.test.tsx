@@ -102,11 +102,11 @@ describe("G08ReviewWorkspace", () => {
   it("distinguishes missing, authorization, stale, and backend failure states", async () => {
     getG08Approval.mockRejectedValueOnce(new ApiClientError("missing", 404));
     const { rerender } = render(<G08ReviewWorkspace runId="run-1" stageId="stage-1" gateId="G08" expectedStateVersion={6} />);
-    expect(await screen.findByText("No G08 package exists for this transformation evidence yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No review package has been initialized yet.")).toBeInTheDocument();
 
     getG08Approval.mockRejectedValueOnce(new ApiClientError("forbidden", 403, "GET", "/g08", JSON.stringify({ error_code: "FORBIDDEN", message: "Forbidden", correlation_id: "corr-auth" })));
     rerender(<G08ReviewWorkspace runId="run-2" stageId="stage-1" gateId="G08" expectedStateVersion={6} />);
-    expect(await screen.findByText("You are not authorized to inspect or decide this approval gate.")).toBeInTheDocument();
+    expect(await screen.findByText("Authorization Error")).toBeInTheDocument();
     expect(screen.getByText("corr-auth")).toBeInTheDocument();
 
     getG08Approval.mockRejectedValueOnce(new ApiClientError("stale", 409, "GET", "/g08", JSON.stringify({ error_code: "STALE_STATE_VERSION", message: "Stale state", correlation_id: "corr-stale" })));
