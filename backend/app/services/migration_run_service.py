@@ -14,7 +14,7 @@ from sqlalchemy import select
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactRefDto, ArtifactType, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
-from app.orchestration.source_intake import SourceIntakeGraph, UnconfiguredSourceIntakeGraph
+from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
 from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
@@ -65,7 +65,7 @@ class MigrationRunService:
 
     def __init__(self, settings, *, session_scope_factory=session_scope, graph: SourceIntakeGraph | None = None, now_provider=None) -> None:
         self._scope = session_scope_factory
-        self._graph = graph or UnconfiguredSourceIntakeGraph()
+        self._graph = graph or default_source_intake_graph(settings)
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._lease_seconds = settings.worker_lease_seconds
         self._settings = settings
