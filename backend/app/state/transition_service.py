@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.contracts import RunStatus, StageStatus, StepStatus, WorkflowEventType
-from app.repositories.models import MigrationRunModel, StageStepModel, WorkflowEventModel, WorkerLeaseModel
+from app.repositories.models import MigrationRunModel, MigrationStageModel, StageStepModel, WorkflowEventModel, WorkerLeaseModel
 
 
 class TransitionError(RuntimeError):
@@ -78,6 +78,14 @@ class StateTransitionService:
             raise StaleStateVersionError(
                 f"run {request.run_id} is at state version {run.state_version}, expected {request.expected_state_version}"
             )
+        if request.next_stage_status is not None:
+            if request.stage_id is None:
+                raise TransitionError("stage_id is required when changing stage status")
+            stage = self._session.get(MigrationStageModel, request.stage_id)
+            if stage is None:
+                raise TransitionError(f"stage does not exist: {request.stage_id}")
+            if stage.run_id != request.run_id:
+                raise TransitionError(f"stage does not belong to run: {request.stage_id}")
 
         previous_version = run.state_version
         occurred_at = request.occurred_at or datetime.now(UTC)
@@ -95,6 +103,7 @@ class StateTransitionService:
             run.status = request.next_run_status.value
         if request.next_stage_status is not None:
             payload["next_stage_status"] = request.next_stage_status.value
+            stage.status = request.next_stage_status.value
         if request.next_step_status is not None:
             self._apply_step_status(request, occurred_at)
             payload["next_step_status"] = request.next_step_status.value
@@ -135,6 +144,15 @@ class StateTransitionService:
         return TransitionResult(run_id=run_id, event_id=event.id, event_sequence=event.sequence, idempotency_key=idempotency_key, previous_state_version=current, next_state_version=current, status=run.status)
 
     def acquire_lease(self, *, run_id: str, worker_id: str, lease_owner: str, now: datetime) -> WorkerLeaseModel:
+        current = self._session.scalar(
+            select(WorkerLeaseModel)
+            .where(WorkerLeaseModel.run_id == run_id)
+            .where(WorkerLeaseModel.expires_at > now)
+        )
+        if current is not None:
+            if current.worker_id == worker_id and current.lease_owner == lease_owner:
+                return current
+            raise LeaseRequiredError("an unexpired lease is held by another worker")
         lease_id = f"lease-{uuid4().hex[:12]}"
         lease = WorkerLeaseModel(
             id=lease_id,

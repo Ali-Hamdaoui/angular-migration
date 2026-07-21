@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tempfile
 from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,7 +14,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.domain.contracts import WorkflowEventType
+from app.domain.contracts import StageStatus, WorkflowEventType
+from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.stage_workspace import (
     G07ApprovalPackage,
     G07ApprovalPackageBuilder,
@@ -36,8 +38,14 @@ from app.repositories.models.workflow import (
     MigrationRunModel,
     MigrationStageModel,
     StageStepModel,
+    SourceSnapshotModel,
+    WorkflowEventModel,
+    WorkerLeaseModel,
 )
+from app.repositories.planning_models import ActivePlanVersionModel, MigrationPlanModel, StageExecutionPlanModel
+from app.repositories.planning_review_models import G06ApprovalModel as PlanningG06ApprovalModel
 from app.repositories.stage_workspace_models import G07ApprovalModel, StageWorkspaceModel
+from app.state.transition_service import LeaseRequiredError, StateTransitionService, TransitionError, TransitionRequest
 from app.services.stage_bootstrap_service import StageApplicationError as BootstrapError
 from app.services.stage_bootstrap_service import StageBootstrapApplicationService
 from app.services.stage_preparation_service import StageApplicationError as PrepError
@@ -295,6 +303,27 @@ class TestChecksumFunctions:
     def test_empty_artifact_set_checksum(self):
         assert _artifact_set_checksum([]).startswith("sha256:")
 
+    def test_pre_copy_g07_package_does_not_require_sandbox_fingerprint(self):
+        plan = StageExecutionPlan(stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1")
+        manifest = StageInputManifest(stage_id="s1", run_id="r1", source_fingerprint="sha256:src", snapshot_id="snap1", plan=plan, manifest_checksum="sha256:m")
+        package = G07ApprovalPackageBuilder().build(
+            run_id="r1", state_version=1, actor="u", stage_id="s1", stage_key="k", gate_version="v1",
+            plan_version="v1", source_fingerprint="sha256:src", input_manifest=manifest,
+        )
+        assert package.workspace_fingerprint is None
+        assert package.copy_report is None
+
+    def test_approved_g07_rejects_modified_package_payload(self):
+        plan = StageExecutionPlan(stage_key="k", source_version_family="a18", target_version_family="a19", plan_version="v1")
+        manifest = StageInputManifest(stage_id="s1", run_id="r1", source_fingerprint="sha256:src", snapshot_id="snap1", plan=plan, manifest_checksum="sha256:m")
+        package = G07ApprovalPackageBuilder().build(
+            run_id="r1", state_version=1, actor="u", stage_id="s1", stage_key="k", gate_version="v1",
+            plan_version="v1", source_fingerprint="sha256:src", input_manifest=manifest,
+        ).model_copy(update={"source_fingerprint": "sha256:changed"})
+        result = G07ApprovalService().decide(package, G07Decision.APPROVED)
+        assert result.decision is G07Decision.REJECTED
+        assert result.reason == "package checksum is invalid"
+
 
 # ===================================================================
 # Integration-style service tests
@@ -304,15 +333,60 @@ class _ServiceTestBase:
     """Base with helpers for service tests that need a real run and stage."""
 
     def _create_run(self, db, run_id="run-001", state_version=1) -> MigrationRunModel:
+        root = Path(tempfile.mkdtemp(prefix="amfa170-"))
+        snapshot_root = root / "snapshot"
+        snapshot_root.mkdir()
+        (snapshot_root / "package.json").write_text(json.dumps({"dependencies": {"@angular/core": "18.2.0"}}), encoding="utf-8")
+        (snapshot_root / "snapshot-fingerprint.json").write_text(json.dumps({"fingerprint": "sha256:src-fp"}), encoding="utf-8")
         run = MigrationRunModel(
             id=run_id, status="WAITING", run_phase="STAGED_MIGRATION", phase_status="running",
             approval_status="not_required", repair_status="not_required", state_version=state_version,
-            source_path="/tmp/source", target_output_path="/tmp/output",
-            resolved_output_root="/tmp/output", artifact_root="/tmp/artifacts",
-            run_root="/tmp/output/.migration-factory/runs/run-001",
+            source_path=str(snapshot_root), target_output_path=str(root / "output"),
+            resolved_output_root=str(root / "output"), artifact_root=str(root / "artifacts"),
+            run_root=str(root / "run"),
             created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
         )
         db.add(run)
+        db.flush()
+        plan = MigrationPlanModel(
+            id="plan-170", run_id=run_id, idempotency_key="plan-170", request_checksum="sha256:req",
+            actor="planner", status="approved", version=1, plan={"source": "18.2.0"}, checksum="sha256:plan",
+            artifact_ids=[], artifact_checksums={}, state_version=1, event_sequence=1,
+            created_at=run.created_at, updated_at=run.updated_at,
+        )
+        stage_plan = StageExecutionPlanModel(
+            id="stage-plan-170", run_id=run_id, migration_plan_id=plan.id, stage_id="18-to-19",
+            idempotency_key="stage-plan-170", request_checksum="sha256:req", actor="planner", status="approved",
+            version=1, stage_plan={"stage_id": "18-to-19", "source_family": "angular_18", "target_family": "angular_19",
+                                  "source_exact": "18.2.0", "target_exact": "19.0.0", "execution_profile_id": "npm-ci",
+                                  "commands": {"prepare": ["npm ci"]}}, checksum="sha256:stage-plan",
+            artifact_ids=[], artifact_checksums={}, state_version=1, event_sequence=1,
+            created_at=run.created_at, updated_at=run.updated_at,
+        )
+        snapshot = SourceSnapshotModel(
+            id="snapshot-170", run_id=run_id, idempotency_key="snapshot-170", actor="operator", status="created",
+            source_path=str(snapshot_root), snapshot_path=str(snapshot_root), fingerprint="sha256:src-fp",
+            policy_version="snapshot-v1", file_count=1, total_size_bytes=(snapshot_root / "package.json").stat().st_size,
+            exclusions=[], git_metadata={}, artifact_ids=[], state_version=1, event_sequence=1,
+            created_at=run.created_at, updated_at=run.updated_at,
+        )
+        db.add_all([plan, stage_plan, snapshot])
+        db.flush()
+        db.add_all([
+            ActivePlanVersionModel(id="active-plan-170", run_id=run_id, scope="migration", migration_plan_id=plan.id,
+                                   stage_plan_id=None, version=1, state_version=1,
+                                   updated_at=run.updated_at),
+            ActivePlanVersionModel(id="active-stage-170", run_id=run_id, scope="18-to-19", migration_plan_id=plan.id,
+                                   stage_plan_id=stage_plan.id, version=1, state_version=1,
+                                   updated_at=run.updated_at),
+            PlanningG06ApprovalModel(id="g06-170", run_id=run_id, gate_id="G06", gate_version="g06-v1",
+                                     idempotency_key="g06-170", actor="reviewer", status="approved", decision="approve",
+                                     package_checksum="sha256:g06", artifact_set_checksum=_artifact_set_checksum([]),
+                                     plan_checksum=plan.checksum, stage_plan_checksum=stage_plan.checksum,
+                                     plan_version=1, workspace_fingerprint=snapshot.fingerprint, artifact_ids=[],
+                                     comment=None, stale_reason=None, state_version=1, event_sequence=1,
+                                     created_at=run.created_at, updated_at=run.updated_at),
+        ])
         db.flush()
         return run
 
@@ -330,6 +404,57 @@ class _ServiceTestBase:
         return type("Req", (), fields)()
 
 
+def test_transition_service_rejects_conflicting_unexpired_lease(db, now):
+    run = MigrationRunModel(
+        id="lease-run", status="WAITING", run_phase="STAGED_MIGRATION", phase_status="running",
+        approval_status="not_required", repair_status="not_required", state_version=1,
+        created_at=now, updated_at=now,
+    )
+    db.add(run)
+    db.flush()
+    service = StateTransitionService(db)
+    service.acquire_lease(run_id="lease-run", worker_id="worker-a", lease_owner="a", now=now)
+    with pytest.raises(LeaseRequiredError, match="unexpired lease"):
+        service.acquire_lease(run_id="lease-run", worker_id="worker-b", lease_owner="b", now=now)
+
+
+def test_transition_service_rejects_stage_status_without_stage_id(db, now):
+    run = MigrationRunModel(id="transition-stage-run", status="WAITING", run_phase="STAGED_MIGRATION",
+                            phase_status="running", approval_status="not_required", repair_status="not_required",
+                            state_version=1, created_at=now, updated_at=now)
+    db.add(run)
+    db.flush()
+    with pytest.raises(TransitionError, match="stage_id is required"):
+        StateTransitionService(db).apply_transition(TransitionRequest(
+            run_id=run.id, idempotency_key="missing-stage", expected_state_version=1,
+            event_type=WorkflowEventType.STAGE_WAITING_APPROVAL,
+            next_stage_status=StageStatus.WAITING_APPROVAL,
+        ))
+    assert run.state_version == 1
+
+
+def test_transition_service_rejects_stage_from_another_run(db, now):
+    run = MigrationRunModel(id="transition-run-a", status="WAITING", run_phase="STAGED_MIGRATION",
+                            phase_status="running", approval_status="not_required", repair_status="not_required",
+                            state_version=1, created_at=now, updated_at=now)
+    other = MigrationRunModel(id="transition-run-b", status="WAITING", run_phase="STAGED_MIGRATION",
+                              phase_status="running", approval_status="not_required", state_version=1,
+                              created_at=now, updated_at=now)
+    db.add_all([run, other])
+    db.flush()
+    stage = MigrationStageModel(id="foreign-stage", run_id=other.id, stage_order=1, status="pending",
+                                created_at=now)
+    db.add(stage)
+    db.flush()
+    with pytest.raises(TransitionError, match="does not belong"):
+        StateTransitionService(db).apply_transition(TransitionRequest(
+            run_id=run.id, idempotency_key="foreign-stage", expected_state_version=1,
+            event_type=WorkflowEventType.STAGE_WAITING_APPROVAL, stage_id=stage.id,
+            next_stage_status=StageStatus.WAITING_APPROVAL,
+        ))
+    assert run.state_version == 1
+
+
 class TestStagePreparationPrepareStage(_ServiceTestBase):
     def test_prepare_stage_creates_stage_record(self, db, now, tmp_path):
         self._create_run(db)
@@ -338,8 +463,13 @@ class TestStagePreparationPrepareStage(_ServiceTestBase):
 
         result = service.prepare_stage("run-001", req)
         assert result.run_id == "run-001"
-        assert result.status == "preparing"
+        assert result.status == "WAITING_APPROVAL"
         assert result.state_version > 0
+        events = db.query(WorkflowEventModel).filter(WorkflowEventModel.run_id == "run-001").order_by(WorkflowEventModel.sequence).all()
+        assert [event.event_type for event in events] == [
+            "STAGE_CREATED", "STAGE_PREPARING", "STAGE_PLAN_LOCKED", "STAGE_WAITING_APPROVAL",
+            "G07_CREATED",
+        ]
 
     def test_prepare_stage_raises_if_run_not_found(self, db, now, tmp_path):
         service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
@@ -366,7 +496,7 @@ class TestStagePreparationCreateSandbox(_ServiceTestBase):
         sandbox_req = type("Req", (), {"expected_state_version": sv, "idempotency_key": "sbx-001", "actor": "operator"})()
         with pytest.raises(Exception) as exc:
             service.create_sandbox("run-001", stage_id, sandbox_req)
-        assert "SOURCE_PATH_NOT_FOUND" in str(exc.value)
+        assert "G07_APPROVAL_REQUIRED" in str(exc.value)
 
     def test_create_sandbox_raises_if_run_not_found(self, db, now, tmp_path):
         service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
@@ -389,24 +519,12 @@ class TestStagePreparationDecideG07(_ServiceTestBase):
         svc = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
         prep = svc.prepare_stage("run-001", self._make_prepare_req(idempotency_key="g07-setup-prep"))
 
-        # Insert a StageWorkspaceModel directly (simulating what create_sandbox does)
-        workspace = StageWorkspaceModel(
-            id="wksp-g07", run_id="run-001", stage_id=prep.stage_id,
-            sandbox_path="/tmp/sandbox",
-            source_fingerprint="sha256:src-fp", workspace_fingerprint="sha256:ws-fp",
-            policy_version="v1", file_count=0, total_size_bytes=0,
-            copy_status="completed",
-            state_version=prep.state_version, event_sequence=3,
-            created_at=now, completed_at=now,
-        )
-        db.add(workspace)
-        db.flush()
         return svc, prep.stage_id
 
     def test_decide_g07_approves_and_updates_status(self, db, now, tmp_path):
         svc, sid = self._setup_for_g07(db, now, tmp_path)
         req = self._make_simple_req(
-            gate_id="G07", expected_state_version=3,
+            gate_id="G07", expected_state_version=5,
             idempotency_key="g07-approve", stage_id=sid,
             decision=G07Decision.APPROVED, comment=None,
         )
@@ -418,17 +536,19 @@ class TestStagePreparationDecideG07(_ServiceTestBase):
     def test_decide_g07_approves_with_comment(self, db, now, tmp_path):
         svc, sid = self._setup_for_g07(db, now, tmp_path)
         req = self._make_simple_req(
-            gate_id="G07", expected_state_version=3,
+            gate_id="G07", expected_state_version=5,
             idempotency_key="g07-approve-comment", stage_id=sid,
             decision=G07Decision.APPROVED_WITH_COMMENT, comment="Proceed",
         )
         result = svc.decide_g07("run-001", sid, req)
         assert result.status == "approved_with_comment"
+        events = db.query(WorkflowEventModel).filter(WorkflowEventModel.run_id == "run-001").all()
+        assert [event.event_type for event in events if event.event_type.startswith("G07_")] == ["G07_CREATED", "G07_APPROVED"]
 
     def test_decide_g07_rejects(self, db, now, tmp_path):
         svc, sid = self._setup_for_g07(db, now, tmp_path)
         req = self._make_simple_req(
-            gate_id="G07", expected_state_version=3,
+            gate_id="G07", expected_state_version=5,
             idempotency_key="g07-reject", stage_id=sid,
             decision=G07Decision.REJECTED, comment="Not ready",
         )
@@ -438,7 +558,7 @@ class TestStagePreparationDecideG07(_ServiceTestBase):
     def test_decide_g07_raises_if_gate_id_wrong(self, db, now, tmp_path):
         svc, sid = self._setup_for_g07(db, now, tmp_path)
         req = self._make_simple_req(
-            gate_id="WRONG", expected_state_version=3,
+            gate_id="WRONG", expected_state_version=5,
             idempotency_key="g07-wrong", stage_id=sid,
             decision=G07Decision.APPROVED, comment=None,
         )
@@ -491,7 +611,7 @@ class TestStageBootstrapApplicationService(_ServiceTestBase):
             stage_key="18-to-19", plan_version="v1",
             state_version=prep.state_version, event_sequence=3,
             package={"key": "val"}, artifact_ids=[],
-            created_at=now, updated_at=now,
+            created_at=now + timedelta(seconds=1), updated_at=now + timedelta(seconds=1),
         )
         db.add(g07)
         db.flush()
@@ -583,6 +703,283 @@ class TestEdgeCases:
         })()
         with pytest.raises(Exception, match="STALE_STATE_VERSION"):
             svc.prepare_stage("run-001", req)
+
+
+class TestAMFA170ClosureProof(_ServiceTestBase):
+    def test_current_version_redetection_rejects_drift(self, db, now, tmp_path):
+        self._create_run(db)
+        service = StagePreparationApplicationService(
+            session_scope_factory=lambda: db, now_provider=lambda: now,
+            current_version_detector=lambda _path: "17.3.0",
+        )
+        with pytest.raises(PrepError, match="CURRENT_VERSION_MISMATCH"):
+            service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="version-drift"))
+
+    def test_prepare_lease_conflict_preserves_foreign_lease(self, db, now, tmp_path):
+        self._create_run(db)
+        foreign = StateTransitionService(db).acquire_lease(
+            run_id="run-001", worker_id="stage-preparer:foreign", lease_owner="preparer-a", now=now
+        )
+        foreign_id = foreign.id
+        foreign_worker_id = foreign.worker_id
+        foreign_owner = foreign.lease_owner
+        foreign_expires_at = foreign.expires_at
+        db.commit()
+        service = StagePreparationApplicationService(
+            session_scope_factory=lambda: Session(bind=db.get_bind()), now_provider=lambda: now
+        )
+        with pytest.raises(PrepError, match="LEASE_CONFLICT"):
+            service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="lease-conflict"))
+
+        preserved = db.get(WorkerLeaseModel, foreign_id)
+        assert preserved is not None
+        assert (preserved.worker_id, preserved.lease_owner) == (foreign_worker_id, foreign_owner)
+        assert preserved.expires_at.replace(tzinfo=UTC) == foreign_expires_at.replace(tzinfo=UTC)
+        assert db.query(WorkerLeaseModel).count() == 1
+
+        StateTransitionService(db).release_lease(lease_id=foreign_id, worker_id=foreign_worker_id)
+        db.commit()
+        next_lease = StateTransitionService(db).acquire_lease(
+            run_id="run-001", worker_id="stage-preparer:after-release", lease_owner="preparer-b", now=now
+        )
+        assert next_lease.worker_id == "stage-preparer:after-release"
+        StateTransitionService(db).release_lease(lease_id=next_lease.id, worker_id=next_lease.worker_id)
+
+    def test_missing_authoritative_input_fingerprint_is_rejected(self, db, now, tmp_path):
+        self._create_run(db)
+        db.query(SourceSnapshotModel).filter_by(id="snapshot-170").one().fingerprint = None
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        with pytest.raises(PrepError, match="INPUT_FINGERPRINT_REQUIRED"):
+            service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="missing-fingerprint"))
+
+    def test_g06_plan_drift_is_rejected_before_prepare(self, db, now, tmp_path):
+        self._create_run(db)
+        db.query(PlanningG06ApprovalModel).filter_by(id="g06-170").one().plan_checksum = "sha256:drift"
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        with pytest.raises(PrepError, match="G06_STALE"):
+            service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="g06-drift"))
+
+    @pytest.mark.parametrize("failure_event", [
+        WorkflowEventType.STAGE_CREATED,
+        WorkflowEventType.STAGE_PREPARING,
+        WorkflowEventType.STAGE_PLAN_LOCKED,
+        WorkflowEventType.STAGE_WAITING_APPROVAL,
+    ])
+    def test_prepare_failure_releases_lease(self, db, now, tmp_path, monkeypatch, failure_event):
+        self._create_run(db)
+        original = StateTransitionService.apply_transition
+
+        def fail_at_event(service, request):
+            if request.event_type is failure_event:
+                raise RuntimeError(f"injected {failure_event.value}")
+            return original(service, request)
+
+        monkeypatch.setattr(StateTransitionService, "apply_transition", fail_at_event)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        with pytest.raises(RuntimeError, match="injected"):
+            service.prepare_stage("run-001", self._make_prepare_req(idempotency_key=f"lease-{failure_event.value}"))
+        assert db.query(WorkerLeaseModel).filter_by(run_id="run-001").count() == 0
+
+    def test_prepare_persists_and_reuses_stage_start_evidence(self, db, now, tmp_path):
+        run = self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        request = self._make_prepare_req(idempotency_key="evidence-prep")
+        first = service.prepare_stage("run-001", request)
+        gate = db.query(G07ApprovalModel).filter_by(stage_id=first.stage_id).one()
+        assert len(gate.artifact_ids) == 1
+        artifact_id = gate.artifact_ids[0]
+        metadata = db.get(ArtifactMetadataModel, f"metadata-{artifact_id}")
+        assert metadata is not None
+        stored = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)).read_artifact_by_id(artifact_id)
+        assert stored.ref.checksum == metadata.checksum
+        assert stored.ref.checksum == f"sha256:{hashlib.sha256(stored.content.encode()).hexdigest()}"
+        replay = service.prepare_stage("run-001", request)
+        assert replay.idempotent_replay is True
+        assert replay.stage_id == first.stage_id
+        assert db.query(ArtifactMetadataModel).filter_by(stage_id=first.stage_id).count() == 1
+
+    def test_prepare_replay_rejects_tampered_stage_start_evidence(self, db, now, tmp_path):
+        run = self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        request = self._make_prepare_req(idempotency_key="evidence-tamper")
+        first = service.prepare_stage("run-001", request)
+        gate = db.query(G07ApprovalModel).filter_by(stage_id=first.stage_id).one()
+        stored = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)).read_artifact_by_id(gate.artifact_ids[0])
+        Path(run.artifact_root, stored.ref.relative_path).write_text("tampered", encoding="utf-8")
+        with pytest.raises(PrepError, match="ARTIFACT"):
+            service.prepare_stage("run-001", request)
+
+    def test_restart_reconstructs_after_real_service_boundary(self, db, now, tmp_path, monkeypatch, engine):
+        run = self._create_run(db)
+        run.run_root = str(Path(run.source_path).parent)
+        Path(run.run_root).mkdir(parents=True, exist_ok=True)
+        db.commit()
+        first_session = Session(bind=db.connection())
+        first_service = StagePreparationApplicationService(session_scope_factory=lambda: first_session, now_provider=lambda: now)
+        first_service._authoritative_snapshot_fingerprint = lambda snapshot: "sha256:src-fp"
+        prep = first_service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="crash-prep"))
+        approved = first_service.decide_g07("run-001", prep.stage_id, self._make_simple_req(
+            gate_id="G07", expected_state_version=prep.state_version,
+            idempotency_key="crash-g07", stage_id=prep.stage_id, decision=G07Decision.APPROVED, comment=None,
+        ))
+        original = StateTransitionService.apply_transition
+
+        def crash_before_ready(service, request):
+            if request.event_type is WorkflowEventType.STAGE_SANDBOX_READY:
+                raise RuntimeError("crash before finalization")
+            return original(service, request)
+
+        monkeypatch.setattr(StateTransitionService, "apply_transition", crash_before_ready)
+        sandbox_request = self._make_simple_req(expected_state_version=approved.state_version, idempotency_key="crash-sandbox")
+        with pytest.raises(PrepError, match="SANDBOX_COPY_FAILED"):
+            first_service.create_sandbox("run-001", prep.stage_id, sandbox_request)
+        first_session.close()
+        monkeypatch.setattr(StateTransitionService, "apply_transition", original)
+        second_session = Session(bind=db.connection())
+        try:
+            restarted = StagePreparationApplicationService(session_scope_factory=lambda: second_session, now_provider=lambda: now)
+            restarted._authoritative_snapshot_fingerprint = lambda snapshot: "sha256:src-fp"
+            recovered = restarted.create_sandbox("run-001", prep.stage_id, sandbox_request)
+            assert recovered.status == "sandbox_ready"
+            assert second_session.query(WorkflowEventModel).filter_by(
+                run_id="run-001", event_type="STAGE_SANDBOX_READY"
+            ).count() == 1
+        finally:
+            second_session.close()
+
+    def test_prepare_is_deterministic_and_rejects_second_active_key(self, db, now, tmp_path):
+        self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        request = self._make_prepare_req(idempotency_key="prepare-replay")
+        first = service.prepare_stage("run-001", request)
+        replay = service.prepare_stage("run-001", request)
+        assert replay.idempotent_replay is True
+        assert (replay.stage_id, replay.status, replay.plan) == (first.stage_id, first.status, first.plan)
+        with pytest.raises(PrepError) as error:
+            service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="prepare-second"))
+        assert error.value.code == "ACTIVE_STAGE_EXISTS"
+
+    def test_prepare_replay_returns_identical_response_after_g07_created(self, db, now, tmp_path):
+        self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        request = self._make_prepare_req(idempotency_key="identical-prepare")
+        first = service.prepare_stage("run-001", request)
+        replay = service.prepare_stage("run-001", request)
+
+        assert replay.model_dump() == first.model_dump()
+        assert replay.event_sequence == first.event_sequence
+        assert db.query(WorkflowEventModel).filter_by(
+            run_id="run-001", event_type=WorkflowEventType.G07_CREATED
+        ).count() == 1
+        assert db.query(MigrationStageModel).filter_by(run_id="run-001").count() == 1
+        assert db.query(G07ApprovalModel).filter_by(run_id="run-001").count() == 1
+        assert db.query(ArtifactMetadataModel).filter_by(run_id="run-001").count() == 1
+        assert db.query(StageWorkspaceModel).filter_by(run_id="run-001").count() == 0
+
+    def test_g07_replay_requires_identical_payload(self, db, now, tmp_path):
+        self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="g07-replay-prep"))
+        request = self._make_simple_req(
+            gate_id="G07", expected_state_version=prep.state_version,
+            idempotency_key="g07-replay-decision", stage_id=prep.stage_id,
+            decision=G07Decision.APPROVED, comment=None,
+        )
+        first = service.decide_g07("run-001", prep.stage_id, request)
+        replay = service.decide_g07("run-001", prep.stage_id, request)
+        assert replay.idempotent_replay is True
+        assert replay.package == first.package
+        with pytest.raises(PrepError) as error:
+            service.decide_g07("run-001", prep.stage_id, self._make_simple_req(
+                gate_id="G07", expected_state_version=prep.state_version,
+                idempotency_key="g07-replay-decision", stage_id=prep.stage_id,
+                decision=G07Decision.REJECTED, comment="different",
+            ))
+        assert error.value.code == "IDEMPOTENCY_PAYLOAD_MISMATCH"
+
+    def test_g07_decision_replay_marks_changed_bindings_stale(self, db, now, tmp_path):
+        self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="stale-replay-prep"))
+        request = self._make_simple_req(
+            gate_id="G07", expected_state_version=prep.state_version,
+            idempotency_key="stale-replay-decision", stage_id=prep.stage_id,
+            decision=G07Decision.APPROVED, comment=None,
+        )
+        first = service.decide_g07("run-001", prep.stage_id, request)
+        gate = db.query(G07ApprovalModel).filter_by(stage_id=prep.stage_id).one()
+        event_count = db.query(WorkflowEventModel).filter_by(run_id="run-001").count()
+
+        stage_plan = db.get(StageExecutionPlanModel, "stage-plan-170")
+        stage_plan.stage_plan["execution_profile_id"] = "drifted-profile"
+        db.flush()
+
+        with pytest.raises(PrepError, match="G07_STALE"):
+            service.decide_g07("run-001", prep.stage_id, request)
+
+        gate = db.query(G07ApprovalModel).filter_by(stage_id=prep.stage_id).one()
+        assert gate.status == "stale"
+        assert gate.stale_reason == "G07_BINDINGS_CHANGED"
+        assert gate.decision_idempotency_key == request.idempotency_key
+        assert db.query(G07ApprovalModel).filter_by(run_id="run-001").count() == 1
+        assert db.query(WorkflowEventModel).filter_by(run_id="run-001").count() == event_count + 1
+        assert db.query(WorkflowEventModel).filter_by(
+            run_id="run-001", event_type=WorkflowEventType.G07_APPROVED
+        ).count() == 1
+        assert db.query(WorkflowEventModel).filter_by(
+            run_id="run-001", event_type=WorkflowEventType.G07_STALE
+        ).count() == 1
+        assert first.status == "approved"
+
+    def test_complete_real_service_path_and_restart_replay(self, db, now, tmp_path):
+        run = self._create_run(db)
+        run.run_root = str(Path(run.source_path).parent)
+        db.flush()
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        service._authoritative_snapshot_fingerprint = lambda snapshot: "sha256:src-fp"
+        prep = service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="full-path"))
+        approved = service.decide_g07("run-001", prep.stage_id, self._make_simple_req(
+            gate_id="G07", expected_state_version=prep.state_version,
+            idempotency_key="full-path-g07", stage_id=prep.stage_id,
+            decision=G07Decision.APPROVED, comment=None,
+        ))
+        assert approved.status == "approved"
+        sandbox_request = self._make_simple_req(
+            expected_state_version=approved.state_version,
+            idempotency_key="full-path-sandbox", actor="operator",
+        )
+        created = service.create_sandbox("run-001", prep.stage_id, sandbox_request)
+        assert created.status == "sandbox_ready"
+        replay = service.create_sandbox("run-001", prep.stage_id, sandbox_request)
+        assert replay.idempotent_replay is True
+        workspace = db.query(StageWorkspaceModel).filter_by(stage_id=prep.stage_id).one()
+        workspace.copy_status = "copying"
+        db.flush()
+        restarted = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        restarted._authoritative_snapshot_fingerprint = lambda snapshot: "sha256:src-fp"
+        recovered = restarted.create_sandbox("run-001", prep.stage_id, sandbox_request)
+        assert recovered.status == "sandbox_ready"
+        assert db.query(StageWorkspaceModel).filter_by(stage_id=prep.stage_id).one().copy_status == "verified"
+        events = [event.event_type for event in db.query(WorkflowEventModel).filter_by(run_id="run-001").all()]
+        assert events.count("STAGE_SANDBOX_READY") == 1
+
+    def test_expired_g07_is_persistently_stale(self, db, now, tmp_path):
+        self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prep = service.prepare_stage("run-001", self._make_prepare_req(idempotency_key="expired-prep"))
+        gate = db.query(G07ApprovalModel).filter_by(stage_id=prep.stage_id).one()
+        gate.status = "approved"
+        gate.decision = "approved"
+        gate.expires_at = now - timedelta(seconds=1)
+        db.flush()
+        with pytest.raises(PrepError) as error:
+            service.create_sandbox("run-001", prep.stage_id, self._make_simple_req(
+                expected_state_version=prep.state_version, idempotency_key="expired-sandbox",
+            ))
+        assert error.value.code == "G07_STALE"
+        refreshed = db.query(G07ApprovalModel).filter_by(stage_id=prep.stage_id).one()
+        assert refreshed.status == "stale"
+        assert refreshed.stale_reason == "G07_EXPIRED"
 
     def test_stale_state_version_during_decision_rejected(self, db, now, tmp_path):
         from app.repositories.models.workflow import MigrationRunModel

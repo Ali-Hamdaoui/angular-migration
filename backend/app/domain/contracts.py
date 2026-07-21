@@ -83,8 +83,10 @@ class PhaseStatus(str, Enum):
 class StageStatus(str, Enum):
     PENDING = "PENDING"
     PREPARING = "preparing"
+    PLAN_LOCKED = "plan_locked"
     RUNNING = "RUNNING"
     WAITING_APPROVAL = "WAITING_APPROVAL"
+    SANDBOX_READY = "sandbox_ready"
     REPAIRING = "REPAIRING"
     PASSED = "PASSED"
     PASSED_WITH_KNOWN_BASELINE_FAILURES = "passed_with_known_baseline_failures"
@@ -364,6 +366,7 @@ class WorkflowEventType(str, Enum):
     G07_CREATED = "G07_CREATED"
     G07_APPROVED = "G07_APPROVED"
     G07_REJECTED = "G07_REJECTED"
+    G07_MODIFICATION_REQUESTED = "G07_MODIFICATION_REQUESTED"
     G07_STALE = "G07_STALE"
     # G02 S3-F06 stage bootstrap install events
     STAGE_BOOTSTRAP_INSTALL_STARTED = "STAGE_BOOTSTRAP_INSTALL_STARTED"

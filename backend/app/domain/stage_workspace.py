@@ -99,10 +99,25 @@ class G07ApprovalPackage(ContractModel):
     stage_key: str = Field(min_length=1)
     plan_version: str = Field(min_length=1)
     source_fingerprint: str = Field(min_length=1)
-    workspace_fingerprint: str = Field(min_length=1)
+    # A pre-copy G07 package cannot bind the result of a copy which has not
+    # happened yet.  The field remains available for the legacy/post-copy
+    # evidence shape, but is deliberately optional at the stage-start gate.
+    workspace_fingerprint: str | None = None
     artifact_set_checksum: str = Field(min_length=1)
+    migration_plan_id: str | None = None
+    migration_plan_checksum: str | None = None
+    stage_plan_id: str | None = None
+    stage_plan_checksum: str | None = None
+    profile: str | None = None
+    approved_commands: tuple[str, ...] = ()
+    g06_id: str | None = None
+    g06_gate_version: str | None = None
+    g06_package_checksum: str | None = None
+    input_snapshot_id: str | None = None
+    intended_destination: str | None = None
+    workspace_alias: str | None = None
     input_manifest: StageInputManifest
-    copy_report: WorkspaceCopyReport
+    copy_report: WorkspaceCopyReport | None = None
     artifacts: tuple[ArtifactRefDto, ...] = ()
     package_checksum: str = Field(min_length=1)
 
@@ -154,10 +169,22 @@ class G07ApprovalPackageBuilder:
         gate_version: str,
         plan_version: str,
         source_fingerprint: str,
-        workspace_fingerprint: str,
+        workspace_fingerprint: str | None = None,
         input_manifest: StageInputManifest,
-        copy_report: WorkspaceCopyReport,
+        copy_report: WorkspaceCopyReport | None = None,
         artifacts: list[ArtifactRefDto] | tuple[ArtifactRefDto, ...] = (),
+        migration_plan_id: str | None = None,
+        migration_plan_checksum: str | None = None,
+        stage_plan_id: str | None = None,
+        stage_plan_checksum: str | None = None,
+        profile: str | None = None,
+        approved_commands: tuple[str, ...] = (),
+        g06_id: str | None = None,
+        g06_gate_version: str | None = None,
+        g06_package_checksum: str | None = None,
+        input_snapshot_id: str | None = None,
+        intended_destination: str | None = None,
+        workspace_alias: str | None = None,
     ) -> G07ApprovalPackage:
         unsigned = {
             "run_id": run_id,
@@ -173,7 +200,19 @@ class G07ApprovalPackageBuilder:
             "artifact_set_checksum": _artifact_set_checksum(artifacts),
             "artifact_payload": [item.model_dump(mode="json") for item in artifacts],
             "input_manifest": input_manifest.model_dump(mode="json"),
-            "copy_report": copy_report.model_dump(mode="json"),
+            "copy_report": copy_report.model_dump(mode="json") if copy_report is not None else None,
+            "migration_plan_id": migration_plan_id,
+            "migration_plan_checksum": migration_plan_checksum,
+            "stage_plan_id": stage_plan_id,
+            "stage_plan_checksum": stage_plan_checksum,
+            "profile": profile,
+            "approved_commands": list(approved_commands),
+            "g06_id": g06_id,
+            "g06_gate_version": g06_gate_version,
+            "g06_package_checksum": g06_package_checksum,
+            "input_snapshot_id": input_snapshot_id,
+            "intended_destination": intended_destination,
+            "workspace_alias": workspace_alias,
         }
         package_checksum = _checksum(unsigned)
         return G07ApprovalPackage(
@@ -194,7 +233,7 @@ class G07ApprovalService:
         comment: str | None = None,
     ) -> G07ApprovalResult:
         if decision in {G07Decision.APPROVED, G07Decision.APPROVED_WITH_COMMENT}:
-            if not package.package_checksum:
+            if not package.package_checksum or package.package_checksum != _package_checksum(package):
                 return G07ApprovalResult(
                     package_checksum=package.package_checksum,
                     decision=G07Decision.REJECTED,
@@ -265,3 +304,10 @@ def _artifact_set_checksum(artifacts: list[ArtifactRefDto] | tuple[ArtifactRefDt
 def _checksum(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _package_checksum(package: G07ApprovalPackage) -> str:
+    payload = package.model_dump(mode="json")
+    payload.pop("package_checksum", None)
+    payload["artifact_payload"] = payload.pop("artifacts", [])
+    return _checksum(payload)

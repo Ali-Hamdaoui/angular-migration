@@ -36,6 +36,10 @@ class G07ApprovalModel(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    decision_request_checksum: Mapped[str | None] = mapped_column(String(128))
+    prepare_request_checksum: Mapped[str | None] = mapped_column(String(128))
 
 
 class StageWorkspaceModel(Base):
@@ -54,6 +58,10 @@ class StageWorkspaceModel(Base):
     file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     copy_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    request_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_binding_checksum: Mapped[str | None] = mapped_column(String(128))
+    locked_bindings: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    verification: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     verification_checksum: Mapped[str | None] = mapped_column(String(128))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
