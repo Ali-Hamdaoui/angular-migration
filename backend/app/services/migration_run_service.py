@@ -12,13 +12,13 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.artifact_store import LocalFilesystemArtifactStore
-from app.domain.contracts import ArtifactRefDto, ArtifactType, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
+from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
-from app.state.transition_service import StateTransitionService, TransitionRequest
+from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 from app.services.migration_workspace_layout_service import MigrationWorkspaceLayoutService, WorkspaceLayoutError
 
 
@@ -61,6 +61,9 @@ class MigrationRunService:
         RunStatus.SOURCE_VALIDATED.value, RunStatus.WORKSPACE_CLASSIFICATION_RUNNING.value,
         RunStatus.BASELINE_RUNNING.value, RunStatus.RUNNING.value, RunStatus.WAITING.value,
         RunStatus.CANCEL_REQUESTED.value, RunStatus.CANCELLING.value, RunStatus.RECOVERY_RUNNING.value,
+    }
+    _CANCELLABLE_STATUSES = {
+        RunStatus.CREATED.value, RunStatus.SOURCE_VALIDATED.value, RunStatus.WAITING.value,
     }
 
     def __init__(self, settings, *, session_scope_factory=session_scope, graph: SourceIntakeGraph | None = None, now_provider=None) -> None:
@@ -170,6 +173,60 @@ class MigrationRunService:
                 event_type=WorkflowEventType.RUN_STARTED, actor=actor, reason="source-intake graph started",
                 payload={"graph_thread_id": thread_id}, occurred_at=self._now()))
             return RunResult(run_id, started.status, started.next_state_version, started.event_sequence, thread_id, artifacts=tuple(self._artifacts_for_run(session, run_id)))
+
+    def cancel(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
+        """Cancel a quiescent run and atomically release its active-run claim.
+
+        Evidence and the external run directory are intentionally retained for
+        auditability. A run with a live command must be cancelled through that
+        command's cancellation endpoint before its ownership can be released.
+        """
+        with self._scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            existing = session.scalar(select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == run_id,
+                WorkflowEventModel.idempotency_key == idempotency_key,
+            ))
+            if existing is not None:
+                return self._result_from_event(session, existing, replay=True)
+            if run.status not in self._CANCELLABLE_STATUSES:
+                raise MigrationRunError(
+                    "RUN_NOT_CANCELLABLE",
+                    "The run can only be cancelled at a safe checkpoint. Cancel any active command or wait for the current operation to finish.",
+                )
+            active_command = session.scalar(select(CommandExecutionModel).where(
+                CommandExecutionModel.run_id == run_id,
+                CommandExecutionModel.status.in_({
+                    CommandStatus.QUEUED.value, CommandStatus.PENDING.value, CommandStatus.RUNNING.value,
+                }),
+            ).limit(1))
+            if active_command is not None:
+                raise MigrationRunError(
+                    "RUN_CANCELLATION_BLOCKED",
+                    "Cancel the active command before cancelling the migration run.",
+                )
+            try:
+                transition = StateTransitionService(session).apply_transition(TransitionRequest(
+                    run_id=run_id, expected_state_version=expected_state_version,
+                    idempotency_key=idempotency_key, event_type=WorkflowEventType.RUN_CANCELLED,
+                    next_run_status=RunStatus.CANCELLED, actor=actor,
+                    reason="operator cancelled run; evidence retained and ownership released",
+                    payload={"claim_released": "true"}, occurred_at=self._now(),
+                ))
+            except StaleStateVersionError as error:
+                raise MigrationRunError("STALE_STATE_VERSION", "The run changed. Refresh its authoritative state and retry.") from error
+            except TransitionError as error:
+                raise MigrationRunError("RUN_CANCELLATION_FAILED", "The migration run could not be cancelled safely.") from error
+            claims = list(session.scalars(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == run_id)))
+            for claim in claims:
+                session.delete(claim)
+            session.flush()
+            return RunResult(
+                run_id, transition.status, transition.next_state_version, transition.event_sequence,
+                self._thread_id(session, run_id), artifacts=tuple(self._artifacts_for_run(session, run_id)),
+            )
 
     def get_state(self, run_id: str):
         with self._scope() as session:

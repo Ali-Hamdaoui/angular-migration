@@ -905,6 +905,14 @@ class StartAuthoritativeRunRequestDto(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class CancelAuthoritativeRunRequestDto(ContractModel):
+    """Operator-confirmed cancellation of an authoritative run."""
+
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+
+
 class AuthoritativeRunStateDto(ContractModel):
     run_id: str
     status: RunStatus

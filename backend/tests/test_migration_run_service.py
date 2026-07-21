@@ -77,6 +77,25 @@ def test_second_active_run_is_rejected(tmp_path: Path):
         service.create(_request("create-2"))
 
 
+def test_cancelling_a_quiescent_run_records_evidence_and_releases_its_claim(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request())
+
+    cancelled = service.cancel(
+        run_id=created.run_id, expected_state_version=created.state_version,
+        idempotency_key="cancel-1", actor="operator",
+    )
+
+    assert cancelled.status == RunStatus.CANCELLED.value
+    assert service.cancel(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="cancel-1", actor="operator").idempotent_replay
+    replacement = service.create(_request("create-2"))
+    assert replacement.run_id != created.run_id
+    with scope() as session:
+        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == created.run_id)))
+        assert events[-1].event_type == "RUN_CANCELLED"
+        assert session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id)) is None
+
+
 def test_stale_target_claim_is_replaced_before_new_claim_is_created(tmp_path: Path):
     service, scope, _ = _service(tmp_path)
     stale = service.create(_request("stale-owner"))
