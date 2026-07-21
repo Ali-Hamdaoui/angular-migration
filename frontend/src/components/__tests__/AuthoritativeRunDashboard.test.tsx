@@ -54,5 +54,6 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByText("RUN_CREATED")).toBeInTheDocument();
     expect(screen.getByText("00_job_setup/create_run_request.json")).toBeInTheDocument();
     expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
   });
 });

@@ -75,6 +75,12 @@
 .list li, .metricList li { border-top-color: #244462; }
 .panel button { border-color: #3d73a6; border-radius: .3rem; background: #102b48; color: #d8e8fb; font-weight: 600; transition: background .15s ease, border-color .15s ease; }
 .panel button:hover:not(:disabled) { border-color: #55a7ff; background: #173b61; }
+.dangerPanel { border-color: #8e4657; background: #2a1520; }
+.dangerButton { border-color: #b5546a !important; background: #541f30 !important; color: #ffe1e6 !important; }
+.dangerButton:hover:not(:disabled) { border-color: #ff8097 !important; background: #743146 !important; }
+.cancelConfirm { margin-top: .8rem; border-top: 1px solid #6c3443; padding-top: .7rem; color: #ffd9e0; }
+.cancelConfirm p { margin-top: 0; }.cancelConfirm div { display: flex; flex-wrap: wrap; gap: .55rem; }
+.dangerMessage { margin-bottom: 0; color: #ffb5c3; }
 .panel select, .panel textarea, .panel input { border: 1px solid #3d5e80; border-radius: .3rem; background: #081827; color: #e0e8f4; padding: .55rem; }
 .previewPanel { border-top-color: #244462; }
 .metadataGrid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; padding: .8rem 0; }

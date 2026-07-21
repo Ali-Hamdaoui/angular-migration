@@ -17,6 +17,7 @@ import { PlanReviewPanel } from "./PlanReviewPanel";
 import styles from "./ControlTowerShell.module.css";
 
 import { CommandPolicyInspector } from "./CommandPolicyInspector";
+import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
 const pipelineSteps = [
   { label: 'Preflight', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type.includes('PREFLIGHT')) },
   { label: 'Snapshot', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'SNAPSHOT_CREATED') },
@@ -71,6 +72,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
       </div>
       <aside className={styles.secondaryColumn}>
+      <AuthoritativeRunCancellationPanel runId={runId} state={state} refresh={refresh} />
       <div className={styles.twoColumns}>
         <section className={styles.panel} aria-label="Authoritative workflow events"><h2>Workflow events</h2>{state.workflow_events.length === 0 ? <p className={styles.note}>No events have been recorded.</p> : <ol className={styles.eventList}>{state.workflow_events.map((event) => <li className={styles.eventItem} key={event.event_id}><code className={styles.eventType}>{event.event_type}</code><span className={styles.eventTime}>#{event.sequence} ? {event.occurred_at}</span></li>)}</ol>}</section>
         <section className={styles.panel} aria-label="Run evidence"><h2>Run evidence</h2>{state.artifacts.length === 0 ? <p className={styles.note}>No run artifacts are available.</p> : <ul className={styles.list}>{state.artifacts.map((artifact) => <li key={artifact.artifact_id}><code>{artifact.relative_path}</code><span>{artifact.checksum}</span></li>)}</ul>}</section>
