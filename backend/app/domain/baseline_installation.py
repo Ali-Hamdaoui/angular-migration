@@ -141,11 +141,11 @@ class FrozenBaselineInspectionService:
     """Verify immutable package inputs and the npm-generated dependency tree."""
 
     def inspect_before(self, sandbox: Path) -> tuple[FileFingerprint, FileFingerprint]:
-        return self._fingerprint(sandbox / "package.json"), self._fingerprint(sandbox / "package-lock.json")
+        return self._fingerprint(sandbox / "package.json"), self._lockfile_fingerprint(sandbox)
 
     def inspect_after(self, sandbox: Path, *, before_package_json: FileFingerprint, before_lockfile: FileFingerprint, command_status: CommandStatus) -> BaselineInstallationInspection:
         package_json = self._fingerprint(sandbox / "package.json")
-        lockfile = self._fingerprint(sandbox / "package-lock.json")
+        lockfile = self._fingerprint(Path(before_lockfile.path))
         blockers: list[str] = []
         if package_json != before_package_json:
             blockers.append("PACKAGE_JSON_CHANGED_AFTER_INSTALL")
@@ -169,6 +169,14 @@ class FrozenBaselineInspectionService:
             return FileFingerprint(str(path), "", False)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return FileFingerprint(str(path), f"sha256:{digest}", True)
+
+    @staticmethod
+    def _lockfile_fingerprint(sandbox: Path) -> FileFingerprint:
+        for name in ("package-lock.json", "npm-shrinkwrap.json"):
+            candidate = sandbox / name
+            if candidate.is_file():
+                return FrozenBaselineInspectionService._fingerprint(candidate)
+        return FrozenBaselineInspectionService._fingerprint(sandbox / "package-lock.json")
 
     def _dependency_tree(self, sandbox: Path) -> DependencyTreeVerification:
         path = sandbox / "node_modules" / ".package-lock.json"

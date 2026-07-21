@@ -138,7 +138,9 @@ class LockfilePrequalificationService:
     """Check npm lockfile presence, parseability, and root dependency agreement."""
 
     def inspect(self, sandbox: Path, package: PackageMetadata) -> LockfileResult:
-        path = sandbox / "package-lock.json"
+        # npm accepts either package-lock.json or npm-shrinkwrap.json for a
+        # frozen install. Prefer package-lock when both are present.
+        path = next((candidate for candidate in (sandbox / "package-lock.json", sandbox / "npm-shrinkwrap.json") if candidate.is_file()), sandbox / "package-lock.json")
         blockers: list[str] = []
         if not path.is_file():
             return LockfileResult("blocked", None, package.package_json_checksum, "", ("NPM_LOCKFILE_MISSING",))
