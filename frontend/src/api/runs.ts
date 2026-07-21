@@ -2,6 +2,7 @@ import { apiClient, type createApiClient } from "./client";
 import type {
   AuthoritativeRunMutationResultDto,
   AuthoritativeRunStateDto,
+  CancelAuthoritativeRunRequestDto,
   CreateAuthoritativeRunRequestDto,
   StartAuthoritativeRunRequestDto,
 } from "@/types/generated/api";
@@ -21,6 +22,14 @@ export function startAuthoritativeRun(
   client: ApiClient = apiClient,
 ): Promise<AuthoritativeRunMutationResultDto> {
   return client.post<AuthoritativeRunMutationResultDto>(`/api/v1/runs/${encodeURIComponent(runId)}/start`, request);
+}
+
+export function cancelAuthoritativeRun(
+  runId: string,
+  request: CancelAuthoritativeRunRequestDto,
+  client: ApiClient = apiClient,
+): Promise<AuthoritativeRunMutationResultDto> {
+  return client.post<AuthoritativeRunMutationResultDto>(`/api/v1/runs/${encodeURIComponent(runId)}/cancel`, request);
 }
 
 export function getAuthoritativeRunState(

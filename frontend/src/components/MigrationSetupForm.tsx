@@ -81,7 +81,16 @@ export function MigrationSetupForm() {
     const requestKey = currentKey;
     let activeStage: ValidationStage = "path validation";
     setValidationStage(activeStage);
-    const pathKey = idempotencyKey("path-ui", JSON.stringify({ sourcePath: inputs.sourcePath, targetParentPath: inputs.targetParentPath, targetAngularFamily: inputs.targetAngularFamily }));
+    // A new explicit validation must re-check the filesystem. Including the
+    // attempt distinguishes it from an earlier persisted validation for the
+    // same paths, which may have been blocked by a folder that was later
+    // removed or renamed.
+    const pathKey = idempotencyKey("path-ui", JSON.stringify({
+      sourcePath: inputs.sourcePath,
+      targetParentPath: inputs.targetParentPath,
+      targetAngularFamily: inputs.targetAngularFamily,
+      attempt,
+    }));
     setIsValidating(true);
     setError(null);
     setPreflight(null);

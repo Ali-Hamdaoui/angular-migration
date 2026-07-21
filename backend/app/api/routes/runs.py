@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.domain.contracts import (
     AuthoritativeRunMutationResultDto,
     AuthoritativeRunStateDto,
+    CancelAuthoritativeRunRequestDto,
     CreateAuthoritativeRunRequestDto,
     StartAuthoritativeRunRequestDto,
 )
@@ -27,7 +28,7 @@ def get_run_service() -> MigrationRunService:
 
 
 def _error(request: Request, error: MigrationRunError):
-    status = 404 if error.code == "RUN_NOT_FOUND" else 409 if error.code in {"ACTIVE_RUN_EXISTS", "G01_NOT_APPROVED", "G01_STALE", "G01_EXPIRED", "RUN_NOT_STARTABLE", "GRAPH_HANDOFF_FAILED"} else 422
+    status = 404 if error.code == "RUN_NOT_FOUND" else 409 if error.code in {"ACTIVE_RUN_EXISTS", "G01_NOT_APPROVED", "G01_STALE", "G01_EXPIRED", "RUN_NOT_STARTABLE", "GRAPH_HANDOFF_FAILED", "STALE_STATE_VERSION", "RUN_CANCELLATION_BLOCKED", "RUN_NOT_CANCELLABLE"} else 422
     return error_response(request, status_code=status, error_code=error.code, message=error.message)
 
 
@@ -54,6 +55,19 @@ def create_run(request: CreateAuthoritativeRunRequestDto, http_request: Request,
 def start_run(run_id: str, request: StartAuthoritativeRunRequestDto, http_request: Request, service: MigrationRunService = Depends(get_run_service)):
     try:
         result = service.start(run_id=run_id, expected_state_version=request.expected_state_version, idempotency_key=request.idempotency_key, actor=request.actor)
+    except MigrationRunError as error:
+        return _error(http_request, error)
+    return AuthoritativeRunMutationResultDto(
+        run_id=result.run_id, status=result.status, state_version=result.state_version,
+        event_sequence=result.event_sequence, graph_thread_id=result.graph_thread_id,
+        idempotent_replay=result.idempotent_replay, artifacts=list(result.artifacts),
+    )
+
+
+@router.post("/{run_id}/cancel", response_model=AuthoritativeRunMutationResultDto)
+def cancel_run(run_id: str, request: CancelAuthoritativeRunRequestDto, http_request: Request, service: MigrationRunService = Depends(get_run_service)):
+    try:
+        result = service.cancel(run_id=run_id, expected_state_version=request.expected_state_version, idempotency_key=request.idempotency_key, actor=request.actor)
     except MigrationRunError as error:
         return _error(http_request, error)
     return AuthoritativeRunMutationResultDto(

@@ -632,6 +632,11 @@
             "title": "Content",
             "type": "string"
           },
+          "content_type": {
+            "default": "text/plain",
+            "title": "Content Type",
+            "type": "string"
+          },
           "created_by": {
             "anyOf": [
               {
@@ -642,6 +647,17 @@
               }
             ],
             "title": "Created By"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
           }
         },
         "required": [
@@ -670,6 +686,16 @@
             "title": "Created At",
             "type": "string"
           },
+          "immutable": {
+            "default": true,
+            "title": "Immutable",
+            "type": "boolean"
+          },
+          "redacted": {
+            "default": false,
+            "title": "Redacted",
+            "type": "boolean"
+          },
           "relative_path": {
             "title": "Relative Path",
             "type": "string"
@@ -688,6 +714,11 @@
               }
             ],
             "title": "Stage Id"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [
@@ -871,25 +902,95 @@
             "title": "Artifacts",
             "type": "array"
           },
+          "catalogue_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogue Version"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
           },
+          "generated_output_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated Output Name"
+          },
           "graph_thread_id": {
-            "title": "Graph Thread Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Thread Id"
+          },
+          "migrated_app_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Migrated App Path"
           },
           "phase_status": {
             "title": "Phase Status",
             "type": "string"
           },
           "preflight_id": {
-            "title": "Preflight Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preflight Id"
+          },
+          "registry_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registry Snapshot"
           },
           "repair_status": {
             "$ref": "#/components/schemas/RepairStatus"
+          },
+          "resolved_output_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Output Root"
           },
           "run_id": {
             "title": "Run Id",
@@ -898,9 +999,46 @@
           "run_phase": {
             "$ref": "#/components/schemas/RunPhase"
           },
+          "run_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Root"
+          },
+          "runtime_candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Runtime Candidates",
+            "type": "array"
+          },
+          "source_angular_exact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Angular Exact"
+          },
           "source_path": {
-            "title": "Source Path",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Path"
           },
           "state_version": {
             "minimum": 1.0,
@@ -911,8 +1049,26 @@
             "$ref": "#/components/schemas/RunStatus"
           },
           "target_output_path": {
-            "title": "Target Output Path",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Output Path"
+          },
+          "target_parent_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Parent Path"
           },
           "updated_at": {
             "format": "date-time",
@@ -925,6 +1081,13 @@
             },
             "title": "Workflow Events",
             "type": "array"
+          },
+          "workspace_aliases": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Workspace Aliases",
+            "type": "object"
           }
         },
         "required": [
@@ -935,10 +1098,6 @@
           "approval_status",
           "repair_status",
           "state_version",
-          "preflight_id",
-          "source_path",
-          "target_output_path",
-          "graph_thread_id",
           "created_at",
           "updated_at"
         ],
@@ -1994,6 +2153,36 @@
         "title": "BaselineWorkspaceRequest",
         "type": "object"
       },
+      "CancelAuthoritativeRunRequestDto": {
+        "additionalProperties": false,
+        "description": "Operator-confirmed cancellation of an authoritative run.",
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "actor"
+        ],
+        "title": "CancelAuthoritativeRunRequestDto",
+        "type": "object"
+      },
       "CancelCommandRequestDto": {
         "additionalProperties": false,
         "description": "Request body for POST /api/v1/runs/{run_id}/commands/{execution_id}/cancel.",
@@ -2030,37 +2219,20 @@
         "additionalProperties": false,
         "description": "Request body for POST /api/v1/runs/{run_id}/commands.",
         "properties": {
-          "arguments": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Arguments",
-            "type": "array"
-          },
-          "cancellation_policy": {
-            "default": "terminate_process_tree",
-            "title": "Cancellation Policy",
-            "type": "string"
-          },
-          "command_id": {
+          "authorization_decision_id": {
             "minLength": 1,
-            "title": "Command Id",
+            "title": "Authorization Decision Id",
             "type": "string"
           },
-          "executable": {
-            "minLength": 1,
-            "title": "Executable",
-            "type": "string"
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
           },
           "idempotency_key": {
             "maxLength": 128,
             "minLength": 1,
             "title": "Idempotency Key",
-            "type": "string"
-          },
-          "network_profile": {
-            "default": "none",
-            "title": "Network Profile",
             "type": "string"
           },
           "requested_by": {
@@ -2073,67 +2245,11 @@
               }
             ],
             "title": "Requested By"
-          },
-          "requester": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Requester"
-          },
-          "runtime_profile_id": {
-            "default": "source-runtime-profile",
-            "title": "Runtime Profile Id",
-            "type": "string"
-          },
-          "stage_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Stage Id"
-          },
-          "timeout_seconds": {
-            "default": 300,
-            "exclusiveMinimum": 0.0,
-            "maximum": 3600.0,
-            "title": "Timeout Seconds",
-            "type": "integer"
-          },
-          "working_directory": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Working Directory"
-          },
-          "working_directory_alias": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Working Directory Alias"
           }
         },
         "required": [
-          "command_id",
-          "executable",
+          "authorization_decision_id",
+          "expected_state_version",
           "idempotency_key"
         ],
         "title": "CommandExecuteRequestDto",
@@ -2389,6 +2505,18 @@
             "title": "Decision",
             "type": "string"
           },
+          "decision_timestamp": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Timestamp"
+          },
           "executable": {
             "title": "Executable",
             "type": "string"
@@ -2402,6 +2530,17 @@
             "default": 1,
             "title": "Expected State Version",
             "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
           },
           "idempotent_replay": {
             "default": false,
@@ -6670,6 +6809,28 @@
             "title": "Artifact Links",
             "type": "object"
           },
+          "artifact_set_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Set Checksum"
+          },
+          "computed_artifact_set_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Computed Artifact Set Checksum"
+          },
           "diff": {
             "anyOf": [
               {
@@ -8194,6 +8355,112 @@
           "checksum"
         ],
         "title": "Stage1ExecutionProfile",
+        "type": "object"
+      },
+      "StageStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_set_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "plan_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Plan Checksum",
+            "type": "string"
+          },
+          "stage_plan_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Stage Plan Checksum",
+            "type": "string"
+          },
+          "workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Fingerprint"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key",
+          "artifact_set_checksum",
+          "plan_checksum",
+          "stage_plan_checksum"
+        ],
+        "title": "StageStartRequest",
+        "type": "object"
+      },
+      "StageStartResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_set_checksum": {
+            "title": "Artifact Set Checksum",
+            "type": "string"
+          },
+          "event_sequence": {
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "idempotent_replay": {
+            "default": false,
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "plan_checksum": {
+            "title": "Plan Checksum",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "stage_plan_checksum": {
+            "title": "Stage Plan Checksum",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "stage_id",
+          "status",
+          "plan_checksum",
+          "stage_plan_checksum",
+          "artifact_set_checksum",
+          "state_version",
+          "event_sequence"
+        ],
+        "title": "StageStartResponse",
         "type": "object"
       },
       "StageStatus": {
@@ -9885,6 +10152,22 @@
               "title": "Run Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
           }
         ],
         "responses": {
@@ -9925,6 +10208,22 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -11381,6 +11680,58 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_run_api_v1_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/commands": {
       "get": {
         "description": "List all command executions for a run.",
@@ -11393,6 +11744,22 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -11422,7 +11789,7 @@
         ]
       },
       "post": {
-        "description": "Queue and execute one approved command for a migration run.\n\nThe command must be registered in the structured command registry and\npass all policy checks. This endpoint blocks until the command completes.",
+        "description": "Queue an accepted authorization for worker-owned execution.",
         "operationId": "queue_command_api_v1_runs__run_id__commands_post",
         "parameters": [
           {
@@ -11432,6 +11799,22 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -11446,7 +11829,7 @@
           "required": true
         },
         "responses": {
-          "201": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {}
@@ -11492,6 +11875,22 @@
             "schema": {
               "title": "Execution Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -11542,6 +11941,22 @@
             "schema": {
               "title": "Execution Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -11655,6 +12070,22 @@
               ],
               "title": "Cursor"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
           }
         ],
         "responses": {
@@ -11685,7 +12116,7 @@
     },
     "/api/v1/runs/{run_id}/commands/{execution_id}/logs/stream": {
       "get": {
-        "description": "SSE endpoint that streams log chunks as they become available.\n\nAccepts ?cursor=<seq> to resume from a known sequence number and\n?stream=stdout|stderr to filter by stream.  The connection stays\nopen and emits new chunks as ``data:`` SSE lines.\n\nWhen no new data is available for 30 seconds the connection is\nclosed gracefully.",
+        "description": "Replay and tail durable logs using the sequence cursor.\n\nExplicit ``cursor`` takes precedence over ``Last-Event-ID``; absent both,\nthe stream starts at zero. Only ``sequence > cursor`` is returned.",
         "operationId": "stream_command_logs_api_v1_runs__run_id__commands__execution_id__logs_stream_get",
         "parameters": [
           {
@@ -11711,9 +12142,15 @@
             "name": "cursor",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Cursor",
-              "type": "integer"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           },
           {
@@ -11740,6 +12177,38 @@
               "default": 0.5,
               "title": "Poll Interval",
               "type": "number"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -11790,6 +12259,22 @@
             "schema": {
               "title": "Execution Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -12939,6 +13424,83 @@
         "summary": "Get Stage Plan",
         "tags": [
           "plans"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/stages/{stage_id}/start": {
+      "post": {
+        "operationId": "start_stage_api_v1_runs__run_id__stages__stage_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StageStartResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Stage",
+        "tags": [
+          "stage-execution"
         ]
       }
     },
@@ -14500,6 +15062,22 @@
               "title": "Run Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
           }
         ],
         "responses": {
@@ -14540,6 +15118,22 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -15996,6 +16590,58 @@
         ]
       }
     },
+    "/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_run_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/runs/{run_id}/commands": {
       "get": {
         "description": "List all command executions for a run.",
@@ -16008,6 +16654,22 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -16037,7 +16699,7 @@
         ]
       },
       "post": {
-        "description": "Queue and execute one approved command for a migration run.\n\nThe command must be registered in the structured command registry and\npass all policy checks. This endpoint blocks until the command completes.",
+        "description": "Queue an accepted authorization for worker-owned execution.",
         "operationId": "queue_command_runs__run_id__commands_post",
         "parameters": [
           {
@@ -16047,6 +16709,22 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -16061,7 +16739,7 @@
           "required": true
         },
         "responses": {
-          "201": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {}
@@ -16107,6 +16785,22 @@
             "schema": {
               "title": "Execution Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -16157,6 +16851,22 @@
             "schema": {
               "title": "Execution Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -16270,6 +16980,22 @@
               ],
               "title": "Cursor"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
           }
         ],
         "responses": {
@@ -16300,7 +17026,7 @@
     },
     "/runs/{run_id}/commands/{execution_id}/logs/stream": {
       "get": {
-        "description": "SSE endpoint that streams log chunks as they become available.\n\nAccepts ?cursor=<seq> to resume from a known sequence number and\n?stream=stdout|stderr to filter by stream.  The connection stays\nopen and emits new chunks as ``data:`` SSE lines.\n\nWhen no new data is available for 30 seconds the connection is\nclosed gracefully.",
+        "description": "Replay and tail durable logs using the sequence cursor.\n\nExplicit ``cursor`` takes precedence over ``Last-Event-ID``; absent both,\nthe stream starts at zero. Only ``sequence > cursor`` is returned.",
         "operationId": "stream_command_logs_runs__run_id__commands__execution_id__logs_stream_get",
         "parameters": [
           {
@@ -16326,9 +17052,15 @@
             "name": "cursor",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Cursor",
-              "type": "integer"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           },
           {
@@ -16355,6 +17087,38 @@
               "default": 0.5,
               "title": "Poll Interval",
               "type": "number"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -16405,6 +17169,22 @@
             "schema": {
               "title": "Execution Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -17554,6 +18334,83 @@
         "summary": "Get Stage Plan",
         "tags": [
           "plans"
+        ]
+      }
+    },
+    "/runs/{run_id}/stages/{stage_id}/start": {
+      "post": {
+        "operationId": "start_stage_runs__run_id__stages__stage_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StageStartResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Stage",
+        "tags": [
+          "stage-execution"
         ]
       }
     },
