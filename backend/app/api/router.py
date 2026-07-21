@@ -18,8 +18,16 @@ from app.api.routes.baseline_g03 import router as baseline_g03_router
 from app.api.routes.baseline_matrix import router as baseline_matrix_router
 from app.api.routes.discovery import router as discovery_router
 from app.api.routes.baseline_parity import router as baseline_parity_router
+from app.api.routes.commands import router as commands_router
+from app.api.routes.run_commands import router as run_commands_router
 from app.api.routes.runs import router as runs_router
+from app.api.routes.llm import router as llm_router
 from app.api.routes.parity_baseline import router as parity_baseline_router
+from app.api.routes.analysis import router as analysis_router
+from app.api.routes.compatibility import router as compatibility_router
+from app.api.routes.plans import router as plans_router
+from app.api.routes.planning_review import router as planning_review_router
+from app.api.routes.stage_execution import router as stage_execution_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -28,7 +36,12 @@ api_router.include_router(sources_router)
 api_router.include_router(source_analysis_router)
 api_router.include_router(version_router)
 api_router.include_router(runs_router)
+api_router.include_router(llm_router)
 api_router.include_router(snapshots_router)
+api_router.include_router(compatibility_router)
+api_router.include_router(plans_router)
+api_router.include_router(planning_review_router)
+api_router.include_router(stage_execution_router)
 api_router.include_router(g02_router)
 api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
@@ -42,6 +55,9 @@ api_router.include_router(baseline_parity_router)
 api_router.include_router(baseline_matrix_router)
 api_router.include_router(discovery_router)
 api_router.include_router(parity_baseline_router)
+api_router.include_router(commands_router)
+api_router.include_router(run_commands_router)
+api_router.include_router(analysis_router)
 api_router.include_router(draft_approval_router)
 
 # Versioned production surface; legacy unversioned paths remain compatibility aliases.
@@ -50,7 +66,12 @@ api_v1_router.include_router(sources_router)
 api_v1_router.include_router(source_analysis_router)
 api_v1_router.include_router(version_router)
 api_v1_router.include_router(runs_router)
+api_v1_router.include_router(llm_router)
 api_v1_router.include_router(snapshots_router)
+api_v1_router.include_router(compatibility_router)
+api_v1_router.include_router(plans_router)
+api_v1_router.include_router(planning_review_router)
+api_v1_router.include_router(stage_execution_router)
 api_v1_router.include_router(g02_router)
 api_v1_router.include_router(migrations_router)
 api_v1_router.include_router(assistant_router)
@@ -65,4 +86,7 @@ api_v1_router.include_router(baseline_parity_router)
 api_v1_router.include_router(baseline_matrix_router)
 api_v1_router.include_router(discovery_router)
 api_v1_router.include_router(parity_baseline_router)
+api_v1_router.include_router(commands_router)
+api_v1_router.include_router(run_commands_router)
+api_v1_router.include_router(analysis_router)
 api_router.include_router(api_v1_router)

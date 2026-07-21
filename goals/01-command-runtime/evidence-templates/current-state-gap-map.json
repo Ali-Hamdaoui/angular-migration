@@ -1,0 +1,14 @@
+{
+  "goal_id": "G01",
+  "branch": "hermes/01-command-runtime",
+  "base_sha": "<recorded-base-sha>",
+  "criteria": [
+    {
+      "acceptance_id": "<feature/criterion>",
+      "status": "PRESENT|PARTIAL|MISSING|CONFLICTING|BLOCKED_UPSTREAM",
+      "evidence": []
+    }
+  ],
+  "duplicate_authority_check": [],
+  "notes": []
+}

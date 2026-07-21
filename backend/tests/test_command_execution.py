@@ -120,8 +120,29 @@ def test_worker_runs_safe_python_version_command_and_writes_command_artifacts(tm
     assert '"command": [' in stored.content
     assert '"python"' in stored.content
     assert '"shell": false' in stored.content
-    assert '"status": "SUCCEEDED"' in stored.content
+    assert '"status": "succeeded"' in stored.content
     assert '"runtime_profile_id": "source-runtime-profile"' in stored.content
+
+
+def test_worker_registers_output_artifact_truncation_metadata(tmp_path: Path) -> None:
+    worker, _artifact_store, _sandbox_root = _worker(tmp_path)
+
+    execution = worker.run(_request())
+
+    # The version output is normally short; exercise the writer contract
+    # directly through its bounded output path in a separate fixture below.
+    writer = CommandLogWriter(LocalFilesystemArtifactStore(tmp_path / "truncated-runs"), max_output_bytes=4)
+    bounded = writer.write(
+        _request(idempotency_key="truncated-output-key"),
+        execution.result,
+        command=("python", "--version"),
+        working_directory=_sandbox_root,
+        stdout="0123456789",
+        stderr="",
+    )
+
+    assert bounded.stdout_artifact is not None
+    assert bounded.stdout_artifact.envelope.input_hashes["truncated"] == "true"
 
 
 def test_worker_rejects_unknown_command_id(tmp_path: Path) -> None:
@@ -179,7 +200,7 @@ def test_worker_rejects_working_directory_outside_sandbox_root(tmp_path: Path) -
         "mock-run-angular-18-to-21",
         "04_workflow_state/command_logs/python-version.json",
     )
-    assert '"status": "REJECTED"' in stored.content
+    assert '"status": "rejected"' in stored.content
 
 
 def test_worker_rejects_unknown_working_directory_alias(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import threading
 import queue
+import codecs
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,11 +29,16 @@ from app.domain.contracts import (
     CommandResultDto,
     CommandStatus,
 )
+from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
 
 _DEFAULT_RUNTIME_PROFILE: Final = "source-runtime-profile"
 _DEFAULT_NETWORK_PROFILE: Final = "none"
+_LIVE_LOG_FIXTURE_ARGUMENTS: Final = (
+    "-c",
+    "import sys,time; [print(f'MT-003 live line {i}', flush=True) or time.sleep(0.7) for i in range(1,13)]",
+)
 _MUTABLE_WORKSPACE_ALIASES: Final = frozenset(
     {
         "run_workspace",
@@ -72,6 +78,7 @@ class StructuredCommandRequest:
     definition: CommandDefinition
     command: tuple[str, ...]
     working_directory: Path
+    environment_allowlist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,7 @@ class CommandRegistry:
 
     definitions: tuple[CommandDefinition, ...] = (
         CommandDefinition("python-version", "python", ("--version",), ("python.exe", "py", "py.exe")),
+        CommandDefinition("python-stream", "python", _LIVE_LOG_FIXTURE_ARGUMENTS, ("python.exe", "py", "py.exe")),
         CommandDefinition("node-version", "node", ("--version",), ("node.exe",)),
         CommandDefinition("npm-version", "npm", ("--version",), ("npm.cmd",)),
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
@@ -129,6 +137,7 @@ class CommandPolicy:
     working_directory_aliases: dict[str, Path] = field(default_factory=dict)
     runtime_profiles: frozenset[str] = frozenset({_DEFAULT_RUNTIME_PROFILE})
     network_profiles: frozenset[str] = frozenset({_DEFAULT_NETWORK_PROFILE})
+    environment_allowlist: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
@@ -166,21 +175,31 @@ class CommandPolicy:
             definition=definition,
             command=(request.executable, *definition.arguments),
             working_directory=working_directory,
+            environment_allowlist=self.environment_allowlist,
         )
 
     def _resolve_working_directory(self, request: CommandRequestDto) -> Path:
         if request.working_directory_alias:
+            if request.working_directory:
+                raise CommandPolicyViolation("Working directory path cannot override an approved alias")
             if request.working_directory_alias not in self.working_directory_aliases:
                 raise CommandPolicyViolation("Working directory alias is not registered")
             candidate = self.working_directory_aliases[request.working_directory_alias]
         elif request.working_directory:
             raw_path = Path(request.working_directory)
+            if ".." in raw_path.parts:
+                raise CommandPolicyViolation("Working directory traversal is forbidden")
+            if not raw_path.is_absolute() and raw_path.drive:
+                raise CommandPolicyViolation("Working directory drive changes are forbidden")
             candidate = raw_path if raw_path.is_absolute() else self.sandbox_root / raw_path
         else:
             raise CommandPolicyViolation("Working directory alias is required")
 
-        sandbox_root = self.sandbox_root.resolve()
-        resolved = Path(candidate).resolve()
+        sandbox_root = self.sandbox_root.resolve(strict=True)
+        try:
+            resolved = Path(candidate).resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise CommandPolicyViolation("Working directory is not available") from exc
         try:
             resolved.relative_to(sandbox_root)
         except ValueError as exc:
@@ -213,8 +232,8 @@ class CommandLogWriter:
         stdout_text, stdout_truncated = self._bound_text(stdout)
         stderr_text, stderr_truncated = self._bound_text(stderr)
 
-        stdout_artifact = self._write_output_artifact(request, result, "stdout", stdout_text)
-        stderr_artifact = self._write_output_artifact(request, result, "stderr", stderr_text)
+        stdout_artifact = self._write_output_artifact(request, result, "stdout", stdout_text, truncated=stdout_truncated)
+        stderr_artifact = self._write_output_artifact(request, result, "stderr", stderr_text, truncated=stderr_truncated)
         result_with_artifacts = result.model_copy(
             update={
                 "stdout_artifact": stdout_artifact.ref if stdout_artifact else None,
@@ -275,9 +294,9 @@ class CommandLogWriter:
         result: CommandResultDto,
         stream_name: str,
         content: str,
+        *,
+        truncated: bool = False,
     ) -> StoredArtifact | None:
-        if content == "":
-            return None
         return self._artifact_store.write_text_artifact(
             result.run_id,
             f"04_workflow_state/command_logs/{result.command_id}.{stream_name}.log",
@@ -286,13 +305,14 @@ class CommandLogWriter:
             stage_id=result.stage_id,
             created_by="command-execution-worker",
             created_at=result.finished_at or result.started_at,
-            input_hashes={"command_id": request.command_id},
+            input_hashes={"command_id": request.command_id, **({"truncated": "true"} if truncated else {})},
         )
 
     def _bound_text(self, value: str | bytes | None) -> tuple[str, bool]:
         if value is None:
             return "", False
         text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+        text = redact_prompt_text(text).redacted_text
         payload = text.encode("utf-8")
         if self._max_output_bytes is None or len(payload) <= self._max_output_bytes:
             return text, False
@@ -302,6 +322,23 @@ class CommandLogWriter:
 
 class WorkerSupervisor:
     """Run approved processes with shell disabled and process-tree termination."""
+
+    _SECRET_PATTERNS: tuple[str, ...] = (
+        "TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL",
+        "HERMES_", "API_KEY", "ACCESS_KEY", "PRIVATE_KEY",
+    )
+
+    @staticmethod
+    def _build_safe_environment(allowlist: tuple[str, ...] = ()) -> dict[str, str]:
+        """Build a sanitized environment blocking secret and backend variables."""
+        clean: dict[str, str] = {}
+        allowed = set(allowlist)
+        for var, value in os.environ.items():
+            upper = var.upper()
+            blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
+            if not blocked and (not allowed or var in allowed):
+                clean[var] = value
+        return clean
 
     def run(
         self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None
@@ -322,8 +359,9 @@ class WorkerSupervisor:
             cwd=request.working_directory,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=False,
             shell=False,
+            env=self._build_safe_environment(request.environment_allowlist),
             creationflags=creationflags,
             **popen_kwargs,
         )
@@ -331,8 +369,19 @@ class WorkerSupervisor:
         output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
 
         def read_stream(name: str, stream) -> None:
-            for line in iter(stream.readline, ""):
-                item = (name, line)
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            while True:
+                raw = stream.read(4096)
+                if not raw:
+                    break
+                text = decoder.decode(raw, final=False)
+                if text:
+                    item = (name, text)
+                    chunks.append(item)
+                    output_queue.put(item)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                item = (name, tail)
                 chunks.append(item)
                 output_queue.put(item)
             output_queue.put(None)

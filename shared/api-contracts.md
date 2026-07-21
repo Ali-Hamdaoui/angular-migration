@@ -106,3 +106,69 @@ The backend captures checksum-bound baseline parity evidence through `POST /api/
 Responses include parser/schema versions, confidence labels, source and evidence artifact references, SHA-256 checksums, state version, and event sequence. Capture emits `BASELINE_FAILURES_FINGERPRINTED`, `BASELINE_ROUTE_ANCHOR_CREATED`, and `BASELINE_BACKEND_ANCHOR_CREATED` through the authoritative Transition Service.
 
 Feature 13 capture requests may include prerequisite_artifact_checksums, an artifact-ID-to-SHA-256 map. When prerequisite IDs are supplied, every ID must have an expected checksum and the registered checksum must match before capture proceeds.
+
+
+## S2-F03 governed LLM gateway
+
+The governed LLM surface is exposed under `/api/v1/llm` and `/api/v1/runs/{run_id}/llm`:
+
+- `GET /llm/readiness` reports Azure configuration and the registered strict structured-output capability.
+- `POST /llm/smoke` accepts only `run_id`, `expected_state_version`, `idempotency_key`, and optional correlation metadata. Actor identity is derived from authentication (`X-Authenticated-Actor` in the local control-plane adapter), never from JSON.
+- `GET /runs/{run_id}/llm/activity` and `GET /runs/{run_id}/usage` return durable invocation and pricing evidence.
+
+Invocation responses expose prompt, schema, model capability/deployment, pricing, stage, input hashes, redacted failure summary, correlation ID, authorized artifact links, state version, and event sequence. Provider failures retain the correlation ID and a redacted failure artifact.
+
+## S2-F04 Analysis Reviewer chain and G04
+
+The Analysis phase is exposed through `/api/v1/runs/{run_id}`:
+
+- `POST /analysis` accepts registered deterministic artifact IDs/checksums,
+  observed state version, and an idempotency key.
+- `GET /analysis` returns the authoritative package and G04 state.
+- `POST /approvals/G04/decisions` requires the current state/gate version,
+  final immutable G04 package checksum, workspace fingerprint, plan version,
+  decision, and idempotency key.
+
+Generation is checksum-bound: deterministic input → phase Proposer → immutable
+Proposer checksum → phase Reviewer → immutable Reviewer checksum → final reviewed
+analysis artifact → G04. The Reviewer returns only an accept, revision request,
+rejection, or insufficient-context decision and cannot replace the Proposer
+narrative. At most one governed Proposer revision is attempted. If review fails
+or is not accepted, the API fails closed and does not create G04.
+
+Responses include both roles' provenance, prompt/schema versions, usage/cost,
+revision count, registered artifact links, final package checksum, state version,
+and event sequence. Durable `ANALYSIS_AGENT_*`, `ANALYSIS_REVIEWER_*`, and
+`G04_*` events are replayed through the run SSE stream. A downstream protected
+transition must call the G04 guard and is rejected unless the latest approved
+gate still matches its package, workspace, plan, and state bindings.
+
+## S2-F05 Feasibility and G05
+
+The deterministic compatibility evidence surface is exposed under
+`/api/v1/runs/{run_id}`:
+
+- `POST /feasibility` accepts the observed state version, idempotency key,
+  source Angular version, catalogue and registry snapshot IDs/checksums,
+  registered prerequisite artifact IDs/checksums, and observed runtime
+  candidates.
+- `GET /feasibility` returns the persisted route, support classification,
+  exact Stage 1 profile, warnings/blockers, immutable artifact IDs/checksums,
+  and current G05 state.
+- `POST /approvals/G05/decisions` requires the current state/gate version,
+  finalized package checksum, artifact-set checksum, workspace/plan bindings,
+  decision, and idempotency key.
+
+The backend finalizes catalogue snapshot, route, support-level, registry
+snapshot, Stage 1 profile, and feasibility-package artifacts before recording
+`COMPATIBILITY_RESOLUTION_COMPLETED` or `COMPATIBILITY_RESOLUTION_BLOCKED`.
+Resolution and G05 transitions are persisted through the Transition Service and
+replayed as `COMPATIBILITY_RESOLUTION_*` and `G05_*` events. G05 decisions are
+append-only; stale bindings, tampered evidence, unauthorized actors, and
+idempotency payload reuse fail with stable error codes.
+
+Verification coverage for this contract is recorded in
+`docs/features/s2-f05/verification.md`. The I04 suite exercises malformed
+input, unauthorized/stale requests, blocked and pending G05 protection,
+idempotent replay, tampered package checksums, backend failure redaction, and
+the authoritative frontend failure/stale states.

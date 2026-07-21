@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/stage_validation_summary.schema.json",
+  "title": "stage_validation_summary",
+  "description": "Normal stage validation evidence; repair validation returns here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "stage_id",
+    "workspace_fingerprint",
+    "technical_status",
+    "parity_status",
+    "core_gates",
+    "g09_status"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "technical_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parity_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "core_gates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "manual_items": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "g09_status": {
+      "enum": [
+        "pending",
+        "approved",
+        "approved_with_comment",
+        "modification_requested",
+        "rejected",
+        "stale"
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "artifact_ref.schema.json"
+      }
+    }
+  }
+}

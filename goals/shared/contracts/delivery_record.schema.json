@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/delivery_record.schema.json",
+  "title": "delivery_record",
+  "description": "Atomic delivery candidate/publication record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "delivery_id",
+    "run_id",
+    "candidate_fingerprint",
+    "destination",
+    "publication_status",
+    "g14_status"
+  ],
+  "properties": {
+    "delivery_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "destination": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publication_status": {
+      "enum": [
+        "candidate_ready",
+        "publishing",
+        "published",
+        "failed_closed",
+        "not_started"
+      ]
+    },
+    "g14_status": {
+      "enum": [
+        "pending",
+        "approved",
+        "approved_with_comment",
+        "modification_requested",
+        "rejected",
+        "stale"
+      ]
+    },
+    "published_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "artifact_ref.schema.json"
+      }
+    }
+  }
+}

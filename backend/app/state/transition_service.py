@@ -114,6 +114,26 @@ class StateTransitionService:
             status=run.status,
         )
 
+    def append_audit_event(self, *, run_id: str, idempotency_key: str, event_type: WorkflowEventType, actor: str, reason: str, occurred_at: datetime, payload: dict[str, str | int | None] | None = None) -> TransitionResult:
+        """Append an evidence/audit event without changing workflow state.
+
+        Some durable evidence lifecycle events (for example G05_CREATED) are
+        projections of an already-committed transition and must not introduce
+        a second optimistic-concurrency step.
+        """
+        existing = self._find_idempotent_event(run_id, idempotency_key)
+        if existing is not None:
+            return self._result_from_event(existing, idempotent_replay=True)
+        run = self._session.get(MigrationRunModel, run_id)
+        if run is None:
+            raise TransitionError(f"run does not exist: {run_id}")
+        current = run.state_version
+        body = {"previous_state_version": current, "next_state_version": current, "actor": actor, "reason": reason}
+        body.update(payload or {})
+        event = self._append_event(TransitionRequest(run_id=run_id, idempotency_key=idempotency_key, expected_state_version=current, event_type=event_type, actor=actor, reason=reason, occurred_at=occurred_at), occurred_at, body)
+        self._session.flush()
+        return TransitionResult(run_id=run_id, event_id=event.id, event_sequence=event.sequence, idempotency_key=idempotency_key, previous_state_version=current, next_state_version=current, status=run.status)
+
     def acquire_lease(self, *, run_id: str, worker_id: str, lease_owner: str, now: datetime) -> WorkerLeaseModel:
         lease_id = f"lease-{uuid4().hex[:12]}"
         lease = WorkerLeaseModel(

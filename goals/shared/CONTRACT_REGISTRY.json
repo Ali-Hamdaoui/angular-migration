@@ -1,0 +1,369 @@
+{
+  "version": "3.0.0",
+  "policy": "Frozen cross-goal handoff shapes for parallel development. Live implementations may add only backward-compatible optional fields until integration governance approves a versioned break.",
+  "contracts": [
+    {
+      "name": "artifact_ref",
+      "file": "contracts/artifact_ref.schema.json",
+      "owner": "platform-foundation",
+      "consumers": [
+        "G01",
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "durable_event_envelope",
+      "file": "contracts/durable_event_envelope.schema.json",
+      "owner": "platform-foundation",
+      "consumers": [
+        "G01",
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "approved_stage_plan",
+      "file": "contracts/approved_stage_plan.schema.json",
+      "owner": "S2-F07",
+      "consumers": [
+        "G01",
+        "G02",
+        "G03",
+        "G04"
+      ]
+    },
+    {
+      "name": "command_authorization",
+      "file": "contracts/command_authorization.schema.json",
+      "owner": "G01",
+      "consumers": [
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "command_execution_record",
+      "file": "contracts/command_execution_record.schema.json",
+      "owner": "G01",
+      "consumers": [
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "stage_sandbox_ready",
+      "file": "contracts/stage_sandbox_ready.schema.json",
+      "owner": "G02",
+      "consumers": [
+        "G03",
+        "G04",
+        "G05",
+        "G07",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "transformation_result",
+      "file": "contracts/transformation_result.schema.json",
+      "owner": "G03",
+      "consumers": [
+        "G04",
+        "G05",
+        "G07",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "stage_validation_summary",
+      "file": "contracts/stage_validation_summary.schema.json",
+      "owner": "G04",
+      "consumers": [
+        "G05",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "sealed_stage_output",
+      "file": "contracts/sealed_stage_output.schema.json",
+      "owner": "G04",
+      "consumers": [
+        "G05",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "failure_evidence",
+      "file": "contracts/failure_evidence.schema.json",
+      "owner": "G05",
+      "consumers": [
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "failure_route",
+      "file": "contracts/failure_route.schema.json",
+      "owner": "G05",
+      "consumers": [
+        "G06",
+        "G07",
+        "G08",
+        "G10"
+      ]
+    },
+    {
+      "name": "repair_context_pack",
+      "file": "contracts/repair_context_pack.schema.json",
+      "owner": "G05",
+      "consumers": [
+        "G06",
+        "G07",
+        "G10"
+      ]
+    },
+    {
+      "name": "repair_proposal",
+      "file": "contracts/repair_proposal.schema.json",
+      "owner": "G06",
+      "consumers": [
+        "G07",
+        "G08",
+        "G10"
+      ]
+    },
+    {
+      "name": "repair_review_decision",
+      "file": "contracts/repair_review_decision.schema.json",
+      "owner": "G06",
+      "consumers": [
+        "G07",
+        "G08",
+        "G10"
+      ]
+    },
+    {
+      "name": "repair_g10_package",
+      "file": "contracts/repair_g10_package.schema.json",
+      "owner": "G06",
+      "consumers": [
+        "G07",
+        "G10"
+      ]
+    },
+    {
+      "name": "patch_apply_ledger",
+      "file": "contracts/patch_apply_ledger.schema.json",
+      "owner": "G07",
+      "consumers": [
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "recovery_decision",
+      "file": "contracts/recovery_decision.schema.json",
+      "owner": "G08",
+      "consumers": [
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "assistant_answer",
+      "file": "contracts/assistant_answer.schema.json",
+      "owner": "G08",
+      "consumers": [
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "final_assurance_summary",
+      "file": "contracts/final_assurance_summary.schema.json",
+      "owner": "G09",
+      "consumers": [
+        "G10"
+      ]
+    },
+    {
+      "name": "delivery_record",
+      "file": "contracts/delivery_record.schema.json",
+      "owner": "G09",
+      "consumers": [
+        "G10"
+      ]
+    },
+    {
+      "name": "final_report_record",
+      "file": "contracts/final_report_record.schema.json",
+      "owner": "G09",
+      "consumers": [
+        "G10"
+      ]
+    },
+    {
+      "name": "goal_completion",
+      "file": "contracts/goal_completion.schema.json",
+      "owner": "each-goal",
+      "consumers": [
+        "integration-coordinator",
+        "G10"
+      ]
+    },
+    {
+      "name": "approval_binding",
+      "file": "contracts/approval_binding.schema.json",
+      "owner": "platform-foundation",
+      "consumers": [
+        "G02",
+        "G03",
+        "G04",
+        "G06",
+        "G07",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "worker_lease",
+      "file": "contracts/worker_lease.schema.json",
+      "owner": "G01",
+      "consumers": [
+        "G02",
+        "G03",
+        "G04",
+        "G08",
+        "G10"
+      ]
+    },
+    {
+      "name": "command_log_event",
+      "file": "contracts/command_log_event.schema.json",
+      "owner": "G01",
+      "consumers": [
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G08",
+        "G10"
+      ]
+    },
+    {
+      "name": "stage_bootstrap_result",
+      "file": "contracts/stage_bootstrap_result.schema.json",
+      "owner": "G02",
+      "consumers": [
+        "G03",
+        "G04",
+        "G05",
+        "G10"
+      ]
+    },
+    {
+      "name": "changed_file_risk_summary",
+      "file": "contracts/changed_file_risk_summary.schema.json",
+      "owner": "G03",
+      "consumers": [
+        "G04",
+        "G06",
+        "G07",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "validation_gate_result",
+      "file": "contracts/validation_gate_result.schema.json",
+      "owner": "G04",
+      "consumers": [
+        "G05",
+        "G07",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "repair_attempt_state",
+      "file": "contracts/repair_attempt_state.schema.json",
+      "owner": "G07",
+      "consumers": [
+        "G08",
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "source_integrity_proof",
+      "file": "contracts/source_integrity_proof.schema.json",
+      "owner": "platform-foundation",
+      "consumers": [
+        "G09",
+        "G10"
+      ]
+    },
+    {
+      "name": "integration_proof",
+      "file": "contracts/integration_proof.schema.json",
+      "owner": "G10",
+      "consumers": [
+        "integration-coordinator"
+      ]
+    },
+    {
+      "name": "session_identity",
+      "file": "contracts/session_identity.schema.json",
+      "owner": "goal-package",
+      "consumers": [
+        "G01",
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "task_id": "10-S3-F03-I02",
+  "jira": "AMFA-163",
+  "description": "Persist and expose evidence contracts for Stream live command logs",
+  "files_created": [
+    "backend/alembic/versions/20260719_08_command_log_chunks.py",
+    "backend/app/repositories/models/workflow.py (CommandLogChunkModel)"
+  ],
+  "files_modified": [
+    "backend/app/api/routes/run_commands.py"
+  ],
+  "tests_passed": 6,
+  "evidence": "CommandLogChunkModel with sequence ordering. GET /logs endpoint with offset/limit/stream filter. COMMAND_OUTPUT_AVAILABLE events.",
+  "commit_sha": "795ee35",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Combined with T09."
+}

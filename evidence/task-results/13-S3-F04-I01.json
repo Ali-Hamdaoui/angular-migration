@@ -1,0 +1,16 @@
+{
+  "task_id": "13-S3-F04-I01",
+  "jira": "AMFA-166",
+  "description": "Implement backend application contract for Own commands with JobSupervisor",
+  "files_created": [
+    "backend/app/services/job_supervisor_service.py"
+  ],
+  "files_modified": [
+    "backend/app/domain/contracts.py (CancelCommandRequestDto)"
+  ],
+  "tests_passed": 7,
+  "evidence": "JobSupervisorService with lease acquire/renew/release, active command ownership, cancellation with idempotency.",
+  "commit_sha": "795ee35",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Lease management, cancellation flow, state transitions via Transition Service."
+}

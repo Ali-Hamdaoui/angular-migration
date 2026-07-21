@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/validation_gate_result.schema.json",
+  "title": "validation_gate_result",
+  "description": "One authoritative technical or assurance validation gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "stage_id",
+    "gate",
+    "status",
+    "input_fingerprint",
+    "artifact_refs"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "gate": {
+      "enum": [
+        "target_version",
+        "lockfile",
+        "clean_install",
+        "static_checks",
+        "build",
+        "tests",
+        "lint",
+        "routes",
+        "backend_integration",
+        "changed_file_risk",
+        "stage_fingerprint",
+        "source_integrity",
+        "final_assurance"
+      ]
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed",
+        "not_configured",
+        "manual_validation_required",
+        "deferred_company_tool_required",
+        "blocked_by_environment",
+        "accepted_risk",
+        "skipped_not_applicable",
+        "interrupted",
+        "cancelled",
+        "unknown"
+      ]
+    },
+    "input_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "command_execution_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "artifact_ref.schema.json"
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

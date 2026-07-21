@@ -27,7 +27,7 @@ export function BaselinePreparationPanel({ runId, initialState }: { runId: strin
         else setError("Baseline evidence could not be loaded.");
       })
       .finally(() => setLoading(false));
-  }, [runId, initialState.state_version]);
+  }, [runId]);
 
   useEffect(() => { refresh(); }, [refresh]);
 

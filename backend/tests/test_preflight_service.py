@@ -75,11 +75,11 @@ def test_valid_fixture_setup_returns_checksum_artifact_and_capabilities(tmp_path
     assert result.checksum.startswith("sha256:")
     assert result.artifact is not None
     assert result.capabilities == {
-        "python": "SUCCEEDED",
-        "node": "SUCCEEDED",
-        "npm": "SUCCEEDED",
-        "npx": "SUCCEEDED",
-        "git": "SUCCEEDED",
+        "python": "succeeded",
+        "node": "succeeded",
+        "npm": "succeeded",
+        "npx": "succeeded",
+        "git": "succeeded",
     }
     assert service.is_current_and_runnable(result.checksum) is True
     assert [request.command_id for request in worker.requests] == [
@@ -152,7 +152,7 @@ def test_missing_runtime_tool_returns_structured_blocker(tmp_path: Path) -> None
 
     assert result.status == "blocked"
     assert "runtime_tool_unavailable_git" in result.blockers
-    assert result.capabilities["git"] == "FAILED"
+    assert result.capabilities["git"] == "failed"
 
 
 def test_expired_preflight_is_not_runnable(tmp_path: Path) -> None:

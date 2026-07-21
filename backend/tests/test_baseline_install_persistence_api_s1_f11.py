@@ -106,7 +106,7 @@ def test_install_persists_execution_events_artifacts_and_idempotent_replay(tmp_p
     first = service.install("run-1", _request())
     replay = service.install("run-1", _request())
 
-    assert first.status == "SUCCEEDED"
+    assert first.status == "succeeded"
     assert replay.idempotent_replay is True
     assert replay.execution_id == first.execution_id
     assert len(first.artifact_ids) >= 5
@@ -115,7 +115,7 @@ def test_install_persists_execution_events_artifacts_and_idempotent_replay(tmp_p
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
         assert command is not None
         assert command.command_id == "npm-ci-bootstrap"
-        assert command.status == "SUCCEEDED"
+        assert command.status == "succeeded"
         lease = session.scalar(select(WorkerLeaseModel).where(WorkerLeaseModel.execution_id == first.execution_id))
         assert lease is not None
         assert lease.backend_instance_id and lease.heartbeat_at is not None
@@ -165,7 +165,7 @@ class ApiInstallServiceStub:
         return self.response
 
     def cancel(self, run_id, execution_id, request):
-        self.response = self.response.model_copy(update={"status": "CANCELLED", "cancelled": True})
+        self.response = self.response.model_copy(update={"status": "cancelled", "cancelled": True})
         return self.response
 
     def get(self, run_id, execution_id):

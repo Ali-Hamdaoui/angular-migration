@@ -6,7 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.exc import OperationalError
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api.errors import error_response
 from app.api.router import api_router
@@ -46,11 +47,13 @@ app.add_middleware(
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
     return error_response(
         request,
         status_code=exc.status_code,
-        error_code="http_error",
-        message=str(exc.detail),
+        error_code=str(detail.get("error_code") or "HTTP_ERROR"),
+        message=str(detail.get("message") or exc.detail),
+        details=detail.get("details") if isinstance(detail.get("details"), dict) else {},
     )
 
 
@@ -63,6 +66,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         message="Request validation failed.",
         details={"errors": exc.errors()},
     )
+
+
+@app.exception_handler(ValidationError)
+async def domain_validation_exception_handler(request: Request, exc: ValidationError):
+    return error_response(request, status_code=422, error_code="DOMAIN_VALIDATION_FAILED", message="Domain validation failed.", details={"errors": exc.errors()})
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    return error_response(request, status_code=409, error_code="RESOURCE_CONFLICT", message="The requested resource conflicts with existing durable state.")
 
 
 app.include_router(api_router)

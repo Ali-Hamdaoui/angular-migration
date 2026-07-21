@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/final_report_record.schema.json",
+  "title": "final_report_record",
+  "description": "Deterministic report truth plus optional non-authoritative narrative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_id",
+    "run_id",
+    "deterministic_report_checksum",
+    "proof_labels",
+    "g15_status",
+    "artifact_refs"
+  ],
+  "properties": {
+    "report_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deterministic_report_checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "narrative_status": {
+      "enum": [
+        "not_requested",
+        "generated",
+        "fallback_deterministic",
+        "failed_optional"
+      ]
+    },
+    "proof_labels": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "PROVEN",
+          "INFERRED",
+          "NOT_PROVEN"
+        ]
+      }
+    },
+    "g15_status": {
+      "enum": [
+        "pending",
+        "approved",
+        "approved_with_comment",
+        "modification_requested",
+        "rejected",
+        "stale"
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "artifact_ref.schema.json"
+      }
+    }
+  }
+}

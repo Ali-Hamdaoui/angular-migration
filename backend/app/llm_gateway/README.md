@@ -39,6 +39,17 @@ The mock gateway snapshots configured pricing per usage record. Defaults match
 the Sprint 0 pricing assumption when configuration is unset: input $0.25 per 1M
 tokens and output $2.00 per 1M tokens.
 
+## Governed Azure application contract
+
+`AzureOpenAILLMGateway` is the backend-only provider path for production calls.
+It requires complete Azure configuration, routes only registered roles, sends
+`store=false`, redacts untrusted context before transport, validates responses
+through `PromptSchemaRegistry`, retries only retryable transport failures, and
+returns provider usage with the configured pricing snapshot and estimated cost.
+Provider keys, endpoints, raw prompts, and raw completions are not included in
+the typed response. Persistence, durable events, and HTTP projections remain
+owned by the subsequent S2-F03 API/application slices.
+
 Budget decisions are structured and can continue, warn, block new LLM calls,
 request deterministic fallback, enter diagnostic hold, or require approval. The
 Sprint 0 mock implements continue, warn, block, and diagnostic hold decisions.
@@ -53,3 +64,13 @@ The gateway writes redacted metadata artifacts only:
 These artifacts contain concise summaries, usage, cost, and budget decisions.
 They do not contain raw secrets, credentials, hidden reasoning, or executable
 instructions.
+
+## S2-F03-I02 evidence surface
+
+The backend persists append-only invocation and usage/cost records and exposes
+`GET /api/v1/llm/readiness`, `POST /api/v1/llm/smoke`,
+`GET /api/v1/runs/{id}/llm/activity`, and `GET /api/v1/runs/{id}/usage`.
+Smoke evidence is stored by artifact ID with checksums; raw prompts and
+provider credentials are not persisted. Invocation lifecycle events are
+written through the Transition Service so replay and optimistic state checks
+remain authoritative.

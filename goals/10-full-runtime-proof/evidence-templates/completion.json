@@ -1,0 +1,33 @@
+{
+  "schema_version": "3.0.0",
+  "goal_id": "G10",
+  "branch": "hermes/10-full-runtime-proof",
+  "base_sha": "<sha>",
+  "head_sha": "<sha>",
+  "goal_package_sha256": "<64-hex-sha256>",
+  "completion_level": "harness_ready",
+  "jira_features": [
+    "AMFA-225"
+  ],
+  "jira_subtasks": [
+    "AMFA-282",
+    "AMFA-283",
+    "AMFA-284",
+    "AMFA-285"
+  ],
+  "branch_ready": false,
+  "harness_ready": false,
+  "integration_verified": false,
+  "jira_complete": false,
+  "automated_tests": "BLOCKED",
+  "manual_tests": "BLOCKED",
+  "documentation": "BLOCKED",
+  "architecture_audit": "BLOCKED",
+  "product_audit": "BLOCKED",
+  "human_product_signoff": "pending",
+  "blocked_integrated_criteria": [],
+  "limitations": [],
+  "pushed": false,
+  "push_remote": null,
+  "push_branch": null
+}

@@ -56,7 +56,14 @@ class Settings(BaseSettings):
     platform_repository_root: Path = _PLATFORM_REPOSITORY_ROOT
 
     backend_cors_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:3000"]
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3301",
+            "http://127.0.0.1:3301",
+            "http://localhost:3302",
+            "http://127.0.0.1:3302",
+        ]
     )
     command_timeout_seconds: int = Field(default=300, gt=0)
     command_max_output_bytes: int = Field(default=1_000_000, gt=0)
@@ -76,6 +83,11 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     llm_input_price_per_million_tokens: float = Field(default=0.0, ge=0)
     llm_output_price_per_million_tokens: float = Field(default=0.0, ge=0)
+    llm_pricing_version: str = Field(default='mvp-pricing-2026-01', min_length=1)
+    llm_prompt_policy_version: str = Field(default='migration-policy-v1', min_length=1)
+    llm_schema_registry_version: str = Field(default='schema-registry-v1', min_length=1)
+    llm_timeout_seconds: float = Field(default=30.0, gt=0)
+    llm_max_transport_retries: int = Field(default=2, ge=0, le=5)
     llm_token_budget: int = Field(default=0, ge=0)
     llm_cost_budget_usd: float = Field(default=0.0, ge=0)
 

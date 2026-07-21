@@ -1,0 +1,14 @@
+{
+  "goal_id": "G06",
+  "branch": "hermes/06-repair-agents-g10",
+  "base_sha": "<recorded-base-sha>",
+  "criteria": [
+    {
+      "acceptance_id": "<feature/criterion>",
+      "status": "PRESENT|PARTIAL|MISSING|CONFLICTING|BLOCKED_UPSTREAM",
+      "evidence": []
+    }
+  ],
+  "duplicate_authority_check": [],
+  "notes": []
+}

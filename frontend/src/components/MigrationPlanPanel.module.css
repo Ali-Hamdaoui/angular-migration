@@ -1,0 +1,23 @@
+.route { display: grid; gap: .6rem; padding: 0; list-style: none; }
+.routeItem { display: grid; grid-template-columns: 2rem 1fr auto; gap: .7rem; align-items: center; border-top: 1px solid #244462; padding: .7rem 0; }
+.routeNumber { display: grid; width: 1.6rem; height: 1.6rem; place-items: center; border: 1px solid #55a7ff; border-radius: 999px; color: #a1c9ff; font-size: .75rem; }
+.tabs { display: flex; gap: .4rem; flex-wrap: wrap; margin: .8rem 0; }
+.tabs button { border: 1px solid #3d73a6; border-radius: .3rem; background: #102b48; color: #d8e8fb; padding: .5rem .7rem; }
+.tabs button[aria-selected="true"] { border-color: #7dfab8; background: #164d45; }
+.codeBlock { overflow: auto; margin: .45rem 0; border: 1px solid #244462; border-radius: .3rem; background: #081827; padding: .65rem; color: #d8e8fb; font-size: .76rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .7rem; }
+.grid div { display: grid; gap: .2rem; min-width: 0; }
+.grid span { color: #73869b; font-size: .65rem; text-transform: uppercase; }
+.grid strong, .grid code { overflow-wrap: anywhere; }
+.artifact { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; align-items: start; border-top: 1px solid #244462; padding: .55rem 0; }
+.artifact a { color: #a1c9ff; font-weight: 700; overflow-wrap: anywhere; }
+.artifact code { color: #9db0c8; font-size: .7rem; overflow-wrap: anywhere; }
+.action { margin-top: .75rem; }
+.field { display: grid; gap: .35rem; margin: .7rem 0; color: #a9b8cf; }
+.field input, .field select, .field textarea { width: 100%; border: 1px solid #30425c; border-radius: .35rem; background: #0b1424; color: #edf4ff; padding: .5rem; font: inherit; }
+.field textarea { min-height: 5rem; resize: vertical; }
+.reviewGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.stale { border-left: 3px solid #f0b429; padding: .65rem; background: #2a2110; }
+@media (max-width: 680px) { .routeItem { grid-template-columns: 2rem 1fr; }.routeItem > :last-child { grid-column: 2; } .artifact { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .reviewGrid { grid-template-columns: 1fr; } }
