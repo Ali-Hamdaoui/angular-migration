@@ -576,13 +576,18 @@ class TestG08ApprovalAPI:
             },
         )
 
-    def _decision_payload(self, new_state_version, decision="approved", idempotency_key="g08-decision"):
-        return {
+    def _decision_payload(self, new_state_version, decision="approved", idempotency_key="g08-decision", init_data=None):
+        payload = {
             "expected_state_version": new_state_version,
             "idempotency_key": idempotency_key,
             "decision": decision,
             "gate_id": "G08",
+            "gate_version": (init_data or {}).get("gate_version", "g08-v1"),
+            "package_checksum": (init_data or {}).get("package_checksum", "sha256:package"),
+            "artifact_set_checksum": (init_data or {}).get("artifact_set_checksum", "sha256:artifacts"),
+            "workspace_fingerprint": (init_data or {}).get("workspace_fingerprint", "sha256:workspace"),
         }
+        return payload
 
     def test_get_g08_not_found_returns_stable_error(self, client, test_db):
         run_id, stage_id, _, _ = test_db
@@ -605,7 +610,7 @@ class TestG08ApprovalAPI:
 
         decide_resp = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
-            json=self._decision_payload(new_state_version),
+            json=self._decision_payload(new_state_version, init_data=init_data),
         )
         assert decide_resp.status_code == 200, f"Decide failed: {decide_resp.text}"
         decide_data = decide_resp.json()
@@ -616,7 +621,7 @@ class TestG08ApprovalAPI:
         # Verify append-only: a second decision with approved is blocked
         second_state_version = decide_data["state_version"]
         second_payload = self._decision_payload(
-            second_state_version, decision="approved", idempotency_key="g08-second-decision"
+            second_state_version, decision="approved", idempotency_key="g08-second-decision", init_data=decide_data
         )
         second_resp = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
@@ -660,9 +665,12 @@ class TestG08ApprovalAPI:
         new_state_version = init_data["state_version"]
         decide_resp = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
-            json=self._decision_payload(new_state_version),
+            json=self._decision_payload(new_state_version, init_data=init_data),
         )
-        assert decide_resp.status_code == 409, f"Expected 409, got {decide_resp.status_code}: {decide_resp.text}"
+        assert decide_resp.status_code == 200, f"Expected 200, got {decide_resp.status_code}: {decide_resp.text}"
+        decide_data = decide_resp.json()
+        assert decide_data["status"] == "stale", f"Expected stale, got {decide_data['status']}"
+        assert decide_data.get("stale_reason") is not None
 
     def test_aggregate_state_change_invalidates_pending_package(self, client, test_db):
         run_id, stage_id, _, tmp_dir = test_db
@@ -683,7 +691,7 @@ class TestG08ApprovalAPI:
         new_state_version = init_data["state_version"]
         decide_resp = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
-            json=self._decision_payload(new_state_version),
+            json=self._decision_payload(new_state_version, init_data=init_data),
         )
         assert decide_resp.status_code == 409, f"Expected 409, got {decide_resp.status_code}: {decide_resp.text}"
 
@@ -716,7 +724,7 @@ class TestG08ApprovalAPI:
         init_data = resp.json()
 
         new_state_version = init_data["state_version"]
-        decide_payload = self._decision_payload(new_state_version)
+        decide_payload = self._decision_payload(new_state_version, init_data=init_data)
         resp1 = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
             json=decide_payload,
@@ -748,7 +756,7 @@ class TestG08ApprovalAPI:
         new_state_version = init_data["state_version"]
         decide_resp = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
-            json=self._decision_payload(new_state_version),
+            json=self._decision_payload(new_state_version, init_data=init_data),
         )
         assert decide_resp.status_code == 200
         decide_data = decide_resp.json()
@@ -763,7 +771,7 @@ class TestG08ApprovalAPI:
         new_state_version = resp.json()["state_version"]
 
         modification_without_comment = self._decision_payload(
-            new_state_version, decision="modification_requested", idempotency_key="mod-no-comment"
+            new_state_version, decision="modification_requested", idempotency_key="mod-no-comment", init_data=resp.json()
         )
         resp_mod = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
@@ -772,7 +780,7 @@ class TestG08ApprovalAPI:
         assert resp_mod.status_code == 422, f"Expected 422, got {resp_mod.status_code}: {resp_mod.text}"
 
         modification_with_comment = self._decision_payload(
-            new_state_version, decision="modification_requested", idempotency_key="mod-with-comment"
+            new_state_version, decision="modification_requested", idempotency_key="mod-with-comment", init_data=resp.json()
         )
         modification_with_comment["comment"] = "Please fix the test fixture"
         resp_mod2 = client.post(
@@ -825,11 +833,12 @@ class TestG08ApprovalAPI:
 
         resp = self._initialize(client, run_id, stage_id, expected_state_version=3)
         assert resp.status_code == 200
-        new_state_version = resp.json()["state_version"]
+        init_data = resp.json()
+        new_state_version = init_data["state_version"]
 
         decide_resp = client.post(
             f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
-            json=self._decision_payload(new_state_version),
+            json=self._decision_payload(new_state_version, init_data=init_data),
         )
         assert decide_resp.status_code == 200
         decide_data = decide_resp.json()
@@ -846,7 +855,7 @@ class TestG08ApprovalAPI:
             s.flush()
 
         unauthorized_payload = {
-            "expected_state_version": 0,
+            "expected_state_version": 1,
             "idempotency_key": "unauth-init",
             "gate_id": "G08",
         }
@@ -871,19 +880,44 @@ class TestG08ApprovalAPI:
         init_data = resp.json()
         new_state_version = init_data["state_version"]
 
-        from app.repositories.session import session_scope
-        from app.repositories.transformation_models import TransformationEvidenceModel
-        with session_scope() as s:
-            ev = s.get(TransformationEvidenceModel, tev_id)
-            ev.artifact_ids = ["nonexistent-artifact-id"]
-            s.flush()
+        from unittest.mock import patch
+        from app.services.transformation_application_service import StateTransitionService
 
-        decide_resp = client.post(
-            f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
-            json=self._decision_payload(new_state_version),
-        )
-        assert decide_resp.status_code == 200
-        decide_data = decide_resp.json()
-        # The decision should still succeed since evidence drift detection may bypass artifact check
-        # or return stale gracefully
-        assert "error_code" not in decide_data
+        # Simulate an artifact storage failure that propagates as a backend failure
+        with patch.object(
+            StateTransitionService, "apply_transition",
+            side_effect=OSError("Simulated artifact storage failure"),
+        ):
+            decide_resp = client.post(
+                f"/api/v1/runs/{run_id}/stages/{stage_id}/approvals/G08/decisions",
+                json=self._decision_payload(new_state_version, init_data=init_data),
+            )
+
+        assert decide_resp.status_code == 500
+        data = decide_resp.json()
+        assert data.get("error_code") == "G08_BACKEND_FAILURE"
+        assert data.get("correlation_id") is not None
+
+        from app.repositories.session import session_scope
+        from app.repositories.models import MigrationRunModel, WorkflowEventModel
+        from app.repositories.transformation_models import G08ApprovalModel
+        from sqlalchemy import select
+
+        with session_scope() as s:
+            run = s.get(MigrationRunModel, run_id)
+            assert run.state_version == new_state_version, "State version must not change on backend failure"
+
+            events = list(s.scalars(
+                select(WorkflowEventModel)
+                .where(WorkflowEventModel.run_id == run_id)
+            ).all())
+            last_event_type = events[-1].event_type if events else None
+            assert last_event_type != "G08_APPROVED", "No workflow event should be committed for the failed decision"
+
+            records = list(s.scalars(
+                select(G08ApprovalModel)
+                .where(G08ApprovalModel.run_id == run_id)
+                .where(G08ApprovalModel.stage_id == stage_id)
+            ).all())
+            # Only the init record exists; no decision record was created
+            assert len(records) == 1

@@ -1792,7 +1792,7 @@ class G08ApprovalApplicationService:
                 gate_version=package.gate_version,
                 idempotency_key=request.idempotency_key,
                 request_checksum=request_checksum,
-                correlation_id=getattr(request, 'correlation_id', None),
+                correlation_id=correlation_id or getattr(request, 'correlation_id', None),
                 actor=actor or request.idempotency_key,
                 status="pending",
                 package_checksum=package.package_checksum,
@@ -1882,6 +1882,9 @@ class G08ApprovalApplicationService:
             if not stale_recording:
                 self._verify_package_integrity(session, record, run)
 
+            if stale_recording:
+                return self._dto(record)
+
             # Build package for decision
             decision_package = G08EvidencePackage(
                 run_id=record.run_id,
@@ -1901,11 +1904,14 @@ class G08ApprovalApplicationService:
                 plan_checksum=inputs["plan_checksum"],
             )
 
-            result: G08DecisionResult = G08ApprovalService().decide(
-                decision_package,
-                request.decision,
-                comment=request.comment,
-            )
+            try:
+                result: G08DecisionResult = G08ApprovalService().decide(
+                    decision_package,
+                    request.decision,
+                    comment=request.comment,
+                )
+            except ValueError as exc:
+                raise G03ApplicationError("VALIDATION_ERROR", str(exc), status_code=422) from exc
 
             event_type = self._decision_event_type(result.decision, result.stale)
 
@@ -1936,7 +1942,7 @@ class G08ApprovalApplicationService:
                 gate_version=record.gate_version,
                 idempotency_key=request.idempotency_key,
                 request_checksum=request_checksum,
-                correlation_id=getattr(request, 'correlation_id', None),
+                correlation_id=correlation_id or getattr(request, 'correlation_id', None),
                 actor=actor or record.actor,
                 status="stale" if result.stale else result.decision.value,
                 decision=result.decision.value,

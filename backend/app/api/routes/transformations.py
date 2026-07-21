@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 
 from app.api.authentication import authenticated_actor
-from app.api.errors import error_response
+from app.api.errors import error_response, get_correlation_id
 from app.api.transformation_contracts import (
     AngularUpdateRequest,
     AngularUpdateResponse,

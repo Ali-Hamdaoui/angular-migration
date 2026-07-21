@@ -76,7 +76,7 @@ describe("transformations API client", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://backend.test/api/v1/runs/run-1/stages/stage-1/transformation-evidence",
-      expect.objectContaining({ method: "POST", body: expect.stringContaining("tgt") }),
+      expect.objectContaining({ method: "POST", body: expect.stringContaining("ev-1") }),
     );
   });
 
