@@ -176,7 +176,7 @@ class MigrationRunService:
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
                 status="queued", actor=actor, idempotency_key=idempotency_key,
-                attempt=0, queued_at=self._now(), state_version=accepted.next_state_version,
+                attempt=1, queued_at=self._now(), state_version=accepted.next_state_version,
             )
             session.add(queued)
             StateTransitionService(session).append_audit_event(

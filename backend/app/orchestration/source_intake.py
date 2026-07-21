@@ -343,7 +343,10 @@ class SourceIntakeDispatcher:
             if job is None or job.status not in {"queued", "waiting_g02", "waiting_runtime_selection"}:
                 return None
             job.status = "running"
-            job.attempt += 1
+            # Attempt is the durable retry identity, not a worker-claim
+            # counter. It must remain stable when recovery reclaims a job.
+            if job.attempt < 1:
+                job.attempt = 1
             job.worker_id = self._worker_id
             job.started_at = datetime.now(UTC)
             return job

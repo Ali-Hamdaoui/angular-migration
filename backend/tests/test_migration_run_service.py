@@ -241,6 +241,25 @@ def test_source_intake_retry_preserves_failed_attempt_and_queues_new_job(tmp_pat
         assert jobs[1].attempt == 2
 
 
+def test_source_intake_attempt_identity_does_not_change_when_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("stable-attempt-create"))
+    with scope() as session:
+        job = SourceIntakeJobModel(
+            id="intake-stable-attempt", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="queued", actor="operator", idempotency_key="stable-attempt-start", attempt=2,
+            queued_at=datetime.now(UTC), state_version=created.state_version,
+        )
+        session.add(job)
+    monkeypatch.setattr(source_intake_module, "session_scope", scope)
+    dispatcher = SourceIntakeDispatcher(Settings(_env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes"))
+    try:
+        claimed = dispatcher._claim(created.run_id)
+    finally:
+        dispatcher._executor.shutdown(wait=True)
+    assert claimed is not None and claimed.attempt == 2
+
+
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):
     service, scope, _ = _service(tmp_path)
     created = service.create(_request("evidence-1"))
