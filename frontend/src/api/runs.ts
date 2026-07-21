@@ -24,6 +24,14 @@ export function startAuthoritativeRun(
   return client.post<AuthoritativeRunMutationResultDto>(`/api/v1/runs/${encodeURIComponent(runId)}/start`, request);
 }
 
+export function retryAuthoritativeSourceIntake(
+  runId: string,
+  request: StartAuthoritativeRunRequestDto,
+  client: ApiClient = apiClient,
+): Promise<AuthoritativeRunMutationResultDto> {
+  return client.post<AuthoritativeRunMutationResultDto>(`/api/v1/runs/${encodeURIComponent(runId)}/retry-source-intake`, request);
+}
+
 export function cancelAuthoritativeRun(
   runId: string,
   request: CancelAuthoritativeRunRequestDto,
