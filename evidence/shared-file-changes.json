@@ -1,0 +1,71 @@
+{
+  "goal_id": "G01",
+  "branch": "hermes/01-command-runtime",
+  "created_at": "2026-07-19T21:00:00Z",
+  "shared_files": [
+    {
+      "path": "backend/app/api/router.py",
+      "change_type": "MODIFY",
+      "description": "Add operator/command-routes (GET /operator/command-templates, POST /operator/command-policy/validate, etc.)",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "backend/app/domain/contracts.py",
+      "change_type": "MODIFY",
+      "description": "Add CommandTemplateDto, CommandAuthorizationRequest, CommandAuthorizationResult, new WorkflowEventType values",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "backend/app/repositories/models/workflow.py",
+      "change_type": "MODIFY",
+      "description": "Add CommandTemplateModel, CommandAuthorizationAuditModel tables",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "backend/alembic/versions/",
+      "change_type": "ADD",
+      "description": "Add Alembic migration for new command template and authorization tables",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "frontend/src/types/generated/api.ts",
+      "change_type": "MODIFY",
+      "description": "Add typed API client methods for command template and policy endpoints",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "frontend/src/hooks/useMigrationEvents.ts",
+      "change_type": "MODIFY",
+      "description": "Add handler for new command-related event types",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "frontend/src/hooks/applyEventToRun.ts",
+      "change_type": "MODIFY",
+      "description": "Add event application for new command events",
+      "planned": true,
+      "owner": "G01"
+    },
+    {
+      "path": "shared/openapi.json",
+      "change_type": "MODIFY",
+      "description": "Regenerated after API changes",
+      "planned": true,
+      "owner": "G01"
+    }
+  ],
+  "contracts_introduced": [
+    "backend/app/domain/command_template.py - StructuredCommandRegistry domain",
+    "backend/app/domain/command_policy.py - CommandPolicyEngine domain",
+    "backend/app/services/command_registry_service.py - CommandRegistryApplicationService",
+    "backend/app/services/command_policy_service.py - CommandPolicyApplicationService",
+    "backend/app/api/routes/commands.py - API routes for operator/command-templates and command-policy/validate",
+    "backend/app/repositories/command_template_repository.py - DB access for templates"
+  ]
+}

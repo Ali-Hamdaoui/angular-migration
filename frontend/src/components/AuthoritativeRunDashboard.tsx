@@ -16,6 +16,7 @@ import { MigrationPlanPanel } from "./MigrationPlanPanel";
 import { PlanReviewPanel } from "./PlanReviewPanel";
 import styles from "./ControlTowerShell.module.css";
 
+import { CommandPolicyInspector } from "./CommandPolicyInspector";
 const pipelineSteps = [
   { label: 'Preflight', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type.includes('PREFLIGHT')) },
   { label: 'Snapshot', completeWhen: (events: AuthoritativeRunStateDto['workflow_events']) => events.some((event) => event.event_type === 'SNAPSHOT_CREATED') },
@@ -67,6 +68,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <BaselinePreparationPanel runId={runId} initialState={state} />
       <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
       <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
+      <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
       </div>
       <aside className={styles.secondaryColumn}>
       <div className={styles.twoColumns}>

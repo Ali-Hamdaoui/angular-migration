@@ -47,11 +47,13 @@ app.add_middleware(
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
     return error_response(
         request,
         status_code=exc.status_code,
-        error_code="http_error",
-        message=str(exc.detail),
+        error_code=str(detail.get("error_code") or "HTTP_ERROR"),
+        message=str(detail.get("message") or exc.detail),
+        details=detail.get("details") if isinstance(detail.get("details"), dict) else {},
     )
 
 

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ArtifactPreviewPanel } from "@/components/ArtifactPreviewPanel";
-import { LogViewer } from "@/components/LogViewer";
+import { StaticLogArtifactViewer } from "@/components/LogViewer";
 import { MarkdownReportViewer } from "@/components/MarkdownReportViewer";
 import { UnifiedDiffViewer } from "@/components/UnifiedDiffViewer";
 import type { ArtifactRefDto } from "@/types/generated/api";
@@ -27,7 +27,7 @@ describe("artifact viewers", () => {
   it("bounds large command logs and highlights search matches", () => {
     const content = Array.from({ length: 25 }, (_, index) => index === 2 ? "ERROR failing build" : `line ${index + 1}`).join("\n");
 
-    render(<LogViewer content={content} search="error" maxLines={10} />);
+    render(<StaticLogArtifactViewer content={content} search="error" maxLines={10} />);
 
     expect(screen.getByLabelText("Command log viewer")).toBeInTheDocument();
     expect(screen.getByText(/15 additional log lines/)).toBeInTheDocument();

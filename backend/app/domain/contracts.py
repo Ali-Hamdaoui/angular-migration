@@ -236,13 +236,15 @@ class ArtifactType(str, Enum):
 
 
 class CommandStatus(str, Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    REJECTED = "REJECTED"
-    TIMED_OUT = "TIMED_OUT"
-    CANCELLED = "CANCELLED"
+    QUEUED = "queued"
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    REJECTED = "rejected"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class CancellationPolicy(str, Enum):
@@ -354,6 +356,12 @@ class WorkflowEventType(str, Enum):
     G06_REJECTED = "G06_REJECTED"
     G06_STALE = "G06_STALE"
     SPRINT1_BOUNDARY_REACHED = "SPRINT1_BOUNDARY_REACHED"
+    COMMAND_AUTHORIZATION_ACCEPTED = "COMMAND_AUTHORIZATION_ACCEPTED"
+    COMMAND_AUTHORIZATION_REJECTED = "COMMAND_AUTHORIZATION_REJECTED"
+    COMMAND_SUCCEEDED = "COMMAND_SUCCEEDED"
+    COMMAND_FAILED = "COMMAND_FAILED"
+    RUN_CANCEL_REQUESTED = "RUN_CANCEL_REQUESTED"
+    RUN_CANCELLED = "RUN_CANCELLED"
 
 
 class ErrorEnvelope(ContractModel):
@@ -515,6 +523,9 @@ class ArtifactRefDto(ContractModel):
     relative_path: str
     created_at: datetime
     checksum: str
+    immutable: bool = True
+    redacted: bool = False
+    truncated: bool = False
 
 
 class RuntimeProfileDto(ContractModel):
@@ -555,6 +566,146 @@ class CommandResultDto(ContractModel):
     exit_code: int | None = None
     stdout_artifact: ArtifactRefDto | None = None
     stderr_artifact: ArtifactRefDto | None = None
+
+
+class CommandTemplateDto(ContractModel):
+    """One registered command template in the structured registry."""
+    template_id: str
+    command_id: str
+    executable: str
+    arguments: list[str] = Field(default_factory=list)
+    executable_aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    status: str = "active"
+    version: int = 1
+    allowed_env_vars: list[str] = Field(default_factory=list)
+    max_output_bytes: int | None = 1_000_000
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CommandTemplateListDto(ContractModel):
+    """Response wrapper for GET /api/v1/operator/command-templates."""
+    templates: list[CommandTemplateDto] = Field(default_factory=list)
+    total: int = 0
+
+
+class CommandPolicyValidateRequestDto(ContractModel):
+    """Request body for POST /api/v1/operator/command-policy/validate."""
+    run_id: str = Field(min_length=1)
+    expected_state_version: int = Field(default=1, ge=1)
+    stage_id: str | None = None
+    command_id: str = Field(min_length=1)
+    template_id: str | None = None
+    template_version: int | None = Field(default=None, ge=1)
+    executable: str = Field(min_length=1)
+    arguments: list[str] = Field(default_factory=list)
+    cwd_alias: str | None = None
+    plan_id: str | None = None
+    plan_version: int | None = Field(default=None, ge=1)
+    working_directory_alias: str | None = None
+    working_directory: str | None = None
+    execution_profile_id: str = "source-runtime-profile"
+    network_profile: str = "none"
+    cancellation_policy: str = "terminate_process_tree"
+    timeout_seconds: int = Field(default=300, gt=0, le=3600)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    requested_by: str | None = None
+    correlation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    shell: bool = False
+
+
+class CommandPolicyValidateResponseDto(ContractModel):
+    """Response body for POST /api/v1/operator/command-policy/validate."""
+    authorization_id: str
+    run_id: str
+    stage_id: str | None = None
+    plan_id: str | None = None
+    command_id: str
+    executable: str
+    arguments: list[str] = Field(default_factory=list)
+    cwd_alias: str | None = None
+    execution_profile_id: str = "source-runtime-profile"
+    decision: str
+    reasons: list[str] = Field(default_factory=list)
+    policy_version: str = "s3-f01-v1"
+    idempotent_replay: bool = False
+    expected_state_version: int = 1
+    authoritative_state_version: int = 1
+    artifact_id: str | None = None
+    correlation_id: str | None = None
+    request_payload_hash: str | None = None
+    idempotency_key: str | None = None
+    decision_timestamp: datetime | None = None
+
+
+class CommandExecuteRequestDto(ContractModel):
+    """Request body for POST /api/v1/runs/{run_id}/commands."""
+    authorization_decision_id: str = Field(min_length=1)
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    requested_by: str | None = None
+
+
+class CommandExecutionResponseDto(ContractModel):
+    """Response body for command execution endpoints."""
+    execution_id: str
+    run_id: str
+    command_id: str
+    status: str
+    state_version: int = 1
+    event_sequence: int = 1
+    idempotent_replay: bool = False
+    stage_id: str | None = None
+    authorization_id: str | None = None
+    template_id: str | None = None
+    template_version: int | None = None
+    plan_id: str | None = None
+    plan_version: int | None = None
+    execution_profile_id: str | None = None
+    workspace_alias: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    exit_code: int | None = None
+    failure_code: str | None = None
+    correlation_id: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    stdout_artifact_id: str | None = None
+    stderr_artifact_id: str | None = None
+    command_log_artifact_id: str | None = None
+    manifest_artifact_id: str | None = None
+    result_artifact_id: str | None = None
+    executable: str | None = None
+    arguments: list[str] = Field(default_factory=list)
+    safe_relative_working_directory: str | None = None
+    runtime_checksum: str | None = None
+    worker_id: str | None = None
+    failure_reason: str | None = None
+    request_payload_hash: str | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_requested_by: str | None = None
+    cancelled: bool = False
+    timed_out: bool = False
+
+
+class CancelCommandRequestDto(ContractModel):
+    """Request body for POST /api/v1/runs/{run_id}/commands/{execution_id}/cancel."""
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+
+
+class LogChunkResponseDto(ContractModel):
+    """One log chunk in a response."""
+    sequence: int
+    stream: str
+    text: str
+    redacted: bool = False
+    truncated: bool = False
+    created_at: str = ""
+    byte_count: int = 0
+    character_count: int = 0
 
 
 class WorkerLeaseDto(ContractModel):
@@ -762,12 +913,22 @@ class AuthoritativeRunStateDto(ContractModel):
     approval_status: ApprovalStatus
     repair_status: RepairStatus
     state_version: int = Field(ge=1)
-    preflight_id: str
-    source_path: str
-    target_output_path: str
-    graph_thread_id: str
+    preflight_id: str | None = None
+    source_path: str | None = None
+    target_output_path: str | None = None
+    graph_thread_id: str | None = None
     created_at: datetime
     updated_at: datetime
+    workspace_aliases: dict[str, str] = Field(default_factory=dict)
+    target_parent_path: str | None = None
+    generated_output_name: str | None = None
+    resolved_output_root: str | None = None
+    run_root: str | None = None
+    migrated_app_path: str | None = None
+    source_angular_exact: str | None = None
+    catalogue_version: str | None = None
+    registry_snapshot: dict[str, object] | None = None
+    runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 

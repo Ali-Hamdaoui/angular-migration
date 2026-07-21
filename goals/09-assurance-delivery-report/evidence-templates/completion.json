@@ -1,0 +1,43 @@
+{
+  "schema_version": "3.0.0",
+  "goal_id": "G09",
+  "branch": "hermes/09-assurance-delivery-report",
+  "base_sha": "<sha>",
+  "head_sha": "<sha>",
+  "goal_package_sha256": "<64-hex-sha256>",
+  "completion_level": "branch_ready",
+  "jira_features": [
+    "AMFA-222",
+    "AMFA-223",
+    "AMFA-224"
+  ],
+  "jira_subtasks": [
+    "AMFA-270",
+    "AMFA-271",
+    "AMFA-272",
+    "AMFA-273",
+    "AMFA-274",
+    "AMFA-275",
+    "AMFA-276",
+    "AMFA-277",
+    "AMFA-278",
+    "AMFA-279",
+    "AMFA-280",
+    "AMFA-281"
+  ],
+  "branch_ready": false,
+  "harness_ready": false,
+  "integration_verified": false,
+  "jira_complete": false,
+  "automated_tests": "BLOCKED",
+  "manual_tests": "BLOCKED",
+  "documentation": "BLOCKED",
+  "architecture_audit": "BLOCKED",
+  "product_audit": "BLOCKED",
+  "human_product_signoff": "pending",
+  "blocked_integrated_criteria": [],
+  "limitations": [],
+  "pushed": false,
+  "push_remote": null,
+  "push_branch": null
+}

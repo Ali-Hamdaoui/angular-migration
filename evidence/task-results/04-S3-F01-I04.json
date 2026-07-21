@@ -1,0 +1,14 @@
+{
+  "task_id": "04-S3-F01-I04",
+  "jira": "AMFA-157",
+  "description": "Verify and document Register structured commands",
+  "files_created": [
+    "backend/tests/test_command_registry_service.py"
+  ],
+  "files_modified": [],
+  "tests_passed": 22,
+  "evidence": "22 tests covering registry CRUD, policy validation, shell enforcement, profile checks, plan membership.",
+  "commit_sha": "6168913",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Full test coverage for S3-F01: 10 registry tests + 12 policy engine tests."
+}

@@ -56,7 +56,14 @@ class Settings(BaseSettings):
     platform_repository_root: Path = _PLATFORM_REPOSITORY_ROOT
 
     backend_cors_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:3000"]
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3301",
+            "http://127.0.0.1:3301",
+            "http://localhost:3302",
+            "http://127.0.0.1:3302",
+        ]
     )
     command_timeout_seconds: int = Field(default=300, gt=0)
     command_max_output_bytes: int = Field(default=1_000_000, gt=0)

@@ -178,6 +178,7 @@ class MigrationRunService:
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,
                 "preflight_id": run.preflight_id, "source_path": run.source_path, "target_parent_path": run.target_parent_path, "generated_output_name": run.generated_output_name, "resolved_output_root": run.resolved_output_root, "run_root": run.run_root, "migrated_app_path": run.migrated_app_path, "target_output_path": run.target_output_path,
                 "graph_thread_id": run.graph_thread_id, "created_at": run.created_at, "updated_at": run.updated_at,
+                "workspace_aliases": dict(run.workspace_aliases or {}),
                 "source_angular_exact": (run.run_policy_snapshot or {}).get("source_angular_exact"), "catalogue_version": (run.run_policy_snapshot or {}).get("catalogue_version"),
                 "registry_snapshot": (run.run_policy_snapshot or {}).get("registry_snapshot"), "runtime_candidates": (run.run_policy_snapshot or {}).get("runtime_candidates", []),
                 "artifacts": self._artifacts_for_run(session, run_id), "workflow_events": self._events_for_run(session, run_id),
@@ -221,7 +222,12 @@ class MigrationRunService:
 
     @staticmethod
     def _artifacts_for_run(session, run_id: str) -> list[ArtifactRefDto]:
-        return [ArtifactRefDto(artifact_id=row.id.removeprefix("metadata-"), run_id=run_id, stage_id=row.stage_id, artifact_type=ArtifactType(row.artifact_type), relative_path=row.relative_path, created_at=row.created_at, checksum=row.checksum) for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id).order_by(ArtifactMetadataModel.relative_path))]
+        return [ArtifactRefDto(
+            artifact_id=row.id.removeprefix("metadata-"), run_id=run_id, stage_id=row.stage_id,
+            artifact_type=ArtifactType(row.artifact_type), relative_path=row.relative_path,
+            created_at=row.created_at, checksum=row.checksum, immutable=row.immutable,
+            redacted=row.redacted, truncated=row.truncated,
+        ) for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id).order_by(ArtifactMetadataModel.relative_path))]
 
     @staticmethod
     def _events_for_run(session, run_id: str) -> list[WorkflowEventDto]:

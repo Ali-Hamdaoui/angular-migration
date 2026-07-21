@@ -1,0 +1,43 @@
+{
+  "schema_version": "3.0.0",
+  "goal_id": "G06",
+  "branch": "hermes/06-repair-agents-g10",
+  "base_sha": "<sha>",
+  "head_sha": "<sha>",
+  "goal_package_sha256": "<64-hex-sha256>",
+  "completion_level": "branch_ready",
+  "jira_features": [
+    "AMFA-214",
+    "AMFA-215",
+    "AMFA-216"
+  ],
+  "jira_subtasks": [
+    "AMFA-238",
+    "AMFA-239",
+    "AMFA-240",
+    "AMFA-241",
+    "AMFA-242",
+    "AMFA-243",
+    "AMFA-244",
+    "AMFA-245",
+    "AMFA-246",
+    "AMFA-247",
+    "AMFA-248",
+    "AMFA-249"
+  ],
+  "branch_ready": false,
+  "harness_ready": false,
+  "integration_verified": false,
+  "jira_complete": false,
+  "automated_tests": "BLOCKED",
+  "manual_tests": "BLOCKED",
+  "documentation": "BLOCKED",
+  "architecture_audit": "BLOCKED",
+  "product_audit": "BLOCKED",
+  "human_product_signoff": "pending",
+  "blocked_integrated_criteria": [],
+  "limitations": [],
+  "pushed": false,
+  "push_remote": null,
+  "push_branch": null
+}

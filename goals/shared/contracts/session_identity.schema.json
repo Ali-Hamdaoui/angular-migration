@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/session_identity.schema.json",
+  "title": "session_identity",
+  "description": "Immutable VM/worktree/runtime identity for one Hermes goal session.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goal_id",
+    "goal_folder",
+    "branch",
+    "base_sha",
+    "worktree",
+    "runtime_root",
+    "backend_port",
+    "frontend_port",
+    "langgraph_namespace"
+  ],
+  "properties": {
+    "goal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goal_folder": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^hermes/"
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "worktree": {
+      "type": "string",
+      "pattern": "^/home/ubuntu/amfa-worktrees/"
+    },
+    "runtime_root": {
+      "type": "string",
+      "pattern": "^/home/ubuntu/amfa-runtime/"
+    },
+    "backend_port": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65535
+    },
+    "frontend_port": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65535
+    },
+    "langgraph_namespace": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root_agents_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,6 +1,8 @@
 """Boundary for identities asserted by the authenticated control plane."""
 
-from fastapi import Header
+from fastapi import Header, HTTPException
+
+from app.repositories.models import MigrationRunModel
 
 
 def authenticated_actor(x_authenticated_actor: str | None = Header(default=None)) -> str:
@@ -9,3 +11,23 @@ def authenticated_actor(x_authenticated_actor: str | None = Header(default=None)
         return x_authenticated_actor.strip()
     # Local development is a single-operator control plane.
     return "local-operator"
+
+
+def authorize_run(session, run_id: str, actor: str) -> MigrationRunModel:
+    """Authorize an authenticated actor for one persisted migration run."""
+    run = session.get(MigrationRunModel, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "RUN_NOT_FOUND", "message": "Migration run does not exist.", "details": {}},
+        )
+    if run.actor and run.actor != actor:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "RUN_ACCESS_FORBIDDEN",
+                "message": "Authenticated actor is not authorized for this run.",
+                "details": {},
+            },
+        )
+    return run

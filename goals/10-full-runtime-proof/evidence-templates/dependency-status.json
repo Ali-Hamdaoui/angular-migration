@@ -1,0 +1,83 @@
+{
+  "goal_id": "G10",
+  "dependencies": [
+    {
+      "id": "G01",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G02",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G03",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G04",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G05",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G06",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G07",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G08",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "G09",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "S2-F03",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    },
+    {
+      "id": "S2-F07",
+      "status": "AVAILABLE|FROZEN_CONTRACT_ONLY|BLOCKED|DRIFT",
+      "evidence": []
+    }
+  ],
+  "consumed_contracts": [
+    "artifact_ref",
+    "durable_event_envelope",
+    "approved_stage_plan",
+    "command_authorization",
+    "command_execution_record",
+    "stage_sandbox_ready",
+    "transformation_result",
+    "stage_validation_summary",
+    "sealed_stage_output",
+    "failure_evidence",
+    "failure_route",
+    "repair_context_pack",
+    "repair_proposal",
+    "repair_review_decision",
+    "repair_g10_package",
+    "patch_apply_ledger",
+    "recovery_decision",
+    "assistant_answer",
+    "final_assurance_summary",
+    "delivery_record",
+    "final_report_record"
+  ]
+}

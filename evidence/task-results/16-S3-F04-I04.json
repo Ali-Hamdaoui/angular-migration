@@ -1,0 +1,14 @@
+{
+  "task_id": "16-S3-F04-I04",
+  "jira": "AMFA-169",
+  "description": "Verify and document Own commands with JobSupervisor",
+  "files_created": [],
+  "files_modified": [
+    "backend/tests/test_command_executor_services.py"
+  ],
+  "tests_passed": 7,
+  "evidence": "7 JobSupervisorService tests: acquire lease, reject duplicate, renew lease, cancel command, get active command, cancel idempotent replay.",
+  "commit_sha": "6168913",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Supervisor tests cover lease lifecycle and cancellation flow."
+}

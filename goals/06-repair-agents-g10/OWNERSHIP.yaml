@@ -1,0 +1,38 @@
+goal: G06
+base_branch: goal
+assigned_branch: hermes/06-repair-agents-g10
+worktree: /home/ubuntu/amfa-worktrees/06-repair-agents-g10
+runtime_root: /home/ubuntu/amfa-runtime/06-repair-agents-g10
+primary_or_new_paths:
+  - backend/app/agents/repair_*.py
+  - backend/app/services/repair_proposal*.py
+  - backend/app/domain/repair*.py
+  - backend/app/repositories/repair*.py
+  - backend/app/api/routes/repairs*.py
+  - frontend/src/api/repairs*.ts
+  - frontend/src/components/Repair*.tsx
+shared_requires_declaration:
+  - backend/app/api/router.py
+  - backend/app/core/application.py
+  - backend/app/domain/contracts.py
+  - backend/app/orchestration/state.py
+  - backend/app/repositories/models/workflow.py
+  - backend/app/state/transition_service.py
+  - frontend/src/components/AuthoritativeRunDashboard.tsx
+  - frontend/src/hooks/useMigrationEvents.ts
+  - frontend/src/hooks/applyEventToRun.ts
+  - frontend/src/types/generated/api.ts
+  - shared/openapi.json
+  - frontend/package-lock.json
+  - backend/pyproject.toml
+  - backend/alembic/versions/**
+forbidden:
+  - another worktree or branch
+  - external Angular source
+  - repository-local runtime databases/artifacts/sandboxes/full Angular fixtures
+  - another goal implementation merely to satisfy a dependency
+rules:
+  - one writer at a time
+  - declare shared files before editing
+  - aggregate generated contracts are integration-coordinator owned
+  - record all shared edits and integration notes

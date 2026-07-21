@@ -1,0 +1,16 @@
+{
+  "task_id": "15-S3-F04-I03",
+  "jira": "AMFA-168",
+  "description": "Build frontend experience for Own commands with JobSupervisor",
+  "files_created": [],
+  "files_modified": [
+    "frontend/src/types/generated/api.ts",
+    "frontend/src/hooks/useMigrationEvents.ts",
+    "frontend/src/hooks/applyEventToRun.ts"
+  ],
+  "tests_passed": 0,
+  "evidence": "CancelCommandRequestDto type. RUN_CANCEL_REQUESTED, COMMAND_CANCELLED events handled in migration events stream.",
+  "commit_sha": "4f721b1",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Frontend contracts exposed for cancellation actions."
+}

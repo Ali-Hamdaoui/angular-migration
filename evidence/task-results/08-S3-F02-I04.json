@@ -1,0 +1,28 @@
+{
+  "task_id": "08-S3-F02-I04",
+  "jira": "AMFA-161",
+  "description": "Verify and document Execute one approved command",
+  "files_created": [],
+  "files_modified": [
+    "backend/tests/test_command_executor_services.py",
+    "backend/tests/test_compatibility_evidence_persistence_api_s2_f05_i02.py",
+    "backend/tests/test_compatibility_verification_s2_f05_i04.py",
+    "backend/tests/test_planning_application_service_s2_f06_i01.py",
+    "backend/tests/test_planning_evidence_persistence_api_s2_f06_i02.py",
+    "backend/tests/test_preflight_service.py",
+    "docs/capabilities/01-command-runtime/MANUAL_TEST_GUIDE.md",
+    "docs/capabilities/01-command-runtime/IMPLEMENTATION.md",
+    "goals/01-command-runtime/manual-tests/MT-002-s3-f02-authoritative-scenario.md"
+  ],
+  "tests_passed": 572,
+  "evidence": "Frontend: typecheck PASS, lint PASS, 38 files/104 tests PASS, production build PASS. Backend collection PASS with 476 tests collected; focused execution tests PASS (47). Full backend suite: 468 passed, 5 failed, 3 skipped. The five remaining failures are stale Sprint 2 planning fixtures that do not seed the now-mandatory approved G05 feasibility binding. Browser happy and negative scenarios were not executed because no supported browser executable/manual runtime is installed; no manual artifacts or screenshots are claimed.",
+  "commit_sha": null,
+  "acceptance_matrix": {
+    "AMFA-158": { "status": "PRESENT", "implementation": "backend/app/services/command_executor_service.py", "api": "POST /api/v1/runs/{id}/commands", "automated_test": "backend/tests/test_command_execution.py + test_command_executor_services.py: 47 focused tests passed", "manual": "BLOCKED; browser runtime unavailable", "artifact_or_screenshot": null, "remaining_gap": "No browser execution evidence" },
+    "AMFA-159": { "status": "PRESENT", "implementation": "backend/app/api/routes/run_commands.py; backend/app/repositories/models/workflow.py", "api": "POST/GET run command endpoints", "automated_test": "backend collection PASS; focused execution suite PASS", "manual": "BLOCKED; browser runtime unavailable", "artifact_or_screenshot": null, "remaining_gap": "No real manual artifact retrieval evidence" },
+    "AMFA-160": { "status": "PRESENT", "implementation": "frontend/src/components/CommandExecutionPanel.tsx; frontend/src/api/commands.ts", "api": "typed authorization-bound execution client", "automated_test": "frontend: 104 passed; typecheck/lint/build PASS", "manual": "BLOCKED; browser runtime unavailable", "artifact_or_screenshot": null, "remaining_gap": "No browser refresh/reconnect capture" },
+    "AMFA-161": { "status": "PARTIAL", "implementation": "docs/capabilities/01-command-runtime/MANUAL_TEST_GUIDE.md; goals/01-command-runtime/manual-tests/MT-002-s3-f02-authoritative-scenario.md", "api": "authorization-bound execution contract documented", "automated_test": "frontend gates PASS; backend collection PASS; full backend 468 passed/5 failed/3 skipped", "manual": "BLOCKED", "artifact_or_screenshot": null, "remaining_gap": "Required happy-path and negative browser scenarios not executed; five unrelated planning fixture failures remain" }
+  },
+  "reviewer_verdict": "PARTIAL",
+  "verdict_notes": "Frontend gates, backend collection, and focused authorization-bound execution tests pass. AMFA-141 remains incomplete because five stale Sprint 2 planning fixtures fail after the mandatory G05 prerequisite was introduced, and the required browser happy/negative scenarios remain blocked without a supported browser runtime."
+}

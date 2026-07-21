@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amfa.local/contracts/failure_route.schema.json",
+  "title": "failure_route",
+  "description": "Deterministic C-Lite route; environment failures do not reach code repair.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "failure_id",
+    "route",
+    "policy_version",
+    "decision_checksum"
+  ],
+  "properties": {
+    "failure_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "route": {
+      "enum": [
+        "CODE_OR_CONFIG_REPAIR",
+        "DEPENDENCY_REPAIR",
+        "ENVIRONMENT_OR_USER_ACTION",
+        "RETRYABLE_EXTERNAL_FAILURE",
+        "UNKNOWN_DIAGNOSIS"
+      ]
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision_checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

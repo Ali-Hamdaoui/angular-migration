@@ -1,0 +1,16 @@
+{
+  "task_id": "14-S3-F04-I02",
+  "jira": "AMFA-167",
+  "description": "Persist and expose evidence contracts for Own commands with JobSupervisor",
+  "files_created": [
+    "backend/app/repositories/models/workflow.py (WorkerLeaseModel)"
+  ],
+  "files_modified": [
+    "backend/app/api/routes/run_commands.py"
+  ],
+  "tests_passed": 7,
+  "evidence": "WorkerLeaseModel with expiry tracking. POST /cancel, GET /active-command, GET /active-lease endpoints. RUN_CANCEL_REQUESTED, COMMAND_CANCELLED events.",
+  "commit_sha": "795ee35",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Combined with T13."
+}

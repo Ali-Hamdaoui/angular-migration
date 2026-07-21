@@ -1,0 +1,19 @@
+{
+  "task_id": "02-S3-F01-I02",
+  "jira": "AMFA-155",
+  "description": "Persist and expose evidence contracts for Register structured commands",
+  "files_created": [
+    "backend/app/repositories/models/workflow.py (CommandTemplateModel, CommandAuthorizationAuditModel)",
+    "backend/alembic/versions/20260719_07_command_templates_and_authorization.py"
+  ],
+  "files_modified": [
+    "backend/app/domain/contracts.py (CommandTemplateDto, CommandPolicyValidateRequestDto/ResponseDto)",
+    "backend/app/api/routes/commands.py",
+    "backend/app/api/router.py"
+  ],
+  "tests_passed": 22,
+  "evidence": "Templates persisted via CommandTemplateModel. Auth audits via CommandAuthorizationAuditModel. Events COMMAND_AUTHORIZATION_ACCEPTED/REJECTED emitted. API contracts match frozen schemas.",
+  "commit_sha": "58bfb2f",
+  "reviewer_verdict": "PASS",
+  "verdict_notes": "Combined with T01. DB-backed templates, auth audit records, API for listing and validation."
+}

@@ -153,6 +153,108 @@ class ArtifactMetadataModel(Base):
     checksum: Mapped[str] = mapped_column(String(128), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    execution_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    owner_reference: Mapped[str | None] = mapped_column(String(128))
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    immutable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    safe_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class CommandTemplateModel(Base):
+    """One registered command template in the structured registry."""
+    __tablename__ = "command_templates"
+    __table_args__ = (UniqueConstraint("command_id", name="uq_command_templates_command_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    executable: Mapped[str] = mapped_column(String(128), nullable=False)
+    arguments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    executable_aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    description: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    allowed_env_vars: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    max_output_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CommandAuthorizationAuditModel(Base):
+    """Authorization audit record for every policy engine decision."""
+    __tablename__ = "command_authorization_audits"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_cmd_auth_audit_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    template_id: Mapped[str | None] = mapped_column(String(64))
+    template_version: Mapped[int | None] = mapped_column(Integer)
+    plan_id: Mapped[str | None] = mapped_column(String(64))
+    plan_version: Mapped[int | None] = mapped_column(Integer)
+    executable: Mapped[str] = mapped_column(String(128), nullable=False)
+    arguments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_payload_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expected_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_profile_id: Mapped[str | None] = mapped_column(String(128))
+    workspace_alias: Mapped[str | None] = mapped_column(String(128))
+    network_profile: Mapped[str | None] = mapped_column(String(64))
+    correlation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CommandLogChunkModel(Base):
+    """One ordered log chunk from a command execution (S3-F03)."""
+    __tablename__ = "command_log_chunks"
+    __table_args__ = (
+        Index("ix_cmd_log_chunks_exec_seq", "execution_id", "sequence"),
+        UniqueConstraint("execution_id", "sequence", name="uq_cmd_log_chunks_exec_seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    execution_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    stream: Mapped[str] = mapped_column(String(16), nullable=False)  # stdout, stderr, system
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    byte_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    character_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CommandLogSummaryModel(Base):
+    """Durable bounded-output cursor and finalization state for one execution."""
+    __tablename__ = "command_log_summaries"
+
+    execution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    first_sequence: Mapped[int | None] = mapped_column(Integer)
+    last_sequence: Mapped[int | None] = mapped_column(Integer)
+    stdout_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stderr_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stdout_stored_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stderr_stored_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stdout_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stderr_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    redaction_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    finalized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
 
 
 class CommandExecutionModel(Base):
@@ -162,11 +264,19 @@ class CommandExecutionModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
     stage_id: Mapped[str | None] = mapped_column(ForeignKey("migration_stages.id"), index=True)
+    authorization_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    template_id: Mapped[str | None] = mapped_column(String(64))
+    template_version: Mapped[int | None] = mapped_column(Integer)
+    plan_id: Mapped[str | None] = mapped_column(String(64))
+    plan_version: Mapped[int | None] = mapped_column(Integer)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_payload_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), index=True)
     requested_by: Mapped[str | None] = mapped_column(String(128))
     executable: Mapped[str] = mapped_column(String(128), nullable=False)
     arguments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     working_directory_alias: Mapped[str | None] = mapped_column(String(128))
+    safe_relative_working_directory: Mapped[str | None] = mapped_column(String(512))
     runtime_profile_id: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -189,15 +299,21 @@ class CommandExecutionModel(Base):
     cancel_idempotency_key: Mapped[str | None] = mapped_column(String(128))
     reconstruction_required: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     worker_id: Mapped[str | None] = mapped_column(String(128))
+    process_id: Mapped[int | None] = mapped_column(Integer)
+    failure_code: Mapped[str | None] = mapped_column(String(128))
+    failure_message: Mapped[str | None] = mapped_column(Text)
     stdout_artifact_id: Mapped[str | None] = mapped_column(String(128))
     stderr_artifact_id: Mapped[str | None] = mapped_column(String(128))
     command_log_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    manifest_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    result_artifact_id: Mapped[str | None] = mapped_column(String(128))
     artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
     start_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     end_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     blockers: Mapped[list[str]] = mapped_column(JSON, nullable=True, default=list)
     environment_blocker: Mapped[str | None] = mapped_column(String(128))
     state_version: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
+    authoritative_state_version: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
 
 
