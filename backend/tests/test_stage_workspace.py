@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
-import tempfile
 from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,21 +49,30 @@ from app.services.stage_preparation_service import StagePreparationApplicationSe
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def engine():
-    tmp = tempfile.mktemp(suffix=".db")
-    eng = create_engine(f"sqlite:///{tmp}", echo=False)
-    Base.metadata.create_all(eng)
-    yield eng
-    os.unlink(tmp)
+def engine(tmp_path):
+    database_path = tmp_path / "test.db"
+    eng = create_engine(f"sqlite:///{database_path}", echo=False)
+    try:
+        Base.metadata.create_all(eng)
+        yield eng
+    finally:
+        eng.dispose()
+        if database_path.exists():
+            database_path.unlink()
 
 
 @pytest.fixture
 def session(engine):
     conn = engine.connect()
     tx = conn.begin()
-    yield Session(bind=conn)
-    tx.rollback()
-    conn.close()
+    db_session = Session(bind=conn)
+    try:
+        yield db_session
+    finally:
+        db_session.close()
+        if tx.is_active:
+            tx.rollback()
+        conn.close()
 
 
 @pytest.fixture
