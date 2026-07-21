@@ -29,6 +29,11 @@ Angular 18 to 19 migration commands.
    evidence is registered. Do not approve G03 unless the evidence is complete.
 10. Recalculate the original source fingerprint and compare it with the G01
     boundary. The source must remain byte-for-byte unchanged.
+The authoritative timeline includes each step's persisted start/finish times,
+latest message or blocker, command and exit code when present, and links to
+registered evidence IDs. If source intake fails with a retryable error, use
+the visible **Retry source intake** action; it queues a new attempt and keeps
+the failed attempt and its evidence intact.
 
 ## Opt-in automated integration test
 
@@ -42,6 +47,20 @@ already first on `PATH`. Run it from `backend` with
 `python -m pytest tests/test_authoritative_angular18_integration.py -q`.
 The test skips when these external prerequisites are absent and never creates
 a synthetic compatible runtime or modifies the supplied source.
+When the integration flag is enabled, an explicitly supplied fixture that is
+missing real Angular 18 metadata or a valid lockfile fails fast rather than
+being treated as an end-to-end proof.
+
+One reproducible fixture setup, using an already installed compatible Node
+runtime, is:
+
+```powershell
+npx --yes @angular/cli@18.2.12 new angular18-baseline --directory C:\external\angular18-baseline --routing --style css --package-manager npm --skip-git
+```
+
+Confirm the generated `package.json` contains Angular 18 dependencies and
+that `package-lock.json` is present before supplying the fixture path. The
+fixture and its target parent must remain outside this repository.
 
 ## Evidence layout
 
