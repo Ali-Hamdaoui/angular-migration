@@ -990,6 +990,38 @@ class TestStageBootstrapApplicationService(_ServiceTestBase):
         with pytest.raises(BootstrapError, match="IDEMPOTENCY_PAYLOAD_MISMATCH"):
             bs.run_bootstrap_install("run-001", sid, req2)
 
+    def test_conflicting_idempotency_payload_rejected(self, db, now, tmp_path):
+        sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
+        bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        execution = CommandExecutionModel(
+            id="cmd-existing-payload", run_id="run-001", stage_id=sid,
+            idempotency_key="bs-payload-conflict", requested_by="operator",
+            requester="operator", executable="npm", arguments=["ci"],
+            working_directory_alias="STAGE_SANDBOX", runtime_profile_id="npm-profile",
+            status="COMPLETED", requested_at=now, command_id="npm-ci-bootstrap",
+            shell=False, timeout_seconds=600, network_profile="approved-registries-only",
+            cancellation_policy="terminate_process_tree", artifact_ids=[], blockers=[],
+            state_version=sv, event_sequence=1,
+            start_fingerprint={
+                "request_actor": "operator",
+                "request_expected_state_version": sv,
+            },
+        )
+        db.add(execution)
+        db.add(StageStepModel(
+            id="step-existing-payload", run_id="run-001", stage_id=sid,
+            name="bootstrap_install", status="COMPLETED", component_type="StagePipelineService", attempt_id=execution.id,
+            idempotency_key=execution.idempotency_key,
+        ))
+        db.flush()
+
+        request = self._make_simple_req(
+            expected_state_version=sv, idempotency_key=execution.idempotency_key,
+            actor="different-actor",
+        )
+        with pytest.raises(BootstrapError, match="IDEMPOTENCY_PAYLOAD_MISMATCH"):
+            bs.run_bootstrap_install("run-001", sid, request)
+
     def test_stale_state_version_rejected(self, db, now, tmp_path):
         sid, sv = self._setup_workspace_and_g07(db, now, tmp_path)
         bs = StageBootstrapApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)

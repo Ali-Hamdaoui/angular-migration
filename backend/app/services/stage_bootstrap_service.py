@@ -66,7 +66,18 @@ class StageBootstrapApplicationService:
                 CommandExecutionModel.idempotency_key == request.idempotency_key,
             ))
             if existing is not None:
-                if existing.stage_id != stage_id or existing.command_id != self.APPROVED_COMMAND_ID:
+                identity = existing.start_fingerprint or {}
+                persisted_actor = identity.get("request_actor", existing.requester or existing.requested_by)
+                persisted_expected_state_version = identity.get("request_expected_state_version")
+                if (
+                    existing.stage_id != stage_id
+                    or existing.command_id != self.APPROVED_COMMAND_ID
+                    or persisted_actor != request.actor
+                    or (
+                        persisted_expected_state_version is not None
+                        and persisted_expected_state_version != request.expected_state_version
+                    )
+                ):
                     raise StageApplicationError("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key is bound to another request.", status_code=409)
                 return self._response(session, existing, idempotent_replay=True)
 
@@ -165,7 +176,9 @@ class StageBootstrapApplicationService:
                 shell=False, timeout_seconds=self.TIMEOUT_SECONDS, network_profile=self.NETWORK_PROFILE,
                 cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE.value,
                 start_fingerprint={"workspace_fingerprint": pre_fingerprint, "lifecycle_script_audit_ref": lifecycle_ref,
-                                   "node_version": node_ver, "npm_version": npm_ver},
+                                   "node_version": node_ver, "npm_version": npm_ver,
+                                   "request_actor": request.actor,
+                                   "request_expected_state_version": request.expected_state_version},
                 artifact_ids=[], blockers=[], state_version=started.next_state_version,
                 event_sequence=started.event_sequence,
             )
