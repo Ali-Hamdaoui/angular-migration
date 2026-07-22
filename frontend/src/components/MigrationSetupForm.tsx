@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useRef, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { analyzeSource, refreshEnvironment, validatePaths } from "@/api/migrations";
 import { ApiClientError, getBackendBaseUrl } from "@/api/client";
@@ -33,13 +33,11 @@ function canStart(result: ProductionPreflight | null, currentKey: string, valida
   return result.snapshot.status === "passed" || result.snapshot.status === "passed_with_warnings";
 }
 
-function idempotencyKey(scope: string, value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${scope}-${(hash >>> 0).toString(36)}`;
+function operationIdempotencyKey(scope: string): string {
+  const operation = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${scope}-${operation}`;
 }
 
 type ValidationStage = "path validation" | "environment and source analysis" | "production preflight";
@@ -63,6 +61,7 @@ function validationFailure(stage: ValidationStage, error: unknown): string {
 }
 export function MigrationSetupForm() {
   const router = useRouter();
+  const formRef = useRef<HTMLFormElement>(null);
   const [inputs, setInputs] = useState(initialInputs);
   const [preflight, setPreflight] = useState<ProductionPreflight | null>(null);
   const [pathValidation, setPathValidation] = useState<PathValidationResult | null>(null);
@@ -72,35 +71,55 @@ export function MigrationSetupForm() {
   const [error, setError] = useState<string | null>(null);
   const [validationStage, setValidationStage] = useState<ValidationStage | null>(null);
   const validationAttempt = useRef(0);
-  const currentKey = useMemo(() => inputKey(inputs), [inputs]);
+  const currentKey = inputKey(inputs);
   const startEnabled = canStart(preflight, currentKey, validatedKey);
 
+  function readLiveInputs(): SetupInputs {
+    const form = formRef.current;
+    const data = form ? new FormData(form) : null;
+    return {
+      sourcePath: String(data?.get("sourcePath") ?? "").trim(),
+      targetParentPath: String(data?.get("targetParentPath") ?? "").trim(),
+      targetAngularFamily: String(data?.get("targetAngularFamily") ?? initialInputs.targetAngularFamily).trim(),
+      migrationMode: String(data?.get("migrationMode") ?? initialInputs.migrationMode).trim(),
+    };
+  }
+
+  function invalidatePreflight(nextInputs: SetupInputs) {
+    setInputs(nextInputs);
+    setPreflight(null);
+    setPathValidation(null);
+    setValidatedKey(null);
+  }
+
   async function runPreflight() {
+    const liveInputs = readLiveInputs();
+    const requestKey = inputKey(liveInputs);
+    setInputs(liveInputs);
     const attempt = validationAttempt.current + 1;
     validationAttempt.current = attempt;
-    const requestKey = currentKey;
     let activeStage: ValidationStage = "path validation";
     setValidationStage(activeStage);
     // A new explicit validation must re-check the filesystem. Including the
     // attempt distinguishes it from an earlier persisted validation for the
     // same paths, which may have been blocked by a folder that was later
     // removed or renamed.
-    const pathKey = idempotencyKey("path-ui", JSON.stringify({
-      sourcePath: inputs.sourcePath,
-      targetParentPath: inputs.targetParentPath,
-      targetAngularFamily: inputs.targetAngularFamily,
-      attempt,
-    }));
+    const operationKey = operationIdempotencyKey("validate-ui");
+    const pathKey = `${operationKey}:path`;
     setIsValidating(true);
     setError(null);
     setPreflight(null);
     setPathValidation(null);
     setValidatedKey(null);
     try {
+      if (!liveInputs.sourcePath || !liveInputs.targetParentPath) {
+        setError("Enter both a source path and an external target-parent path.");
+        return;
+      }
       const pathResult = await validatePaths({
-        source_path: inputs.sourcePath,
-        target_parent_path: inputs.targetParentPath,
-        target_angular_family: inputs.targetAngularFamily,
+        source_path: liveInputs.sourcePath,
+        target_parent_path: liveInputs.targetParentPath,
+        target_angular_family: liveInputs.targetAngularFamily,
         idempotency_key: pathKey,
         actor: "control-tower",
       });
@@ -110,8 +129,8 @@ export function MigrationSetupForm() {
       activeStage = "environment and source analysis";
       setValidationStage(activeStage);
       const [environment, analysis] = await Promise.all([
-        refreshEnvironment({ idempotency_key: `environment-ui-${Date.now()}-${attempt}`, actor: "control-tower" }),
-        analyzeSource({ source_path: pathResult.snapshot.source_path, idempotency_key: idempotencyKey("source-analysis-ui", pathResult.snapshot.source_path), actor: "control-tower" }),
+        refreshEnvironment({ idempotency_key: `${operationKey}:environment`, actor: "control-tower" }),
+        analyzeSource({ source_path: pathResult.snapshot.source_path, idempotency_key: `${operationKey}:source-analysis`, actor: "control-tower" }),
       ]);
       if (validationAttempt.current !== attempt) return;
       activeStage = "production preflight";
@@ -120,9 +139,9 @@ export function MigrationSetupForm() {
         path_validation_id: pathResult.snapshot.validation_id,
         environment_snapshot_id: environment.snapshot.snapshot_id,
         source_analysis_id: analysis.snapshot.analysis_id,
-        target_angular_family: inputs.targetAngularFamily,
-        migration_mode: inputs.migrationMode,
-        idempotency_key: idempotencyKey("production-preflight-ui", JSON.stringify({ pathValidationId: pathResult.snapshot.validation_id, environmentSnapshotId: environment.snapshot.snapshot_id, sourceAnalysisId: analysis.snapshot.analysis_id, targetAngularFamily: inputs.targetAngularFamily, migrationMode: inputs.migrationMode })),
+        target_angular_family: liveInputs.targetAngularFamily,
+        migration_mode: liveInputs.migrationMode,
+        idempotency_key: `${operationKey}:production-preflight`,
         actor: "control-tower",
       });
       if (validationAttempt.current !== attempt) return;
@@ -165,15 +184,16 @@ export function MigrationSetupForm() {
       <section className={styles.panel}>
         <p className={styles.kicker}>Control Tower</p>
         <h1>Prepare external migration</h1><p>The original application remains unchanged. Validation previews and reserves the external output root; run-owned files are created only after an approved migration run begins.</p>
-        <form onSubmit={startMigration}>
+        <form ref={formRef} onSubmit={startMigration}>
           <label>
             Source path
             <input
               name="sourcePath"
               required
+              defaultValue={initialInputs.sourcePath}
               placeholder="C:\\projects\\angular-18-app"
-              value={inputs.sourcePath}
-              onChange={(event) => setInputs({ ...inputs, sourcePath: event.target.value })}
+              onInput={(event) => invalidatePreflight({ ...readLiveInputs(), sourcePath: event.currentTarget.value })}
+              onChange={(event) => invalidatePreflight({ ...readLiveInputs(), sourcePath: event.currentTarget.value })}
             />
           </label>
           <label>
@@ -181,17 +201,18 @@ export function MigrationSetupForm() {
             <input
               name="targetParentPath"
               required
+              defaultValue={initialInputs.targetParentPath}
               placeholder="C:\\migration-results"
-              value={inputs.targetParentPath}
-              onChange={(event) => setInputs({ ...inputs, targetParentPath: event.target.value })}
+              onInput={(event) => invalidatePreflight({ ...readLiveInputs(), targetParentPath: event.currentTarget.value })}
+              onChange={(event) => invalidatePreflight({ ...readLiveInputs(), targetParentPath: event.currentTarget.value })}
             />
           </label>
           <label>
             Target Angular family
             <select
               name="targetAngularFamily"
-              value={inputs.targetAngularFamily}
-              onChange={(event) => setInputs({ ...inputs, targetAngularFamily: event.target.value })}
+              defaultValue={initialInputs.targetAngularFamily}
+              onChange={(event) => invalidatePreflight({ ...readLiveInputs(), targetAngularFamily: event.target.value })}
             >
               <option>21.x</option>
             </select>
@@ -200,14 +221,14 @@ export function MigrationSetupForm() {
             Migration mode
             <select
               name="migrationMode"
-              value={inputs.migrationMode}
-              onChange={(event) => setInputs({ ...inputs, migrationMode: event.target.value })}
+              defaultValue={initialInputs.migrationMode}
+              onChange={(event) => invalidatePreflight({ ...readLiveInputs(), migrationMode: event.target.value })}
             >
               <option value="strict-functional-parity">Strict functional parity</option>
             </select>
           </label>
           <div className={styles.actions}>
-            <button type="button" onClick={runPreflight} disabled={isValidating || !inputs.sourcePath || !inputs.targetParentPath}>
+            <button type="button" onClick={runPreflight} disabled={isValidating}>
               {isValidating ? "Validating" : "Validate"}
             </button>
             <button type="submit" disabled={!startEnabled || isStarting}>

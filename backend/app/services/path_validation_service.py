@@ -22,6 +22,8 @@ class PathValidationService:
 
     def validate(self, request: PathValidationRequest) -> PathValidationResult:
         captured_at = self._now_provider()
+        raw_source = Path(request.source_path.strip())
+        raw_parent = Path((request.target_parent_path or request.target_output_path or "").strip())
         source = self._canonical(request.source_path)
         parent = self._canonical(request.target_parent_path or request.target_output_path or "")
         output_name = self._output_name(source.name, request.target_angular_family)
@@ -30,15 +32,18 @@ class PathValidationService:
         warnings: list[str] = []
         rules: list[PathRuleResult] = []
         repo = self._settings.platform_repository_root.resolve()
+        target_roots = tuple(root.expanduser().resolve(strict=False) for root in self._settings.allowed_target_roots)
         self._rule(rules, blockers, "SOURCE_PATH_NOT_FOUND", source.exists(), "Source path must exist.")
         self._rule(rules, blockers, "SOURCE_PATH_NOT_DIRECTORY", source.is_dir(), "Source path must be a directory.")
         self._rule(rules, blockers, "SOURCE_PATH_INSIDE_PLATFORM_REPOSITORY", not self._is_relative_to(source, repo), "Source must be external to the platform repository.")
         self._rule(rules, blockers, "TARGET_PARENT_INSIDE_PLATFORM_REPOSITORY", not self._is_relative_to(parent, repo), "Target parent must be external to the platform repository.")
+        self._rule(rules, blockers, "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS", self._is_under_any_root(parent, target_roots), "Target parent must be inside an allowed target root.")
+        self._rule(rules, blockers, "OUTPUT_ROOT_OUTSIDE_ALLOWED_ROOTS", self._is_under_any_root(output, target_roots), "Output root must be inside an allowed target root.")
         self._rule(rules, blockers, "OUTPUT_ROOT_INSIDE_PLATFORM_REPOSITORY", not self._is_relative_to(output, repo), "Output root must be external to the platform repository.")
         self._rule(rules, blockers, "SOURCE_TARGET_EQUAL", source != parent, "Source and target parent must differ.")
         self._rule(rules, blockers, "OUTPUT_ROOT_INSIDE_SOURCE", not self._is_relative_to(output, source), "Output root must not be inside source.")
         self._rule(rules, blockers, "SOURCE_INSIDE_OUTPUT_ROOT", not self._is_relative_to(source, output), "Source must not be inside output root.")
-        self._rule(rules, blockers, "UNSAFE_REPARSE_POINT", not self._has_reparse_point(source) and not self._has_reparse_point(parent), "Reparse points are not accepted for external intake.")
+        self._rule(rules, blockers, "UNSAFE_REPARSE_POINT", not self._has_reparse_point(raw_source) and not self._has_reparse_point(raw_parent), "Reparse points are not accepted for external intake.")
         self._rule(rules, blockers, "NETWORK_LOCATION_UNSUPPORTED", not self._is_network_path(source) and not self._is_network_path(parent), "Only local paths are supported.")
         nearest = self._nearest_existing_parent(parent)
         writable = nearest is not None and self._is_writable(nearest)
@@ -73,6 +78,9 @@ class PathValidationService:
             if path.is_symlink(): return True
             path = path.parent
         return False
+    @staticmethod
+    def _is_under_any_root(path: Path, roots: tuple[Path, ...]) -> bool:
+        return any(PathValidationService._is_relative_to(path, root) for root in roots)
     @staticmethod
     def _output_name(source_name: str, family: str) -> str:
         major = family.strip().lower().removesuffix(".x")

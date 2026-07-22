@@ -104,7 +104,6 @@ class CompatibilityResolver:
             and (entry.npm_exact is None or candidate.npm_exact == entry.npm_exact)
             and (candidate.angular_cli_exact is None or candidate.angular_cli_exact == (entry.cli_exact or entry.target_cli_exact))
             and candidate.registry_configured
-            and candidate.proxy_configured
             and candidate.certificate_valid
             and candidate.environment_allowlist_valid
             and candidate.cache_policy_valid
