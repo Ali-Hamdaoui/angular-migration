@@ -79,6 +79,18 @@ class _StageService:
         self.actor = actor
         return {"run_id": run_id, "stage_id": stage_id, "gate_id": "G07", "gate_version": "g07-v1", "status": "pending", "package": {}, "state_version": 1, "event_sequence": 1}
 
+    def decide_g07(self, run_id, stage_id, request):
+        if self.foreign:
+            raise StageApplicationError("RUN_NOT_AUTHORIZED", "foreign run", status_code=403)
+        self.actor = request.actor
+        return {"run_id": run_id, "stage_id": stage_id, "gate_id": "G07", "gate_version": "g07-v1", "status": "approved", "decision": "approved", "package": {}, "state_version": 2, "event_sequence": 2, "idempotent_replay": False, "stale_reason": None, "comment": None, "decision_id": "decision-1"}
+
+    def create_sandbox(self, run_id, stage_id, request):
+        if self.foreign:
+            raise StageApplicationError("RUN_NOT_AUTHORIZED", "foreign run", status_code=403)
+        self.actor = request.actor
+        return {"run_id": run_id, "stage_id": stage_id, "sandbox_path": "C:/private", "status": "creating_sandbox", "state_version": 3, "event_sequence": 3, "verification": None, "idempotent_replay": False}
+
 
 def test_unauthenticated_actor_is_rejected():
     """AMFA-171: a missing server identity cannot become a local actor."""
@@ -115,6 +127,29 @@ def test_g07_read_http_is_protected_and_maps_foreign_run_to_403():
     client = _client(_StageService(foreign=True))
     assert client.get("/api/v1/runs/run-1/approvals/G07?stage_id=stage-1").status_code == 401
     response = client.get("/api/v1/runs/run-1/approvals/G07?stage_id=stage-1", headers={"x-authenticated-actor": "foreign"})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("method, path, payload", [
+    ("post", "/api/v1/runs/run-1/approvals/G07/decisions", {"gate_id": "G07", "stage_id": "stage-1", "expected_state_version": 1, "idempotency_key": "decision-1", "actor": "spoofed", "decision": "approved"}),
+    ("post", "/api/v1/runs/run-1/stages/stage-1/sandbox", {"expected_state_version": 1, "idempotency_key": "sandbox-1", "actor": "spoofed"}),
+])
+def test_g07_mutation_routes_require_authentication_and_use_server_actor(method, path, payload):
+    service = _StageService()
+    client = _client(service)
+    assert getattr(client, method)(path, json=payload).status_code == 401
+    response = getattr(client, method)(path, json=payload, headers={"x-authenticated-actor": "owner"})
+    assert response.status_code == 200
+    assert service.actor == "owner"
+
+
+@pytest.mark.parametrize("method, path, payload", [
+    ("post", "/api/v1/runs/run-1/approvals/G07/decisions", {"gate_id": "G07", "stage_id": "stage-1", "expected_state_version": 1, "idempotency_key": "decision-1", "actor": "spoofed", "decision": "approved"}),
+    ("post", "/api/v1/runs/run-1/stages/stage-1/sandbox", {"expected_state_version": 1, "idempotency_key": "sandbox-1", "actor": "spoofed"}),
+])
+def test_g07_mutation_routes_map_foreign_actor_to_403(method, path, payload):
+    client = _client(_StageService(foreign=True))
+    response = getattr(client, method)(path, json=payload, headers={"x-authenticated-actor": "foreign"})
     assert response.status_code == 403
 
 

@@ -498,6 +498,25 @@ class TestStagePreparationCreateSandbox(_ServiceTestBase):
             service.create_sandbox("run-001", stage_id, sandbox_req)
         assert "G07_APPROVAL_REQUIRED" in str(exc.value)
 
+    @pytest.mark.parametrize("status", ["rejected", "modification_requested", "stale"])
+    def test_create_sandbox_fails_closed_for_non_approved_g07_status(self, db, now, tmp_path, status):
+        self._create_run(db)
+        service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
+        prepared = service.prepare_stage("run-001", self._make_prepare_req(idempotency_key=f"prepare-{status}"))
+        gate = db.query(G07ApprovalModel).filter_by(stage_id=prepared.stage_id).one()
+        gate.status = status
+        gate.decision = status
+        db.flush()
+
+        request = type("Req", (), {
+            "expected_state_version": prepared.state_version,
+            "idempotency_key": f"sandbox-{status}",
+            "actor": "operator",
+        })()
+        with pytest.raises(PrepError, match="G07_APPROVAL_REQUIRED"):
+            service.create_sandbox("run-001", prepared.stage_id, request)
+        assert db.query(StageWorkspaceModel).filter_by(stage_id=prepared.stage_id).count() == 0
+
     def test_create_sandbox_raises_if_run_not_found(self, db, now, tmp_path):
         service = StagePreparationApplicationService(session_scope_factory=lambda: db, now_provider=lambda: now)
         req = self._make_simple_req()
