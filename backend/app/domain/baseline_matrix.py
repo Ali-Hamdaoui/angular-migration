@@ -151,7 +151,9 @@ class BaselineTargetDiscoveryService:
         if not path.is_file():
             return None
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            # Angular CLI commonly writes UTF-8 JSON with a BOM on Windows.
+            # It is valid project evidence and must not block baseline reads.
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise BaselineMatrixError("ANGULAR_JSON_INVALID") from error
         if not isinstance(value, dict):

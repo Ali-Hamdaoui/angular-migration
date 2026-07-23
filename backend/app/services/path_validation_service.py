@@ -26,7 +26,7 @@ class PathValidationService:
         raw_parent = Path((request.target_parent_path or request.target_output_path or "").strip())
         source = self._canonical(request.source_path)
         parent = self._canonical(request.target_parent_path or request.target_output_path or "")
-        output_name = self._output_name(source.name, request.target_angular_family)
+        output_name = self._unique_output_name(parent, source.name, request.target_angular_family)
         output = parent / output_name
         blockers: list[str] = []
         warnings: list[str] = []
@@ -82,11 +82,20 @@ class PathValidationService:
     def _is_under_any_root(path: Path, roots: tuple[Path, ...]) -> bool:
         return any(PathValidationService._is_relative_to(path, root) for root in roots)
     @staticmethod
-    def _output_name(source_name: str, family: str) -> str:
+    def _output_name(source_name: str, family: str, output_id: str) -> str:
         major = family.strip().lower().removesuffix(".x")
         stem = re.sub(r"[^a-z0-9]+", "-", source_name.lower()).strip("-.")
         if not major.isdigit() or not stem or stem in {"con", "prn", "aux", "nul", ".", ".."}: raise ValueError("unsafe generated output name")
-        return f"{stem}-angular-{major}"
+        return f"{stem}-angular-{major}-{output_id}"
+
+    @classmethod
+    def _unique_output_name(cls, parent: Path, source_name: str, family: str) -> str:
+        """Create a safe, collision-resistant sibling output directory name."""
+        for _ in range(10):
+            output_name = cls._output_name(source_name, family, uuid4().hex[:12])
+            if not (parent / output_name).exists():
+                return output_name
+        raise RuntimeError("could not allocate a unique migration output root")
     @staticmethod
     def _fingerprint(source: Path) -> str | None:
         if not source.is_dir(): return None

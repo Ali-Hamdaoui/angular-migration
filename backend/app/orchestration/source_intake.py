@@ -270,9 +270,11 @@ class SourceIntakeDispatcher:
                 prerequisite_artifact_ids=prerequisite_ids,
             ))
             prerequisite_ids.extend(result.artifact_ids)
-            if result.status not in {"passed", "skipped_not_configured", "skipped_not_applicable"}:
-                self._fail(job_id, f"BASELINE_{kind.upper()}_FAILED", f"Baseline {kind} did not pass.")
-                return
+            # A validation result is baseline evidence, not a source-intake
+            # failure. Keep collecting the matrix so G03 can classify a
+            # blocked/known-failure baseline and create its approval package.
+            # In particular, an unsupported Angular target may coexist with a
+            # passing package script for the same kind.
 
         qualification = BaselineG03ApplicationService().qualify(run_id, BaselineQualifyRequest(
             expected_state_version=self._current_version(run_id),
@@ -282,7 +284,16 @@ class SourceIntakeDispatcher:
             prerequisite_artifact_checksums={},
         ))
         if qualification.blockers:
-            self._fail(job_id, "G03_BLOCKED", "; ".join(qualification.blockers))
+            # G03 owns the baseline decision. Do not overwrite it with a
+            # misleading SOURCE_INTAKE_FAILED event; the run remains
+            # reviewable with the persisted blockers and evidence.
+            with session_scope() as session:
+                job = session.get(SourceIntakeJobModel, job_id)
+                run = session.get(MigrationRunModel, run_id)
+                if job is not None and run is not None:
+                    job.status = "completed"
+                    job.finished_at = datetime.now(UTC)
+                    job.state_version = run.state_version
             return
         with session_scope() as session:
             job = session.get(SourceIntakeJobModel, job_id)

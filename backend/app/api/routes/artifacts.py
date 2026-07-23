@@ -112,8 +112,8 @@ def read_artifact_by_id(artifact_id: str, actor: str = Depends(authenticated_act
         with session_scope() as session:
             metadata = session.get(ArtifactMetadataModel, f"metadata-{artifact_id}")
             if metadata is not None:
-                if not metadata.immutable or metadata.finalized_at is None:
-                    raise ArtifactStoreError("Artifact is not finalized")
+                if not metadata.immutable:
+                    raise ArtifactStoreError("Artifact is not immutable")
                 run = session.get(MigrationRunModel, metadata.run_id)
                 if run is None or not run.artifact_root:
                     raise ArtifactNotFoundError(artifact_id)

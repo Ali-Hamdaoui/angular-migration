@@ -6,7 +6,7 @@ All execution goes through the CommandExecutor service.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -228,6 +228,7 @@ def stream_command_logs(
     stream: str | None = None,
     poll_interval: float = 0.5,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    stream_actor: str | None = Query(default=None, alias="actor"),
 ):
     """Replay and tail durable logs using the sequence cursor.
 
@@ -247,8 +248,13 @@ def stream_command_logs(
     if stream is not None and stream not in VALID_LOG_STREAMS:
         return error_response(request, status_code=422, error_code="INVALID_LOG_STREAM", message="Stream must be one of stdout, stderr, or system", details={"allowed_streams": sorted(VALID_LOG_STREAMS)})
     poll_interval = min(max(poll_interval, 0.1), 5.0)
+    # Native EventSource cannot attach custom headers. The frontend supplies
+    # the same authenticated local-control-plane actor as a query value for
+    # this SSE-only endpoint; normal command and artifact routes remain
+    # header-authenticated.
+    effective_actor = stream_actor.strip() if stream_actor and stream_actor.strip() else actor
     with session_scope() as session:
-        authorize_run(session, run_id, actor)
+        authorize_run(session, run_id, effective_actor)
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:
             return error_response(request, status_code=404, error_code="EXECUTION_NOT_FOUND", message="Command execution not found")
     log_service = CommandLogService()

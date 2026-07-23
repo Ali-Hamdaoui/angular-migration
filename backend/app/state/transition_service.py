@@ -36,6 +36,8 @@ class TransitionRequest:
     expected_state_version: int
     event_type: WorkflowEventType
     next_run_status: RunStatus | None = None
+    next_phase_status: str | None = None
+    next_approval_status: str | None = None
     next_stage_status: StageStatus | None = None
     next_step_status: StepStatus | None = None
     stage_id: str | None = None
@@ -93,6 +95,14 @@ class StateTransitionService:
             payload["previous_run_status"] = run.status
             payload["next_run_status"] = request.next_run_status.value
             run.status = request.next_run_status.value
+        if request.next_phase_status is not None:
+            payload["previous_phase_status"] = run.phase_status
+            payload["next_phase_status"] = request.next_phase_status
+            run.phase_status = request.next_phase_status
+        if request.next_approval_status is not None:
+            payload["previous_approval_status"] = run.approval_status
+            payload["next_approval_status"] = request.next_approval_status
+            run.approval_status = request.next_approval_status
         if request.next_stage_status is not None:
             payload["next_stage_status"] = request.next_stage_status.value
         if request.next_step_status is not None:

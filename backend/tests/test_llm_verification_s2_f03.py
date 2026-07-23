@@ -4,6 +4,8 @@ from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, Ll
 from app.api.routes import llm as llm_routes
 from app.main import app
 from app.services.llm_evidence_application_service import LlmEvidenceError
+from app.core.config import Settings
+from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
 
 
 def invocation() -> LlmInvocationResponse:
@@ -59,3 +61,10 @@ def test_llm_api_returns_stable_correlation_safe_errors_for_invalid_and_stale_re
             assert stale.headers["x-correlation-id"] == "corr-stale"
     finally:
         app.dependency_overrides.pop(llm_routes.get_service, None)
+
+
+def test_unconfigured_read_only_diagnostics_do_not_construct_azure_gateway(tmp_path) -> None:
+    settings = Settings(_env_file=None, artifact_root=tmp_path / "runs", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes")
+    service = LlmEvidenceApplicationService(settings=settings)
+    assert service.readiness().status == "blocked"
+    assert service.gateway is None
