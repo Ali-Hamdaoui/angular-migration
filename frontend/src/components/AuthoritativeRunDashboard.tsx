@@ -168,8 +168,8 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />
       {g02Available ? <G02ReviewPanel runId={runId} initialState={state} /> : null}
-      {g02Approved || runtimeAvailable ? <ExecutionProfilePanel runId={runId} initialState={state} /> : null}
-      {runtimeAvailable ? <BaselinePreparationPanel runId={runId} initialState={state} /> : null}
+      {runtimeAvailable ? <ExecutionProfilePanel runId={runId} initialState={state} /> : null}
+      {has('BASELINE_WORKSPACE_STARTED', 'BASELINE_WORKSPACE_READY') ? <BaselinePreparationPanel runId={runId} initialState={state} /> : null}
       {baselineAvailable ? <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} /> : null}
       {baselineAvailable ? <BaselineValidationPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} availableKinds={baselineValidationKinds} /> : null}
       {baselineQualificationAvailable ? <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}

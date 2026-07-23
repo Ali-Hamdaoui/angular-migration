@@ -7,6 +7,7 @@ committed, so a disconnected browser cannot interrupt the workflow.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -330,13 +331,21 @@ class SourceIntakeDispatcher:
             metadata = {item.id.removeprefix("metadata-"): item.checksum for item in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id))}
             artifact_ids = tuple(approval.artifact_ids or ())
             expected_version = run.state_version
-        DiscoveryEvidenceApplicationService().capture(run_id, DiscoveryCaptureRequest(
+        request = DiscoveryCaptureRequest(
             expected_state_version=expected_version,
             idempotency_key=f"intake-{job_id}:discovery",
             actor=actor,
             prerequisite_artifact_ids=artifact_ids,
             prerequisite_artifact_checksums={item: metadata[item] for item in artifact_ids if item in metadata},
-        ))
+        )
+        discovery = DiscoveryEvidenceApplicationService()
+        try:
+            discovery.capture(run_id, request)
+        except Exception as error:
+            # Discovery owns its dependency failures. Do not report scanner,
+            # artifact, or workspace failures as a source-intake failure.
+            checksum = "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            discovery.block(run_id, request, checksum, str(error))
         with session_scope() as session:
             job = session.get(SourceIntakeJobModel, job_id)
             run = session.get(MigrationRunModel, run_id)
