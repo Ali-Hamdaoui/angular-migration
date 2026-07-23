@@ -19,7 +19,8 @@ class BaselineG03ApplicationService:
     def get(self, run_id):
         with self.scope() as s:
             row=s.scalar(select(BaselineAssessmentModel).where(BaselineAssessmentModel.run_id==run_id).order_by(BaselineAssessmentModel.created_at.desc()))
-            return self.dto(row) if row else None
+            approval = s.scalar(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run_id).order_by(G03ApprovalModel.updated_at.desc()))
+            return self.dto(row, g03_decision=approval.decision if approval else None) if row else None
     def qualify(self, run_id, request):
         with self.scope() as s:
             run=s.get(MigrationRunModel,run_id)
@@ -65,11 +66,17 @@ class BaselineG03ApplicationService:
             run=s.get(MigrationRunModel,run_id); row=s.scalar(select(BaselineAssessmentModel).where(BaselineAssessmentModel.run_id==run_id).order_by(BaselineAssessmentModel.created_at.desc()))
             if not run: raise BaselineG03ApplicationError("RUN_NOT_FOUND","Migration run does not exist.",404)
             if not row: raise BaselineG03ApplicationError("G03_PACKAGE_REQUIRED","Qualify the baseline before deciding G03.",409)
+            existing = s.scalar(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run_id, G03ApprovalModel.idempotency_key == request.idempotency_key))
+            if existing:
+                return self.dto(row, True, existing.decision)
             self.version(run,request.expected_state_version)
             if request.decision==G03Decision.APPROVED.value and row.status not in {"qualified","qualified_with_known_failures"}: raise BaselineG03ApplicationError("BASELINE_BLOCKED","A blocked baseline cannot be approved.",409)
             event=StateTransitionService(s).apply_transition(TransitionRequest(run_id=run_id,idempotency_key=request.idempotency_key,expected_state_version=run.state_version,event_type=WorkflowEventType.G03_APPROVED if request.decision=="approved" else WorkflowEventType.G03_REJECTED,next_run_status=RunStatus.BASELINE_QUALIFIED if request.decision=="approved" else None,actor=request.actor,reason=request.comment or "G03 decision recorded",occurred_at=self.now(),payload={"package_checksum":row.package_checksum,"decision":request.decision}))
             s.add(G03ApprovalModel(id="g03-"+uuid4().hex[:12],run_id=run_id,gate_id="G03",gate_version="g03-v1",idempotency_key=request.idempotency_key,actor=request.actor,status=request.decision,decision=request.decision,package_checksum=row.package_checksum,evidence_set_checksum=row.evidence_set_checksum,qualification_status=row.status,policy_version=row.policy_version,state_version=event.next_state_version,event_sequence=event.event_sequence,sandbox_fingerprint=row.sandbox_fingerprint,execution_profile_checksum=row.execution_profile_checksum,package={"package_checksum":row.package_checksum},artifact_ids=row.artifact_ids,comment=request.comment,created_at=self.now(),updated_at=self.now()))
-            s.flush(); return self.dto(row)
+            row.state_version = event.next_state_version
+            row.event_sequence = event.event_sequence
+            row.updated_at = self.now()
+            s.flush(); return self.dto(row, g03_decision=request.decision)
     def version(self,run,v):
         if run.state_version!=v: raise BaselineG03ApplicationError("STALE_STATE_VERSION","The run state version is stale.",409)
     def validation_status(self,v):
@@ -81,5 +88,5 @@ class BaselineG03ApplicationService:
         if installation is None:
             return "not_run"
         return "passed" if installation.status == "succeeded" else installation.status
-    def dto(self,row,replay=False):
-        return BaselineAssessmentResponse(run_id=row.run_id,assessment_id=row.id,status=row.status,policy=row.policy,policy_version=row.policy_version,blockers=row.blockers or [],warnings=row.warnings or [],known_failures=row.known_failures or [],evidence_confidence=row.evidence_confidence or {},evidence_set_checksum=row.evidence_set_checksum,sandbox_fingerprint=row.sandbox_fingerprint,execution_profile_checksum=row.execution_profile_checksum,package_checksum=row.package_checksum,artifact_ids=row.artifact_ids or [],state_version=row.state_version,event_sequence=row.event_sequence,idempotent_replay=replay)
+    def dto(self,row,replay=False,g03_decision=None):
+        return BaselineAssessmentResponse(run_id=row.run_id,assessment_id=row.id,status=row.status,policy=row.policy,policy_version=row.policy_version,blockers=row.blockers or [],warnings=row.warnings or [],known_failures=row.known_failures or [],evidence_confidence=row.evidence_confidence or {},evidence_set_checksum=row.evidence_set_checksum,sandbox_fingerprint=row.sandbox_fingerprint,execution_profile_checksum=row.execution_profile_checksum,package_checksum=row.package_checksum,artifact_ids=row.artifact_ids or [],state_version=row.state_version,event_sequence=row.event_sequence,g03_decision=g03_decision,idempotent_replay=replay)
