@@ -16,14 +16,18 @@ from app.domain.contracts import (
     AssistantHistoryDto,
     AssistantMessageRequestDto,
     AssistantMessageResultDto,
+    AssistantOperationalStatisticsDto,
     AssistantUsageDto,
 )
-from app.llm_gateway import MockLlmGateway
+from app.domain.contracts import AgentKind
+from app.llm_gateway import LlmContextSegment
 from app.core.config import get_settings
-from app.repositories.models import ArtifactMetadataModel, AssistantConversationModel, AssistantLifecycleEventModel, AssistantMessageModel, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, AssistantConversationModel, AssistantLifecycleEventModel, AssistantMessageModel, LlmInvocationModel, MigrationRunModel, MigrationStageModel, UsageCostRecordModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.services.mock_migration_api_service import get_mock_migration_api_service
 from app.services.migration_run_service import MigrationRunService
+from app.services.workflow_projection_service import WorkflowProjectionService
+from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService
 
 _SECRET = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[:=]\s*|password\s*[:=]\s*)[^\s,;]+")
 _PATH = re.compile(r"(?i)([a-z]:\\|/home/|/Users/|/workspace/)[^\s,;]+")
@@ -47,9 +51,12 @@ def _safe(value: object, limit: int = 500) -> str:
 class AssistantContextService:
     """Rebuilds current state before every answer and persists only sanitized output."""
 
-    def __init__(self, *, session_scope_factory=session_scope, gateway: MockLlmGateway | None = None):
+    def __init__(self, *, session_scope_factory=session_scope, gateway=None, invocation_service=None):
         self._scope = session_scope_factory
-        self._gateway = gateway or MockLlmGateway()
+        # A gateway is an explicit test/provider seam.  Normal API construction
+        # must use the production application service, which resolves the
+        # configured governed gateway lazily and fails explicitly when absent.
+        self._invocations = invocation_service or LlmEvidenceApplicationService(session_scope_factory=session_scope_factory, gateway=gateway)
 
     def _run(self, run_id: str):
         if run_id.startswith("mock-"):
@@ -62,7 +69,7 @@ class AssistantContextService:
                 invocations = list(session.scalars(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id)))
                 usage_by_invocation = {item.invocation_id: item for item in session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == run_id))}
                 usage = [usage_by_invocation[item.id] for item in invocations if item.status == "completed" and item.id in usage_by_invocation]
-                return SimpleNamespace(run_id=run_id, status=persisted.status, run_phase=persisted.run_phase, state_version=persisted.state_version, source_angular_version=persisted.source_angular_version, target_angular_version=persisted.target_angular_version, created_at=persisted.created_at, updated_at=persisted.updated_at, stages=[], workflow_events=events, artifacts=[SimpleNamespace(artifact_id=item.id, checksum=item.checksum, relative_path=item.relative_path) for item in artifacts], llm_usage=usage)
+                return SimpleNamespace(run_id=run_id, status=persisted.status, run_phase=persisted.run_phase, state_version=persisted.state_version, source_angular_version=persisted.source_angular_version, target_angular_version=persisted.target_angular_version, created_at=persisted.created_at, updated_at=persisted.updated_at, stages=[], workflow_events=events, artifacts=[SimpleNamespace(artifact_id=item.id, checksum=item.checksum, relative_path=item.relative_path) for item in artifacts], llm_usage=usage, assistant_projection=WorkflowProjectionService().build(session, run_id))
         try:
             return MigrationRunService(get_settings()).get_state(run_id)
         except Exception as error:
@@ -87,6 +94,27 @@ class AssistantContextService:
 
     @staticmethod
     def _projection(run):
+        shared = getattr(run, "assistant_projection", None)
+        if shared is not None:
+            data = shared.model_dump(mode="json") if hasattr(shared, "model_dump") else shared
+            def value(name: str, fallback: str = "unknown") -> str:
+                item = data.get(name) or {}
+                return str(item.get("value") if item.get("availability") == "known" else fallback)
+            stats = data.get("operational_statistics") or {}
+            evidence = data.get("evidence_references") or []
+            return {
+                "application": value("application_name"), "run_id": data.get("run_id", getattr(run, "run_id", "unknown")),
+                "current_angular_version": value("current_angular_version"), "target_angular_version": value("target_angular_version"),
+                "phase": value("phase"), "stage": value("stage"), "step": value("step"), "status": value("status"),
+                "gate": value("gate"), "gate_status": "pending" if value("gate").lower().endswith("pending") else value("gate"), "blocker": value("blocker"), "waiting_reason": value("waiting_reason"),
+                "failure_reason": value("failure_reason"), "next_action": value("next_permitted_action"),
+                "completed_phases": data.get("completed_work", []), "remaining_phases": data.get("remaining_work", []),
+                "state_version": int(data.get("workflow_state_version", 1)), "events": [],
+                "evidence": [{"artifact_id": item["artifact_id"], "checksum": item["checksum"], "label": item["label"]} for item in evidence],
+                "usage": [{"input_tokens": stats["input_tokens"], "output_tokens": stats["output_tokens"], "total_tokens": stats["total_tokens"], "input_cost_usd": stats["input_cost_usd"], "output_cost_usd": stats["output_cost_usd"], "cost_usd": stats["total_cost_usd"]}] if stats.get("input_tokens") is not None else [],
+                "duration_seconds": stats.get("recorded_workflow_duration_seconds"),
+                "operational_statistics": stats,
+            }
         events = sorted(run.workflow_events, key=lambda item: item.sequence)
         phase_key = getattr(run.run_phase, "value", run.run_phase)
         status_value = getattr(run.status, "value", run.status)
@@ -186,6 +214,10 @@ class AssistantContextService:
             return f"{intent.title()} information currently available from authoritative workflow evidence: events={matching or ['unavailable']}; evidence={evidence}. Facts not present in the persisted projection are unavailable.", "evidence-supported explanation" if matching else "unknown or unavailable"
         if intent == "operations":
             usage = projection["usage"]
+            if not usage:
+                duration = projection.get("duration_seconds")
+                duration_text = f" Recorded workflow duration: {float(duration):.2f} seconds." if duration is not None else ""
+                return f"Persisted LLM token and cost statistics are unavailable because no authoritative usage records exist.{duration_text}", "unknown or unavailable"
             input_tokens = sum(int(item["input_tokens"]) for item in usage)
             output_tokens = sum(int(item["output_tokens"]) for item in usage)
             cost = sum(float(item["cost_usd"]) for item in usage)
@@ -200,6 +232,70 @@ class AssistantContextService:
         sequence = int(session.scalar(select(func.max(AssistantLifecycleEventModel.sequence)).where(AssistantLifecycleEventModel.run_id == run_id)) or 0) + 1
         session.add(AssistantLifecycleEventModel(id=uuid4().hex, run_id=run_id, conversation_id=conversation_id, message_id=message_id, event_type=event_type, sequence=sequence, correlation_id=correlation_id, state_version=state_version, status=status, idempotency_key=idempotency_key, payload=payload or {}, occurred_at=datetime.now(UTC)))
 
+    @staticmethod
+    def _request_checksum(request: AssistantMessageRequestDto) -> str:
+        payload = {
+            "message": request.message,
+            "conversation_id": request.conversation_id,
+            "client_known_state_version": request.client_known_state_version,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _message_projection(projection: dict[str, object]) -> dict[str, object]:
+        return {"phase": projection["phase"], "stage": projection["stage"], "status": projection["status"], "gate": projection["gate"], "blocker": projection["blocker"], "next_action": projection["next_action"], "operational_statistics": projection.get("operational_statistics", {})}
+
+    def _persist_user_message(self, session, request, *, conversation_id, correlation_id, projection, manifest, checksum, message_order, now):
+        session.add(AssistantMessageModel(
+            id=uuid4().hex, message_id=uuid4().hex, conversation_id=conversation_id, run_id=request.run_id,
+            message_order=message_order, role="user", input_manifest=manifest, input_manifest_checksum=checksum,
+            answer=_safe(request.message, 1000), state_version=int(projection["state_version"]),
+            projection=self._message_projection(projection), evidence=[], proof_label="user request",
+            usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"),
+            model_provenance={"role": "user"}, correlation_id=correlation_id,
+            idempotency_key=hashlib.sha256(("user:" + request.idempotency_key).encode()).hexdigest(),
+            status="completed", failure_reason=None, created_at=now,
+        ))
+
+    def _persist_failed_result(self, request, *, conversation_id, message_id, correlation_id, projection, manifest, checksum, reason, code):
+        with self._scope() as session:
+            prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
+            if prior:
+                return self._dto(prior)
+            count = session.scalar(select(AssistantMessageModel.message_order).where(AssistantMessageModel.conversation_id == conversation_id).order_by(AssistantMessageModel.message_order.desc()).limit(1)) or 0
+            now = datetime.now(UTC)
+            if not session.scalar(select(AssistantConversationModel).where(AssistantConversationModel.run_id == request.run_id, AssistantConversationModel.conversation_id == conversation_id)):
+                session.add(AssistantConversationModel(id=uuid4().hex, conversation_id=conversation_id, run_id=request.run_id, created_at=now, updated_at=now))
+            self._persist_user_message(session, request, conversation_id=conversation_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, message_order=int(count) + 1, now=now)
+            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 2, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer="The Assistant request failed before producing a completed answer.", state_version=int(projection["state_version"]), projection=self._message_projection(projection), evidence=[], proof_label="unknown or unavailable", usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"), model_provenance={"role": "assistant", "failure_code": code}, correlation_id=correlation_id, idempotency_key=request.idempotency_key, status="failed", failure_reason=reason, created_at=now)
+            session.add(row)
+            self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_FAILED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="failed", idempotency_key=request.idempotency_key, payload={"failure_code": code})
+            return self._dto(row)
+
+    @staticmethod
+    def _validate_citations(session, run_id: str, citations: object) -> bool:
+        if not isinstance(citations, list):
+            return False
+        supported_types = {"json", "yaml", "markdown", "text_log", "command_log", "report"}
+        for citation in citations:
+            if not isinstance(citation, dict) or not citation.get("artifact_id") or not citation.get("checksum"):
+                return False
+            record = session.get(ArtifactMetadataModel, citation["artifact_id"])
+            if record is None or record.run_id != run_id or record.checksum != citation["checksum"] or (citation.get("stage_id") and record.stage_id != citation["stage_id"]) or not record.immutable or record.artifact_type not in supported_types:
+                return False
+            metadata = record.safe_metadata or {}
+            if metadata.get("approval_status") not in {"approved", "approved_with_comment"}:
+                return False
+            if record.stage_id:
+                stage = session.get(MigrationStageModel, record.stage_id)
+                if stage is None or stage.run_id != run_id:
+                    return False
+            elif metadata.get("lineage") != run_id:
+                return False
+            if metadata.get("superseded") is True or metadata.get("rejected") is True:
+                return False
+        return True
+
     def answer(self, request: AssistantMessageRequestDto, correlation_id: str | None = None) -> AssistantMessageResultDto:
         if not request.run_id:
             raise AssistantRequestError("run_id_required", "A run-scoped assistant request is required.", 422)
@@ -209,23 +305,51 @@ class AssistantContextService:
         with self._scope() as session:
             prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
             if prior:
+                request_checksum = self._request_checksum(request)
+                if prior.input_manifest_checksum != request_checksum:
+                    raise AssistantRequestError("idempotency_key_reused", "Idempotency key was used with a different payload.", 409)
                 return self._dto(prior)
             history = session.scalars(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id).order_by(AssistantMessageModel.message_order.desc()).limit(_MAX_HISTORY)).all()
         run = self._run(request.run_id)
         projection = self._projection(run)
         stale = request.client_known_state_version is not None and request.client_known_state_version != projection["state_version"]
         manifest = {"question": _safe(request.message, 1000), "projection": projection, "history": [_safe(item.answer, 300) for item in reversed(history)]}
-        checksum = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+        checksum = self._request_checksum(request)
         with self._scope() as session:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_STARTED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="started", idempotency_key=request.idempotency_key, payload={"request_id": request.idempotency_key})
         intent = self._intent(request.message)
         answer, proof = self._compose(intent, projection)
+        governed_response = None
+        if intent not in {"mutation", "unsupported"}:
+            try:
+                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.idempotency_key}", correlation_id=correlation_id, question=_safe(request.message, 1000), context=[LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), LlmContextSegment(segment_id="evidence", label="approved workflow evidence", content=json.dumps(projection.get("evidence", []), sort_keys=True))]), actor="assistant")
+                if governed_response.status != "completed":
+                    raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503)
+                citations = governed_response.structured_output.get("citations", [])
+                with self._scope() as session:
+                    citation_valid = self._validate_citations(session, request.run_id, citations)
+                if not citation_valid:
+                    failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="Citation validation failed.", code="invalid_citation")
+                    raise AssistantRequestError("invalid_citation", "The governed Assistant returned an invalid evidence citation.", 502)
+                if isinstance(governed_response.structured_output.get("answer"), str):
+                    answer = governed_response.structured_output["answer"]
+                    proof = "governed Assistant role"
+            except AssistantRequestError as error:
+                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
+                raise
+            except Exception as error:
+                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed")
+                raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503) from error
         evidence = [AssistantEvidenceDto.model_validate(item) for item in projection["evidence"]]
         input_tokens = sum(int(item["input_tokens"]) for item in projection["usage"])
         output_tokens = sum(int(item["output_tokens"]) for item in projection["usage"])
         input_cost = sum(float(item.get("input_cost_usd", 0.0)) for item in projection["usage"])
         output_cost = sum(float(item.get("output_cost_usd", 0.0)) for item in projection["usage"])
         total_cost = sum(float(item["cost_usd"]) for item in projection["usage"])
+        if governed_response is not None and governed_response.structured_output.get("answer"):
+            input_tokens, output_tokens = governed_response.input_tokens, governed_response.output_tokens
+            input_cost, output_cost, total_cost = governed_response.input_cost_usd, governed_response.output_cost_usd, governed_response.total_cost_usd
+            usage = AssistantUsageDto(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=governed_response.total_tokens, estimated_input_cost=input_cost, estimated_output_cost=output_cost, estimated_total_cost=total_cost)
         usage = AssistantUsageDto(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=input_tokens + output_tokens, estimated_input_cost=input_cost, estimated_output_cost=output_cost, estimated_total_cost=total_cost)
         with self._scope() as session:
             prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
@@ -235,7 +359,8 @@ class AssistantContextService:
             now = datetime.now(UTC)
             if not session.scalar(select(AssistantConversationModel).where(AssistantConversationModel.run_id == request.run_id, AssistantConversationModel.conversation_id == conversation_id)):
                 session.add(AssistantConversationModel(id=uuid4().hex, conversation_id=conversation_id, run_id=request.run_id, created_at=now, updated_at=now))
-            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 1, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer=answer, state_version=int(projection["state_version"]), projection={"phase": projection["phase"], "stage": projection["stage"], "status": projection["status"], "gate": projection["gate"], "blocker": projection["blocker"], "next_action": projection["next_action"]}, evidence=[item.model_dump(mode="json") for item in evidence], proof_label=proof, usage=usage.model_dump(mode="json"), model_provenance={"role": "deterministic_projection", "deployment": "none", "prompt": "none", "schema": "assistant-response-v1"}, correlation_id=correlation_id, idempotency_key=request.idempotency_key, status="stale" if stale else "completed", created_at=now)
+            self._persist_user_message(session, request, conversation_id=conversation_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, message_order=int(count) + 1, now=now)
+            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 2, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer=answer, state_version=int(projection["state_version"]), projection=self._message_projection(projection), evidence=[item.model_dump(mode="json") for item in evidence], proof_label=proof, usage=usage.model_dump(mode="json"), model_provenance={"role": "assistant" if governed_response is not None and governed_response.structured_output.get("answer") else "deterministic_projection", "deployment": governed_response.deployment_alias if governed_response is not None else "none", "prompt": governed_response.prompt_version if governed_response is not None else "none", "schema": governed_response.schema_version if governed_response is not None else "assistant-response-v1"}, correlation_id=correlation_id, idempotency_key=request.idempotency_key, status="stale" if stale else "completed", created_at=now)
             session.add(row)
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_COMPLETED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status=row.status, idempotency_key=request.idempotency_key, payload={"message_id": message_id})
             return self._dto(row, stale=stale)
@@ -253,4 +378,5 @@ class AssistantContextService:
     @staticmethod
     def _dto(row: AssistantMessageModel, *, stale: bool | None = None) -> AssistantMessageResultDto:
         projection = row.projection
-        return AssistantMessageResultDto(message_id=row.message_id, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, answer=row.answer, current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=row.proof_label, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason)
+        stats = projection.get("operational_statistics")
+        return AssistantMessageResultDto(message_id=row.message_id, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=row.answer, current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=row.proof_label, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None)

@@ -46,9 +46,10 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
         if (payload.event_type !== "ASSISTANT_RESPONSE_STARTED") void restore();
       } catch { setState("reconnecting"); void restore(); }
     };
-    source.onmessage = onLifecycle;
+    const lifecycleEvents = ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED", "ASSISTANT_RESPONSE_FAILED"] as const;
+    lifecycleEvents.forEach((eventName) => source.addEventListener(eventName, onLifecycle));
     source.onerror = () => { if (active) { setState("reconnecting"); void restore(); } };
-    return () => { active = false; source.close(); };
+    return () => { active = false; lifecycleEvents.forEach((eventName) => source.removeEventListener(eventName, onLifecycle)); source.close(); };
   }, [runId, conversationId, stateVersion]);
 
   async function submit(event?: FormEvent) {
@@ -70,7 +71,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
     {state === "reconnecting" ? <p role="alert">Reconnecting to persisted conversation…</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {!messages.length && state !== "loading" ? <p className={styles.note}>Ask a supported migration question.</p> : null}
-    <ol aria-label="Assistant conversation" className={styles.list}>{messages.map((message) => <li key={message.message_id} className={styles.previewPanel}><p>{message.answer}</p><small>{message.current_phase} · {message.current_stage} · {message.current_gate} · {message.proof_label} · state version {message.workflow_state_version}{message.stale ? " · stale answer" : ""}</small>{message.evidence_references.length ? <div><span>Evidence:</span><ul aria-label="Evidence references">{message.evidence_references.map((evidence) => <li key={evidence.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(evidence.artifact_id)}`} target="_blank" rel="noreferrer">{evidence.label}</a></li>)}</ul></div> : null}<small>{message.usage.total_tokens} tokens · ${message.usage.estimated_total_cost.toFixed(6)}</small></li>)}</ol>
+    <ol aria-label="Assistant conversation" className={styles.list}>{messages.map((message) => <li key={message.message_id} className={styles.previewPanel}><small>{message.role}</small><p>{message.answer}</p><small>{message.current_phase} · {message.current_stage} · {message.current_gate} · {message.proof_label} · state version {message.workflow_state_version}{message.stale ? " · stale answer" : ""}</small><small>Blocker: {message.current_blocker} · Next: {message.next_permitted_action}</small>{message.evidence_references.length ? <div><span>Evidence:</span><ul aria-label="Evidence references">{message.evidence_references.map((evidence) => <li key={evidence.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(evidence.artifact_id)}`} target="_blank" rel="noreferrer">{evidence.label}</a> <small>{evidence.checksum}</small></li>)}</ul></div> : null}<small>{message.operational_statistics?.total_tokens == null ? "Operational statistics unavailable" : `${message.operational_statistics.total_tokens} tokens · ${message.operational_statistics.total_cost_usd == null ? "cost unavailable" : `$${message.operational_statistics.total_cost_usd.toFixed(6)}`}`}{message.operational_statistics?.successful_commands != null ? ` · commands ${message.operational_statistics.successful_commands} succeeded / ${message.operational_statistics.failed_commands == null ? "unavailable" : message.operational_statistics.failed_commands} failed` : ""}</small></li>)}</ol>
     <div aria-label="Suggested assistant questions" className={styles.list}>{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => setQuestion(suggestion)}>{suggestion}</button>)}</div>
     <form onSubmit={submit}><label htmlFor="assistant-question">Ask about this migration</label><input id="assistant-question" value={question} onChange={(event) => setQuestion(event.target.value)} disabled={state === "loading"} /><button type="submit" disabled={!question.trim() || state === "loading"}>{state === "loading" ? "Answering…" : "Send"}</button>{state === "failed" ? <button type="button" onClick={() => void submit()}>Retry</button> : null}</form>
   </section>;

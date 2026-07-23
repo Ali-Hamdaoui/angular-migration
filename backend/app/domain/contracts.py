@@ -469,6 +469,7 @@ class AssistantMessageResultDto(ContractModel):
     message_order: int = Field(ge=1)
     conversation_id: str
     run_id: str
+    role: str = "assistant"
     answer: str
     current_phase: str
     current_stage: str
@@ -483,6 +484,7 @@ class AssistantMessageResultDto(ContractModel):
     usage: AssistantUsageDto
     response_status: str
     failure_reason: str | None = None
+    operational_statistics: "AssistantOperationalStatisticsDto | None" = None
 
 
 class AssistantHistoryDto(ContractModel):
@@ -988,6 +990,7 @@ class AuthoritativeRunStateDto(ContractModel):
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
+    assistant_projection: "AssistantWorkflowProjectionDto | None" = None
 
 
 class AuthoritativeRunMutationResultDto(ContractModel):
@@ -999,6 +1002,70 @@ class AuthoritativeRunMutationResultDto(ContractModel):
     graph_thread_id: str
     idempotent_replay: bool = False
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
+
+
+class ProjectionValue(ContractModel):
+    value: Any | None = None
+    availability: str = "unavailable"
+
+
+class AssistantEvidenceReferenceDto(ContractModel):
+    artifact_id: str
+    label: str
+    checksum: str
+    run_id: str
+    stage_id: str | None = None
+    category: str | None = None
+    lineage: str | None = None
+    approval_status: str | None = None
+    immutable: bool | None = None
+
+
+class AssistantOperationalStatisticsDto(ContractModel):
+    run_start_timestamp: datetime | None = None
+    recorded_workflow_duration_seconds: float | None = None
+    current_active_run_age_seconds: float | None = None
+    phase_durations_seconds: dict[str, float] | None = None
+    stage_durations_seconds: dict[str, float] | None = None
+    command_totals_by_status: dict[str, int] | None = None
+    successful_commands: int | None = None
+    failed_commands: int | None = None
+    relevant_command_ids: list[str] = Field(default_factory=list)
+    llm_calls_by_role: dict[str, int] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    input_cost_usd: float | None = None
+    output_cost_usd: float | None = None
+    total_cost_usd: float | None = None
+
+
+class AssistantWorkflowProjectionDto(ContractModel):
+    application_name: ProjectionValue = ProjectionValue()
+    current_angular_version: ProjectionValue = ProjectionValue()
+    target_angular_version: ProjectionValue = ProjectionValue()
+    node_execution_profile: ProjectionValue = ProjectionValue()
+    package_manager: ProjectionValue = ProjectionValue()
+    run_id: str
+    migration_route: ProjectionValue = ProjectionValue()
+    stage_workspace_reference: ProjectionValue = ProjectionValue()
+    source_fingerprint: ProjectionValue = ProjectionValue()
+    stage_fingerprint: ProjectionValue = ProjectionValue()
+    phase: ProjectionValue = ProjectionValue()
+    stage: ProjectionValue = ProjectionValue()
+    step: ProjectionValue = ProjectionValue()
+    gate: ProjectionValue = ProjectionValue()
+    status: ProjectionValue = ProjectionValue()
+    completed_work: list[str] = Field(default_factory=list)
+    remaining_work: list[str] = Field(default_factory=list)
+    blocker: ProjectionValue = ProjectionValue()
+    waiting_reason: ProjectionValue = ProjectionValue()
+    failure_reason: ProjectionValue = ProjectionValue()
+    repair_state: ProjectionValue = ProjectionValue()
+    next_permitted_action: ProjectionValue = ProjectionValue()
+    workflow_state_version: int
+    operational_statistics: AssistantOperationalStatisticsDto = AssistantOperationalStatisticsDto()
+    evidence_references: list[AssistantEvidenceReferenceDto] = Field(default_factory=list)
 
 
 # Deterministic component and AI-agent contracts (AMF-S0-10)

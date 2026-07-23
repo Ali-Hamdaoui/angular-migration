@@ -51,6 +51,7 @@ class LlmInvocationResponse(ContractModel):
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False
+    structured_output: dict[str, Any] = Field(default_factory=dict)
 
 
 class LlmActivityResponse(ContractModel):
