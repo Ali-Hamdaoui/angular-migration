@@ -15,7 +15,7 @@ from app.state.transition_service import StateTransitionService, TransitionReque
 class BaselineG03ApplicationError(ValueError):
     def __init__(self, code, message, status_code=422): self.code,self.message,self.status_code=code,message,status_code
 class BaselineG03ApplicationService:
-    def __init__(self, *, scope=session_scope, now_provider=None): self.scope=scope; self.now=now_provider or (lambda:datetime.now(UTC))
+    def __init__(self, *, scope=session_scope, now_provider=None, continuation=None): self.scope=scope; self.now=now_provider or (lambda:datetime.now(UTC)); self.continuation=continuation
     def get(self, run_id):
         with self.scope() as s:
             row=s.scalar(select(BaselineAssessmentModel).where(BaselineAssessmentModel.run_id==run_id).order_by(BaselineAssessmentModel.created_at.desc()))
@@ -76,7 +76,15 @@ class BaselineG03ApplicationService:
             row.state_version = event.next_state_version
             row.event_sequence = event.event_sequence
             row.updated_at = self.now()
-            s.flush(); return self.dto(row, g03_decision=request.decision)
+            s.flush(); response = self.dto(row, g03_decision=request.decision)
+        if request.decision == G03Decision.APPROVED.value:
+            continuation = self.continuation
+            if continuation is None:
+                from app.core.config import get_settings
+                from app.orchestration.source_intake import default_source_intake_graph
+                continuation = default_source_intake_graph(get_settings()).resume_after_g03
+            continuation(run_id)
+        return response
     def version(self,run,v):
         if run.state_version!=v: raise BaselineG03ApplicationError("STALE_STATE_VERSION","The run state version is stale.",409)
     def validation_status(self,v):

@@ -109,8 +109,12 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
   const g02Approved = has('G02_APPROVED');
   const runtimeAvailable = has('EXECUTION_PROFILE_RESOLUTION_STARTED', 'EXECUTION_PROFILE_RESOLVED', 'EXECUTION_PROFILE_SELECTED', 'EXECUTION_PROFILE_BLOCKED');
   const baselineAvailable = has('BASELINE_WORKSPACE_STARTED', 'BASELINE_WORKSPACE_READY');
-  const discoveryAvailable = has('DISCOVERY_STARTED', 'SCANNER_COMPLETED', 'DISCOVERY_COMPLETED', 'DISCOVERY_BLOCKED');
-  const analysisAvailable = has('ANALYSIS_AGENT_STARTED', 'ANALYSIS_AGENT_COMPLETED', 'ANALYSIS_AGENT_FAILED', 'G04_CREATED');
+  const commandPolicyAvailable = has('G06_APPROVED') && has('STAGE_PLAN_CREATED') && has('EXECUTION_PROFILE_SELECTED') && has('BASELINE_WORKSPACE_READY');
+  const discoveryAvailable = has('G03_APPROVED', 'DISCOVERY_STARTED', 'SCANNER_COMPLETED', 'DISCOVERY_COMPLETED', 'DISCOVERY_BLOCKED');
+  // G03 is the prerequisite boundary for Sprint 2 analysis. Keep the panel
+  // visible at that boundary so the reviewer can explicitly start analysis;
+  // waiting for an analysis event here would hide the only Generate action.
+  const analysisAvailable = has('G03_APPROVED', 'ANALYSIS_AGENT_STARTED', 'ANALYSIS_AGENT_COMPLETED', 'ANALYSIS_AGENT_FAILED', 'G04_CREATED');
   const feasibilityAvailable = has('COMPATIBILITY_RESOLUTION_STARTED', 'COMPATIBILITY_RESOLUTION_COMPLETED', 'COMPATIBILITY_RESOLUTION_BLOCKED', 'G05_CREATED');
   const planAvailable = has('MIGRATION_PLAN_CREATED', 'STAGE_PLAN_CREATED', 'PLAN_REVISION_CREATED', 'G06_CREATED');
   const baselineValidationKinds = useMemo(() => (['build', 'test', 'lint'] as const).filter((kind) => has(kind === 'build' ? 'BASELINE_BUILD_STARTED' : kind === 'test' ? 'BASELINE_TESTS_STARTED' : 'BASELINE_LINT_STARTED')), [state.workflow_events]);
@@ -168,9 +172,9 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       {runtimeAvailable ? <BaselinePreparationPanel runId={runId} initialState={state} /> : null}
       {baselineAvailable ? <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} /> : null}
       {baselineAvailable ? <BaselineValidationPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} availableKinds={baselineValidationKinds} /> : null}
-      {baselineQualificationAvailable ? <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} /> : null}
+      {baselineQualificationAvailable ? <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
       {baselineParityAvailable ? <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} /> : null}
-      {baselineAvailable ? <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
+      {commandPolicyAvailable ? <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
       </div>
       <aside className={styles.secondaryColumn}>
       <AuthoritativeRunCancellationPanel runId={runId} state={state} refresh={refresh} />

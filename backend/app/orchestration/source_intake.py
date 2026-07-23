@@ -22,9 +22,10 @@ from app.api.baseline_g03_contracts import BaselineQualifyRequest
 from app.api.baseline_matrix_contracts import BaselineValidationRequest
 from app.api.execution_profile_contracts import ExecutionProfileResolveRequest
 from app.api.g02_initialization import G02PackageInitializationRequest
+from app.api.discovery_contracts import DiscoveryCaptureRequest
 from app.domain.contracts import RunStatus, WorkflowEventType
 from app.domain.snapshot import CreateSourceSnapshotRequest
-from app.repositories.models import ExecutionProfileModel, G02ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, ExecutionProfileModel, G02ApprovalModel, G03ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.services.g02_application_service import G02ApprovalApplicationService
 from app.services.baseline_application_service import BaselineApplicationService
@@ -32,6 +33,7 @@ from app.services.baseline_g03_application_service import BaselineG03Application
 from app.services.baseline_install_application_service import BaselineInstallApplicationService
 from app.services.baseline_validation_application_service import BaselineValidationApplicationService
 from app.services.execution_profile_application_service import ExecutionProfileApplicationService
+from app.services.discovery_evidence_application_service import DiscoveryEvidenceApplicationService
 from app.services.source_snapshot_application_service import SourceSnapshotApplicationService
 from app.state.transition_service import StateTransitionService, TransitionRequest
 
@@ -63,17 +65,28 @@ class SourceIntakeDispatcher:
                 self._submitted.discard(run_id)
             raise
 
+    def resume_after_g03(self, run_id: str) -> None:
+        with session_scope() as session:
+            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status == "waiting_g03"))
+            if job is None:
+                return
+            job.status = "queued"
+            job.finished_at = None
+            thread_id = job.thread_id
+        self.start(run_id=run_id, thread_id=thread_id)
+
     def recover(self) -> int:
         """Re-dispatch jobs left queued, running, or waiting at restart."""
         with session_scope() as session:
-            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"}))))
+            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_g03"}))))
             # A new backend instance owns recovery. Requeue work owned by a
             # previous process before dispatching it; attempt-specific
             # idempotency keys keep resumed steps from creating duplicate
             # authoritative evidence.
             for job in jobs:
                 if job.status == "running" and job.worker_id != self._worker_id:
-                    job.status = "queued"
+                    approved = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == job.run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value))
+                    job.status = "waiting_g03" if approved is not None else "queued"
                     job.started_at = None
         for job in jobs:
             self.start(run_id=job.run_id, thread_id=job.thread_id)
@@ -81,8 +94,12 @@ class SourceIntakeDispatcher:
 
     def _run(self, run_id: str, thread_id: str) -> None:
         try:
-            job = self._claim(run_id)
+            claimed = self._claim(run_id)
+            job, resume_g03 = claimed if claimed else (None, False)
             if job is None:
+                return
+            if resume_g03:
+                self._continue_after_g03(job.id, run_id, job.actor)
                 return
             with session_scope() as session:
                 run = session.get(MigrationRunModel, run_id)
@@ -291,10 +308,35 @@ class SourceIntakeDispatcher:
                 job = session.get(SourceIntakeJobModel, job_id)
                 run = session.get(MigrationRunModel, run_id)
                 if job is not None and run is not None:
-                    job.status = "completed"
-                    job.finished_at = datetime.now(UTC)
+                    job.status = "waiting_g03"
+                    job.finished_at = None
                     job.state_version = run.state_version
             return
+        with session_scope() as session:
+            job = session.get(SourceIntakeJobModel, job_id)
+            run = session.get(MigrationRunModel, run_id)
+            if job is not None and run is not None:
+                job.status = "waiting_g03"
+                job.finished_at = None
+                job.state_version = run.state_version
+
+    def _continue_after_g03(self, job_id: str, run_id: str, actor: str) -> None:
+        with session_scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            approval = session.scalar(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run_id, G03ApprovalModel.status == "approved").order_by(G03ApprovalModel.updated_at.desc()))
+            if run is None or approval is None:
+                self._fail(job_id, "G03_APPROVAL_REQUIRED", "Approved G03 is required before discovery.")
+                return
+            metadata = {item.id.removeprefix("metadata-"): item.checksum for item in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id))}
+            artifact_ids = tuple(approval.artifact_ids or ())
+            expected_version = run.state_version
+        DiscoveryEvidenceApplicationService().capture(run_id, DiscoveryCaptureRequest(
+            expected_state_version=expected_version,
+            idempotency_key=f"intake-{job_id}:discovery",
+            actor=actor,
+            prerequisite_artifact_ids=artifact_ids,
+            prerequisite_artifact_checksums={item: metadata[item] for item in artifact_ids if item in metadata},
+        ))
         with session_scope() as session:
             job = session.get(SourceIntakeJobModel, job_id)
             run = session.get(MigrationRunModel, run_id)
@@ -348,11 +390,12 @@ class SourceIntakeDispatcher:
             raise RuntimeError("Angular source version could not be determined from the approved snapshot")
         return str(values["angular"]), values["typescript"], values["rxjs"]
 
-    def _claim(self, run_id: str) -> SourceIntakeJobModel | None:
+    def _claim(self, run_id: str) -> tuple[SourceIntakeJobModel, bool] | None:
         with session_scope() as session:
-            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "waiting_g02", "waiting_runtime_selection"})).order_by(SourceIntakeJobModel.queued_at.desc()))
-            if job is None or job.status not in {"queued", "waiting_g02", "waiting_runtime_selection"}:
+            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "waiting_g02", "waiting_runtime_selection", "waiting_g03"})).order_by(SourceIntakeJobModel.queued_at.desc()))
+            if job is None:
                 return None
+            resume_g03 = job.status == "waiting_g03"
             job.status = "running"
             # Attempt is the durable retry identity, not a worker-claim
             # counter. It must remain stable when recovery reclaims a job.
@@ -360,7 +403,7 @@ class SourceIntakeDispatcher:
                 job.attempt = 1
             job.worker_id = self._worker_id
             job.started_at = datetime.now(UTC)
-            return job
+            return job, resume_g03
 
     def _set_status(self, job_id: str, status: str) -> None:
         with session_scope() as session:
