@@ -236,7 +236,7 @@ class MigrationRunService:
             if run.status != RunStatus.FAILED.value:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
             previous = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id).order_by(SourceIntakeJobModel.attempt.desc()))
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING"}
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError"}
             if previous is None or previous.status != "failed" or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
             self._validate_start_boundary(session, run)
@@ -246,13 +246,14 @@ class MigrationRunService:
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
+            post_g03 = previous.last_error_code == "ExecutionProfileApplicationError" and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
             accepted = StateTransitionService(session).apply_transition(TransitionRequest(
                 run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
                 event_type=WorkflowEventType.RUN_STATE_CHANGED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
                 actor=actor, reason="explicit source-intake retry accepted", payload={"previous_job_id": previous.id, "attempt": previous.attempt + 1}, occurred_at=self._now()))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
-                status="queued", actor=actor, idempotency_key=idempotency_key,
+                status="waiting_g03" if post_g03 else "queued", actor=actor, idempotency_key=idempotency_key,
                 attempt=previous.attempt + 1, queued_at=self._now(), state_version=accepted.next_state_version,
             )
             session.add(queued)

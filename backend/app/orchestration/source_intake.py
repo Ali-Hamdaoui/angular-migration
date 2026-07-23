@@ -71,8 +71,6 @@ class SourceIntakeDispatcher:
             job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status == "waiting_g03"))
             if job is None:
                 return
-            job.status = "queued"
-            job.finished_at = None
             thread_id = job.thread_id
         self.start(run_id=run_id, thread_id=thread_id)
 
