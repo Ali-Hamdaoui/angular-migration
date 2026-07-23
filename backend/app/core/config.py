@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _PLATFORM_REPOSITORY_ROOT = _BACKEND_ROOT.parent
+_STABLE_TARGET_ROOT = Path(r"C:\Users\abdelilah.mortaki\Desktop\angularRus")
 
 def _default_application_data_root() -> Path:
     base = os.environ.get("LOCALAPPDATA")
@@ -52,7 +53,7 @@ class Settings(BaseSettings):
     delivery_root: Path | None = None
     sandbox_root: Path | None = None
     allowed_source_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
-    allowed_target_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
+    allowed_target_roots: Annotated[list[Path], NoDecode] = Field(default_factory=lambda: [_STABLE_TARGET_ROOT])
     platform_repository_root: Path = _PLATFORM_REPOSITORY_ROOT
 
     backend_cors_origins: Annotated[list[str], NoDecode] = Field(

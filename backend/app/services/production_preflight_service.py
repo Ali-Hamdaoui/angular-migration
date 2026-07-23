@@ -46,6 +46,12 @@ class ProductionPreflightService:
         with self._scope() as session:
             existing = session.scalar(select(PreflightModel).where(PreflightModel.idempotency_key == request.idempotency_key))
             if existing:
+                binding = existing.binding or {}
+                path = session.get(PathValidationModel, binding.get("path_validation_id"))
+                if path is None:
+                    raise PreflightError("TARGET_RESERVATION_INVALID", "The bound path validation record is missing.")
+                path_snapshot = PathValidationSnapshot.model_validate(path.snapshot)
+                self._require_live_reservation(session, path, path_snapshot)
                 return PreflightResult(snapshot=PreflightSnapshot.model_validate(existing.snapshot))
             path = session.get(PathValidationModel, request.path_validation_id)
             environment = session.get(EnvironmentCapabilityModel, request.environment_snapshot_id)
@@ -53,6 +59,7 @@ class ProductionPreflightService:
             if not path or not environment or not analysis:
                 raise PreflightError("PREFLIGHT_PREREQUISITE_MISSING", "Path, environment, and source analysis evidence are required.", status_code=422)
             path_snapshot = PathValidationSnapshot.model_validate(path.snapshot)
+            reservation = self._require_live_reservation(session, path, path_snapshot)
             env_snapshot = EnvironmentCapabilitySnapshot.model_validate(environment.snapshot)
             analysis_snapshot = SourceAnalysisSnapshot.model_validate(analysis.snapshot)
             preflight_id = f"preflight-{uuid4().hex[:12]}"
@@ -65,7 +72,6 @@ class ProductionPreflightService:
                 artifacts = LocalFilesystemArtifactStore(metadata_root / preflight_id, fixed_run_root=metadata_root / preflight_id)
             except WorkspaceLayoutError as error:
                 raise PreflightError("UNSAFE_WORKSPACE_LAYOUT", str(error), status_code=422) from error
-            reservation = session.scalar(select(TargetReservationModel).where(TargetReservationModel.validation_id == path.id).order_by(TargetReservationModel.created_at.desc()))
             blockers = sorted(set(path_snapshot.blockers + env_snapshot.blockers + analysis_snapshot.blockers))
             warnings = sorted(set(path_snapshot.warnings + env_snapshot.warnings + analysis_snapshot.warnings))
             binding = {
@@ -103,6 +109,20 @@ class ProductionPreflightService:
             session.add(ApprovalGateModel(id=f"gate-{preflight_id}-g01", preflight_id=preflight_id, gate_id=GATE_ID, gate_version=GATE_VERSION, status="pending", state_version=1, input_checksum=input_checksum, artifact_set_checksum=artifact_set_checksum, expires_at=expires, created_at=now))
             append_preflight_event(session, preflight_id=preflight_id, event_type="PREFLIGHT_CREATED", actor=request.actor, idempotency_key=request.idempotency_key, payload={"input_checksum": input_checksum, "artifact_set_checksum": artifact_set_checksum}, occurred_at=now)
             return PreflightResult(snapshot=snapshot)
+
+    def _require_live_reservation(self, session, path: PathValidationModel, path_snapshot: PathValidationSnapshot) -> TargetReservationModel:
+        reservation_id = path_snapshot.reservation_id
+        reservation = session.get(TargetReservationModel, reservation_id) if reservation_id else None
+        if reservation is None or reservation.validation_id != path.id:
+            raise PreflightError("TARGET_RESERVATION_INVALID", "The target reservation is missing or not bound to this path validation.")
+        if reservation.target_path != path_snapshot.resolved_output_root:
+            raise PreflightError("TARGET_RESERVATION_INVALID", "The target reservation does not match the resolved output root.")
+        expires_at = reservation.expires_at if reservation.expires_at.tzinfo else reservation.expires_at.replace(tzinfo=UTC)
+        if expires_at <= self._now():
+            raise PreflightError("TARGET_RESERVATION_EXPIRED", "The target reservation has expired.")
+        if reservation.status not in {"reserved", "eligible"}:
+            raise PreflightError("TARGET_RESERVATION_INVALID", "The target reservation is not available for preflight.")
+        return reservation
 
     def get(self, preflight_id: str) -> PreflightResult | None:
         with self._scope() as session:

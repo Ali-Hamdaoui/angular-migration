@@ -84,7 +84,7 @@ def test_validate_previews_a_future_output_root_without_creating_directories(tmp
     assert not (output / ".migration-factory").exists()
     assert not (output / "migrated-app").exists()
 
-def test_validate_allows_safe_external_paths_outside_legacy_allowed_roots(tmp_path: Path):
+def test_validate_blocks_paths_outside_the_configured_target_root(tmp_path: Path):
     source = tmp_path / "external-source" / "angular-app"
     target_parent = tmp_path / "external-targets"
     source.mkdir(parents=True)
@@ -113,7 +113,20 @@ def test_validate_allows_safe_external_paths_outside_legacy_allowed_roots(tmp_pa
         )
     )
 
-    assert result.snapshot.status == "passed"
-    assert "source_path_outside_allowed_roots" not in result.snapshot.blockers
-    assert "target_path_outside_allowed_roots" not in result.snapshot.blockers
-    assert result.snapshot.resolved_output_root == str(target_parent / "angular-app-angular-21")
+    assert result.snapshot.status == "blocked"
+    assert "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS" in result.snapshot.blockers
+    assert "OUTPUT_ROOT_OUTSIDE_ALLOWED_ROOTS" in result.snapshot.blockers
+
+
+def test_validate_allows_nested_target_and_rejects_sibling_prefix(tmp_path: Path):
+    source = tmp_path / "sources" / "angular-app"
+    target_root = tmp_path / "targets"
+    source.mkdir(parents=True)
+    target_root.mkdir()
+    service = PathValidationService(Settings(_env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes", allowed_target_roots=[target_root], minimum_free_disk_bytes=0))
+
+    nested = service.validate(PathValidationRequest(source_path=str(source), target_parent_path=str(target_root / "nested"), idempotency_key="nested"))
+    sibling = service.validate(PathValidationRequest(source_path=str(source), target_parent_path=str(tmp_path / "targets-sibling"), idempotency_key="sibling"))
+
+    assert "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS" not in nested.snapshot.blockers
+    assert "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS" in sibling.snapshot.blockers

@@ -284,7 +284,9 @@ class BaselinePrequalificationService:
             return RegistryReadiness("blocked", None, private_auth_configured, False, False, ("EXECUTION_PROFILE_REQUIRED",))
         blockers = []
         if profile.network_policy != "approved-registries-only": blockers.append("REGISTRY_NETWORK_POLICY_UNAPPROVED")
-        if profile.proxy_profile == "none": blockers.append("REGISTRY_PROXY_UNAVAILABLE")
+        # Direct registry access is valid. A proxy is blocking only when the
+        # selected policy explicitly marks it as mandatory.
+        if profile.proxy_profile in {"required", "mandatory"}: blockers.append("REGISTRY_PROXY_UNAVAILABLE")
         if profile.certificate_profile != "validated": blockers.append("REGISTRY_CERTIFICATE_INVALID")
         return RegistryReadiness("ready" if not blockers else "blocked", "configured", private_auth_configured, profile.proxy_profile != "none", profile.certificate_profile == "validated", tuple(blockers))
 
