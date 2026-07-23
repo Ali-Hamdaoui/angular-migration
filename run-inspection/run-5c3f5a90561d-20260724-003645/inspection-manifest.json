@@ -1,0 +1,8 @@
+﻿{
+    "run_id":  "run-5c3f5a90561d",
+    "backend_url":  "http://127.0.0.1:8000",
+    "database_path":  "C:\\Users\\abdelilah.mortaki\\AppData\\Local\\AngularMigrationControlTower\\clean-proof-20260724-002610\\control-tower.db",
+    "actor":  "control-tower",
+    "created_at":  "2026-07-24T00:36:47.4393861+01:00",
+    "output_root":  "C:\\Users\\abdelilah.mortaki\\Desktop\\angular-migration\\run-inspection\\run-5c3f5a90561d-20260724-003645"
+}

@@ -14,7 +14,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.api.routes import discovery as discovery_routes
 from app.api.routes import runs as runs_routes
 from app.main import app
-from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, MigrationRunModel, SourceSnapshotModel, WorkflowEventModel
 from app.services.discovery_evidence_application_service import DiscoveryEvidenceApplicationService
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
@@ -29,7 +29,8 @@ def fixture(tmp_path):
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     with sessions() as session:
-        session.add(MigrationRunModel(id="run-1", status="CREATED", run_phase="DISCOVERY_BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(tmp_path / "artifacts"), workspace_aliases={"SOURCE_SNAPSHOT": str(workspace)}, created_at=NOW, updated_at=NOW))
+        session.add(MigrationRunModel(id="run-1", status="CREATED", run_phase="DISCOVERY_BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(tmp_path / "artifacts"), workspace_aliases={"SOURCE_SNAPSHOT": str(tmp_path)}, created_at=NOW, updated_at=NOW))
+        session.add(SourceSnapshotModel(id="snapshot-1", run_id="run-1", idempotency_key="snapshot-1", actor="operator", status="created", source_path=str(workspace), snapshot_path=str(workspace), policy_version="snapshot-v1", file_count=2, total_size_bytes=1, exclusions=[], git_metadata={}, artifact_ids=[], state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
         session.add(ArtifactMetadataModel(id="metadata-baseline", run_id="run-1", stage_id=None, artifact_type="json", relative_path="baseline.json", checksum="sha256:baseline", created_at=NOW))
         session.add(G03ApprovalModel(id="g03-1", run_id="run-1", gate_id="G03", gate_version="g03-v1", idempotency_key="g03-1", actor="operator", status="approved", decision="approved", package_checksum="sha256:package", evidence_set_checksum="sha256:evidence", qualification_status="qualified", policy_version="g03-v1", state_version=1, event_sequence=1, sandbox_fingerprint="sha256:sandbox", execution_profile_checksum="sha256:profile", package={}, artifact_ids=[], comment=None, created_at=NOW, updated_at=NOW))
         session.commit()
@@ -119,4 +120,18 @@ def test_discovery_execution_failure_persists_a_blocked_result_and_event(tmp_pat
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
         assert record is not None and record.artifact_ids == []
         assert [event.event_type for event in events] == ["DISCOVERY_STARTED", "DISCOVERY_BLOCKED"]
+    engine.dispose()
+
+
+def test_discovery_blocks_missing_required_scanner_inputs(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    (tmp_path / "source-snapshot" / "package.json").unlink()
+    result = DiscoveryEvidenceApplicationService(session_scope_factory=scope, now_provider=lambda: NOW).capture("run-1", request("missing-input"))
+    assert result.status == "blocked"
+    assert result.error_code == "DISCOVERY_SCANNER_BLOCKED"
+    with sessions() as session:
+        record = session.get(DiscoveryEvidenceModel, result.discovery_id)
+        assert record.status == "blocked"
+        assert [item["status"] for item in record.scanner_results].count("unknown") >= 3
+        assert session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.event_type == "DISCOVERY_COMPLETED")) is None
     engine.dispose()

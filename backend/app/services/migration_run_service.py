@@ -15,7 +15,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, PathValidationModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
@@ -382,6 +382,22 @@ class MigrationRunService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            resolution = session.scalar(select(CompatibilityResolutionModel).where(CompatibilityResolutionModel.run_id == run_id).order_by(CompatibilityResolutionModel.state_version.desc(), CompatibilityResolutionModel.created_at.desc()))
+            package = resolution.package if resolution else {}
+            profile = (package or {}).get("selected_profile") or {}
+            discovery = session.scalar(select(DiscoveryEvidenceModel).where(DiscoveryEvidenceModel.run_id == run_id).order_by(DiscoveryEvidenceModel.created_at.desc()))
+            builder = next((finding.get("value", [{}])[0].get("builder") for scanner in (discovery.scanner_results if discovery else []) if scanner.get("scanner") == "builders" for finding in scanner.get("findings", []) if finding.get("key") == "inventory" and finding.get("value")), None)
+            plan_inputs = ({
+                "source_exact": (package or {}).get("source_exact"),
+                "source_family": (package or {}).get("source_family"),
+                "target_family": (package or {}).get("target_family"),
+                "catalogue_version": (package or {}).get("catalogue_version"),
+                "input_fingerprint": resolution.artifact_set_checksum if resolution else None,
+                "execution_profile_id": profile.get("profile_id"),
+                "stage_route": [[item.get("source_family"), item.get("target_family"), item.get("stage_id"), item.get("target_angular_exact"), item.get("target_cli_exact")] for item in ((package or {}).get("route") or [])],
+                "target_cli_exact": (((package or {}).get("route") or [{}])[0]).get("target_cli_exact") if (package or {}).get("route") else None,
+                "builder": builder,
+            } if resolution else None)
             return {
                 "run_id": run.id, "status": run.status, "run_phase": run.run_phase, "phase_status": run.phase_status,
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,
@@ -390,6 +406,7 @@ class MigrationRunService:
                 "workspace_aliases": dict(run.workspace_aliases or {}),
                 "source_angular_exact": (run.run_policy_snapshot or {}).get("source_angular_exact"), "catalogue_version": (run.run_policy_snapshot or {}).get("catalogue_version"),
                 "registry_snapshot": (run.run_policy_snapshot or {}).get("registry_snapshot"), "runtime_candidates": (run.run_policy_snapshot or {}).get("runtime_candidates", []),
+                "plan_inputs": plan_inputs,
                 "artifacts": self._artifacts_for_run(session, run_id), "workflow_events": self._events_for_run(session, run_id),
             }
 

@@ -64,7 +64,7 @@ describe("MigrationSetupForm", () => {
     expect(analyzeSource).toHaveBeenCalledWith(expect.objectContaining({ source_path: "C:/external/source" }));
     expect(createProductionPreflight).toHaveBeenCalledWith(expect.objectContaining({ path_validation_id: "path-1", environment_snapshot_id: "environment-1", source_analysis_id: "analysis-1" }));
     expect(screen.queryByLabelText("Path validation result")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8765/api/v1/artifacts/artifact-preflight");
+    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Start" }));

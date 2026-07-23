@@ -114,9 +114,9 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
   // G03 is the prerequisite boundary for Sprint 2 analysis. Keep the panel
   // visible at that boundary so the reviewer can explicitly start analysis;
   // waiting for an analysis event here would hide the only Generate action.
-  const analysisAvailable = has('G03_APPROVED', 'ANALYSIS_AGENT_STARTED', 'ANALYSIS_AGENT_COMPLETED', 'ANALYSIS_AGENT_FAILED', 'G04_CREATED');
-  const feasibilityAvailable = has('COMPATIBILITY_RESOLUTION_STARTED', 'COMPATIBILITY_RESOLUTION_COMPLETED', 'COMPATIBILITY_RESOLUTION_BLOCKED', 'G05_CREATED');
-  const planAvailable = has('MIGRATION_PLAN_CREATED', 'STAGE_PLAN_CREATED', 'PLAN_REVISION_CREATED', 'G06_CREATED');
+  const analysisAvailable = has('DISCOVERY_COMPLETED', 'ANALYSIS_AGENT_STARTED', 'ANALYSIS_AGENT_COMPLETED', 'ANALYSIS_AGENT_FAILED', 'G04_CREATED');
+  const feasibilityAvailable = has('G04_APPROVED', 'COMPATIBILITY_RESOLUTION_STARTED', 'COMPATIBILITY_RESOLUTION_COMPLETED', 'COMPATIBILITY_RESOLUTION_BLOCKED', 'G05_CREATED');
+  const planAvailable = has('G05_APPROVED', 'MIGRATION_PLAN_CREATED', 'STAGE_PLAN_CREATED', 'PLAN_REVISION_CREATED', 'G06_CREATED');
   const baselineValidationKinds = useMemo(() => (['build', 'test', 'lint'] as const).filter((kind) => has(kind === 'build' ? 'BASELINE_BUILD_STARTED' : kind === 'test' ? 'BASELINE_TESTS_STARTED' : 'BASELINE_LINT_STARTED')), [state.workflow_events]);
   const baselineQualificationAvailable = has('BASELINE_QUALIFIED', 'G03_CREATED') || ['BASELINE_BUILD_COMPLETED', 'BASELINE_TESTS_COMPLETED', 'BASELINE_LINT_COMPLETED'].every((eventType) => has(eventType));
   const baselineParityAvailable = has('BASELINE_QUALIFIED', 'BASELINE_QUALIFIED_WITH_KNOWN_FAILURES', 'G03_CREATED', 'BASELINE_FAILURES_FINGERPRINTED');

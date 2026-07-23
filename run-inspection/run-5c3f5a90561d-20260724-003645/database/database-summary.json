@@ -1,0 +1,463 @@
+{
+  "analysis_artifact_summary": [
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\builders_inventory.json",
+      "finding_count": 0,
+      "name": "builders_inventory.json",
+      "scanner": "builders",
+      "size_bytes": 134,
+      "status": "unknown",
+      "unknowns": [
+        "ANGULAR_JSON_MISSING"
+      ],
+      "warnings": []
+    },
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\dependencies_inventory.json",
+      "finding_count": 3,
+      "name": "dependencies_inventory.json",
+      "scanner": "dependencies",
+      "size_bytes": 1476,
+      "status": "completed",
+      "unknowns": [],
+      "warnings": []
+    },
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\ssr_pwa_i18n_inventory.json",
+      "finding_count": 0,
+      "name": "ssr_pwa_i18n_inventory.json",
+      "scanner": "ssr_pwa_i18n",
+      "size_bytes": 138,
+      "status": "unknown",
+      "unknowns": [
+        "ANGULAR_JSON_MISSING"
+      ],
+      "warnings": []
+    },
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\state_management_inventory.json",
+      "finding_count": 1,
+      "name": "state_management_inventory.json",
+      "scanner": "state_management",
+      "size_bytes": 293,
+      "status": "completed",
+      "unknowns": [],
+      "warnings": []
+    },
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\test_lint_inventory.json",
+      "finding_count": 1,
+      "name": "test_lint_inventory.json",
+      "scanner": "test_lint",
+      "size_bytes": 321,
+      "status": "completed",
+      "unknowns": [],
+      "warnings": []
+    },
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\ui_theme_inventory.json",
+      "finding_count": 1,
+      "name": "ui_theme_inventory.json",
+      "scanner": "ui_theme",
+      "size_bytes": 361,
+      "status": "completed",
+      "unknowns": [],
+      "warnings": []
+    },
+    {
+      "file": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts\\02_analysis\\workspace_inventory.json",
+      "finding_count": 0,
+      "name": "workspace_inventory.json",
+      "scanner": "workspace",
+      "size_bytes": 135,
+      "status": "unknown",
+      "unknowns": [
+        "ANGULAR_JSON_MISSING"
+      ],
+      "warnings": []
+    }
+  ],
+  "database_integrity_check": "ok",
+  "database_path": "C:\\Users\\abdelilah.mortaki\\AppData\\Local\\AngularMigrationControlTower\\clean-proof-20260724-002610\\control-tower.db",
+  "diagnosis": [
+    "Discovery did not complete.",
+    "AI analysis was never started: ANALYSIS_AGENT_STARTED is absent.",
+    "No LLM invocation row exists for this run.",
+    "No LLM usage/cost row exists for this run.",
+    "G04 was not approved, so feasibility was not unlocked.",
+    "G05 was not approved, so MigrationPlan generation was not unlocked.",
+    "MigrationPlan generation was never invoked.",
+    "No planning-review record exists.",
+    "No G06 gate record exists.",
+    "Discovery root mismatch detected: SOURCE_SNAPSHOT points to the snapshot parent, while package.json/angular.json are inside the persisted snapshot_path.",
+    "Discovery produced unknown scanner results: builders=['ANGULAR_JSON_MISSING'], ssr_pwa_i18n=['ANGULAR_JSON_MISSING'], workspace=['ANGULAR_JSON_MISSING']"
+  ],
+  "event_types": [
+    "RUN_CREATED",
+    "RUN_START_ACCEPTED",
+    "SOURCE_INTAKE_QUEUED",
+    "SOURCE_INTAKE_STARTED",
+    "SNAPSHOT_STARTED",
+    "SNAPSHOT_PROGRESS_UPDATED",
+    "SNAPSHOT_CREATED",
+    "SOURCE_INTAKE_COMPLETED",
+    "G02_CREATED",
+    "SOURCE_INTEGRITY_VERIFIED",
+    "G02_APPROVED",
+    "EXECUTION_PROFILE_RESOLUTION_STARTED",
+    "EXECUTION_PROFILE_RESOLVED",
+    "BASELINE_WORKSPACE_STARTED",
+    "BASELINE_WORKSPACE_READY",
+    "LOCKFILE_PREQUALIFICATION_COMPLETED",
+    "BASELINE_INSTALL_AUTHORIZED",
+    "COMMAND_QUEUED",
+    "COMMAND_STARTED",
+    "COMMAND_OUTPUT_CHUNK",
+    "COMMAND_OUTPUT_CHUNK",
+    "COMMAND_OUTPUT_AVAILABLE",
+    "BASELINE_INSTALL_SUCCEEDED",
+    "BASELINE_TARGETS_DISCOVERED",
+    "BASELINE_BUILD_STARTED",
+    "COMMAND_OUTPUT_CHUNK",
+    "COMMAND_OUTPUT_CHUNK",
+    "COMMAND_OUTPUT_CHUNK",
+    "COMMAND_OUTPUT_CHUNK",
+    "BASELINE_BUILD_COMPLETED",
+    "BASELINE_TARGETS_DISCOVERED",
+    "BASELINE_TESTS_STARTED",
+    "COMMAND_OUTPUT_CHUNK",
+    "COMMAND_OUTPUT_CHUNK",
+    "BASELINE_TESTS_COMPLETED",
+    "BASELINE_TARGETS_DISCOVERED",
+    "BASELINE_LINT_STARTED",
+    "BASELINE_LINT_COMPLETED",
+    "BASELINE_QUALIFIED",
+    "G03_CREATED",
+    "G03_APPROVED",
+    "DISCOVERY_STARTED",
+    "SCANNER_COMPLETED",
+    "SCANNER_COMPLETED",
+    "SCANNER_COMPLETED",
+    "SCANNER_COMPLETED",
+    "SCANNER_COMPLETED",
+    "SCANNER_COMPLETED",
+    "SCANNER_COMPLETED",
+    "DISCOVERY_BLOCKED"
+  ],
+  "foreign_key_issues": [],
+  "phase_counts": {
+    "analysis_metadata": 0,
+    "compatibility_resolutions": 0,
+    "discovery_evidence": 1,
+    "g04_approvals": 0,
+    "g05_approvals": 0,
+    "g06_approvals": 0,
+    "llm_invocations": 0,
+    "migration_plans": 0,
+    "planning_reviews": 0,
+    "stage_execution_plans": 0,
+    "usage_cost_records": 0,
+    "workflow_events": 50
+  },
+  "run": {
+    "actor": "control-tower",
+    "approval_status": "approved",
+    "artifact_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts",
+    "client_constraints": {
+      "allow_optional_modernization": false,
+      "preserve_api_contracts": true,
+      "preserve_authentication_authorization": true,
+      "preserve_behavior": true,
+      "preserve_business_logic": true,
+      "preserve_ui": true
+    },
+    "created_at": "2026-07-23 23:28:45.119958",
+    "generated_output_name": "angular-crud-poc-angular-21-a5772c56b09f",
+    "graph_thread_id": "source-intake-run-5c3f5a90561d",
+    "id": "run-5c3f5a90561d",
+    "log_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\logs",
+    "migrated_app_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\migrated-app",
+    "output_layout_version": "external-output-layout-v1",
+    "phase_status": "running",
+    "preflight_id": "preflight-e5c14d632273",
+    "pricing_snapshot": {},
+    "repair_status": "not_required",
+    "report_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\reports",
+    "resolved_output_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f",
+    "run_phase": "PREFLIGHT_SNAPSHOT",
+    "run_policy_snapshot": {
+      "artifact_set_checksum": "sha256:1a44d3eada3550cb7a043d3d793d4eff6fab91950dac26309dbbfd57e0e1ea47",
+      "gate_version": "s1-g01-v1",
+      "input_checksum": "sha256:ab2eb1c938223cde9675fc3cda12160a2d25ddbeb300f42c851e1519940a4db3"
+    },
+    "run_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d",
+    "source_angular_version": null,
+    "source_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angular-crud-poc",
+    "source_version_detected": null,
+    "source_version_family": null,
+    "state_version": 48,
+    "status": "BASELINE_QUALIFIED",
+    "target_angular_version": "21.x",
+    "target_output_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f",
+    "target_parent_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus",
+    "target_policy_snapshot": {
+      "migration_mode": "strict-functional-parity",
+      "target_angular_family": "21.x"
+    },
+    "target_version_family": "21.x",
+    "target_version_resolved": null,
+    "temporary_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\temporary",
+    "updated_at": "2026-07-23 23:32:47.925698",
+    "workspace_aliases": {
+      "ARTIFACT_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\artifacts",
+      "BASELINE_SANDBOX": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\baseline-sandbox",
+      "DELIVERY_CANDIDATE": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\delivery-candidate",
+      "FINAL_ASSURANCE_SANDBOX": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\final-assurance-sandbox",
+      "LOG_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\logs",
+      "MIGRATED_APP": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\migrated-app",
+      "MIGRATION_FACTORY_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory",
+      "OUTPUT_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f",
+      "REPAIR_SANDBOX": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\repair-sandboxes",
+      "REPORT_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\reports",
+      "RUN_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d",
+      "SOURCE_SNAPSHOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\source-snapshot",
+      "STAGE_SANDBOX": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\stage-sandboxes",
+      "TEMPORARY_ROOT": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\temporary"
+    }
+  },
+  "run_id": "run-5c3f5a90561d",
+  "snapshot_root_probe": {
+    "alias_angular_json_exists": false,
+    "alias_package_json_exists": false,
+    "persisted_angular_json_exists": true,
+    "persisted_package_json_exists": true,
+    "persisted_snapshot_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\source-snapshot\\snapshot-dc6abfc688be",
+    "workspace_alias_source_snapshot": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\source-snapshot"
+  },
+  "table_counts": {
+    "active_plan_versions": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "active_run_claims": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "agent_executions": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "alembic_version": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "analysis_metadata": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "approval_events": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "approval_gates": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "approval_policy_events": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "artifact_metadata": {
+      "run_rows": 76,
+      "total_rows": 76
+    },
+    "baseline_assessments": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "baseline_parity_evidence": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "baseline_qualifications": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "baseline_validations": {
+      "run_rows": 3,
+      "total_rows": 3
+    },
+    "build_system_decisions": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "command_authorization_audits": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "command_executions": {
+      "run_rows": 4,
+      "total_rows": 4
+    },
+    "command_log_chunks": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "command_log_summaries": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "command_templates": {
+      "run_rows": null,
+      "total_rows": 0
+    },
+    "compatibility_catalogues": {
+      "run_rows": null,
+      "total_rows": 0
+    },
+    "compatibility_registry_snapshots": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "compatibility_resolutions": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "discovery_evidence": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "environment_capability_snapshots": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "environment_diagnostic_events": {
+      "run_rows": null,
+      "total_rows": 2
+    },
+    "execution_profiles": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "g02_approvals": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "g03_approvals": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "g04_approvals": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "g05_approvals": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "g06_approvals": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "llm_invocations": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "llm_usage_records": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "migration_plans": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "migration_runs": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "migration_stages": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "parity_baseline_evidence": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "path_validations": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "plan_approval_stale_records": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "plan_revisions": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "planning_reviews": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "preflight_artifact_metadata": {
+      "run_rows": null,
+      "total_rows": 6
+    },
+    "preflight_events": {
+      "run_rows": null,
+      "total_rows": 2
+    },
+    "preflights": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "repair_attempts": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "run_assurance_statuses": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "source_analyses": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "source_intake_jobs": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "source_snapshots": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "stage_execution_plans": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "stage_steps": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "target_reservations": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "usage_cost_records": {
+      "run_rows": 0,
+      "total_rows": 0
+    },
+    "user_decisions": {
+      "run_rows": null,
+      "total_rows": 1
+    },
+    "worker_leases": {
+      "run_rows": 1,
+      "total_rows": 1
+    },
+    "workflow_events": {
+      "run_rows": 50,
+      "total_rows": 50
+    }
+  }
+}

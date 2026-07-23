@@ -109,8 +109,12 @@ class DiscoveryService:
         return ScannerFinding(scanner="test_lint", status="completed", findings=(self._fact("scripts", selected, "package.json"),))
 
     def _ssr_pwa_i18n(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json") or {}
-        angular = self._json(root / "angular.json") or {}
+        package = self._json(root / "package.json")
+        angular = self._json(root / "angular.json")
+        if package is None:
+            return self._unknown("ssr_pwa_i18n", "PACKAGE_JSON_MISSING")
+        if angular is None:
+            return self._unknown("ssr_pwa_i18n", "ANGULAR_JSON_MISSING")
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         dependency_names = set(dependencies) if isinstance(dependencies, dict) else set()
         serialized = json.dumps(angular, sort_keys=True)
@@ -122,14 +126,18 @@ class DiscoveryService:
         return ScannerFinding(scanner="ssr_pwa_i18n", status="completed", findings=(self._fact("inventory", inventory, "package.json", "angular.json"),))
 
     def _ui_theme(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json") or {}
+        package = self._json(root / "package.json")
+        if package is None:
+            return self._unknown("ui_theme", "PACKAGE_JSON_MISSING")
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         names = set(dependencies) if isinstance(dependencies, dict) else set()
         inventory = {"ui_libraries": sorted(name for name in names if name in {"@angular/material", "primeng", "ng-zorro-antd", "bootstrap"}), "theme_configuration": "unknown"}
         return ScannerFinding(scanner="ui_theme", status="completed", findings=(self._fact("inventory", inventory, "package.json"),))
 
     def _state_management(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json") or {}
+        package = self._json(root / "package.json")
+        if package is None:
+            return self._unknown("state_management", "PACKAGE_JSON_MISSING")
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         names = set(dependencies) if isinstance(dependencies, dict) else set()
         inventory = {"libraries": sorted(name for name in names if name.startswith("@ngrx/") or name in {"akita", "@angular-redux/store"})}

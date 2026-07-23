@@ -941,6 +941,7 @@ class AuthoritativeRunStateDto(ContractModel):
     catalogue_version: str | None = None
     registry_snapshot: dict[str, object] | None = None
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
+    plan_inputs: dict[str, object] | None = None
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 
