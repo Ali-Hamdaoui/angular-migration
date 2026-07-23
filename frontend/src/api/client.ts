@@ -23,7 +23,13 @@ export function createApiClient(baseUrl = getBackendBaseUrl(), fetchImplementati
   async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const response = await fetchImplementation(`${baseUrl}${path}`, {
       method,
-      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers: {
+        Accept: "application/json",
+        // The local control plane persists this actor on every run. Keep all
+        // browser reads and writes under the same authenticated identity.
+        "X-Authenticated-Actor": process.env.NEXT_PUBLIC_AUTHENTICATED_ACTOR ?? "control-tower",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
       cache: "no-store",
       body: body ? JSON.stringify(body) : undefined,
     });

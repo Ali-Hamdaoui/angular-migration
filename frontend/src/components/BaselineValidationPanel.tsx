@@ -13,7 +13,7 @@ function label(value: string) { return value.replaceAll("_", " "); }
 function resultFor(results: BaselineMatrixResult[], targetId: string) { return results.find((item) => item.target_id === targetId); }
 const terminal = new Set(["passed", "failed", "skipped_not_configured", "skipped_not_applicable", "blocked", "interrupted", "cancelled"]);
 
-export function BaselineValidationPanel({ runId, stateVersion, connectionStatus }: { runId: string; stateVersion: number; connectionStatus: ConnectionStatus }) {
+export function BaselineValidationPanel({ runId, stateVersion, connectionStatus, availableKinds = kinds }: { runId: string; stateVersion: number; connectionStatus: ConnectionStatus; availableKinds?: BaselineMatrixKind[] }) {
   const [inventory, setInventory] = useState<BaselineTargetInventoryResponse | null>(null);
   const [validations, setValidations] = useState<Partial<Record<BaselineMatrixKind, BaselineValidationResponse>>>({});
   const [loading, setLoading] = useState(true);
@@ -24,12 +24,12 @@ export function BaselineValidationPanel({ runId, stateVersion, connectionStatus 
   const refresh = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [targets, ...results] = await Promise.all([getBaselineTargets(runId), ...kinds.map((kind) => getBaselineValidation(runId, kind).catch((reason: unknown) => reason instanceof ApiClientError && reason.status === 404 ? null : Promise.reject(reason)))]);
+      const [targets, ...results] = await Promise.all([getBaselineTargets(runId), ...availableKinds.map((kind) => getBaselineValidation(runId, kind).catch((reason: unknown) => reason instanceof ApiClientError && reason.status === 404 ? null : Promise.reject(reason)))]);
       setInventory(targets);
       setValidations(Object.fromEntries(results.filter((item): item is BaselineValidationResponse => item !== null).map((item) => [item.kind, item])));
     } catch { setError("Baseline validation evidence could not be loaded."); }
     finally { setLoading(false); }
-  }, [runId]);
+  }, [availableKinds, runId]);
 
   useEffect(() => { void refresh(); }, [refresh, stateVersion]);
   useEffect(() => {
