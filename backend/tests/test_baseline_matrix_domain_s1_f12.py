@@ -39,3 +39,14 @@ def test_invalid_package_metadata_fails_closed(tmp_path):
     (tmp_path / "package.json").write_text("not json", encoding="utf-8")
     with pytest.raises(BaselineMatrixError, match="PACKAGE_JSON_INVALID"):
         BaselineTargetDiscoveryService().discover(tmp_path)
+
+
+def test_windows_utf8_bom_in_angular_metadata_is_supported(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "jest"}}), encoding="utf-8")
+    angular = {"projects": {"app": {"architect": {"build": {"builder": "@angular-devkit/build-angular:application"}}}}}
+    (tmp_path / "angular.json").write_text("\ufeff" + json.dumps(angular), encoding="utf-8")
+
+    inventory = BaselineTargetDiscoveryService().discover(tmp_path)
+
+    assert inventory.angular_json_present is True
+    assert any(item.target_id == "angular:app:build" for item in inventory.targets)

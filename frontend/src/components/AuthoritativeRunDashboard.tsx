@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { retryAuthoritativeSourceIntake } from "@/api/runs";
@@ -100,10 +100,22 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
   const [retryingSourceIntake, setRetryingSourceIntake] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const connectionLabel = {
-    loading: "Loading authoritative state?", connecting: "Connecting to backend events?", open: "Live ? authoritative state", reconnecting: "Connection lost ? reconnecting?", recovering: "Refreshing authoritative snapshot?", failed: "Unable to refresh authoritative state",
+    loading: "Loading authoritative state…", connecting: "Connecting to backend events…", open: "Live · authoritative state", reconnecting: "Connection lost · reconnecting…", recovering: "Refreshing authoritative snapshot…", failed: "Unable to refresh authoritative state",
   }[status];
 
   const baselineEvidenceReady = state.workflow_events.some((event) => event.event_type === 'BASELINE_QUALIFIED' || event.event_type === 'BASELINE_QUALIFIED_WITH_KNOWN_FAILURES' || event.event_type === 'G03_CREATED');
+  const has = (...types: string[]) => state.workflow_events.some((event) => types.includes(event.event_type));
+  const g02Available = has('G02_CREATED', 'G02_APPROVED', 'G02_REJECTED', 'G02_STALE');
+  const g02Approved = has('G02_APPROVED');
+  const runtimeAvailable = has('EXECUTION_PROFILE_RESOLUTION_STARTED', 'EXECUTION_PROFILE_RESOLVED', 'EXECUTION_PROFILE_SELECTED', 'EXECUTION_PROFILE_BLOCKED');
+  const baselineAvailable = has('BASELINE_WORKSPACE_STARTED', 'BASELINE_WORKSPACE_READY');
+  const discoveryAvailable = has('DISCOVERY_STARTED', 'SCANNER_COMPLETED', 'DISCOVERY_COMPLETED', 'DISCOVERY_BLOCKED');
+  const analysisAvailable = has('ANALYSIS_AGENT_STARTED', 'ANALYSIS_AGENT_COMPLETED', 'ANALYSIS_AGENT_FAILED', 'G04_CREATED');
+  const feasibilityAvailable = has('COMPATIBILITY_RESOLUTION_STARTED', 'COMPATIBILITY_RESOLUTION_COMPLETED', 'COMPATIBILITY_RESOLUTION_BLOCKED', 'G05_CREATED');
+  const planAvailable = has('MIGRATION_PLAN_CREATED', 'STAGE_PLAN_CREATED', 'PLAN_REVISION_CREATED', 'G06_CREATED');
+  const baselineValidationKinds = useMemo(() => (['build', 'test', 'lint'] as const).filter((kind) => has(kind === 'build' ? 'BASELINE_BUILD_STARTED' : kind === 'test' ? 'BASELINE_TESTS_STARTED' : 'BASELINE_LINT_STARTED')), [state.workflow_events]);
+  const baselineQualificationAvailable = has('BASELINE_QUALIFIED', 'G03_CREATED') || ['BASELINE_BUILD_COMPLETED', 'BASELINE_TESTS_COMPLETED', 'BASELINE_LINT_COMPLETED'].every((eventType) => has(eventType));
+  const baselineParityAvailable = has('BASELINE_QUALIFIED', 'BASELINE_QUALIFIED_WITH_KNOWN_FAILURES', 'G03_CREATED', 'BASELINE_FAILURES_FINGERPRINTED');
   const visiblePipelineSteps = baselineEvidenceReady ? pipelineSteps : pipelineSteps.filter((step) => step.label !== 'G03 readiness');
   const pipelineStates = visiblePipelineSteps.map((step) => pipelineState(step, state.workflow_events));
   const completedPipelineSteps = pipelineStates.filter((step) => step.status === 'completed').length;
@@ -142,23 +154,23 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       </section>
       {error ? <section className={styles.panel}><p role="alert">{error}</p></section> : null}
       <LlmDiagnosticsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} refreshAuthoritativeState={refresh} workflowEvents={state.workflow_events} />
-      <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
-      <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
-      <MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
-      <PlanReviewPanel runId={runId} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} />
-      <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
-      <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} />
+      {analysisAvailable ? <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
+      {feasibilityAvailable ? <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
+      {planAvailable ? <MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
+      {planAvailable ? <PlanReviewPanel runId={runId} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} /> : null}
+      {discoveryAvailable ? <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} /> : null}
+      {has('PARITY_BASELINE_STARTED', 'PARITY_BASELINE_COMPLETED', 'PARITY_BASELINE_BLOCKED') ? <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} /> : null}
       <div className={styles.dashboardGrid}>
       <div className={styles.primaryColumn}>
       <SourceSnapshotPanel runId={runId} initialState={state} />
-      <G02ReviewPanel runId={runId} initialState={state} />
-      <ExecutionProfilePanel runId={runId} initialState={state} />
-      <BaselinePreparationPanel runId={runId} initialState={state} />
-      <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} />
-      <BaselineValidationPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
-      <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} />
-      <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} />
-      <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+      {g02Available ? <G02ReviewPanel runId={runId} initialState={state} /> : null}
+      {g02Approved || runtimeAvailable ? <ExecutionProfilePanel runId={runId} initialState={state} /> : null}
+      {runtimeAvailable ? <BaselinePreparationPanel runId={runId} initialState={state} /> : null}
+      {baselineAvailable ? <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} /> : null}
+      {baselineAvailable ? <BaselineValidationPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} availableKinds={baselineValidationKinds} /> : null}
+      {baselineQualificationAvailable ? <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} /> : null}
+      {baselineParityAvailable ? <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} /> : null}
+      {baselineAvailable ? <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
       </div>
       <aside className={styles.secondaryColumn}>
       <AuthoritativeRunCancellationPanel runId={runId} state={state} refresh={refresh} />

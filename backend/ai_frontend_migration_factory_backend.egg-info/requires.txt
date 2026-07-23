@@ -1,0 +1,6 @@
+fastapi<1.0,>=0.115
+uvicorn[standard]<1.0,>=0.30
+pydantic-settings<3.0,>=2.0
+sqlalchemy<3.0,>=2.0
+alembic<2.0,>=1.14
+langgraph<1.0,>=0.2

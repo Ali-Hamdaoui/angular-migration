@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -123,7 +124,7 @@ def test_application_service_persists_reservation_without_creating_previewed_out
         )
     )
 
-    output_root = target_parent / "source-angular-21"
+    output_root = Path(result.snapshot.resolved_output_root)
     assert result.snapshot.status == "passed"
     assert result.snapshot.reservation_id is not None
     assert not output_root.exists()

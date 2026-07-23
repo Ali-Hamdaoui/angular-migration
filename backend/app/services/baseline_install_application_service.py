@@ -345,7 +345,7 @@ class BaselineInstallApplicationService:
     @staticmethod
     def _register_artifacts(session, run, artifacts):
         for artifact in artifacts:
-            session.add(ArtifactMetadataModel(id=f"metadata-{artifact.ref.artifact_id}", run_id=run.id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at))
+            session.add(ArtifactMetadataModel(id=f"metadata-{artifact.ref.artifact_id}", run_id=run.id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at, finalized_at=artifact.ref.created_at, immutable=True))
     def _persist_artifacts(self, session, run, result, request, execution_id, reconstruction, *, executable="npm"):
         root = Path(run.artifact_root).resolve()
         store = LocalFilesystemArtifactStore(root, fixed_run_root=root)

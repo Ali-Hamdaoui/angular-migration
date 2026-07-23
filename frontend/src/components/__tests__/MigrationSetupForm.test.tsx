@@ -64,11 +64,62 @@ describe("MigrationSetupForm", () => {
     expect(analyzeSource).toHaveBeenCalledWith(expect.objectContaining({ source_path: "C:/external/source" }));
     expect(createProductionPreflight).toHaveBeenCalledWith(expect.objectContaining({ path_validation_id: "path-1", environment_snapshot_id: "environment-1", source_analysis_id: "analysis-1" }));
     expect(screen.queryByLabelText("Path validation result")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8000/api/v1/artifacts/artifact-preflight");
+    expect(screen.getByRole("link", { name: "Open preflight artifact" })).toHaveAttribute("href", "http://127.0.0.1:8765/api/v1/artifacts/artifact-preflight");
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(push).toHaveBeenCalledWith("/preflights/preflight-1");
+  });
+
+  it("reads live form values and reports empty paths without disabling Validate", async () => {
+    render(<MigrationSetupForm />);
+    const validate = screen.getByRole("button", { name: "Validate" });
+    expect(validate).toBeEnabled();
+    fireEvent.click(validate);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Enter both a source path and an external target-parent path.");
+    expect(validatePaths).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Source path"), { target: { value: " C:/restored/source " } });
+    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: " C:/restored/target " } });
+    fireEvent.click(validate);
+    await waitFor(() => expect(validatePaths).toHaveBeenCalledWith(expect.objectContaining({ source_path: "C:/restored/source", target_parent_path: "C:/restored/target" })));
+  });
+
+  it("restores DOM values, validates them, and binds Start to the resulting preflight", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed"));
+    render(<MigrationSetupForm />);
+    const source = screen.getByLabelText("Source path") as HTMLInputElement;
+    const target = screen.getByLabelText("External target-parent path") as HTMLInputElement;
+    source.value = "C:/restored/source";
+    target.value = "C:/restored/target";
+
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+
+    await screen.findByText("Latest authoritative validation: preflight-1");
+    expect(validatePaths).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+  });
+
+  it("sends exactly one path-validation request for one Validate click", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed"));
+    render(<MigrationSetupForm />);
+    fireEvent.change(screen.getByLabelText("Source path"), { target: { value: "C:/typed/source" } });
+    fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: "C:/typed/target" } });
+    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+
+    await screen.findByText("Latest authoritative validation: preflight-1");
+    expect(validatePaths).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+  });
+
+  it("invalidates Start when a path changes after a passed preflight", async () => {
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed"));
+    render(<MigrationSetupForm />);
+    fillAndValidate();
+    await screen.findByText("Latest authoritative validation: preflight-1");
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+    fireEvent.input(screen.getByLabelText("Source path"), { target: { value: "C:/changed/source" } });
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
   });
 
   it("keeps Start disabled when the latest authoritative decision is blocked", async () => {

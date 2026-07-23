@@ -176,7 +176,8 @@ export function LiveCommandLogViewer({
     }
     clearReconnect();
     setConnectionState(retryRef.current === 0 ? "connecting" : "reconnecting");
-    const url = `${apiBase}/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/logs/stream?cursor=${encodeURIComponent(String(cursorRef.current))}`;
+    const actor = process.env.NEXT_PUBLIC_AUTHENTICATED_ACTOR ?? "control-tower";
+    const url = `${apiBase}/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/logs/stream?cursor=${encodeURIComponent(String(cursorRef.current))}&actor=${encodeURIComponent(actor)}`;
     const source = new EventSource(url);
     eventSourceRef.current = source;
 

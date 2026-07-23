@@ -65,8 +65,15 @@ class DeploymentConfiguration(BaseModel):
 
     @classmethod
     def from_settings(cls, settings: Settings) -> 'DeploymentConfiguration':
+        # Accept the Azure v1 resource URL shown in Azure Portal while keeping
+        # the gateway's deployment-based transport URL canonical.
+        endpoint = (settings.azure_openai_endpoint or '').rstrip('/')
+        for suffix in ('/openai/v1', '/openai'):
+            if endpoint.endswith(suffix):
+                endpoint = endpoint[:-len(suffix)]
+                break
         values = {
-            'endpoint': settings.azure_openai_endpoint,
+            'endpoint': endpoint,
             'deployment': settings.azure_openai_deployment,
             'api_version': settings.azure_openai_api_version,
             'api_key': settings.azure_openai_api_key.get_secret_value() if settings.azure_openai_api_key else None,

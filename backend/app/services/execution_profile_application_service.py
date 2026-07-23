@@ -102,7 +102,35 @@ class ExecutionProfileApplicationService:
         controlled = snapshot.get("controlled_probes", {})
         if any(controlled.get(name, {}).get("status") != "passed" for name in ("node_exec_path", "npm_registry")):
             return (), environment.checksum
-        candidate = RuntimeCandidate(profile_id=f"environment-{environment.id}", operating_system="windows", architecture="amd64", node_executable=required[0]["executable"], node_exact=required[0]["version"], npm_executable=required[1]["executable"], npm_exact=required[1]["version"], npx_executable=required[2]["executable"], npx_exact=required[2]["version"], registry_configured=bool(network.get("registry_configured")), proxy_configured=bool(network.get("proxy_configured")), certificate_valid=bool(network.get("strict_ssl")), environment_allowlist_valid=bool(network.get("credentials_redacted", True)), cache_policy_valid=True, network_policy="approved-registries-only", available=True)
+        registry_probe = controlled.get("npm_registry", {})
+        registry_configured = (
+            registry_probe.get("status") == "passed"
+            and bool(registry_probe.get("value"))
+        )
+
+        candidate = RuntimeCandidate(
+            profile_id=f"environment-{environment.id}",
+            operating_system="windows",
+            architecture="amd64",
+            node_executable=required[0]["executable"],
+            node_exact=required[0]["version"],
+            npm_executable=required[1]["executable"],
+            npm_exact=required[1]["version"],
+            npx_executable=required[2]["executable"],
+            npx_exact=required[2]["version"],
+            registry_configured=registry_configured,
+            proxy_configured=bool(
+                network.get("proxy_configured")
+                or network.get("https_proxy_configured")
+            ),
+            certificate_valid=bool(network.get("strict_ssl")),
+            environment_allowlist_valid=bool(
+                network.get("credentials_redacted", True)
+            ),
+            cache_policy_valid=True,
+            network_policy="approved-registries-only",
+            available=True,
+        )
         return (candidate,), environment.checksum
 
     def _require_g02(self,session,run_id):

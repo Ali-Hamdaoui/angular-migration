@@ -102,6 +102,8 @@ class G02ApprovalApplicationService:
             run_id=run.id, expected_state_version=created.next_state_version,
             idempotency_key=f"{idempotency_key}:integrity",
             event_type=(WorkflowEventType.SOURCE_INTEGRITY_VERIFIED if package.source_integrity_verified else WorkflowEventType.SOURCE_INTEGRITY_FAILED),
+            next_phase_status="waiting_approval" if package.source_integrity_verified else "blocked",
+            next_approval_status="pending" if package.source_integrity_verified else "rejected",
             actor=actor, reason="G02 source integrity evaluated", occurred_at=now,
             payload={"snapshot_id": package.snapshot_id, "source_fingerprint": package.source_fingerprint},
         ))
@@ -156,6 +158,8 @@ class G02ApprovalApplicationService:
                         run_id=run_id, expected_state_version=created.next_state_version,
                         idempotency_key=f"{request.idempotency_key}:integrity",
                         event_type=(WorkflowEventType.SOURCE_INTEGRITY_VERIFIED if package.source_integrity_verified else WorkflowEventType.SOURCE_INTEGRITY_FAILED),
+                        next_phase_status="waiting_approval" if package.source_integrity_verified else "blocked",
+                        next_approval_status="pending" if package.source_integrity_verified else "rejected",
                         actor=request.actor, reason="G02 source integrity evaluated", occurred_at=now,
                         payload={"snapshot_id": package.snapshot_id, "source_fingerprint": package.source_fingerprint},
                     )
@@ -183,6 +187,8 @@ class G02ApprovalApplicationService:
                 TransitionRequest(
                     run_id=run_id, expected_state_version=run.state_version,
                     idempotency_key=request.idempotency_key, event_type=event_type,
+                    next_phase_status=("running" if event_type == WorkflowEventType.G02_APPROVED else "blocked"),
+                    next_approval_status=("approved" if event_type == WorkflowEventType.G02_APPROVED else "rejected"),
                     actor=request.actor, reason=result.reason or "G02 decision recorded", occurred_at=now,
                     payload={"package_checksum": package.package_checksum, "decision": result.decision.value},
                 )
@@ -324,7 +330,17 @@ class G02ApprovalApplicationService:
 
     def _dto(self, record, *, replay: bool = False):
         from app.api.g02_contracts import G02ReviewResponse
-        return G02ReviewResponse(run_id=record.run_id, gate_id=record.gate_id, gate_version=record.gate_version, status=record.status, decision=record.decision, package=record.package, baseline_input_boundary=record.baseline_input_boundary, state_version=record.state_version, event_sequence=record.event_sequence, idempotent_replay=replay, stale_reason=record.stale_reason, comment=record.comment)
+        package = dict(record.package)
+        integrity = dict(package.get("integrity") or {})
+        # `status` is a derived property of the immutable evidence model and is
+        # intentionally not part of the checksum-bound persisted package.  It
+        # is nevertheless part of the public API contract consumed by the UI.
+        integrity["status"] = "verified" if (
+            integrity.get("source_read_only_verified")
+            and integrity.get("before_fingerprint") == integrity.get("after_snapshot_fingerprint")
+        ) else "failed"
+        package["integrity"] = integrity
+        return G02ReviewResponse(run_id=record.run_id, gate_id=record.gate_id, gate_version=record.gate_version, status=record.status, decision=record.decision, package=package, baseline_input_boundary=record.baseline_input_boundary, state_version=record.state_version, event_sequence=record.event_sequence, idempotent_replay=replay, stale_reason=record.stale_reason, comment=record.comment)
 
 def _manifest_fingerprint(source_root: Path) -> str:
     from app.snapshots import SourceManifestBuilder

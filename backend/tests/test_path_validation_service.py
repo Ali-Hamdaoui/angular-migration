@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
+import re
 
 from app.core.config import Settings
 from app.domain.path_validation import PathValidationRequest
@@ -40,8 +41,8 @@ def test_validate_canonicalizes_paths_and_fingerprints_source(tmp_path):
     assert result.snapshot.status == "passed"
     assert result.snapshot.source_path == str(source.resolve())
     assert result.snapshot.target_parent_path == str((target_root / "out").resolve())
-    assert result.snapshot.generated_output_name == "project-angular-21"
-    assert result.snapshot.resolved_output_root == str((target_root / "out" / "project-angular-21").resolve())
+    assert re.fullmatch(r"project-angular-21-[0-9a-f]{12}", result.snapshot.generated_output_name)
+    assert result.snapshot.resolved_output_root == str((target_root / "out" / result.snapshot.generated_output_name).resolve())
     assert result.snapshot.source_fingerprint is not None
     assert result.snapshot.target_reservation_eligible is True
 
@@ -79,12 +80,30 @@ def test_validate_previews_a_future_output_root_without_creating_directories(tmp
 
     output = Path(result.snapshot.resolved_output_root)
     assert result.snapshot.status == "passed"
-    assert output == target_parent / "project-angular-21"
+    assert output.parent == target_parent
+    assert re.fullmatch(r"project-angular-21-[0-9a-f]{12}", output.name)
     assert not output.exists()
     assert not (output / ".migration-factory").exists()
     assert not (output / "migrated-app").exists()
 
-def test_validate_allows_safe_external_paths_outside_legacy_allowed_roots(tmp_path: Path):
+
+def test_validate_allocates_a_unique_sibling_for_each_new_request(tmp_path):
+    source = tmp_path / "sources" / "project"
+    target_parent = tmp_path / "targets"
+    source.mkdir(parents=True)
+    target_parent.mkdir()
+    service = PathValidationService(settings(tmp_path))
+
+    first = service.validate(PathValidationRequest(source_path=str(source), target_parent_path=str(target_parent), idempotency_key="first"))
+    second = service.validate(PathValidationRequest(source_path=str(source), target_parent_path=str(target_parent), idempotency_key="second"))
+
+    assert first.snapshot.status == "passed"
+    assert second.snapshot.status == "passed"
+    assert first.snapshot.resolved_output_root != second.snapshot.resolved_output_root
+    assert Path(first.snapshot.resolved_output_root).parent == target_parent
+    assert Path(second.snapshot.resolved_output_root).parent == target_parent
+
+def test_validate_blocks_paths_outside_the_configured_target_root(tmp_path: Path):
     source = tmp_path / "external-source" / "angular-app"
     target_parent = tmp_path / "external-targets"
     source.mkdir(parents=True)
@@ -113,7 +132,20 @@ def test_validate_allows_safe_external_paths_outside_legacy_allowed_roots(tmp_pa
         )
     )
 
-    assert result.snapshot.status == "passed"
-    assert "source_path_outside_allowed_roots" not in result.snapshot.blockers
-    assert "target_path_outside_allowed_roots" not in result.snapshot.blockers
-    assert result.snapshot.resolved_output_root == str(target_parent / "angular-app-angular-21")
+    assert result.snapshot.status == "blocked"
+    assert "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS" in result.snapshot.blockers
+    assert "OUTPUT_ROOT_OUTSIDE_ALLOWED_ROOTS" in result.snapshot.blockers
+
+
+def test_validate_allows_nested_target_and_rejects_sibling_prefix(tmp_path: Path):
+    source = tmp_path / "sources" / "angular-app"
+    target_root = tmp_path / "targets"
+    source.mkdir(parents=True)
+    target_root.mkdir()
+    service = PathValidationService(Settings(_env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes", allowed_target_roots=[target_root], minimum_free_disk_bytes=0))
+
+    nested = service.validate(PathValidationRequest(source_path=str(source), target_parent_path=str(target_root / "nested"), idempotency_key="nested"))
+    sibling = service.validate(PathValidationRequest(source_path=str(source), target_parent_path=str(tmp_path / "targets-sibling"), idempotency_key="sibling"))
+
+    assert "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS" not in nested.snapshot.blockers
+    assert "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS" in sibling.snapshot.blockers
