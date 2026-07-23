@@ -28,6 +28,7 @@ from app.api.routes.compatibility import router as compatibility_router
 from app.api.routes.plans import router as plans_router
 from app.api.routes.planning_review import router as planning_review_router
 from app.api.routes.stage_execution import router as stage_execution_router
+from app.api.routes.assistant import router as run_assistant_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -49,6 +50,7 @@ api_router.include_router(baseline_g03_router)
 api_router.include_router(g02_router)
 api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
+api_router.include_router(run_assistant_router)
 api_router.include_router(artifacts_router)
 api_router.include_router(environment_router)
 api_router.include_router(execution_profiles_router)
@@ -81,6 +83,7 @@ api_v1_router.include_router(baseline_g03_router)
 api_v1_router.include_router(g02_router)
 api_v1_router.include_router(migrations_router)
 api_v1_router.include_router(assistant_router)
+api_v1_router.include_router(run_assistant_router)
 api_v1_router.include_router(artifacts_router)
 api_v1_router.include_router(environment_router)
 api_v1_router.include_router(execution_profiles_router)

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ApiClientError, getBackendBaseUrl } from '@/api/client';
 import { decideG01, getProductionPreflight } from '@/api/preflights';
 import { createAuthoritativeRun, startAuthoritativeRun } from '@/api/runs';
+import { getAuthoritativeRunState } from '@/api/runs';
 import { usePreflightEvents } from '@/hooks/usePreflightEvents';
 import type { G01Decision, ProductionPreflight } from '@/types/preflight';
 import styles from './G01ReviewPanel.module.css';
@@ -23,6 +24,12 @@ function purposeFor(name: string) {
   if (name.includes('environment')) return 'Environment capability evidence';
   if (name.includes('analysis')) return 'Source analysis evidence';
   return 'Preflight evidence';
+}
+
+const ACTIVE_RUN_STORAGE_KEY = 'amfa.activeRunId';
+
+function persistedRunId(): string | null {
+  try { return window.localStorage.getItem(ACTIVE_RUN_STORAGE_KEY)?.trim() || null; } catch { return null; }
 }
 
 export function G01ReviewPanel({ preflight, actor = 'control-tower' }: { preflight: ProductionPreflight; actor?: string }) {
@@ -61,8 +68,18 @@ export function G01ReviewPanel({ preflight, actor = 'control-tower' }: { preflig
     try {
       const created = await createAuthoritativeRun({ preflight_id: snapshot.preflight_id, input_checksum: snapshot.input_checksum, artifact_set_checksum: snapshot.artifact_set_checksum, idempotency_key: `run-create-${snapshot.preflight_id}`, actor, client_constraints: { preserve_ui: true, preserve_behavior: true, preserve_business_logic: true, preserve_api_contracts: true, preserve_authentication_authorization: true, allow_optional_modernization: false }, pricing_snapshot: {} });
       const started = await startAuthoritativeRun(created.run_id, { expected_state_version: created.state_version, idempotency_key: `run-start-${created.run_id}`, actor });
-      router.push(`/migrations/${started.run_id}`);
-    } catch (error) { setNotice(detailFor(error, 'The authoritative run could not be started.')); }
+      window.localStorage.setItem(ACTIVE_RUN_STORAGE_KEY, started.run_id);
+      router.push(`/?run_id=${encodeURIComponent(started.run_id)}`);
+    } catch (error) {
+      if (error instanceof ApiClientError && error.status === 409 && error.responseBody?.includes('ACTIVE_RUN_EXISTS')) {
+        const existingRunId = persistedRunId();
+        if (existingRunId) {
+          try { await getAuthoritativeRunState(existingRunId); router.push(`/?run_id=${encodeURIComponent(existingRunId)}`); return; }
+          catch { /* retain the conflict notice when the persisted run cannot be reopened */ }
+        }
+      }
+      setNotice(detailFor(error, 'The authoritative run could not be started.'));
+    }
     finally { setStartingRun(false); }
   }
 

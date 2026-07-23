@@ -1,0 +1,4 @@
+export type AssistantEvidence = { artifact_id: string; checksum: string; label: string };
+export type AssistantUsage = { input_tokens: number; output_tokens: number; total_tokens: number; estimated_input_cost: number; estimated_output_cost: number; estimated_total_cost: number };
+export type AssistantMessage = { message_id: string; message_order: number; conversation_id: string; run_id: string; answer: string; current_phase: string; current_stage: string; workflow_status: string; current_gate: string; current_blocker: string; next_permitted_action: string; workflow_state_version: number; stale: boolean; evidence_references: AssistantEvidence[]; proof_label: string; usage: AssistantUsage; response_status: string; failure_reason: string | null };
+export type AssistantHistory = { run_id: string; conversation_id: string; messages: AssistantMessage[] };

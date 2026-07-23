@@ -438,12 +438,57 @@ class ApprovalPolicyDto(ContractModel):
 class AssistantMessageRequestDto(ContractModel):
     run_id: str | None = None
     message: str = Field(min_length=1)
+    conversation_id: str | None = None
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    client_known_state_version: int | None = Field(default=None, ge=1)
 
 
 class AssistantMessageResponseDto(ContractModel):
     run_id: str | None = None
     response: str
     status: str
+
+
+class AssistantEvidenceDto(ContractModel):
+    artifact_id: str
+    checksum: str
+    label: str
+
+
+class AssistantUsageDto(ContractModel):
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    estimated_input_cost: float = Field(ge=0)
+    estimated_output_cost: float = Field(ge=0)
+    estimated_total_cost: float = Field(ge=0)
+
+
+class AssistantMessageResultDto(ContractModel):
+    message_id: str
+    message_order: int = Field(ge=1)
+    conversation_id: str
+    run_id: str
+    answer: str
+    current_phase: str
+    current_stage: str
+    workflow_status: str
+    current_gate: str
+    current_blocker: str
+    next_permitted_action: str
+    workflow_state_version: int = Field(ge=1)
+    stale: bool = False
+    evidence_references: list[AssistantEvidenceDto] = Field(default_factory=list)
+    proof_label: str
+    usage: AssistantUsageDto
+    response_status: str
+    failure_reason: str | None = None
+
+
+class AssistantHistoryDto(ContractModel):
+    run_id: str
+    conversation_id: str
+    messages: list[AssistantMessageResultDto] = Field(default_factory=list)
 
 
 class MigrationStageDto(ContractModel):

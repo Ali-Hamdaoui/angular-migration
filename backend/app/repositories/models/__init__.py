@@ -18,6 +18,9 @@ from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
+    AssistantConversationModel,
+    AssistantLifecycleEventModel,
+    AssistantMessageModel,
     ActiveRunClaimModel,
     ApprovalEventModel,
     ApprovalPolicyEventModel,
@@ -83,6 +86,9 @@ __all__ = [
     'LlmInvocationModel',
     'UsageCostRecordModel',
     "AgentExecutionModel",
+    "AssistantConversationModel",
+    "AssistantLifecycleEventModel",
+    "AssistantMessageModel",
     "ActiveRunClaimModel",
     "ApprovalEventModel",
     "ApprovalPolicyEventModel",

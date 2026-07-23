@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api.errors import error_response
 from app.api.router import api_router
+from app.api.routes.assistant import router as run_assistant_router
 from app.core.application import APP_DESCRIPTION, APP_NAME, APP_VERSION
 from app.core.config import get_settings
 from app.repositories.session import check_database_connection
@@ -86,3 +87,7 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
 
 
 app.include_router(api_router)
+# FastAPI's lazy nested-router registration requires the run-scoped assistant
+# surface to be attached at the application boundary as well as the versioned
+# composition root.
+app.include_router(run_assistant_router, prefix="/api/v1")

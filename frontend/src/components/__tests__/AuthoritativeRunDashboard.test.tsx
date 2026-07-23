@@ -49,8 +49,8 @@ describe("AuthoritativeRunDashboard", () => {
   it("renders backend-owned state, event history, and evidence", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
 
-    expect(screen.getByText("Live ? authoritative state")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "C:/source ? C:/target" })).toBeInTheDocument();
+    expect(screen.getByText("Live · authoritative state")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "C:/source → C:/target" })).toBeInTheDocument();
     expect(screen.getByText("RUN_CREATED")).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toHaveTextContent("pending");

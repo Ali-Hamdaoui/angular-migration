@@ -23,6 +23,7 @@ import styles from "./ControlTowerShell.module.css";
 
 import { CommandPolicyInspector } from "./CommandPolicyInspector";
 import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
+import { AssistantPanel } from "./AssistantPanel";
 type PipelineStep = { label: string; started: string[]; completed: string[]; failed: string[]; blocked: string[]; kind?: string };
 type PipelineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
 const pipelineSteps: PipelineStep[] = [
@@ -135,7 +136,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
     <main className={styles.shell}>
       <div className={styles.connectionBar} role="status" aria-live="polite">{connectionLabel}</div>
       <header className={styles.header}>
-        <div><p className={styles.kicker}>Authoritative migration run</p><h1>{state.source_path} ? {state.target_output_path}</h1><p>{state.run_id}</p></div>
+        <div><p className={styles.kicker}>Authoritative migration run</p><h1>{state.source_path} → {state.target_output_path}</h1><p>{state.run_id}</p></div>
         <div className={styles.dimensionGrid} aria-label="Authoritative run dimensions">
           <div><span>Run</span><strong>{state.status}</strong></div><div><span>Phase</span><strong>{state.run_phase}</strong></div>
           <div><span>Approval</span><strong>{state.approval_status}</strong></div><div><span>Version</span><strong>{state.state_version}</strong></div>
@@ -148,7 +149,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
           const current = pipelineStates[index];
           const active = current.status === 'running' || (current.status === 'pending' && index === activePipelineStep);
           const className = current.status === 'completed' ? styles.pipelineComplete : current.status === 'failed' ? styles.pipelineFailed : current.status === 'blocked' ? styles.pipelineBlocked : active ? styles.pipelineActive : styles.pipelinePending;
-          return <li className={className} key={step.label} aria-label={`${step.label}: ${current.status}`}><span>{current.status === 'completed' ? 'âœ“' : String(index + 1).padStart(2, '0')}</span><strong>{step.label}</strong><small className={styles.pipelineMeta}>{current.status}{current.event ? ` · ${current.event.occurred_at}` : ''}</small>{index === 0 && current.status === 'failed' ? <button type="button" onClick={() => void retrySourceIntake()} disabled={retryingSourceIntake}>{retryingSourceIntake ? 'Retrying…' : 'Retry source intake'}</button> : null}</li>;
+          return <li className={className} key={step.label} aria-label={`${step.label}: ${current.status}`}><span>{current.status === 'completed' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{step.label}</strong><small className={styles.pipelineMeta}>{current.status}{current.event ? ` · ${current.event.occurred_at}` : ''}</small>{index === 0 && current.status === 'failed' ? <button type="button" onClick={() => void retrySourceIntake()} disabled={retryingSourceIntake}>{retryingSourceIntake ? 'Retrying…' : 'Retry source intake'}</button> : null}</li>;
         })}</ol>
         <div aria-label="Pipeline evidence details">{visiblePipelineSteps.map((step, index) => <PipelineStepDetail key={`detail-${step.label}`} step={step} current={pipelineStates[index]} events={state.workflow_events} />)}</div>
       </section>
@@ -174,6 +175,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       </div>
       <aside className={styles.secondaryColumn}>
       <AuthoritativeRunCancellationPanel runId={runId} state={state} refresh={refresh} />
+      <AssistantPanel runId={runId} phase={state.run_phase} stateVersion={state.state_version} workflowStatus={state.status} />
       <div className={styles.twoColumns}>
         <section className={styles.panel} aria-label="Authoritative workflow events"><h2>Workflow events</h2>{state.workflow_events.length === 0 ? <p className={styles.note}>No events have been recorded.</p> : <ol className={styles.eventList}>{state.workflow_events.map((event) => <li className={styles.eventItem} key={event.event_id}><code className={styles.eventType}>{event.event_type}</code><span className={styles.eventTime}>#{event.sequence} ? {event.occurred_at}</span></li>)}</ol>}</section>
         <section className={styles.panel} aria-label="Run evidence"><h2>Run evidence</h2>{state.artifacts.length === 0 ? <p className={styles.note}>No run artifacts are available.</p> : <ul className={styles.list}>{state.artifacts.map((artifact) => <li key={artifact.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`} target="_blank" rel="noreferrer"><code>{artifact.relative_path}</code></a><span>{artifact.checksum}</span></li>)}</ul>}</section>

@@ -1,14 +1,14 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ApiClientError } from '@/api/client';
 import { decideG01, getProductionPreflight } from '@/api/preflights';
-import { createAuthoritativeRun, startAuthoritativeRun } from '@/api/runs';
+import { createAuthoritativeRun, getAuthoritativeRunState, startAuthoritativeRun } from '@/api/runs';
 import { G01ReviewPanel } from '@/components/G01ReviewPanel';
 import type { ProductionPreflight } from '@/types/preflight';
 
 const push = vi.fn();
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('@/api/preflights', () => ({ decideG01: vi.fn(), getProductionPreflight: vi.fn() }));
-vi.mock('@/api/runs', () => ({ createAuthoritativeRun: vi.fn(), startAuthoritativeRun: vi.fn() }));
+vi.mock('@/api/runs', () => ({ createAuthoritativeRun: vi.fn(), getAuthoritativeRunState: vi.fn(), startAuthoritativeRun: vi.fn() }));
 vi.mock('@/hooks/usePreflightEvents', () => ({ usePreflightEvents: () => ({ status: 'open', lastEventId: 7 }) }));
 
 function fixture(overrides: Partial<ProductionPreflight['snapshot']> = {}): ProductionPreflight {
@@ -16,7 +16,7 @@ function fixture(overrides: Partial<ProductionPreflight['snapshot']> = {}): Prod
 }
 
 describe('G01ReviewPanel', () => {
-  beforeEach(() => { vi.mocked(decideG01).mockReset(); vi.mocked(getProductionPreflight).mockReset(); vi.mocked(createAuthoritativeRun).mockReset(); vi.mocked(startAuthoritativeRun).mockReset(); push.mockReset(); });
+  beforeEach(() => { vi.mocked(decideG01).mockReset(); vi.mocked(getProductionPreflight).mockReset(); vi.mocked(createAuthoritativeRun).mockReset(); vi.mocked(getAuthoritativeRunState).mockReset(); vi.mocked(startAuthoritativeRun).mockReset(); window.localStorage.clear(); push.mockReset(); });
 
   it('presents live preflight evidence, warning badges, and the backend artifact link', () => {
     render(<G01ReviewPanel preflight={fixture()} />);
@@ -46,5 +46,25 @@ describe('G01ReviewPanel', () => {
     expect(alert).toHaveTextContent('G01 decision could not be recorded');
     expect(alert).toHaveTextContent('STALE_EVIDENCE');
     expect(screen.getByRole('button', { name: 'Refresh G01 evidence' })).toBeEnabled();
+  });
+
+  it('reopens a persisted run when start reports an active-run conflict', async () => {
+    vi.mocked(createAuthoritativeRun).mockResolvedValue({ run_id: 'new-run', state_version: 2 } as never);
+    vi.mocked(startAuthoritativeRun).mockRejectedValue(new ApiClientError('active run', 409, 'POST', '/runs/new-run/start', '{"error_code":"ACTIVE_RUN_EXISTS"}'));
+    vi.mocked(getAuthoritativeRunState).mockResolvedValue({ run_id: 'existing-run' } as never);
+    window.localStorage.setItem('amfa.activeRunId', 'existing-run');
+    render(<G01ReviewPanel preflight={fixture({ approval_status: 'approved' })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create and start authoritative run' }));
+    await waitFor(() => expect(getAuthoritativeRunState).toHaveBeenCalledWith('existing-run'));
+    expect(push).toHaveBeenCalledWith('/?run_id=existing-run');
+  });
+
+  it('persists the newly started run and navigates to its deep link', async () => {
+    vi.mocked(createAuthoritativeRun).mockResolvedValue({ run_id: 'created-run', state_version: 2 } as never);
+    vi.mocked(startAuthoritativeRun).mockResolvedValue({ run_id: 'created-run', state_version: 3 } as never);
+    render(<G01ReviewPanel preflight={fixture({ approval_status: 'approved' })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create and start authoritative run' }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/?run_id=created-run'));
+    expect(window.localStorage.getItem('amfa.activeRunId')).toBe('created-run');
   });
 });
