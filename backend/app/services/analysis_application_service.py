@@ -22,6 +22,7 @@ from app.domain.analysis import (
 )
 from app.domain.contracts import AgentKind
 from app.llm_gateway import (
+    AzureGatewayError,
     LlmContextSegment,
     LlmRequest,
     LlmRole,
@@ -33,8 +34,8 @@ from app.llm_gateway import (
 class AnalysisApplicationError(ValueError):
     """Stable application error suitable for the API adapter."""
 
-    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
-        self.code, self.message, self.status_code = code, message, status_code
+    def __init__(self, code: str, message: str, status_code: int = 422, *, details: dict[str, object] | None = None) -> None:
+        self.code, self.message, self.status_code, self.details = code, message, status_code, details or {}
         super().__init__(message)
 
 
@@ -199,6 +200,10 @@ class AnalysisAgentService:
             narrative = AnalysisNarrative.model_validate(validated)
         except AnalysisApplicationError:
             raise
+        except AzureGatewayError as exc:
+            code = {400: "LLM_INVALID_REQUEST", 401: "LLM_AUTH_FAILED", 403: "LLM_AUTH_FAILED", 404: "LLM_DEPLOYMENT_FAILED", 408: "LLM_TIMEOUT", 429: "LLM_RATE_LIMITED"}.get(exc.provider_status, "LLM_SERVER_FAILED" if exc.provider_status and exc.provider_status >= 500 else "LLM_TRANSPORT_FAILED" if exc.code.value == "transport" else "LLM_RESPONSE_INVALID" if exc.code.value in {"schema", "semantic", "empty_output", "protocol"} else f"LLM_{exc.code.value.upper()}_FAILED")
+            details = {"failure_stage": "phase_proposer", "provider_http_status": exc.provider_status, "provider_error_code": exc.provider_code, "sanitized_provider_message": exc.provider_message, "provider_request_id": exc.provider_request_id, "resolved_deployment": getattr(self.gateway, "deployment_name", None), "retry_count": exc.retry_count, "request_manifest": getattr(self.gateway, "last_request_manifest", None)}
+            raise AnalysisApplicationError(code, "The governed Azure OpenAI proposer failed; G04 remains unavailable.", 502, details={key: value for key, value in details.items() if value is not None and (key != "retry_count" or value)}) from exc
         except Exception as exc:
             raise AnalysisApplicationError("ANALYSIS_PROPOSER_FAILED", "The Analysis proposer failed; G04 remains unavailable.", 503) from exc
         if narrative.deterministic_input_checksum != request.artifact_set_checksum:

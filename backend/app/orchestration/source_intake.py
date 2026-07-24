@@ -52,6 +52,7 @@ class SourceIntakeDispatcher:
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="source-intake")
         self._lock = threading.Lock()
         self._submitted: set[str] = set()
+        self._continuing: set[str] = set()
         self._worker_id = f"source-intake-{os.getpid()}"
 
     def start(self, *, run_id: str, thread_id: str) -> None:
@@ -193,7 +194,23 @@ class SourceIntakeDispatcher:
         self._continue_after_g02(job_id, run_id, actor)
 
     def _continue_after_g02(self, job_id: str, run_id: str, actor: str) -> None:
+        with self._lock:
+            if run_id in self._continuing:
+                return
+            self._continuing.add(run_id)
+        try:
+            self._continue_after_g02_once(job_id, run_id, actor)
+        finally:
+            with self._lock:
+                self._continuing.discard(run_id)
+
+    def _continue_after_g02_once(self, job_id: str, run_id: str, actor: str) -> None:
         """Run the approved source boundary through runtime and baseline checks."""
+        try:
+            G02ApprovalApplicationService().authorize_baseline(run_id)
+        except Exception as error:
+            self._block(job_id, "G02_STALE" if getattr(error, "code", "") == "STALE_EVIDENCE" else "G02_APPROVAL_REQUIRED", str(error))
+            return
         with session_scope() as session:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
@@ -431,6 +448,17 @@ class SourceIntakeDispatcher:
             job.last_error_message = message[:4000]
             run = session.get(MigrationRunModel, job.run_id)
             if run is not None:
+                completed = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run.id, WorkflowEventModel.event_type == WorkflowEventType.SOURCE_INTAKE_COMPLETED.value))
+                if completed is not None:
+                    event_type = WorkflowEventType.EXECUTION_PROFILE_BLOCKED if code.startswith(("G02_", "RUNTIME_", "EXECUTION_PROFILE_")) else WorkflowEventType.BASELINE_BLOCKED
+                    StateTransitionService(session).apply_transition(TransitionRequest(
+                        run_id=run.id, expected_state_version=run.state_version,
+                        idempotency_key=f"{job.idempotency_key}:blocked:{job.attempt}", event_type=event_type,
+                        next_run_status=RunStatus.DIAGNOSTIC_HOLD, next_phase_status="blocked",
+                        actor=job.actor, reason="post-intake continuation blocked", occurred_at=datetime.now(UTC),
+                        payload={"job_id": job.id, "error_code": code, "message": message[:1000]},
+                    ))
+                    return
                 StateTransitionService(session).apply_transition(TransitionRequest(
                     run_id=run.id,
                     expected_state_version=run.state_version,
@@ -442,6 +470,9 @@ class SourceIntakeDispatcher:
                     occurred_at=datetime.now(UTC),
                     payload={"job_id": job.id, "error_code": code, "message": message[:1000]},
                 ))
+
+    def _block(self, job_id: str | None, code: str, message: str) -> None:
+        self._fail(job_id, code, message)
 
 
 _dispatcher: SourceIntakeDispatcher | None = None

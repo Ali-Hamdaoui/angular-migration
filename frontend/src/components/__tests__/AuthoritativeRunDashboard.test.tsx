@@ -79,6 +79,7 @@ describe("AuthoritativeRunDashboard", () => {
       sequence: index + 2,
       payload: {},
     }));
+    events.push({ event_id: "event-install-output-after-success", run_id: initialState.run_id, stage_id: null, event_type: "COMMAND_OUTPUT_CHUNK", occurred_at: "2026-07-15T10:20:00Z", sequence: 99, payload: { chunk: "late buffered output" } });
 
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
 

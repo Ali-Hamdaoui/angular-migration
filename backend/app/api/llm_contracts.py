@@ -48,6 +48,11 @@ class LlmInvocationResponse(ContractModel):
     retries: int = 0
     latency_ms: int | None = None
     failure_code: str | None = None
+    provider_http_status: int | None = None
+    provider_error_code: str | None = None
+    sanitized_provider_message: str | None = None
+    provider_request_id: str | None = None
+    failure_stage: str | None = None
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False

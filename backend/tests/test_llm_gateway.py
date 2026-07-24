@@ -113,8 +113,21 @@ def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp
     assert response.role == LlmRole.PHASE_PROPOSER
     assert response.pricing_version == 'mvp-pricing-2026-01'
     assert transport.calls[0]['payload']['store'] is False
+    assert transport.calls[0]['payload']['model'] == 'gpt-5-mini-private'
     assert 'secret-value-1234567890' not in str(transport.calls[0]['payload'])
     assert transport.calls[0]['api_key'] == 'super-secret-api-key'
+
+
+def test_azure_gateway_preserves_provider_deployment_failure_metadata(tmp_path: Path) -> None:
+    error = AzureGatewayError(LlmFailureCode.DEPLOYMENT, 'deployment failed', provider_status=404, provider_code='DeploymentNotFound')
+    transport = _FakeAzureTransport([error])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    with pytest.raises(AzureGatewayError) as raised:
+        gateway.complete(_azure_request())
+    assert raised.value.code is LlmFailureCode.DEPLOYMENT
+    assert raised.value.provider_status == 404
+    assert raised.value.provider_code == 'DeploymentNotFound'
 
 
 def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) -> None:

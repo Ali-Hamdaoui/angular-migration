@@ -4,7 +4,7 @@ import pytest
 
 from app.domain.analysis import AnalysisRequest, G04Decision, G04DecisionRequest
 from app.domain.contracts import AgentKind
-from app.llm_gateway import LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
+from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.services.analysis_application_service import AnalysisAgentService, AnalysisApplicationError, AnalysisArtifact
 
 
@@ -167,6 +167,16 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
     with pytest.raises(AnalysisApplicationError) as provider_error:
         provider.generate(request)
     assert provider_error.value.code == "ANALYSIS_PROPOSER_FAILED"
+
+    provider = AnalysisAgentService(
+        gateway=FakeGateway(failure=AzureGatewayError(LlmFailureCode.DEPLOYMENT, "deployment failed", provider_status=404, provider_code="DeploymentNotFound")),
+        artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"),
+    )
+    with pytest.raises(AnalysisApplicationError) as deployment_error:
+        provider.generate(request)
+    assert deployment_error.value.code == "LLM_DEPLOYMENT_FAILED"
+    assert deployment_error.value.status_code == 502
+    assert deployment_error.value.details == {"failure_stage": "phase_proposer", "provider_http_status": 404, "provider_error_code": "DeploymentNotFound"}
 
     stale = AnalysisAgentService(
         gateway=FakeGateway(lambda _: {}),

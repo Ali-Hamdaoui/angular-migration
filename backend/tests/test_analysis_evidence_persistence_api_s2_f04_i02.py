@@ -7,7 +7,7 @@ from app.api.analysis_contracts import AnalysisCreateRequest, G04DecisionApiRequ
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.analysis import AnalysisPackage, AnalysisNarrative, AnalysisReview, G04Decision, G04DecisionResult
 from app.domain.contracts import ArtifactType
-from app.repositories.models import ArtifactMetadataModel, Base, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService, AnalysisEvidenceError
 from app.api.routes import analysis as analysis_routes
@@ -104,6 +104,8 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
     with sessions() as session:
         events = list(session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence))
         assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "ANALYSIS_REVIEWER_STARTED", "ANALYSIS_REVIEWER_COMPLETED", "G04_CREATED"]
+        invocation = session.query(LlmInvocationModel).filter_by(run_id="run-1", role="phase_proposer").one()
+        assert invocation.status == "completed" and invocation.task_type == "analysis_summary"
         assert session.query(ArtifactMetadataModel).filter(ArtifactMetadataModel.run_id == "run-1").count() == 9
         assert session.query(MigrationRunModel).one().state_version == 6
     store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")

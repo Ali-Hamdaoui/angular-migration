@@ -102,7 +102,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
       <div><dt>Role</dt><dd>{latest?.role ?? "phase_proposer"}</dd></div>
       <div><dt>Task</dt><dd>{latest?.task_type ?? "smoke_check"}</dd></div>
       <div><dt>Prompt</dt><dd>{latest?.prompt_version ?? "unknown"}</dd></div><div><dt>Schema</dt><dd>{latest?.schema_version ?? "unknown"}</dd></div><div><dt>Pricing</dt><dd>{latest?.pricing_version ?? "unknown"}</dd></div>
-      <div><dt>Budget</dt><dd>{budgetStatus}</dd></div>
+       <div><dt>Budget</dt><dd>{budgetStatus}</dd></div><div><dt>Provider status</dt><dd>{latest?.provider_http_status ?? "none"}</dd></div><div><dt>Provider code</dt><dd>{latest?.provider_error_code ?? "none"}</dd></div><div><dt>Provider message</dt><dd>{latest?.sanitized_provider_message ?? "none"}</dd></div><div><dt>Provider request</dt><dd>{latest?.provider_request_id ?? "none"}</dd></div><div><dt>Failure stage</dt><dd>{latest?.failure_stage ?? "none"}</dd></div>
     </div>
     <ul className={styles.metricList} aria-label="LLM usage totals">
       <li><span>Input tokens</span><strong>{(usage?.input_tokens ?? latest?.input_tokens ?? 0).toLocaleString()}</strong></li>

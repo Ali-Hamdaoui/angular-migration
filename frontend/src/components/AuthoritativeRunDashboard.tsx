@@ -47,6 +47,8 @@ function isStepEvent(step: PipelineStep, event: AuthoritativeRunStateDto['workfl
 function pipelineState(step: PipelineStep, events: AuthoritativeRunStateDto['workflow_events']): { status: PipelineStatus; event?: AuthoritativeRunStateDto['workflow_events'][number] } {
   const relevant = events.filter((event) => isStepEvent(step, event)).sort((a, b) => a.sequence - b.sequence);
   const latest = relevant.at(-1);
+  const terminal = [...relevant].reverse().find((event) => step.completed.includes(event.event_type) || step.failed.includes(event.event_type) || step.blocked.includes(event.event_type));
+  if (terminal && latest?.event_type === 'COMMAND_OUTPUT_CHUNK' && terminal.sequence < latest.sequence) return { status: step.completed.includes(terminal.event_type) ? 'completed' : step.failed.includes(terminal.event_type) ? 'failed' : 'blocked', event: terminal };
   if (!latest) return { status: 'pending' };
   if (step.completed.includes(latest.event_type)) return { status: 'completed', event: latest };
   if (step.failed.includes(latest.event_type)) return { status: 'failed', event: latest };

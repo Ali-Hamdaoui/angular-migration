@@ -21,6 +21,14 @@ describe("AnalysisReviewPanel", () => {
     render(<AnalysisReviewPanel {...props} />); await screen.findByText("No analysis package is available yet."); fireEvent.click(screen.getByRole("button", { name: "Generate AI-assisted analysis" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("analysis state is stale"); expect(generateAnalysis).toHaveBeenCalledWith("run-1", expect.objectContaining({ expected_state_version: 4, prerequisite_artifacts: [{ artifact_id: "fact-1", checksum: "sha256:" + "b".repeat(64) }] }));
   });
+  it("submits only persisted discovery artifacts when the run has many artifacts", async () => {
+    vi.mocked(getAnalysis).mockRejectedValue(new ApiClientError("missing", 404)); vi.mocked(generateAnalysis).mockRejectedValue(new ApiClientError("stale", 409));
+    const discovery = Array.from({ length: 7 }, (_, index) => ({ ...props.artifacts[0], artifact_id: `discovery-${index}` }));
+    const events = discovery.map((artifact) => ({ event_type: "SCANNER_COMPLETED", sequence: 1, payload: { artifact_id: artifact.artifact_id } }));
+    render(<AnalysisReviewPanel {...props} artifacts={[...Array.from({ length: 40 }, (_, index) => ({ ...props.artifacts[0], artifact_id: `run-${index}` })), ...discovery]} workflowEvents={events} />);
+    await screen.findByText("No analysis package is available yet."); fireEvent.click(screen.getByRole("button", { name: "Generate AI-assisted analysis" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("analysis state is stale"); expect(generateAnalysis).toHaveBeenCalledWith("run-1", expect.objectContaining({ prerequisite_artifacts: discovery.map((artifact) => ({ artifact_id: artifact.artifact_id, checksum: artifact.checksum })) }));
+  });
   it("renders backend failure with a correlation ID", async () => {
     vi.mocked(getAnalysis).mockRejectedValue(new ApiClientError("failed", 500, "GET", "/analysis", JSON.stringify({ correlation_id: "corr-4" })));
     render(<AnalysisReviewPanel {...props} />); expect(await screen.findByRole("alert")).toHaveTextContent("Correlation ID: corr-4");
