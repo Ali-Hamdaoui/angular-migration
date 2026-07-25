@@ -38,6 +38,8 @@ from app.services.baseline_parity_application_service import BaselineParityAppli
 from app.services.execution_profile_application_service import ExecutionProfileApplicationService
 from app.services.discovery_evidence_application_service import DiscoveryEvidenceApplicationService
 from app.services.parity_baseline_evidence_application_service import ParityBaselineEvidenceApplicationService
+from app.api.analysis_contracts import AnalysisCreateRequest
+from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService
 from app.api.parity_baseline_contracts import ParityBaselineCaptureRequest
 from app.services.source_snapshot_application_service import SourceSnapshotApplicationService
 from app.state.transition_service import StateTransitionService, TransitionRequest
@@ -396,6 +398,20 @@ class SourceIntakeDispatcher:
         if post_g03_parity.status != "completed":
             self._fail(job_id, "DISCOVERY_PARITY_BASELINE_FAILED", "Deterministic discovery parity evidence was not completed.")
             return
+        # Analysis is a backend-owned continuation.  The durable parity result
+        # supplies the idempotency anchor; the Analysis service derives the
+        # canonical artifact set from persisted evidence and never trusts a UI.
+        with session_scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                self._fail(job_id, "RUN_NOT_FOUND", "Migration run disappeared before Analysis continuation.")
+                return
+            analysis_request = AnalysisCreateRequest(
+                expected_state_version=run.state_version,
+                idempotency_key=f"analysis:{run_id}:{post_g03_parity.evidence_id}:{post_g03_parity.state_version}",
+                correlation_id=f"analysis:{run_id}:{post_g03_parity.evidence_id}",
+            )
+        AnalysisEvidenceApplicationService().generate(run_id, analysis_request, actor)
         with session_scope() as session:
             job = session.get(SourceIntakeJobModel, job_id)
             run = session.get(MigrationRunModel, run_id)

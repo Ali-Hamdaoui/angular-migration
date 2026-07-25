@@ -9,7 +9,8 @@ from app.domain.contracts import ContractModel
 class AnalysisCreateRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    prerequisite_artifacts: list[AnalysisArtifactInput] = Field(min_length=1, max_length=32)
+    # Kept for safe backward compatibility; the backend derives the authority.
+    prerequisite_artifacts: list[AnalysisArtifactInput] = Field(default_factory=list, max_length=32)
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
