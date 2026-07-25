@@ -22,7 +22,13 @@ def upgrade():
     if "ix_g08_approvals_parent_gate_record_id" not in {index["name"] for index in inspector.get_indexes("g08_approvals")}: op.create_index("ix_g08_approvals_parent_gate_record_id", "g08_approvals", ["parent_gate_record_id"])
 
 def downgrade():
-    op.drop_index("ix_g08_approvals_parent_gate_record_id", table_name="g08_approvals")
+    inspector = sa.inspect(op.get_bind())
+    if "g08_approvals" not in inspector.get_table_names():
+        return
+    if "ix_g08_approvals_parent_gate_record_id" in {index["name"] for index in inspector.get_indexes("g08_approvals")}:
+        op.drop_index("ix_g08_approvals_parent_gate_record_id", table_name="g08_approvals")
+    columns = {column["name"] for column in inspector.get_columns("g08_approvals")}
     with op.batch_alter_table("g08_approvals") as batch:
         for name in ("parent_gate_record_id", "package_artifact_id", "plan_checksum", "plan_version", "correlation_id", "request_checksum"):
-            batch.drop_column(name)
+            if name in columns:
+                batch.drop_column(name)

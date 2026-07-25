@@ -8,6 +8,7 @@ from sqlalchemy import Engine, create_engine, event, make_url, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.core.database import database_path
 
 
 def create_database_engine(
@@ -52,6 +53,11 @@ def check_database_connection() -> None:
     """Verify connectivity without creating or changing workflow records."""
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
+
+
+def resolved_database_path() -> Path | None:
+    """Expose the exact path used by the SQLAlchemy engine for diagnostics."""
+    return database_path(get_settings().database_url or "")
 
 
 @contextmanager

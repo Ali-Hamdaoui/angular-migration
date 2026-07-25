@@ -7,32 +7,28 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError
 
 from app.api.errors import error_response
 from app.api.router import api_router
 from app.core.application import APP_DESCRIPTION, APP_NAME, APP_VERSION
 from app.core.config import get_settings
-from app.repositories.session import check_database_connection
+from app.core.database import assert_schema_compatible
+from app.repositories.session import check_database_connection, engine, resolved_database_path
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Confirm configured database connectivity before serving API requests."""
     check_database_connection()
+    path = resolved_database_path()
+    print(f"Backend database: {path or '<non-file database>'}", flush=True)
+    assert_schema_compatible(engine, get_settings())
     from app.api.routes.baseline import get_baseline_install_service
-    try:
-        get_baseline_install_service().reconcile_orphans()
-    except OperationalError:
-        # Older test/development databases may predate the command columns.
-        pass
+    get_baseline_install_service().reconcile_orphans()
     from app.orchestration.source_intake import default_source_intake_graph, recover_source_intake_jobs
     default_source_intake_graph(get_settings())
-    try:
-        recover_source_intake_jobs()
-    except OperationalError:
-        # Older test/development databases may predate durable source intake.
-        pass
+    recover_source_intake_jobs()
     yield
 
 
