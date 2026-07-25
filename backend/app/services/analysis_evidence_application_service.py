@@ -90,6 +90,7 @@ class AnalysisEvidenceApplicationService:
                 workspace_fingerprint=request.workspace_fingerprint, plan_version=request.plan_version,
                 invocation_id=invocation.id, artifact_ids=[], artifact_checksums={}, package=None,
                 state_version=started.next_state_version, event_sequence=started.event_sequence,
+                correlation_id=request.correlation_id or invocation.correlation_id,
                 created_at=now, updated_at=now,
             )
             session.add(row)
@@ -108,11 +109,6 @@ class AnalysisEvidenceApplicationService:
                 with self.scope() as session:
                     row = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == run_id, AnalysisMetadataModel.idempotency_key == request.idempotency_key))
                     session.get(LlmInvocationModel, row.invocation_id).deployment_alias = deployment
-                with self.scope() as session:
-                    run = session.get(MigrationRunModel, run_id)
-                    transition = self._transition(session, run, request, WorkflowEventType.LLM_INVOCATION_STARTED, "analysis proposer LLM invocation started", {"invocation_id": row.invocation_id})
-                    invocation = session.get(LlmInvocationModel, row.invocation_id)
-                    invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence
             package = agent.generate(request)
         except AnalysisApplicationError as error:
             if deployment and error.details.get("failure_stage") != "phase_reviewer":
@@ -217,6 +213,14 @@ class AnalysisEvidenceApplicationService:
         return AnalysisAgentService(gateway=AzureOpenAILLMGateway(settings=get_settings(), registry=registry), artifact_reader=lambda artifact_id: self._read_artifact(store, artifact_id))
 
     def _on_analysis_invocation_before(self, run_id, request, data):
+        if data.get("role") is LlmRole.PHASE_PROPOSER:
+            with self.scope() as session:
+                run = session.get(MigrationRunModel, run_id)
+                row = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == run_id, AnalysisMetadataModel.idempotency_key == request.idempotency_key))
+                invocation = session.get(LlmInvocationModel, row.invocation_id)
+                transition = self._transition(session, run, request, WorkflowEventType.LLM_INVOCATION_STARTED, "analysis proposer LLM invocation started", {"invocation_id": invocation.id, "role": "phase_proposer"})
+                invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence
+            return
         if data.get("role") is not LlmRole.PHASE_REVIEWER:
             return
         revision = data.get("revision", 0)
@@ -329,7 +333,7 @@ class AnalysisEvidenceApplicationService:
             if error_code.startswith("ANALYSIS_REVIEW") or (details or {}).get("failure_stage") == "phase_reviewer":
                 self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_FAILED, "analysis reviewer failed", {"error_code": error_code, "artifact_id": artifact.ref.artifact_id})
             transition = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_FAILED, "analysis agent failed", {"error_code": error_code, "artifact_id": artifact.ref.artifact_id})
-            details = details or {}; now = self.now(); row.status = "failed"; row.error_code = error_code; row.artifact_ids = [artifact.ref.artifact_id]; row.artifact_checksums = {artifact.ref.artifact_id: artifact.ref.checksum}; row.state_version = transition.next_state_version; row.event_sequence = transition.event_sequence; row.updated_at = now; invocation.status = "failed"; invocation.failure_code = error_code; invocation.retries = details.get("retry_count", 0); invocation.provider_http_status = details.get("provider_http_status"); invocation.provider_error_code = details.get("provider_error_code"); invocation.sanitized_provider_message = details.get("sanitized_provider_message"); invocation.provider_request_id = details.get("provider_request_id"); invocation.failure_stage = details.get("failure_stage"); invocation.deployment_alias = details.get("resolved_deployment") or invocation.deployment_alias; invocation.artifact_ids = row.artifact_ids; invocation.artifact_checksums = row.artifact_checksums; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence; invocation.completed_at = now
+            details = details or {}; now = self.now(); row.status = "failed"; row.error_code = error_code; row.failure_subtype = details.get("failure_subtype"); row.failure_stage = details.get("failure_stage"); row.retryable = details.get("retryable", False); row.failed_at = now; row.artifact_ids = [artifact.ref.artifact_id]; row.artifact_checksums = {artifact.ref.artifact_id: artifact.ref.checksum}; row.state_version = transition.next_state_version; row.event_sequence = transition.event_sequence; row.updated_at = now; invocation.status = "failed"; invocation.failure_code = error_code; invocation.failure_subtype = details.get("failure_subtype"); invocation.retries = details.get("retry_count", 0); invocation.provider_http_status = details.get("provider_http_status"); invocation.provider_error_code = details.get("provider_error_code"); invocation.sanitized_provider_message = details.get("sanitized_provider_message"); invocation.provider_request_id = details.get("provider_request_id"); invocation.failure_stage = details.get("failure_stage"); invocation.transport_exception_type = details.get("transport_exception_type"); invocation.endpoint_host = details.get("endpoint_host"); invocation.endpoint_path = details.get("endpoint_path"); invocation.retryable = details.get("retryable", False); invocation.response_received = details.get("response_received"); invocation.response_content_type = details.get("response_content_type"); invocation.response_bytes = details.get("response_bytes"); invocation.response_sha256 = details.get("response_sha256"); invocation.response_kind = details.get("response_kind"); invocation.transport_started = details.get("transport_started"); invocation.deployment_alias = details.get("resolved_deployment") or invocation.deployment_alias; invocation.artifact_ids = row.artifact_ids; invocation.artifact_checksums = row.artifact_checksums; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence; invocation.completed_at = now
             if details.get("failure_stage") == "phase_reviewer":
                 reviewer = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id, LlmInvocationModel.role == "phase_reviewer", LlmInvocationModel.status.in_({"in_progress", "failed"})).order_by(LlmInvocationModel.created_at.desc()))
                 if reviewer is not None:
@@ -435,7 +439,9 @@ class AnalysisEvidenceApplicationService:
 
     def _analysis_dto(self, session, row, replay=False):
         gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == row.run_id).order_by(G04ApprovalModel.state_version.desc(), G04ApprovalModel.created_at.desc()))
-        return AnalysisResponse(run_id=row.run_id, analysis_id=row.id, status=row.status, package=row.package, artifact_ids=row.artifact_ids, artifact_checksums=row.artifact_checksums, artifact_links={item: f"/api/v1/artifacts/{item}" for item in row.artifact_ids}, package_checksum=gate.package_checksum if gate else None, gate_status=gate.status if gate else "blocked", gate_decision=gate.decision if gate else None, error_code=row.error_code, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)
+        attempts = session.scalars(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == row.run_id).order_by(AnalysisMetadataModel.created_at.asc())).all()
+        history = [{"attempt_id": item.id, "status": item.status, "error_code": item.error_code, "failure_subtype": item.failure_subtype, "failure_stage": item.failure_stage, "retryable": bool(item.retryable), "correlation_id": item.correlation_id, "failed_at": item.failed_at.isoformat() if item.failed_at else None} for item in attempts]
+        return AnalysisResponse(run_id=row.run_id, analysis_id=row.id, status=row.status, package=row.package, artifact_ids=row.artifact_ids, artifact_checksums=row.artifact_checksums, artifact_links={item: f"/api/v1/artifacts/{item}" for item in row.artifact_ids}, package_checksum=gate.package_checksum if gate else None, gate_status=gate.status if gate else "blocked", gate_decision=gate.decision if gate else None, error_code=row.error_code, failure_subtype=row.failure_subtype, failure_stage=row.failure_stage, retryable=bool(row.retryable), correlation_id=row.correlation_id, failed_invocation_id=row.invocation_id, attempt_history=history, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)
 
     @staticmethod
     def _decision_dto(row, replay=False):

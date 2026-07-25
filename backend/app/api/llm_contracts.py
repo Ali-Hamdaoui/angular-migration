@@ -59,6 +59,14 @@ class LlmInvocationResponse(ContractModel):
     sanitized_provider_message: str | None = None
     provider_request_id: str | None = None
     failure_stage: str | None = None
+    failure_subtype: str | None = None
+    retryable: bool = False
+    response_received: bool | None = None
+    response_content_type: str | None = None
+    response_bytes: int | None = None
+    response_sha256: str | None = None
+    response_kind: str | None = None
+    transport_started: bool | None = None
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False

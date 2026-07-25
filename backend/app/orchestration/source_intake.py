@@ -411,7 +411,23 @@ class SourceIntakeDispatcher:
                 idempotency_key=f"analysis:{run_id}:{post_g03_parity.evidence_id}:{post_g03_parity.state_version}",
                 correlation_id=f"analysis:{run_id}:{post_g03_parity.evidence_id}",
             )
-        AnalysisEvidenceApplicationService().generate(run_id, analysis_request, actor)
+        try:
+            analysis_result = AnalysisEvidenceApplicationService().generate(run_id, analysis_request, actor)
+        except Exception as error:
+            self._fail(job_id, "ANALYSIS_WORKER_FAILURE", "Analysis continuation failed after its durable attempt was recorded.")
+            return
+        if analysis_result.status != "completed":
+            with session_scope() as session:
+                job = session.get(SourceIntakeJobModel, job_id)
+                run = session.get(MigrationRunModel, run_id)
+                if job is not None and run is not None:
+                    retryable = bool(getattr(analysis_result, "retryable", False))
+                    job.status = "waiting_retry" if retryable else "failed"
+                    job.last_error_code = analysis_result.error_code or "ANALYSIS_FAILED"
+                    job.last_error_message = "Analysis failed; durable Analysis evidence is available for review."
+                    job.finished_at = datetime.now(UTC) if not retryable else None
+                    job.state_version = run.state_version
+            return
         with session_scope() as session:
             job = session.get(SourceIntakeJobModel, job_id)
             run = session.get(MigrationRunModel, run_id)

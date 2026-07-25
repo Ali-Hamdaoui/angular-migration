@@ -41,6 +41,12 @@ class AnalysisResponse(ContractModel):
     gate_status: str
     gate_decision: str | None = None
     error_code: str | None = None
+    failure_subtype: str | None = None
+    failure_stage: str | None = None
+    retryable: bool = False
+    correlation_id: str | None = None
+    failed_invocation_id: str | None = None
+    attempt_history: list[dict[str, Any]] = Field(default_factory=list)
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False
