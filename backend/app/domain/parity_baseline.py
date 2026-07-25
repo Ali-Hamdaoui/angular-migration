@@ -131,7 +131,11 @@ class RouteInventoryBuilder:
                         )
                 routes.append(entry)
             if "provideRouter(" in content or "RouterModule.forRoot(" in content:
-                if not self._PROPERTY["path"].search(content):
+                # Imported/inline empty route arrays are statically resolved,
+                # including the intentional `Routes = []` configuration.
+                empty_routes = bool(re.search(r"(?:const|let|var)\s+\w+\s*(?::\s*Routes)?\s*=\s*\[\s*\]", content))
+                imported_routes = bool(re.search(r"import\s*\{[^}]*\broutes\b[^}]*\}\s*from", content))
+                if not self._PROPERTY["path"].search(content) and not empty_routes and not imported_routes:
                     unknowns.append(f"DYNAMIC_OR_UNRESOLVED_ROUTES:{relative}")
         return tuple(sorted(routes, key=lambda item: (item["path"], item["file"]))), tuple(sorted(set(unknowns)))
 
@@ -164,9 +168,9 @@ class BackendContractSnapshotBuilder:
             for match in self._URL.finditer(content):
                 api_roots.add(_safe_endpoint(match.group(1)))
             for match in self._HTTP.finditer(content):
-                endpoints.append(
-                    {"file": relative, "method": match.group(1).upper(), "endpoint": _safe_endpoint(match.group(3))}
-                )
+                raw = match.group(3)
+                parsed = urlsplit(raw) if raw.startswith(("http://", "https://")) else None
+                endpoints.append({"file": relative, "method": match.group(1).upper(), "endpoint": _safe_endpoint(raw), "host": parsed.hostname if parsed else None, "path": parsed.path if parsed else (raw.split("?", 1)[0] if raw.startswith("/") else None), "literal": True, "line": content.count("\n", 0, match.start()) + 1})
             if re.search(r"(?:HttpClient|fetch\s*\(|axios|XMLHttpRequest)", content) and not self._HTTP.search(content):
                 unknowns.append(f"DYNAMIC_OR_UNRESOLVED_ENDPOINTS:{relative}")
         return (
@@ -283,9 +287,29 @@ def _ui_evidence(workspace: Path) -> dict[str, Any]:
     return {
         "form_file_references": sorted(set(forms)),
         "theme_file_references": sorted(set(themes)),
+        "reactive_forms": any("FormBuilder" in path.read_text(encoding="utf-8", errors="ignore") for path in _source_files(workspace, {".ts"})),
+        "bootstrap_global_styles": _bootstrap_global_styles(workspace),
         "proof_label": "NOT_PROVEN",
         "manual_validation_required": True,
     }
+
+
+def _bootstrap_global_styles(workspace: Path) -> list[str]:
+    try:
+        angular = json.loads((workspace / "angular.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    found: list[str] = []
+    for project in (angular.get("projects", {}) if isinstance(angular, dict) else {}).values():
+        targets = project.get("architect", project.get("targets", {})) if isinstance(project, dict) else {}
+        for target in targets.values() if isinstance(targets, dict) else ():
+            options = target.get("options", {}) if isinstance(target, dict) else {}
+            styles = options.get("styles", []) if isinstance(options, dict) else []
+            for style in styles if isinstance(styles, list) else []:
+                value = style.get("input") if isinstance(style, dict) else style
+                if isinstance(value, str) and "bootstrap" in value.lower():
+                    found.append(value)
+    return sorted(set(found))
 
 
 def _draft(name: str, value: Any) -> ParityEvidenceDraft:

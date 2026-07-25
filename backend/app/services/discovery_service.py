@@ -73,12 +73,14 @@ class DiscoveryService:
             values = package.get(field, {}) if isinstance(package, dict) else {}
             if isinstance(values, dict):
                 dependencies.update({str(name): self._redact(str(version)) for name, version in values.items()})
-        private = sorted(name for name in dependencies if name.startswith("@") and not name.startswith("@angular/"))
+        scoped = sorted(name for name in dependencies if name.startswith("@") and not name.startswith("@angular/"))
         scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
         lifecycle = sorted(name for name in scripts if name in {"preinstall", "install", "postinstall", "prepare"}) if isinstance(scripts, dict) else []
         return ScannerFinding(scanner="dependencies", status="completed", findings=(
             self._fact("inventory", dict(sorted(dependencies.items())), "package.json"),
-            self._fact("private_package_candidates", private, "package.json"),
+            self._fact("scoped_package_candidates", scoped, "package.json"),
+            self._fact("package_provenance_policy", "scope alone is insufficient; registry, provenance, and auth evidence are required", "package.json",
+                       ),
             self._fact("lifecycle_scripts", lifecycle, "package.json"),
         ))
 

@@ -1,9 +1,15 @@
 export type LlmReadinessResponse = {
-  status: "ready" | "blocked";
+  status: "disabled" | "configuration_incomplete" | "configured_unverified" | "ready" | "degraded" | "blocked";
   provider: string;
   deployment_configured: boolean;
   model_capability?: string;
   error_code: string | null;
+  llm_enabled?: boolean;
+  endpoint_configured?: boolean;
+  authentication_configured?: boolean;
+  schema_capability_configured?: boolean;
+  last_smoke_check_status?: string | null;
+  last_checked_at?: string | null;
 };
 
 export type LlmSmokeRequest = {
