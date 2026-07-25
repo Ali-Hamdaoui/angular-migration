@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import http.client
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -46,7 +49,7 @@ class LlmFailureCode(str, Enum):
 class AzureGatewayError(RuntimeError):
     '''Stable gateway error that never exposes provider data or credentials.'''
 
-    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_status: int | None = None, provider_code: str | None = None, provider_message: str | None = None, provider_request_id: str | None = None) -> None:
+    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_status: int | None = None, provider_code: str | None = None, provider_message: str | None = None, provider_request_id: str | None = None, failure_stage: str | None = None, failure_subtype: str | None = None, response_received: bool = False, response_content_type: str | None = None, response_bytes: int | None = None, response_sha256: str | None = None, response_kind: str | None = None, transport_started: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
@@ -54,6 +57,14 @@ class AzureGatewayError(RuntimeError):
         self.provider_code = provider_code
         self.provider_message = provider_message
         self.provider_request_id = provider_request_id
+        self.failure_stage = failure_stage
+        self.failure_subtype = failure_subtype
+        self.response_received = response_received
+        self.response_content_type = response_content_type
+        self.response_bytes = response_bytes
+        self.response_sha256 = response_sha256
+        self.response_kind = response_kind
+        self.transport_started = transport_started
         self.retry_count = 0
 
 
@@ -225,26 +236,82 @@ class UrllibAzureTransport:
 
     def request(self, *, endpoint: str, api_key: str, api_version: str, deployment: str, payload: dict[str, Any], timeout: float) -> Mapping[str, Any]:
         url = endpoint.rstrip('/') + '/openai/v1/responses'
-        request = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'api-key': api_key, 'Content-Type': 'application/json'}, method='POST')
+        try:
+            body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise AzureGatewayError(LlmFailureCode.INVALID_REQUEST, 'LLM request serialization failed.', failure_stage='request_serialization', failure_subtype='LLM_REQUEST_SERIALIZATION_FAILED') from exc
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme not in {'https'} or not parsed.netloc or parsed.path != '/openai/v1/responses':
+                raise ValueError('invalid endpoint')
+        except ValueError as exc:
+            raise AzureGatewayError(LlmFailureCode.CONFIGURATION, 'LLM endpoint configuration is invalid.', failure_stage='endpoint_validation', failure_subtype='LLM_ENDPOINT_INVALID') from exc
+        request = urllib.request.Request(url, data=body, headers={'api-key': api_key, 'Content-Type': 'application/json'}, method='POST')
+        max_bytes = 4 * 1024 * 1024
+        metadata: dict[str, Any] = {'transport_started': True}
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode('utf-8'))
+                headers = response.headers
+                metadata.update(response_received=True, provider_status=getattr(response, 'status', None), response_content_type=headers.get('Content-Type'), provider_request_id=headers.get('apim-request-id') or headers.get('x-ms-request-id') or headers.get('request-id'))
+                declared = headers.get('Content-Length')
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response exceeded the maximum permitted size.', failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_TRUNCATED', response_received=True, transport_started=True, response_content_type=metadata['response_content_type'])
+                chunks: list[bytes] = []
+                total = 0
+                while True:
+                    chunk = response.read(min(64 * 1024, max_bytes - total + 1))
+                    if not chunk:
+                        break
+                    chunks.append(chunk); total += len(chunk)
+                    if total > max_bytes:
+                        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response exceeded the maximum permitted size.', failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_TRUNCATED', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=total, response_sha256=hashlib.sha256(b''.join(chunks)).hexdigest(), response_kind='binary_or_json', transport_started=True)
+                raw_body = b''.join(chunks)
+                checksum = hashlib.sha256(raw_body).hexdigest()
+                kind = 'empty' if not raw_body else 'html' if raw_body.lstrip().lower().startswith((b'<html', b'<!doctype')) else 'json' if raw_body.lstrip().startswith((b'{', b'[')) else 'binary'
+                if declared and declared.isdigit() and int(declared) != len(raw_body):
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response body was truncated.', failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_TRUNCATED', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind='truncated', provider_request_id=metadata['provider_request_id'], transport_started=True)
+                if not raw_body:
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response body was empty.', failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=0, response_sha256=checksum, response_kind='empty', provider_request_id=metadata['provider_request_id'], transport_started=True)
+                try:
+                    decoded = raw_body.decode('utf-8')
+                except UnicodeDecodeError as exc:
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response encoding was invalid.', failure_stage='response_decode', failure_subtype='LLM_RESPONSE_ENCODING_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True) from exc
+                try:
+                    parsed_body = json.loads(decoded)
+                except json.JSONDecodeError as exc:
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response was not valid JSON.', failure_stage='response_json_decode', failure_subtype='LLM_RESPONSE_JSON_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True) from exc
+                if not isinstance(parsed_body, Mapping):
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response top-level shape was invalid.', failure_stage='response_shape_validation', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True)
+                return parsed_body
+        except AzureGatewayError:
+            raise
         except urllib.error.HTTPError as exc:
             provider_code = None
             provider_message = None
             try:
-                body = json.loads(exc.read().decode('utf-8'))
+                error_body = exc.read(64 * 1024)
+                body = json.loads(error_body.decode('utf-8'))
                 provider_error = body.get('error') if isinstance(body.get('error'), Mapping) else {}
                 provider_code = provider_error.get('code')
                 provider_message = provider_error.get('message')
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
                 pass
             code = {400: LlmFailureCode.INVALID_REQUEST, 401: LlmFailureCode.AUTHENTICATION, 403: LlmFailureCode.AUTHORIZATION, 404: LlmFailureCode.DEPLOYMENT, 408: LlmFailureCode.TIMEOUT, 429: LlmFailureCode.RATE_LIMIT}.get(exc.code, LlmFailureCode.SERVER if exc.code >= 500 else LlmFailureCode.PROTOCOL)
-            raise AzureGatewayError(code, 'Azure OpenAI request failed.', retryable=exc.code in {408, 429, 500, 502, 503, 504}, provider_status=exc.code, provider_code=provider_code if isinstance(provider_code, str) else None, provider_message=_safe_provider_text(provider_message), provider_request_id=exc.headers.get('apim-request-id') or exc.headers.get('x-ms-request-id') or exc.headers.get('request-id')) from exc
+            raise AzureGatewayError(code, 'Azure OpenAI request failed.', retryable=exc.code in {408, 429, 500, 502, 503, 504}, provider_status=exc.code, provider_code=provider_code if isinstance(provider_code, str) else None, provider_message=_safe_provider_text(provider_message), provider_request_id=exc.headers.get('apim-request-id') or exc.headers.get('x-ms-request-id') or exc.headers.get('request-id'), failure_stage='http_response', failure_subtype='LLM_RESPONSE_FAILED', response_received=True, response_content_type=exc.headers.get('Content-Type'), transport_started=True) from exc
         except (socket.timeout, TimeoutError) as exc:
-            raise AzureGatewayError(LlmFailureCode.TIMEOUT, 'Azure OpenAI request timed out.', retryable=True) from exc
+            raise AzureGatewayError(LlmFailureCode.TIMEOUT, 'Azure OpenAI request timed out.', retryable=True, failure_stage='http_request', failure_subtype='LLM_TIMEOUT', transport_started=True) from exc
         except urllib.error.URLError as exc:
-            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI network request failed.', retryable=False) from exc
+            reason = exc.reason
+            subtype = 'LLM_DNS_FAILED' if isinstance(reason, socket.gaierror) else 'LLM_PROXY_FAILED' if 'proxy' in str(reason).lower() else 'LLM_TLS_FAILED' if isinstance(reason, ssl.SSLError) else 'LLM_TRANSPORT_FAILED'
+            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI network request failed.', retryable=True, failure_stage='http_request', failure_subtype=subtype, transport_started=True) from exc
+        except (http.client.IncompleteRead, http.client.RemoteDisconnected) as exc:
+            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI response connection closed unexpectedly.', retryable=True, failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_TRUNCATED', transport_started=True) from exc
+        except ConnectionRefusedError as exc:
+            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI connection was refused.', retryable=True, failure_stage='http_request', failure_subtype='LLM_CONNECTION_REFUSED', transport_started=True) from exc
+        except ConnectionResetError as exc:
+            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI connection was reset.', retryable=True, failure_stage='http_request', failure_subtype='LLM_CONNECTION_RESET', transport_started=True) from exc
+        except (BrokenPipeError, OSError) as exc:
+            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI transport failed.', retryable=True, failure_stage='http_request', failure_subtype='LLM_TRANSPORT_FAILED', transport_started=True) from exc
 
 
 class AzureOpenAILLMGateway:
@@ -274,11 +341,13 @@ class AzureOpenAILLMGateway:
         request = request.model_copy(update={'system_policy': prompt.system_policy})
         redacted = self._redacted_request(request)
         payload = self._payload(request, redacted, deployment.deployment)
-        self.last_request_manifest = {'endpoint_path': '/openai/v1/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type']}
+        endpoint_parts = urllib.parse.urlsplit(deployment.endpoint)
+        self.last_request_manifest = {'endpoint_host': endpoint_parts.hostname, 'endpoint_path': '/openai/v1/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type']}
         attempt = 0
         while True:
             try:
                 raw = self._transport.request(endpoint=deployment.endpoint, api_key=deployment.api_key, api_version=deployment.api_version, deployment=deployment.deployment, payload=payload, timeout=self._settings.llm_timeout_seconds)
+                _validate_response_state(raw)
                 validated = self._registry.validate(request.response_schema, _extract_structured_output(raw))
                 usage_data = _extract_usage(raw)
                 usage = build_usage_record(run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, input_tokens=usage_data['input_tokens'], output_tokens=usage_data['output_tokens'], input_price_per_million=self._settings.llm_input_price_per_million_tokens, output_price_per_million=self._settings.llm_output_price_per_million_tokens, retry_count=attempt)
@@ -292,6 +361,10 @@ class AzureOpenAILLMGateway:
                     raise
                 time.sleep(min(2.0, 0.25 * (2 ** attempt)))
                 attempt += 1
+            except (ValidationError, ValueError, TypeError) as exc:
+                raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM gateway validation failed.', failure_stage='response_contract_validation', failure_subtype='LLM_RESPONSE_CONTRACT_INVALID') from exc
+            except Exception as exc:
+                raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'LLM gateway failed safely before completing the response.', failure_stage='gateway_internal', failure_subtype='LLM_INTERNAL_GATEWAY_ERROR') from exc
 
     def _redacted_request(self, request: LlmRequest):
         content = json.dumps({'system_policy': request.system_policy, 'context': [segment.model_dump(mode='json') for segment in request.context]}, sort_keys=True)
@@ -380,6 +453,26 @@ def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:
     content_shape = [[sorted(content.keys()) for content in item.get('content', []) if isinstance(content, Mapping)] for item in output[:3] if isinstance(item, Mapping) and isinstance(item.get('content'), list)] if isinstance(output, list) else []
     message = f'Provider returned no structured output (keys={sorted(raw.keys())}, output_type={type(output).__name__}, item_keys={item_keys}, content_shape={content_shape}).'
     raise StructuredOutputValidationError(LlmFailureCode.EMPTY_OUTPUT, message, provider_message=message)
+
+
+def _validate_response_state(raw: Mapping[str, Any]) -> None:
+    """Validate the Azure Responses envelope before interpreting output items."""
+    status = raw.get('status')
+    error = raw.get('error')
+    incomplete = raw.get('incomplete_details')
+    if error is not None:
+        provider_code = error.get('code') if isinstance(error, Mapping) else None
+        provider_message = error.get('message') if isinstance(error, Mapping) else None
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider reported a failed response.', retryable=status in {'queued', 'in_progress'}, provider_code=provider_code if isinstance(provider_code, str) else None, provider_message=_safe_provider_text(provider_message), failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_FAILED')
+    if status == 'failed':
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response status was failed.', failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_FAILED')
+    if status == 'incomplete':
+        reason = incomplete.get('reason') if isinstance(incomplete, Mapping) else None
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response was incomplete.', failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_INCOMPLETE', provider_message=_safe_provider_text(reason))
+    if status == 'in_progress':
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response was still in progress.', retryable=True, failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_INCOMPLETE')
+    if status not in {None, 'completed'}:
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response status was invalid.', failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_SHAPE_INVALID')
 
 
 def _find_structured_mapping(value: object) -> dict[str, Any] | None:
