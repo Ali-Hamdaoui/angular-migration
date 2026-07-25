@@ -2,6 +2,8 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import subprocess
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -24,6 +26,26 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     path = resolved_database_path()
     print(f"Backend database: {path or '<non-file database>'}", flush=True)
     assert_schema_compatible(engine, get_settings())
+    settings = get_settings()
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=settings.platform_repository_root, capture_output=True, text=True, timeout=2, check=False).stdout.strip()
+    except OSError:
+        commit = "unavailable"
+    endpoint = urlsplit(settings.azure_openai_endpoint or "")
+    print({
+        "startup_provenance": {
+            "commit_sha": commit,
+            "repository_root": str(settings.platform_repository_root),
+            "database_path": str(path or "<non-file database>"),
+            "artifact_root": str(settings.artifact_root),
+            "llm_enabled": settings.llm_enabled,
+            "endpoint_host": endpoint.hostname,
+            "endpoint_path": endpoint.path,
+            "deployment_alias": settings.azure_openai_deployment,
+            "timeout_seconds": settings.llm_timeout_seconds,
+            "retry_count": settings.llm_max_transport_retries,
+        }
+    }, flush=True)
     from app.api.routes.baseline import get_baseline_install_service
     get_baseline_install_service().reconcile_orphans()
     from app.orchestration.source_intake import default_source_intake_graph, recover_source_intake_jobs
