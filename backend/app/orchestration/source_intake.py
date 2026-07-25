@@ -21,20 +21,24 @@ from sqlalchemy import select
 from app.api.baseline_contracts import BaselineInstallAuthorizationRequest, BaselineInstallRequest, BaselinePrequalifyRequest, BaselineWorkspaceRequest
 from app.api.baseline_g03_contracts import BaselineQualifyRequest
 from app.api.baseline_matrix_contracts import BaselineValidationRequest
+from app.api.baseline_parity_contracts import BaselineParityCaptureRequest
 from app.api.execution_profile_contracts import ExecutionProfileResolveRequest
 from app.api.g02_initialization import G02PackageInitializationRequest
 from app.api.discovery_contracts import DiscoveryCaptureRequest
 from app.domain.contracts import RunStatus, WorkflowEventType
 from app.domain.snapshot import CreateSourceSnapshotRequest
-from app.repositories.models import ArtifactMetadataModel, ExecutionProfileModel, G02ApprovalModel, G03ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, DiscoveryEvidenceModel, ExecutionProfileModel, G02ApprovalModel, G03ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.services.g02_application_service import G02ApprovalApplicationService
 from app.services.baseline_application_service import BaselineApplicationService
 from app.services.baseline_g03_application_service import BaselineG03ApplicationService
 from app.services.baseline_install_application_service import BaselineInstallApplicationService
 from app.services.baseline_validation_application_service import BaselineValidationApplicationService
+from app.services.baseline_parity_application_service import BaselineParityApplicationService
 from app.services.execution_profile_application_service import ExecutionProfileApplicationService
 from app.services.discovery_evidence_application_service import DiscoveryEvidenceApplicationService
+from app.services.parity_baseline_evidence_application_service import ParityBaselineEvidenceApplicationService
+from app.api.parity_baseline_contracts import ParityBaselineCaptureRequest
 from app.services.source_snapshot_application_service import SourceSnapshotApplicationService
 from app.state.transition_service import StateTransitionService, TransitionRequest
 
@@ -51,21 +55,14 @@ class SourceIntakeDispatcher:
         self._settings = settings
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="source-intake")
         self._lock = threading.Lock()
-        self._submitted: set[str] = set()
         self._continuing: set[str] = set()
         self._worker_id = f"source-intake-{os.getpid()}"
 
     def start(self, *, run_id: str, thread_id: str) -> None:
-        with self._lock:
-            if run_id in self._submitted:
-                return
-            self._submitted.add(run_id)
-        try:
-            self._executor.submit(self._run, run_id, thread_id)
-        except Exception:
-            with self._lock:
-                self._submitted.discard(run_id)
-            raise
+        # Submission is intentionally not de-duplicated in memory. Multiple
+        # callbacks may enqueue the same durable job; _claim() atomically moves
+        # exactly one queued/waiting row to running and every other worker exits.
+        self._executor.submit(self._run, run_id, thread_id)
 
     def resume_after_g03(self, run_id: str) -> None:
         with session_scope() as session:
@@ -94,11 +91,10 @@ class SourceIntakeDispatcher:
 
     def _run(self, run_id: str, thread_id: str) -> None:
         try:
-            claimed = self._claim(run_id)
-            job, resume_g03 = claimed if claimed else (None, False)
+            job = self._claim(run_id)
             if job is None:
                 return
-            if resume_g03:
+            if getattr(job, "_resume_after_g03", False):
                 self._continue_after_g03(job.id, run_id, job.actor)
                 return
             with session_scope() as session:
@@ -157,9 +153,6 @@ class SourceIntakeDispatcher:
             self._wait_for_g02(job.id, run_id)
         except Exception as error:
             self._fail(job.id if "job" in locals() and job is not None else None, type(error).__name__, str(error))
-        finally:
-            with self._lock:
-                self._submitted.discard(run_id)
 
     def _wait_for_g02(self, job_id: str, run_id: str) -> None:
         """Keep the durable job observable while the mandatory human gate waits."""
@@ -309,12 +302,34 @@ class SourceIntakeDispatcher:
             # In particular, an unsupported Angular target may coexist with a
             # passing package script for the same kind.
 
+        with session_scope() as session:
+            metadata = {
+                item.id.removeprefix("metadata-"): item.checksum
+                for item in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id))
+            }
+        parity = BaselineParityApplicationService().capture(run_id, BaselineParityCaptureRequest(
+            expected_state_version=self._current_version(run_id),
+            idempotency_key=f"intake-{job_id}:baseline-parity",
+            actor=actor,
+            prerequisite_artifact_ids=prerequisite_ids,
+            prerequisite_artifact_checksums={item: metadata[item] for item in prerequisite_ids if item in metadata},
+        ))
+        if parity.status != "captured":
+            self._fail(job_id, "BASELINE_PARITY_CAPTURE_FAILED", "Baseline parity evidence was not captured.")
+            return
+        prerequisite_ids.extend(parity.artifact_ids)
+        with session_scope() as session:
+            metadata = {
+                item.id.removeprefix("metadata-"): item.checksum
+                for item in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id))
+            }
+
         qualification = BaselineG03ApplicationService().qualify(run_id, BaselineQualifyRequest(
             expected_state_version=self._current_version(run_id),
             idempotency_key=f"intake-{job_id}:g03",
             actor=actor,
             prerequisite_artifact_ids=prerequisite_ids,
-            prerequisite_artifact_checksums={},
+            prerequisite_artifact_checksums={item: metadata[item] for item in prerequisite_ids},
         ))
         if qualification.blockers:
             # G03 owns the baseline decision. Do not overwrite it with a
@@ -355,12 +370,32 @@ class SourceIntakeDispatcher:
         )
         discovery = DiscoveryEvidenceApplicationService()
         try:
-            discovery.capture(run_id, request)
+            discovery_result = discovery.capture(run_id, request)
         except Exception as error:
             # Discovery owns its dependency failures. Do not report scanner,
             # artifact, or workspace failures as a source-intake failure.
             checksum = "sha256:" + hashlib.sha256(json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            discovery.block(run_id, request, checksum, str(error))
+            discovery_result = discovery.block(run_id, request, checksum, str(error))
+        if discovery_result.status != "completed":
+            self._fail(job_id, "DISCOVERY_NOT_COMPLETED", "Deterministic discovery evidence was not completed.")
+            return
+        with session_scope() as session:
+            run = session.get(MigrationRunModel, run_id)
+            if run is None:
+                self._fail(job_id, "RUN_NOT_FOUND", "Migration run disappeared before discovery parity capture.")
+                return
+            metadata = {item.id.removeprefix("metadata-"): item.checksum for item in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id))}
+            discovery_artifacts = list(discovery_result.artifact_ids)
+            parity_request = ParityBaselineCaptureRequest(
+                expected_state_version=run.state_version,
+                idempotency_key=f"intake-{job_id}:discovery-parity-baseline",
+                prerequisite_artifact_ids=discovery_artifacts,
+                prerequisite_artifact_checksums={item: metadata[item] for item in discovery_artifacts if item in metadata},
+            )
+        post_g03_parity = ParityBaselineEvidenceApplicationService().capture(run_id, parity_request, actor=actor)
+        if post_g03_parity.status != "completed":
+            self._fail(job_id, "DISCOVERY_PARITY_BASELINE_FAILED", "Deterministic discovery parity evidence was not completed.")
+            return
         with session_scope() as session:
             job = session.get(SourceIntakeJobModel, job_id)
             run = session.get(MigrationRunModel, run_id)
@@ -414,12 +449,13 @@ class SourceIntakeDispatcher:
             raise RuntimeError("Angular source version could not be determined from the approved snapshot")
         return str(values["angular"]), values["typescript"], values["rxjs"]
 
-    def _claim(self, run_id: str) -> tuple[SourceIntakeJobModel, bool] | None:
+    def _claim(self, run_id: str) -> SourceIntakeJobModel | None:
         with session_scope() as session:
             job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "waiting_g02", "waiting_runtime_selection", "waiting_g03"})).order_by(SourceIntakeJobModel.queued_at.desc()))
             if job is None:
                 return None
             resume_g03 = job.status == "waiting_g03"
+            job._resume_after_g03 = resume_g03
             job.status = "running"
             # Attempt is the durable retry identity, not a worker-claim
             # counter. It must remain stable when recovery reclaims a job.
@@ -427,7 +463,7 @@ class SourceIntakeDispatcher:
                 job.attempt = 1
             job.worker_id = self._worker_id
             job.started_at = datetime.now(UTC)
-            return job, resume_g03
+            return job
 
     def _set_status(self, job_id: str, status: str) -> None:
         with session_scope() as session:

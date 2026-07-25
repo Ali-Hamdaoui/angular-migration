@@ -30,10 +30,12 @@ class BaselineAssessmentModel(Base):
     source_artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    parity_binding: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     package_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stale_reason: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
