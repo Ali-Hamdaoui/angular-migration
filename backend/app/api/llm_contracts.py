@@ -6,11 +6,17 @@ from app.domain.contracts import ContractModel
 
 
 class LlmReadinessResponse(ContractModel):
-    status: Literal['ready', 'blocked']
+    status: Literal['disabled', 'configuration_incomplete', 'configured_unverified', 'ready', 'degraded', 'blocked']
     provider: str = 'azure_openai'
     deployment_configured: bool
     model_capability: str
     error_code: str | None = None
+    llm_enabled: bool = False
+    endpoint_configured: bool = False
+    authentication_configured: bool = False
+    schema_capability_configured: bool = False
+    last_smoke_check_status: str | None = None
+    last_checked_at: str | None = None
 
 
 class LlmSmokeRequest(ContractModel):

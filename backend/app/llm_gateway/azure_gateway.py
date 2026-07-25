@@ -83,7 +83,7 @@ class DeploymentConfiguration(BaseModel):
         values = {
             'endpoint': endpoint,
             'deployment': settings.azure_openai_deployment,
-            'api_version': settings.azure_openai_api_version,
+            'api_version': settings.azure_openai_api_version or 'v1',
             'api_key': settings.azure_openai_api_key.get_secret_value() if settings.azure_openai_api_key else None,
         }
         if not settings.llm_enabled or any(not value for value in values.values()):
@@ -213,7 +213,7 @@ class PromptSchemaRegistry:
         registered = self._schemas.get(schema_name)
         if registered is None:
             raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Response schema is not registered.')
-        return registered[0].model_json_schema()
+        return _azure_strict_schema(registered[0].model_json_schema())
 
 
 class ProviderTransport(Protocol):
@@ -305,6 +305,36 @@ def _safe_provider_text(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     return value.replace('\r', ' ').replace('\n', ' ')[:512]
+
+
+_AZURE_UNSUPPORTED_SCHEMA_KEYS = {
+    'minLength', 'maxLength', 'pattern', 'format', 'minimum', 'maximum',
+    'multipleOf', 'minItems', 'maxItems', 'uniqueItems', 'patternProperties',
+    'unevaluatedProperties', 'propertyNames',
+}
+
+
+def _azure_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Compile Pydantic JSON Schema to the restricted Azure strict subset."""
+    defs = schema.get('$defs', {})
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        ref = value.get('$ref')
+        if isinstance(ref, str) and ref.startswith('#/$defs/'):
+            return visit(defs.get(ref.rsplit('/', 1)[-1], {}))
+        output = {key: visit(item) for key, item in value.items() if key not in _AZURE_UNSUPPORTED_SCHEMA_KEYS and key not in {'$defs', '$schema', 'title', 'default'} and key != '$ref'}
+        if output.get('type') == 'object' or 'properties' in output:
+            properties = output.get('properties', {})
+            output['properties'] = {key: visit(item) for key, item in properties.items()}
+            output['required'] = sorted(properties)
+            output['additionalProperties'] = False
+        return output
+
+    return visit(schema)
 
 
 def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:

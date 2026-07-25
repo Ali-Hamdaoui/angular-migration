@@ -144,7 +144,6 @@ class Settings(BaseSettings):
                 for variable, value in {
                     "AZURE_OPENAI_ENDPOINT": self.azure_openai_endpoint,
                     "AZURE_OPENAI_DEPLOYMENT": self.azure_openai_deployment,
-                    "AZURE_OPENAI_API_VERSION": self.azure_openai_api_version,
                     "AZURE_OPENAI_API_KEY": self.azure_openai_api_key,
                 }.items()
                 if value is None or (isinstance(value, str) and not value.strip())

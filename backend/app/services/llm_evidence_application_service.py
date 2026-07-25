@@ -56,8 +56,17 @@ class LlmEvidenceApplicationService:
         return registry
 
     def readiness(self) -> LlmReadinessResponse:
-        configured = bool(self.settings.llm_enabled and self.settings.azure_openai_endpoint and self.settings.azure_openai_deployment and self.settings.azure_openai_api_version and self.settings.azure_openai_api_key)
-        return LlmReadinessResponse(status='ready' if configured else 'blocked', deployment_configured=configured, model_capability='responses_json_schema' if configured else 'unknown', error_code=None if configured else 'LLM_CONFIGURATION_INCOMPLETE')
+        endpoint = bool(self.settings.azure_openai_endpoint)
+        deployment = bool(self.settings.azure_openai_deployment)
+        auth = bool(self.settings.azure_openai_api_key)
+        configured = endpoint and deployment and auth
+        if not self.settings.llm_enabled:
+            status, error = 'disabled', None
+        elif not configured:
+            status, error = 'configuration_incomplete', 'LLM_CONFIGURATION_INCOMPLETE'
+        else:
+            status, error = 'configured_unverified', 'LLM_SMOKE_NOT_VERIFIED'
+        return LlmReadinessResponse(status=status, deployment_configured=deployment, model_capability='responses_json_schema' if configured else 'unknown', error_code=error, llm_enabled=self.settings.llm_enabled, endpoint_configured=endpoint, authentication_configured=auth, schema_capability_configured=configured)
 
     def smoke(self, request: LlmSmokeRequest, *, actor: str = 'local-operator') -> LlmInvocationResponse:
         authenticated_actor = actor.strip() or 'local-operator'
