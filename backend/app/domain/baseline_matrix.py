@@ -47,6 +47,7 @@ class BaselineTarget:
     working_directory_alias: str = "BASELINE_SANDBOX"
     supported: bool = True
     blocker: str | None = None
+    builder: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,12 +134,12 @@ class BaselineTargetDiscoveryService:
             suffix = f":{configuration}" if configuration else ""
             target_id = f"angular:{project}:{kind.value}{suffix}"
             if not isinstance(builder, str) or not self._supported_builder(kind, builder):
-                yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "", (), supported=False, blocker="UNSUPPORTED_CUSTOM_TARGET")
+                yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "", (), supported=False, blocker="UNSUPPORTED_CUSTOM_TARGET", builder=builder if isinstance(builder, str) else None)
                 continue
             arguments = ["ng", kind.value, project]
             if configuration:
                 arguments.extend(("--configuration", configuration))
-            yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments))
+            yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments), builder=builder)
 
     @staticmethod
     def _supported_builder(kind: BaselineTargetKind, builder: str) -> bool:

@@ -91,6 +91,22 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByRole("listitem", { name: "G03 readiness: completed" })).toBeInTheDocument();
   });
 
+  it("does not attribute a qualification blocker to completed validation stages", () => {
+    const events = [
+      "BASELINE_BUILD_COMPLETED", "BASELINE_TESTS_COMPLETED", "BASELINE_LINT_COMPLETED",
+      "BASELINE_FAILURES_FINGERPRINTED", "BASELINE_ROUTE_ANCHOR_CREATED", "BASELINE_BACKEND_ANCHOR_CREATED", "BASELINE_BLOCKED",
+    ].map((event_type, index) => ({
+      event_id: `event-${event_type}`, run_id: initialState.run_id, stage_id: null, event_type,
+      occurred_at: `2026-07-15T12:${String(index).padStart(2, "0")}:00Z`, sequence: index + 2, payload: {},
+    }));
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
+
+    expect(screen.getByRole("listitem", { name: "Build: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Tests: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Lint: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Baseline qualification: blocked" })).toBeInTheDocument();
+  });
+
   it("reveals each next review surface from its prerequisite event", () => {
     const events = ["DISCOVERY_COMPLETED", "G04_APPROVED", "G05_APPROVED", "MIGRATION_PLAN_CREATED"].map((event_type, index) => ({
       event_id: `event-${event_type}`, run_id: initialState.run_id, stage_id: null, event_type,

@@ -32,9 +32,9 @@ const pipelineSteps: PipelineStep[] = [
   { label: 'Runtime validation', started: ['EXECUTION_PROFILE_RESOLUTION_STARTED'], completed: ['EXECUTION_PROFILE_RESOLVED', 'EXECUTION_PROFILE_SELECTED'], failed: [], blocked: ['EXECUTION_PROFILE_BLOCKED'] },
   { label: 'Baseline preparation', started: ['BASELINE_WORKSPACE_STARTED'], completed: ['BASELINE_WORKSPACE_READY'], failed: [], blocked: ['BASELINE_INSTALL_BLOCKED'] },
   { label: 'Dependency installation', started: ['COMMAND_QUEUED', 'COMMAND_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_INSTALL_SUCCEEDED'], failed: ['BASELINE_INSTALL_FAILED', 'COMMAND_INTERRUPTED', 'COMMAND_CANCELLED'], blocked: [] },
-  { label: 'Build', started: ['BASELINE_BUILD_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_BUILD_COMPLETED'], failed: [], blocked: ['BASELINE_BLOCKED'], kind: 'build' },
-  { label: 'Tests', started: ['BASELINE_TESTS_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_TESTS_COMPLETED'], failed: [], blocked: ['BASELINE_BLOCKED'], kind: 'test' },
-  { label: 'Lint', started: ['BASELINE_LINT_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_LINT_COMPLETED'], failed: [], blocked: ['BASELINE_BLOCKED'], kind: 'lint' },
+  { label: 'Build', started: ['BASELINE_BUILD_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_BUILD_COMPLETED'], failed: [], blocked: [], kind: 'build' },
+  { label: 'Tests', started: ['BASELINE_TESTS_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_TESTS_COMPLETED'], failed: [], blocked: [], kind: 'test' },
+  { label: 'Lint', started: ['BASELINE_LINT_STARTED', 'COMMAND_OUTPUT_CHUNK'], completed: ['BASELINE_LINT_COMPLETED'], failed: [], blocked: [], kind: 'lint' },
   { label: 'Baseline qualification', started: [], completed: ['BASELINE_QUALIFIED', 'BASELINE_QUALIFIED_WITH_KNOWN_FAILURES'], failed: [], blocked: ['BASELINE_BLOCKED'] },
   { label: 'G03 readiness', started: [], completed: ['G03_CREATED'], failed: [], blocked: [] },
 ];
@@ -108,7 +108,6 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
   const baselineEvidenceReady = state.workflow_events.some((event) => event.event_type === 'BASELINE_QUALIFIED' || event.event_type === 'BASELINE_QUALIFIED_WITH_KNOWN_FAILURES' || event.event_type === 'G03_CREATED');
   const has = (...types: string[]) => state.workflow_events.some((event) => types.includes(event.event_type));
   const g02Available = has('G02_CREATED', 'G02_APPROVED', 'G02_REJECTED', 'G02_STALE');
-  const g02Approved = has('G02_APPROVED');
   const runtimeAvailable = has('EXECUTION_PROFILE_RESOLUTION_STARTED', 'EXECUTION_PROFILE_RESOLVED', 'EXECUTION_PROFILE_SELECTED', 'EXECUTION_PROFILE_BLOCKED');
   const baselineAvailable = has('BASELINE_WORKSPACE_STARTED', 'BASELINE_WORKSPACE_READY');
   const commandPolicyAvailable = has('G06_APPROVED') && has('STAGE_PLAN_CREATED') && has('EXECUTION_PROFILE_SELECTED') && has('BASELINE_WORKSPACE_READY');
@@ -175,7 +174,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
       {baselineAvailable ? <BaselineInstallationPanel runId={runId} initialState={state} connectionStatus={status} /> : null}
       {baselineAvailable ? <BaselineValidationPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} availableKinds={baselineValidationKinds} /> : null}
       {baselineQualificationAvailable ? <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
-      {baselineParityAvailable ? <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} /> : null}
+      {baselineParityAvailable ? <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} /> : null}
       {commandPolicyAvailable ? <CommandPolicyInspector runId={runId} runState={state} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : null}
       </div>
       <aside className={styles.secondaryColumn}>
