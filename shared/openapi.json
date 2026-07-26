@@ -254,7 +254,6 @@
               "$ref": "#/components/schemas/AnalysisArtifactInput"
             },
             "maxItems": 32,
-            "minItems": 1,
             "title": "Prerequisite Artifacts",
             "type": "array"
           },
@@ -273,8 +272,7 @@
         },
         "required": [
           "expected_state_version",
-          "idempotency_key",
-          "prerequisite_artifacts"
+          "idempotency_key"
         ],
         "title": "AnalysisCreateRequest",
         "type": "object"
@@ -875,7 +873,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Job Id"
           },
           "run_id": {
@@ -966,6 +963,18 @@
           "phase_status": {
             "title": "Phase Status",
             "type": "string"
+          },
+          "plan_inputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Inputs"
           },
           "preflight_id": {
             "anyOf": [
@@ -3587,6 +3596,23 @@
             "title": "Checksum",
             "type": "string"
           },
+          "controlled_probes": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Controlled Probes",
+            "type": "object"
+          },
           "git_ready": {
             "title": "Git Ready",
             "type": "boolean"
@@ -5254,6 +5280,17 @@
             ],
             "title": "Failure Code"
           },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
           "idempotent_replay": {
             "default": false,
             "title": "Idempotent Replay",
@@ -5332,6 +5369,39 @@
             "title": "Provider",
             "type": "string"
           },
+          "provider_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Error Code"
+          },
+          "provider_http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Http Status"
+          },
+          "provider_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Request Id"
+          },
           "redacted_summary": {
             "anyOf": [
               {
@@ -5355,6 +5425,17 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "sanitized_provider_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sanitized Provider Message"
           },
           "schema_version": {
             "anyOf": [
@@ -5424,8 +5505,18 @@
       "LlmReadinessResponse": {
         "additionalProperties": false,
         "properties": {
+          "authentication_configured": {
+            "default": false,
+            "title": "Authentication Configured",
+            "type": "boolean"
+          },
           "deployment_configured": {
             "title": "Deployment Configured",
+            "type": "boolean"
+          },
+          "endpoint_configured": {
+            "default": false,
+            "title": "Endpoint Configured",
             "type": "boolean"
           },
           "error_code": {
@@ -5439,6 +5530,33 @@
             ],
             "title": "Error Code"
           },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          },
+          "last_smoke_check_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Smoke Check Status"
+          },
+          "llm_enabled": {
+            "default": false,
+            "title": "Llm Enabled",
+            "type": "boolean"
+          },
           "model_capability": {
             "title": "Model Capability",
             "type": "string"
@@ -5448,9 +5566,18 @@
             "title": "Provider",
             "type": "string"
           },
+          "schema_capability_configured": {
+            "default": false,
+            "title": "Schema Capability Configured",
+            "type": "boolean"
+          },
           "status": {
             "enum": [
+              "disabled",
+              "configuration_incomplete",
+              "configured_unverified",
               "ready",
+              "degraded",
               "blocked"
             ],
             "title": "Status",
@@ -12192,6 +12319,22 @@
             }
           },
           {
+            "in": "query",
+            "name": "actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor"
+            }
+          },
+          {
             "in": "header",
             "name": "Last-Event-ID",
             "required": false,
@@ -13269,6 +13412,58 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/retry-source-intake": {
+      "post": {
+        "operationId": "retry_source_intake_api_v1_runs__run_id__retry_source_intake_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Source Intake",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/snapshots": {
       "post": {
         "operationId": "create_snapshot_api_v1_runs__run_id__snapshots_post",
@@ -13563,58 +13758,6 @@
           }
         },
         "summary": "Start Run",
-        "tags": [
-          "runs"
-        ]
-      }
-    },
-    "/api/v1/runs/{run_id}/retry-source-intake": {
-      "post": {
-        "operationId": "retry_source_intake_api_v1_runs__run_id__retry_source_intake_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StartAuthoritativeRunRequestDto"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Retry Source Intake",
         "tags": [
           "runs"
         ]
@@ -17154,6 +17297,22 @@
             }
           },
           {
+            "in": "query",
+            "name": "actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor"
+            }
+          },
+          {
             "in": "header",
             "name": "Last-Event-ID",
             "required": false,
@@ -18231,6 +18390,58 @@
         ]
       }
     },
+    "/runs/{run_id}/retry-source-intake": {
+      "post": {
+        "operationId": "retry_source_intake_runs__run_id__retry_source_intake_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAuthoritativeRunRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoritativeRunMutationResultDto"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Source Intake",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/runs/{run_id}/snapshots": {
       "post": {
         "operationId": "create_snapshot_runs__run_id__snapshots_post",
@@ -18503,7 +18714,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {

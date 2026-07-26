@@ -253,6 +253,14 @@ class CancellationPolicy(str, Enum):
 
 
 class WorkflowEventType(str, Enum):
+    ANALYSIS_INPUT_VALIDATION_STARTED = 'ANALYSIS_INPUT_VALIDATION_STARTED'
+    ANALYSIS_INPUT_VALIDATION_COMPLETED = 'ANALYSIS_INPUT_VALIDATION_COMPLETED'
+    ANALYSIS_CONTEXT_PREPARED = 'ANALYSIS_CONTEXT_PREPARED'
+    LLM_REQUEST_PREPARED = 'LLM_REQUEST_PREPARED'
+    LLM_HTTP_REQUEST_STARTED = 'LLM_HTTP_REQUEST_STARTED'
+    LLM_HTTP_RESPONSE_RECEIVED = 'LLM_HTTP_RESPONSE_RECEIVED'
+    LLM_RESPONSE_DECODED = 'LLM_RESPONSE_DECODED'
+    LLM_STRUCTURED_OUTPUT_VALIDATED = 'LLM_STRUCTURED_OUTPUT_VALIDATED'
     LLM_INVOCATION_STARTED = 'LLM_INVOCATION_STARTED'
     LLM_INVOCATION_COMPLETED = 'LLM_INVOCATION_COMPLETED'
     LLM_INVOCATION_FAILED = 'LLM_INVOCATION_FAILED'
@@ -941,6 +949,7 @@ class AuthoritativeRunStateDto(ContractModel):
     catalogue_version: str | None = None
     registry_snapshot: dict[str, object] | None = None
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
+    plan_inputs: dict[str, object] | None = None
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 

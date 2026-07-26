@@ -252,7 +252,7 @@ def stream_command_logs(
     # the same authenticated local-control-plane actor as a query value for
     # this SSE-only endpoint; normal command and artifact routes remain
     # header-authenticated.
-    effective_actor = stream_actor.strip() if stream_actor and stream_actor.strip() else actor
+    effective_actor = stream_actor.strip() if isinstance(stream_actor, str) and stream_actor.strip() else actor
     with session_scope() as session:
         authorize_run(session, run_id, effective_actor)
         if CommandExecutorService().get_command_execution(session, run_id, execution_id) is None:

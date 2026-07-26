@@ -9,10 +9,18 @@ from app.domain.contracts import ContractModel
 class AnalysisCreateRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    prerequisite_artifacts: list[AnalysisArtifactInput] = Field(min_length=1, max_length=32)
+    # Kept for safe backward compatibility; the backend derives the authority.
+    prerequisite_artifacts: list[AnalysisArtifactInput] = Field(default_factory=list, max_length=32)
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
+
+
+class AnalysisRetryRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    failed_analysis_id: str = Field(min_length=1, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=4000)
 
 
 class G04DecisionApiRequest(ContractModel):
@@ -40,6 +48,19 @@ class AnalysisResponse(ContractModel):
     gate_status: str
     gate_decision: str | None = None
     error_code: str | None = None
+    cause_code: str | None = None
+    failure_subtype: str | None = None
+    failure_stage: str | None = None
+    retryable: bool = False
+    correlation_id: str | None = None
+    proposer_invocation_id: str | None = None
+    reviewer_invocation_id: str | None = None
+    failed_invocation_id: str | None = None
+    failure_origin: str | None = None
+    technical_stage: str | None = None
+    transport_started: bool | None = None
+    provider_request_id: str | None = None
+    attempt_history: list[dict[str, Any]] = Field(default_factory=list)
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False

@@ -15,7 +15,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, MigrationRunModel, PathValidationModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
@@ -236,7 +236,7 @@ class MigrationRunService:
             if run.status != RunStatus.FAILED.value:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
             previous = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id).order_by(SourceIntakeJobModel.attempt.desc()))
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING"}
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError"}
             if previous is None or previous.status != "failed" or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
             self._validate_start_boundary(session, run)
@@ -246,13 +246,14 @@ class MigrationRunService:
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
+            post_g03 = previous.last_error_code == "ExecutionProfileApplicationError" and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
             accepted = StateTransitionService(session).apply_transition(TransitionRequest(
                 run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
                 event_type=WorkflowEventType.RUN_STATE_CHANGED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
                 actor=actor, reason="explicit source-intake retry accepted", payload={"previous_job_id": previous.id, "attempt": previous.attempt + 1}, occurred_at=self._now()))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
-                status="queued", actor=actor, idempotency_key=idempotency_key,
+                status="waiting_g03" if post_g03 else "queued", actor=actor, idempotency_key=idempotency_key,
                 attempt=previous.attempt + 1, queued_at=self._now(), state_version=accepted.next_state_version,
             )
             session.add(queued)
@@ -381,6 +382,22 @@ class MigrationRunService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            resolution = session.scalar(select(CompatibilityResolutionModel).where(CompatibilityResolutionModel.run_id == run_id).order_by(CompatibilityResolutionModel.state_version.desc(), CompatibilityResolutionModel.created_at.desc()))
+            package = resolution.package if resolution else {}
+            profile = (package or {}).get("selected_profile") or {}
+            discovery = session.scalar(select(DiscoveryEvidenceModel).where(DiscoveryEvidenceModel.run_id == run_id).order_by(DiscoveryEvidenceModel.created_at.desc()))
+            builder = next((finding.get("value", [{}])[0].get("builder") for scanner in (discovery.scanner_results if discovery else []) if scanner.get("scanner") == "builders" for finding in scanner.get("findings", []) if finding.get("key") == "inventory" and finding.get("value")), None)
+            plan_inputs = ({
+                "source_exact": (package or {}).get("source_exact"),
+                "source_family": (package or {}).get("source_family"),
+                "target_family": (package or {}).get("target_family"),
+                "catalogue_version": (package or {}).get("catalogue_version"),
+                "input_fingerprint": resolution.artifact_set_checksum if resolution else None,
+                "execution_profile_id": profile.get("profile_id"),
+                "stage_route": [[item.get("source_family"), item.get("target_family"), item.get("stage_id"), item.get("target_angular_exact"), item.get("target_cli_exact")] for item in ((package or {}).get("route") or [])],
+                "target_cli_exact": (((package or {}).get("route") or [{}])[0]).get("target_cli_exact") if (package or {}).get("route") else None,
+                "builder": builder,
+            } if resolution else None)
             return {
                 "run_id": run.id, "status": run.status, "run_phase": run.run_phase, "phase_status": run.phase_status,
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,
@@ -389,6 +406,7 @@ class MigrationRunService:
                 "workspace_aliases": dict(run.workspace_aliases or {}),
                 "source_angular_exact": (run.run_policy_snapshot or {}).get("source_angular_exact"), "catalogue_version": (run.run_policy_snapshot or {}).get("catalogue_version"),
                 "registry_snapshot": (run.run_policy_snapshot or {}).get("registry_snapshot"), "runtime_candidates": (run.run_policy_snapshot or {}).get("runtime_candidates", []),
+                "plan_inputs": plan_inputs,
                 "artifacts": self._artifacts_for_run(session, run_id), "workflow_events": self._events_for_run(session, run_id),
             }
 

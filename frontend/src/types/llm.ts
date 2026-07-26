@@ -1,9 +1,15 @@
 export type LlmReadinessResponse = {
-  status: "ready" | "blocked";
+  status: "disabled" | "configuration_incomplete" | "configured_unverified" | "ready" | "degraded" | "blocked";
   provider: string;
   deployment_configured: boolean;
   model_capability?: string;
   error_code: string | null;
+  llm_enabled?: boolean;
+  endpoint_configured?: boolean;
+  authentication_configured?: boolean;
+  schema_capability_configured?: boolean;
+  last_smoke_check_status?: string | null;
+  last_checked_at?: string | null;
 };
 
 export type LlmSmokeRequest = {
@@ -41,6 +47,11 @@ export type LlmInvocationResponse = {
   retries: number;
   latency_ms: number | null;
   failure_code: string | null;
+  provider_http_status?: number | null;
+  provider_error_code?: string | null;
+  sanitized_provider_message?: string | null;
+  provider_request_id?: string | null;
+  failure_stage?: string | null;
   state_version: number;
   event_sequence: number;
   idempotent_replay: boolean;

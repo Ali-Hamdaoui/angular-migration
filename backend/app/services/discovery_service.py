@@ -39,9 +39,9 @@ class DiscoveryService:
         return ordered, drafts
 
     def _workspace(self, root: Path) -> ScannerFinding:
-        angular = self._json(root / "angular.json")
-        if angular is None:
-            return self._unknown("workspace", "ANGULAR_JSON_MISSING")
+        angular, error = self._angular_json(root)
+        if error:
+            return self._unknown("workspace", error)
         projects = angular.get("projects") if isinstance(angular, dict) else None
         if not isinstance(projects, dict):
             return self._unknown("workspace", "ANGULAR_PROJECTS_UNKNOWN", "angular.json")
@@ -65,27 +65,29 @@ class DiscoveryService:
         ))
 
     def _dependencies(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json")
-        if package is None:
-            return self._unknown("dependencies", "PACKAGE_JSON_MISSING")
+        package, error = self._json(root / "package.json")
+        if error:
+            return self._unknown("dependencies", error)
         dependencies: dict[str, str] = {}
         for field in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
             values = package.get(field, {}) if isinstance(package, dict) else {}
             if isinstance(values, dict):
                 dependencies.update({str(name): self._redact(str(version)) for name, version in values.items()})
-        private = sorted(name for name in dependencies if name.startswith("@") and not name.startswith("@angular/"))
+        scoped = sorted(name for name in dependencies if name.startswith("@") and not name.startswith("@angular/"))
         scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
         lifecycle = sorted(name for name in scripts if name in {"preinstall", "install", "postinstall", "prepare"}) if isinstance(scripts, dict) else []
         return ScannerFinding(scanner="dependencies", status="completed", findings=(
             self._fact("inventory", dict(sorted(dependencies.items())), "package.json"),
-            self._fact("private_package_candidates", private, "package.json"),
+            self._fact("scoped_package_candidates", scoped, "package.json"),
+            self._fact("package_provenance_policy", "scope alone is insufficient; registry, provenance, and auth evidence are required", "package.json",
+                       ),
             self._fact("lifecycle_scripts", lifecycle, "package.json"),
         ))
 
     def _builders(self, root: Path) -> ScannerFinding:
-        angular = self._json(root / "angular.json")
-        if angular is None:
-            return self._unknown("builders", "ANGULAR_JSON_MISSING")
+        angular, error = self._angular_json(root)
+        if error:
+            return self._unknown("builders", error)
         inventory: list[dict[str, str]] = []
         projects = angular.get("projects", {}) if isinstance(angular, dict) else {}
         if not isinstance(projects, dict):
@@ -99,9 +101,9 @@ class DiscoveryService:
         return ScannerFinding(scanner="builders", status="completed", findings=(self._fact("inventory", inventory, "angular.json"),))
 
     def _test_lint(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json")
-        if package is None:
-            return self._unknown("test_lint", "PACKAGE_JSON_MISSING")
+        package, error = self._json(root / "package.json")
+        if error:
+            return self._unknown("test_lint", error)
         scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
         if not isinstance(scripts, dict):
             return self._unknown("test_lint", "PACKAGE_SCRIPTS_UNKNOWN", "package.json")
@@ -109,8 +111,12 @@ class DiscoveryService:
         return ScannerFinding(scanner="test_lint", status="completed", findings=(self._fact("scripts", selected, "package.json"),))
 
     def _ssr_pwa_i18n(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json") or {}
-        angular = self._json(root / "angular.json") or {}
+        package, package_error = self._json(root / "package.json")
+        angular, angular_error = self._angular_json(root)
+        if package_error:
+            return self._unknown("ssr_pwa_i18n", package_error)
+        if angular_error:
+            return self._unknown("ssr_pwa_i18n", angular_error)
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         dependency_names = set(dependencies) if isinstance(dependencies, dict) else set()
         serialized = json.dumps(angular, sort_keys=True)
@@ -122,14 +128,18 @@ class DiscoveryService:
         return ScannerFinding(scanner="ssr_pwa_i18n", status="completed", findings=(self._fact("inventory", inventory, "package.json", "angular.json"),))
 
     def _ui_theme(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json") or {}
+        package, error = self._json(root / "package.json")
+        if error:
+            return self._unknown("ui_theme", error)
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         names = set(dependencies) if isinstance(dependencies, dict) else set()
         inventory = {"ui_libraries": sorted(name for name in names if name in {"@angular/material", "primeng", "ng-zorro-antd", "bootstrap"}), "theme_configuration": "unknown"}
         return ScannerFinding(scanner="ui_theme", status="completed", findings=(self._fact("inventory", inventory, "package.json"),))
 
     def _state_management(self, root: Path) -> ScannerFinding:
-        package = self._json(root / "package.json") or {}
+        package, error = self._json(root / "package.json")
+        if error:
+            return self._unknown("state_management", error)
         dependencies = {**package.get("dependencies", {}), **package.get("devDependencies", {})} if isinstance(package, dict) else {}
         names = set(dependencies) if isinstance(dependencies, dict) else set()
         inventory = {"libraries": sorted(name for name in names if name.startswith("@ngrx/") or name in {"akita", "@angular-redux/store"})}
@@ -156,14 +166,78 @@ class DiscoveryService:
     def _fact(key: str, value: object, *references: str) -> DiscoveryFinding:
         return DiscoveryFinding(key=key, value=value, source_references=tuple(references))
 
-    def _json(self, path: Path) -> dict | None:
+    def _angular_json(self, discovery_root: Path) -> tuple[dict | None, str | None]:
+        return self._json(Path(discovery_root) / "angular.json", "ANGULAR_JSON")
+
+    def _json(self, path: Path, name: str = "PACKAGE_JSON") -> tuple[dict | None, str | None]:
+        missing = f"{name}_MISSING"
+        invalid = f"{name}_INVALID"
+        unreadable = f"{name}_UNREADABLE"
         try:
-            if not path.is_file() or path.stat().st_size > self._max_input_bytes:
-                return None
-            value = json.loads(path.read_text(encoding="utf-8"))
-            return value if isinstance(value, dict) else None
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
+            if not path.is_file():
+                return None, missing
+            if path.stat().st_size > self._max_input_bytes:
+                return None, unreadable
+            value = self._parse_jsonc(path.read_text(encoding="utf-8-sig"))
+            return (value, None) if isinstance(value, dict) else (None, invalid)
+        except json.JSONDecodeError:
+            return None, invalid
+        except (OSError, UnicodeDecodeError):
+            return None, unreadable
+
+    @staticmethod
+    def _parse_jsonc(text: str) -> dict:
+        output: list[str] = []
+        index = 0
+        in_string = False
+        escaped = False
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                output.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+            if char == '"':
+                in_string = True
+                output.append(char)
+                index += 1
+                continue
+            if char == "/" and index + 1 < len(text) and text[index + 1] in "/*":
+                start = index
+                block = text[index + 1] == "*"
+                index += 2
+                while index < len(text) and (block and text[index:index + 2] != "*/" or not block and text[index] not in "\r\n"):
+                    index += 1
+                if block:
+                    if index >= len(text):
+                        raise json.JSONDecodeError("Unterminated comment", text, start)
+                    index += 2
+                output.extend("\n" if char == "\n" else " " for char in text[start:index])
+                continue
+            output.append(char)
+            index += 1
+        if in_string:
+            raise json.JSONDecodeError("Unterminated string", text, len(text))
+
+        normalized = output
+        for index, char in enumerate(normalized):
+            if char != ",":
+                continue
+            next_index = index + 1
+            while next_index < len(normalized) and normalized[next_index].isspace():
+                next_index += 1
+            if next_index < len(normalized) and normalized[next_index] in "]}":
+                normalized[index] = " "
+        value = json.loads("".join(normalized))
+        if not isinstance(value, dict):
+            raise json.JSONDecodeError("JSON object expected", text, 0)
+        return value
 
     @staticmethod
     def _checksum(content: str) -> str:

@@ -1,0 +1,610 @@
+[
+  {
+    "actual_checksum": "sha256:bacd4d4bd6d3a15d3d15da9fb5c4135a851d817b0b41ac7f61f0187859caf3f4",
+    "artifact_id": "artifact-035829c7969142f7be60bf5b961ce8e9",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:bacd4d4bd6d3a15d3d15da9fb5c4135a851d817b0b41ac7f61f0187859caf3f4",
+    "relative_path": "00_job_setup/create_run_request.json"
+  },
+  {
+    "actual_checksum": "sha256:79567f6840dfc19466d89cd40f252bd919bf40d606093192522b40804af826c1",
+    "artifact_id": "artifact-0bbc588a43d84c5fbb9e8e7e6acdd192",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:79567f6840dfc19466d89cd40f252bd919bf40d606093192522b40804af826c1",
+    "relative_path": "00_job_setup/client_constraints.json"
+  },
+  {
+    "actual_checksum": "sha256:022c7bb9346e586be9aedb7b56e459ff2684b1f9ed65a4e6b2a7d67bdecd0835",
+    "artifact_id": "artifact-50bf16769b53441490d4ad85dcfdd3f8",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:022c7bb9346e586be9aedb7b56e459ff2684b1f9ed65a4e6b2a7d67bdecd0835",
+    "relative_path": "00_job_setup/external_source_reference.json"
+  },
+  {
+    "actual_checksum": "sha256:06bcca6e5cfb677b2f2b351366e2a6a02216efc5c76a76999d474512cab24e54",
+    "artifact_id": "artifact-2fb83caef3d6420f9c735b15a342cc28",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:06bcca6e5cfb677b2f2b351366e2a6a02216efc5c76a76999d474512cab24e54",
+    "relative_path": "00_job_setup/output_layout.json"
+  },
+  {
+    "actual_checksum": "sha256:06bcca6e5cfb677b2f2b351366e2a6a02216efc5c76a76999d474512cab24e54",
+    "artifact_id": "artifact-ae5b96daac6a4513a986eda1fcbfaca7",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:06bcca6e5cfb677b2f2b351366e2a6a02216efc5c76a76999d474512cab24e54",
+    "relative_path": "00_job_setup/workspace_alias_registry.json"
+  },
+  {
+    "actual_checksum": "sha256:e3e70e1ddcbfc09164de0621fe7afb30fe47912362f34e7b68e2eb1bfb9c87d1",
+    "artifact_id": "artifact-bb614d8642fc4b93a4f6fb15b9b13520",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e3e70e1ddcbfc09164de0621fe7afb30fe47912362f34e7b68e2eb1bfb9c87d1",
+    "relative_path": "00_job_setup/target_policy.json"
+  },
+  {
+    "actual_checksum": "sha256:ff1181f2014b1d5a46bd7a27af51e9be2b2f3dfb974ab4feb4203893368bb7d6",
+    "artifact_id": "artifact-a8c7a28dbba34f98998e99fa897e0fa0",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:ff1181f2014b1d5a46bd7a27af51e9be2b2f3dfb974ab4feb4203893368bb7d6",
+    "relative_path": "00_job_setup/run_policy_snapshot.json"
+  },
+  {
+    "actual_checksum": "sha256:5ef9be39194c38dda0e229fa8f6585994f50d2a715623437f314c5829b58c404",
+    "artifact_id": "artifact-5f8bfd10f88949cc9a1de40ffbd3f41d",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:5ef9be39194c38dda0e229fa8f6585994f50d2a715623437f314c5829b58c404",
+    "relative_path": "00_job_setup/run_initial_state.json"
+  },
+  {
+    "actual_checksum": "sha256:820c51fca509b122489e1a67942b29684086ec9010bd43959d2c53fe406b65b5",
+    "artifact_id": "artifact-f43f00c5ed144c75a4c69524ddb3f617",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:820c51fca509b122489e1a67942b29684086ec9010bd43959d2c53fe406b65b5",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/source_manifest.json"
+  },
+  {
+    "actual_checksum": "sha256:088b0eb0bd70557427d96999eb21bb88ad70595690e7b6196cd89f83586e9518",
+    "artifact_id": "artifact-691d59a288214b299376d899402d4977",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:088b0eb0bd70557427d96999eb21bb88ad70595690e7b6196cd89f83586e9518",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/source_git_metadata.json"
+  },
+  {
+    "actual_checksum": "sha256:479b6d1e885ebcf69812b80563826f7760b13eb5f9a6631868a434dae9fa7c02",
+    "artifact_id": "artifact-0ec42fbb1a11419fa80da8a250d11c2b",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:479b6d1e885ebcf69812b80563826f7760b13eb5f9a6631868a434dae9fa7c02",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/snapshot_manifest.json"
+  },
+  {
+    "actual_checksum": "sha256:8b102a16343b6da25fce9fb768eea206ec99e0beb3b625f18b0568bcf7844a04",
+    "artifact_id": "artifact-632069641e714dc7a1d14223b1eef74c",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:8b102a16343b6da25fce9fb768eea206ec99e0beb3b625f18b0568bcf7844a04",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/exclusion_policy_snapshot.json"
+  },
+  {
+    "actual_checksum": "sha256:661268fb10d9ec7fd75cb66808646d63f62f7034a538a9020427812e52f244db",
+    "artifact_id": "artifact-5dc3b0913f4d4718978c63ad1f110740",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:661268fb10d9ec7fd75cb66808646d63f62f7034a538a9020427812e52f244db",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/snapshot_copy_report.json"
+  },
+  {
+    "actual_checksum": "sha256:ecefd49db322f3f658d060f037258a1d07b66906bae0b6067b4458948d1aa593",
+    "artifact_id": "artifact-9ca675f41c0248b58cad96f219511390",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:ecefd49db322f3f658d060f037258a1d07b66906bae0b6067b4458948d1aa593",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/snapshot_fingerprint.json"
+  },
+  {
+    "actual_checksum": "sha256:13bbee051b4d75caca2dce8d76e016cc9bc5aa105b16c57a7a381f9660dcc1e4",
+    "artifact_id": "artifact-73c740bf7bea4aa78c920df4765813b7",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:13bbee051b4d75caca2dce8d76e016cc9bc5aa105b16c57a7a381f9660dcc1e4",
+    "relative_path": "global/source-snapshots/snapshot-dc6abfc688be/source_validation_result.json"
+  },
+  {
+    "actual_checksum": "sha256:724804f0d95dd75f8928020cfe8c88699ddb8394deb96605bb04f63d5646ffc8",
+    "artifact_id": "artifact-a780914ad59b4d57a26f849343f5a630",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:724804f0d95dd75f8928020cfe8c88699ddb8394deb96605bb04f63d5646ffc8",
+    "relative_path": "global/g02/snapshot-dc6abfc688be/source_integrity_before.json"
+  },
+  {
+    "actual_checksum": "sha256:5b5af709618e8fc940083d1bc59b5931409c5ce1e64e51dca2a035a5ae042cf4",
+    "artifact_id": "artifact-3c1d12294e04481297199cea17eec097",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:5b5af709618e8fc940083d1bc59b5931409c5ce1e64e51dca2a035a5ae042cf4",
+    "relative_path": "global/g02/snapshot-dc6abfc688be/source_integrity_after_snapshot.json"
+  },
+  {
+    "actual_checksum": "sha256:e48a102cfdc11048db7771a6015cb606cf0327e8780d3a725ca4b5e87c613df3",
+    "artifact_id": "artifact-6c451eefef714aa99143d1eb61f42849",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e48a102cfdc11048db7771a6015cb606cf0327e8780d3a725ca4b5e87c613df3",
+    "relative_path": "global/g02/snapshot-dc6abfc688be/source_read_only_verification.json"
+  },
+  {
+    "actual_checksum": "sha256:dda8da83487cb438b86235f06add6c419a2306b16f6ce3a53a92cad44d08bdd0",
+    "artifact_id": "artifact-3d4cedf69c5f4d6a9c8955147593ac7a",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:dda8da83487cb438b86235f06add6c419a2306b16f6ce3a53a92cad44d08bdd0",
+    "relative_path": "global/g02/snapshot-dc6abfc688be/g02_evidence_index.json"
+  },
+  {
+    "actual_checksum": "sha256:d78953025901c249c7d9596f2fa6cf4063f21061f7f9fde4df6657789c924203",
+    "artifact_id": "artifact-31e66ed6f3224c559958bee682361e6c",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:d78953025901c249c7d9596f2fa6cf4063f21061f7f9fde4df6657789c924203",
+    "relative_path": "global/execution-profile/source_runtime_resolution.json"
+  },
+  {
+    "actual_checksum": "sha256:512e000cbd6a9114f3b20669697989b200bc20762d88c158d93430f0903f8d37",
+    "artifact_id": "artifact-3d230fe69ae84082aadbd099daea69ba",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:512e000cbd6a9114f3b20669697989b200bc20762d88c158d93430f0903f8d37",
+    "relative_path": "global/execution-profile/runtime_probe_report.json"
+  },
+  {
+    "actual_checksum": "sha256:2acd69e0493d96c99a8f80c738769c1128a51a835bdf9cf051c3ffd287358f03",
+    "artifact_id": "artifact-9237c48ad1214422b678c7f9cc8d6af7",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:2acd69e0493d96c99a8f80c738769c1128a51a835bdf9cf051c3ffd287358f03",
+    "relative_path": "global/execution-profile/angular_version_compatibility.json"
+  },
+  {
+    "actual_checksum": "sha256:cb701d55ea6f6103a7f946f335e3e752c791eac606a11fd886f1e4dd8efa8176",
+    "artifact_id": "artifact-eada8f6d2fdf484b81240eb14d051a7a",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:cb701d55ea6f6103a7f946f335e3e752c791eac606a11fd886f1e4dd8efa8176",
+    "relative_path": "global/execution-profile/runtime_binding_manifest.json"
+  },
+  {
+    "actual_checksum": "sha256:af04e613fa0c4d577c16fa3d388d1f01c549223da8f80c1e4c94dda2ab0da77b",
+    "artifact_id": "artifact-4eb827ed3763436b962689ba46c0ede9",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:af04e613fa0c4d577c16fa3d388d1f01c549223da8f80c1e4c94dda2ab0da77b",
+    "relative_path": "global/execution-profile/npm_registry_probe.json"
+  },
+  {
+    "actual_checksum": "sha256:93b7244956b6bf0a4ce174c69ff2d9024a72c9ca95db3e32fe0dc0839506857c",
+    "artifact_id": "artifact-27b7d9aca876479a9c199234f7bd27e8",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:93b7244956b6bf0a4ce174c69ff2d9024a72c9ca95db3e32fe0dc0839506857c",
+    "relative_path": "global/execution-profile/runtime_profile.json"
+  },
+  {
+    "actual_checksum": "sha256:93b7244956b6bf0a4ce174c69ff2d9024a72c9ca95db3e32fe0dc0839506857c",
+    "artifact_id": "artifact-7e5bbb8d08364a389f3316b0719389c8",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:93b7244956b6bf0a4ce174c69ff2d9024a72c9ca95db3e32fe0dc0839506857c",
+    "relative_path": "global/execution-profile/execution_profile.json"
+  },
+  {
+    "actual_checksum": "sha256:a7ab02041b6b73c03e4ba3527d01373620ca313198730c010c16743c19b95b7f",
+    "artifact_id": "artifact-7f0f5df0d18b450eb9ac45198ed443bb",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:a7ab02041b6b73c03e4ba3527d01373620ca313198730c010c16743c19b95b7f",
+    "relative_path": "01_baseline/baseline_workspace_manifest.json"
+  },
+  {
+    "actual_checksum": "sha256:045bb6cfe6fd6a4a1b217cb4b2824abe45a4f0528bf0bf9d27bbc2e4dee2eeb1",
+    "artifact_id": "artifact-69f0095e7a194a3a9d3e36b51f36c327",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:045bb6cfe6fd6a4a1b217cb4b2824abe45a4f0528bf0bf9d27bbc2e4dee2eeb1",
+    "relative_path": "01_baseline/baseline_copy_report.json"
+  },
+  {
+    "actual_checksum": "sha256:b563c8ce39f66d913eceb7e7f24d77373221c53d740b2f8c51b30c1d6269841b",
+    "artifact_id": "artifact-8cc05323ba0d4b4c940de07ff4a90ed9",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:b563c8ce39f66d913eceb7e7f24d77373221c53d740b2f8c51b30c1d6269841b",
+    "relative_path": "01_baseline/baseline_initial_fingerprint.json"
+  },
+  {
+    "actual_checksum": "sha256:0d81dc63a583a969476ac3298a90fd1c77cc205fa209ffa1815c311872c644dc",
+    "artifact_id": "artifact-97f0c68104d646c28a5e9a227fea3e39",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:0d81dc63a583a969476ac3298a90fd1c77cc205fa209ffa1815c311872c644dc",
+    "relative_path": "01_baseline/package_manager_detection.json"
+  },
+  {
+    "actual_checksum": "sha256:4582bc90158c1274f9b1e18890edd3511dc9b226ff7e771b96879a3084493a4d",
+    "artifact_id": "artifact-ed02973231ad44b0be53c9253941af1c",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:4582bc90158c1274f9b1e18890edd3511dc9b226ff7e771b96879a3084493a4d",
+    "relative_path": "01_baseline/npm_configuration_summary.json"
+  },
+  {
+    "actual_checksum": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "artifact_id": "artifact-bc4ab6cb289b40bda3dd19859ceb9138",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "relative_path": "01_baseline/lifecycle_script_risk_report.json"
+  },
+  {
+    "actual_checksum": "sha256:d4706d5effe294d0277d5b1111ffb1e141a41d748cfd89bcf5d8b1ea58dd45fc",
+    "artifact_id": "artifact-dda698319d8c4d3daa06bc9fafcfba5a",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:d4706d5effe294d0277d5b1111ffb1e141a41d748cfd89bcf5d8b1ea58dd45fc",
+    "relative_path": "01_baseline/baseline_preparation_result.json"
+  },
+  {
+    "actual_checksum": "sha256:a55a2cc7917e5329eb96da2aa17952fe266e9720d2e033ef70d33ace3e4fcc2e",
+    "artifact_id": "artifact-129449ed6ffe469db727fc7af610fdae",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:a55a2cc7917e5329eb96da2aa17952fe266e9720d2e033ef70d33ace3e4fcc2e",
+    "relative_path": "04_workflow_state/command_logs/npm-ci-bootstrap.json"
+  },
+  {
+    "actual_checksum": "sha256:c0cd3463412d9b350ef145e06d20a9c1ca64c3f8c0728521cdbc2e86af576b1c",
+    "artifact_id": "artifact-2dd9107e3f7d4816bf406800045fe2c1",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:c0cd3463412d9b350ef145e06d20a9c1ca64c3f8c0728521cdbc2e86af576b1c",
+    "relative_path": "04_workflow_state/command_logs/npm-ci-bootstrap.stdout.log"
+  },
+  {
+    "actual_checksum": "sha256:e0704f1b33c45dd81df0a42cde61d6ba3c40acabdf00496c36d34172937d488a",
+    "artifact_id": "artifact-51ff1df98503406bbd8a10507f332607",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e0704f1b33c45dd81df0a42cde61d6ba3c40acabdf00496c36d34172937d488a",
+    "relative_path": "04_workflow_state/command_logs/npm-ci-bootstrap.stderr.log"
+  },
+  {
+    "actual_checksum": "sha256:8812febb0ec748dc5e134608cede9aeebaea370aaf2f556a86013a4e41091d73",
+    "artifact_id": "artifact-af2eb2a0e42a4288b33fb16f3e3668f9",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:8812febb0ec748dc5e134608cede9aeebaea370aaf2f556a86013a4e41091d73",
+    "relative_path": "01_baseline/npm_ci_authorization.json"
+  },
+  {
+    "actual_checksum": "sha256:18497702dc39fb579786a19c59793d2cc03a35d0c03f3f316535e7844b279170",
+    "artifact_id": "artifact-a6874e2a422b4f0eb585e16e1291620d",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:18497702dc39fb579786a19c59793d2cc03a35d0c03f3f316535e7844b279170",
+    "relative_path": "01_baseline/npm_ci_command_manifest.json"
+  },
+  {
+    "actual_checksum": "sha256:18497702dc39fb579786a19c59793d2cc03a35d0c03f3f316535e7844b279170",
+    "artifact_id": "artifact-536b3524a8b649a5ae666f6acef6d91a",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:18497702dc39fb579786a19c59793d2cc03a35d0c03f3f316535e7844b279170",
+    "relative_path": "01_baseline/npm-ci-command.json"
+  },
+  {
+    "actual_checksum": "sha256:0782a7339d203f84ea95acefb9462164535d05b19e529dbdba78d8e2916582dc",
+    "artifact_id": "artifact-c5ba2f513fb84ac5b51dad0269bc2e7c",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:0782a7339d203f84ea95acefb9462164535d05b19e529dbdba78d8e2916582dc",
+    "relative_path": "01_baseline/dependency_tree.json"
+  },
+  {
+    "actual_checksum": "sha256:0782a7339d203f84ea95acefb9462164535d05b19e529dbdba78d8e2916582dc",
+    "artifact_id": "artifact-7647107ae25243638248f447e9041e73",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:0782a7339d203f84ea95acefb9462164535d05b19e529dbdba78d8e2916582dc",
+    "relative_path": "01_baseline/dependency_tree_verification.json"
+  },
+  {
+    "actual_checksum": "sha256:76791415287f6c22d0f559db54135a40baa0361c99c14ce82809adaa347a3d57",
+    "artifact_id": "artifact-69cb5aa6567a433487f120de6558c7c6",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:76791415287f6c22d0f559db54135a40baa0361c99c14ce82809adaa347a3d57",
+    "relative_path": "01_baseline/npm_ci_result.json"
+  },
+  {
+    "actual_checksum": "sha256:ceb39834a2fe009e195df069c27c84d22f773e26c28c81ad02b6de5692dab5cd",
+    "artifact_id": "artifact-b772a822fdc9421382101551bb57c67e",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:ceb39834a2fe009e195df069c27c84d22f773e26c28c81ad02b6de5692dab5cd",
+    "relative_path": "01_baseline/lockfile_post_install_verification.json"
+  },
+  {
+    "actual_checksum": "sha256:e95e731a859afe9759fd85a36f776ae8e9ee840123d3ccd5870c53f5ea447a1f",
+    "artifact_id": "artifact-d231407bdbed4899bc03c60a917d5e3d",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e95e731a859afe9759fd85a36f776ae8e9ee840123d3ccd5870c53f5ea447a1f",
+    "relative_path": "01_baseline/baseline_install_summary.json"
+  },
+  {
+    "actual_checksum": "sha256:c0cd3463412d9b350ef145e06d20a9c1ca64c3f8c0728521cdbc2e86af576b1c",
+    "artifact_id": "artifact-5de35a639a014f999780475258d4ae9f",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:c0cd3463412d9b350ef145e06d20a9c1ca64c3f8c0728521cdbc2e86af576b1c",
+    "relative_path": "01_baseline/npm_ci_stdout.log"
+  },
+  {
+    "actual_checksum": "sha256:e0704f1b33c45dd81df0a42cde61d6ba3c40acabdf00496c36d34172937d488a",
+    "artifact_id": "artifact-645152f73d9e45469201a4e8ff4574a7",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e0704f1b33c45dd81df0a42cde61d6ba3c40acabdf00496c36d34172937d488a",
+    "relative_path": "01_baseline/npm_ci_stderr.log"
+  },
+  {
+    "actual_checksum": "sha256:a55a2cc7917e5329eb96da2aa17952fe266e9720d2e033ef70d33ace3e4fcc2e",
+    "artifact_id": "artifact-22dd1f4f20154cddbcc764cc4c16b764",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:a55a2cc7917e5329eb96da2aa17952fe266e9720d2e033ef70d33ace3e4fcc2e",
+    "relative_path": "01_baseline/npm_ci_command_log.json"
+  },
+  {
+    "actual_checksum": "sha256:dc5c4eeeefd6b6a66a05c15090d8070729e3be06865cb27d266fcb485c7560fd",
+    "artifact_id": "artifact-18283ea5c84d4b41a39d99fd66e6d221",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:dc5c4eeeefd6b6a66a05c15090d8070729e3be06865cb27d266fcb485c7560fd",
+    "relative_path": "01_baseline/npm-debug/000-2026-07-23T23_29_20_429Z-debug-0.log"
+  },
+  {
+    "actual_checksum": "sha256:820df06f10820818be6e0ac8f855cf49ce783daa69665c86e763ba4d99501d92",
+    "artifact_id": "artifact-a7aac7bb24224923b7d1f81c0eb5e06b",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:820df06f10820818be6e0ac8f855cf49ce783daa69665c86e763ba4d99501d92",
+    "relative_path": "04_workflow_state/command_logs/angular__Angular-CRUD-Operations__build__production.json"
+  },
+  {
+    "actual_checksum": "sha256:e4e1f93b9f03b531da2e7e69f105bd70c38e33d175ee542ab59b759eccd30128",
+    "artifact_id": "artifact-097e42545f0441cca3d29bc1e824f704",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e4e1f93b9f03b531da2e7e69f105bd70c38e33d175ee542ab59b759eccd30128",
+    "relative_path": "04_workflow_state/command_logs/angular__Angular-CRUD-Operations__build__production.stdout.log"
+  },
+  {
+    "actual_checksum": "sha256:3823bad573f70eba34cc6d0433cbee8df0e0c5a0a047f9c95ea31041e212db28",
+    "artifact_id": "artifact-024b4038bfe045e6914ffd9b6128f598",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:3823bad573f70eba34cc6d0433cbee8df0e0c5a0a047f9c95ea31041e212db28",
+    "relative_path": "04_workflow_state/command_logs/angular__Angular-CRUD-Operations__build__production.stderr.log"
+  },
+  {
+    "actual_checksum": "sha256:f5034e14331450f44dd85bcfe61a94391e3988c0c6d05849b2e6cb6bb5289579",
+    "artifact_id": "artifact-df6cacaf028d4bd2a880f5246b489578",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:f5034e14331450f44dd85bcfe61a94391e3988c0c6d05849b2e6cb6bb5289579",
+    "relative_path": "04_workflow_state/command_logs/script__build.json"
+  },
+  {
+    "actual_checksum": "sha256:423c04ce8edfc2e8666afcef47b95fdb06415da0a8e303a5e0c52a8c6f92b766",
+    "artifact_id": "artifact-d6d5339697b0481ba343fa7f2aa406e1",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:423c04ce8edfc2e8666afcef47b95fdb06415da0a8e303a5e0c52a8c6f92b766",
+    "relative_path": "04_workflow_state/command_logs/script__build.stdout.log"
+  },
+  {
+    "actual_checksum": "sha256:3823bad573f70eba34cc6d0433cbee8df0e0c5a0a047f9c95ea31041e212db28",
+    "artifact_id": "artifact-4984dafef918455699ac7ba62dd0b9aa",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:3823bad573f70eba34cc6d0433cbee8df0e0c5a0a047f9c95ea31041e212db28",
+    "relative_path": "04_workflow_state/command_logs/script__build.stderr.log"
+  },
+  {
+    "actual_checksum": "sha256:8060b245ae8bb7ff2d311b16e0325376f0bc724297b0822fc0e129ecd22ffc06",
+    "artifact_id": "artifact-c3076cb136904379b7c731f9f61f05dc",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:8060b245ae8bb7ff2d311b16e0325376f0bc724297b0822fc0e129ecd22ffc06",
+    "relative_path": "01_baseline/baseline_target_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:e3ddd82f0bdaa7a888c56bbec81f47465fd35fcae9c14d892933e87ebf827e60",
+    "artifact_id": "artifact-6de9feab6b22429a8f7c5371a289cb1c",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:e3ddd82f0bdaa7a888c56bbec81f47465fd35fcae9c14d892933e87ebf827e60",
+    "relative_path": "01_baseline/baseline_build_report.json"
+  },
+  {
+    "actual_checksum": "sha256:2df09857014f5da22119ebdf5a4aa31118212a6335feab454cc63fbfa0d02fea",
+    "artifact_id": "artifact-a9c6c03a64b04e7eb3660635fdc17275",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:2df09857014f5da22119ebdf5a4aa31118212a6335feab454cc63fbfa0d02fea",
+    "relative_path": "01_baseline/generated_output_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:6f67fdb21b7e9e7d2e71e7ab79c2678a6a78d94e22db10341a0a56bfa41843af",
+    "artifact_id": "artifact-2a483d0ba15343dc8e2d11352baa87da",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:6f67fdb21b7e9e7d2e71e7ab79c2678a6a78d94e22db10341a0a56bfa41843af",
+    "relative_path": "04_workflow_state/command_logs/script__test.json"
+  },
+  {
+    "actual_checksum": "sha256:05c762bcd5d73b81193502500a024efd49095ce740bca23ec3ccdf15ce3402f3",
+    "artifact_id": "artifact-31fb039660e340c693346e39ac976483",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:05c762bcd5d73b81193502500a024efd49095ce740bca23ec3ccdf15ce3402f3",
+    "relative_path": "04_workflow_state/command_logs/script__test.stdout.log"
+  },
+  {
+    "actual_checksum": "sha256:31730e1d552870b78080f84f54901f18f349f891c683f2d7098191b2a4befd44",
+    "artifact_id": "artifact-6a55631880aa4f9f8791ea959e3e88c6",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:31730e1d552870b78080f84f54901f18f349f891c683f2d7098191b2a4befd44",
+    "relative_path": "04_workflow_state/command_logs/script__test.stderr.log"
+  },
+  {
+    "actual_checksum": "sha256:8060b245ae8bb7ff2d311b16e0325376f0bc724297b0822fc0e129ecd22ffc06",
+    "artifact_id": "artifact-c306ddccba7049adac74280a571ef9bd",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:8060b245ae8bb7ff2d311b16e0325376f0bc724297b0822fc0e129ecd22ffc06",
+    "relative_path": "01_baseline/baseline_target_inventory__v2.json"
+  },
+  {
+    "actual_checksum": "sha256:488368e9c2b79c9661fa9f5b72cf751548bb08ac442da85daec97c9c2a68d9a5",
+    "artifact_id": "artifact-404c106e556f48a8ae75bcf16228a05e",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:488368e9c2b79c9661fa9f5b72cf751548bb08ac442da85daec97c9c2a68d9a5",
+    "relative_path": "01_baseline/baseline_test_report.json"
+  },
+  {
+    "actual_checksum": "sha256:8060b245ae8bb7ff2d311b16e0325376f0bc724297b0822fc0e129ecd22ffc06",
+    "artifact_id": "artifact-759dcba8498947ef81d6fb8a1d8359ee",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:8060b245ae8bb7ff2d311b16e0325376f0bc724297b0822fc0e129ecd22ffc06",
+    "relative_path": "01_baseline/baseline_target_inventory__v3.json"
+  },
+  {
+    "actual_checksum": "sha256:23868256b609486bb725271bb870d2e44f9a5edd6a97b80d307e934c290adad4",
+    "artifact_id": "artifact-0d59b8c1a172451d818364877ea19ec5",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:23868256b609486bb725271bb870d2e44f9a5edd6a97b80d307e934c290adad4",
+    "relative_path": "01_baseline/baseline_lint_report.json"
+  },
+  {
+    "actual_checksum": "sha256:077340ed2bd1a6e2e85a624a1f1486abf6675648a113e32966e0a341ea1d0cd9",
+    "artifact_id": "artifact-33037c9ec83c428a8514a4f6a6cda5c4",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:077340ed2bd1a6e2e85a624a1f1486abf6675648a113e32966e0a341ea1d0cd9",
+    "relative_path": "01_baseline/baseline_summary.json"
+  },
+  {
+    "actual_checksum": "sha256:077340ed2bd1a6e2e85a624a1f1486abf6675648a113e32966e0a341ea1d0cd9",
+    "artifact_id": "artifact-6f30b4c0ea1a4587858abba209908fad",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:077340ed2bd1a6e2e85a624a1f1486abf6675648a113e32966e0a341ea1d0cd9",
+    "relative_path": "01_baseline/baseline_qualification.json"
+  },
+  {
+    "actual_checksum": "sha256:f56392081a94e4103553dae3a8b79a50700f4d302f0d5db8ad60b69380a3378b",
+    "artifact_id": "artifact-170dac79802f402286d067ce46db90bd",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:f56392081a94e4103553dae3a8b79a50700f4d302f0d5db8ad60b69380a3378b",
+    "relative_path": "01_baseline/baseline_assurance_status.json"
+  },
+  {
+    "actual_checksum": "sha256:1a77e7eeb36ee1c98af57bfdd1ebc71435e87ea3c7628903dd539add5a9a6920",
+    "artifact_id": "artifact-972267e350bf4910b163810ba7374b8d",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:1a77e7eeb36ee1c98af57bfdd1ebc71435e87ea3c7628903dd539add5a9a6920",
+    "relative_path": "01_baseline/g03_evidence_index.json"
+  },
+  {
+    "actual_checksum": "sha256:077340ed2bd1a6e2e85a624a1f1486abf6675648a113e32966e0a341ea1d0cd9",
+    "artifact_id": "artifact-fa0ca2a0a4a14450a5d8f6999bcb1b12",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:077340ed2bd1a6e2e85a624a1f1486abf6675648a113e32966e0a341ea1d0cd9",
+    "relative_path": "01_baseline/sprint1_evidence_manifest.json"
+  },
+  {
+    "actual_checksum": "sha256:ddc98345673c88270ad1fea492087982bbd4fb9ec8988959a59948d33f521ade",
+    "artifact_id": "artifact-6e73415df7d44ab3a748f9e9fcb8db1d",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:ddc98345673c88270ad1fea492087982bbd4fb9ec8988959a59948d33f521ade",
+    "relative_path": "02_analysis/builders_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:746025ff0c485987e1df188c4589592721369ac911ffe71911b951e9efbe8f72",
+    "artifact_id": "artifact-717eea21dc3b4e7d93588d58b9f16e16",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:746025ff0c485987e1df188c4589592721369ac911ffe71911b951e9efbe8f72",
+    "relative_path": "02_analysis/dependencies_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:6a0e1b77c7f1fa0bcedb9769dd86fadbea53996169d1bb34d3e134cb82147b73",
+    "artifact_id": "artifact-54d8b3eaadef49b6a823daa46bef51c9",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:6a0e1b77c7f1fa0bcedb9769dd86fadbea53996169d1bb34d3e134cb82147b73",
+    "relative_path": "02_analysis/ssr_pwa_i18n_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:f1cb625696323cc488634efabbda7782f8881e8ae600eecf42ed226e242c1e5b",
+    "artifact_id": "artifact-b197dec2cd43476fa1bc4be0f0e4e2dc",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:f1cb625696323cc488634efabbda7782f8881e8ae600eecf42ed226e242c1e5b",
+    "relative_path": "02_analysis/state_management_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:61ca4e4bad70582a5bcb1b6f8b4b6fb066f22fcadc89c97b98b271551e25fb32",
+    "artifact_id": "artifact-1a3563152bd942b785bda98cac9965a3",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:61ca4e4bad70582a5bcb1b6f8b4b6fb066f22fcadc89c97b98b271551e25fb32",
+    "relative_path": "02_analysis/test_lint_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:84e5894d1e7a99a7669ba77acaae6846c1cf8399d9e2dc1242edf80022412a79",
+    "artifact_id": "artifact-8b9cedd3a5b64b5c96762fa49a283d69",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:84e5894d1e7a99a7669ba77acaae6846c1cf8399d9e2dc1242edf80022412a79",
+    "relative_path": "02_analysis/ui_theme_inventory.json"
+  },
+  {
+    "actual_checksum": "sha256:af4877a428c928f16f0e5367a508d92d9d3f1fd9efe7e7e4a6324a08f10a95d3",
+    "artifact_id": "artifact-898e16e72a5049b58292610cf738d7a4",
+    "checksum_matches": true,
+    "exists": true,
+    "expected_checksum": "sha256:af4877a428c928f16f0e5367a508d92d9d3f1fd9efe7e7e4a6324a08f10a95d3",
+    "relative_path": "02_analysis/workspace_inventory.json"
+  }
+]

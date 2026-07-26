@@ -2,37 +2,55 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import subprocess
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError
 
 from app.api.errors import error_response
 from app.api.router import api_router
 from app.core.application import APP_DESCRIPTION, APP_NAME, APP_VERSION
 from app.core.config import get_settings
-from app.repositories.session import check_database_connection
+from app.core.database import assert_schema_compatible
+from app.repositories.session import check_database_connection, engine, resolved_database_path
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Confirm configured database connectivity before serving API requests."""
     check_database_connection()
-    from app.api.routes.baseline import get_baseline_install_service
+    path = resolved_database_path()
+    print(f"Backend database: {path or '<non-file database>'}", flush=True)
+    assert_schema_compatible(engine, get_settings())
+    settings = get_settings()
     try:
-        get_baseline_install_service().reconcile_orphans()
-    except OperationalError:
-        # Older test/development databases may predate the command columns.
-        pass
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=settings.platform_repository_root, capture_output=True, text=True, timeout=2, check=False).stdout.strip()
+    except OSError:
+        commit = "unavailable"
+    endpoint = urlsplit(settings.azure_openai_endpoint or "")
+    print({
+        "startup_provenance": {
+            "commit_sha": commit,
+            "repository_root": str(settings.platform_repository_root),
+            "database_path": str(path or "<non-file database>"),
+            "artifact_root": str(settings.artifact_root),
+            "llm_enabled": settings.llm_enabled,
+            "endpoint_host": endpoint.hostname,
+            "endpoint_path": endpoint.path,
+            "deployment_alias": settings.azure_openai_deployment,
+            "timeout_seconds": settings.llm_timeout_seconds,
+            "retry_count": settings.llm_max_transport_retries,
+        }
+    }, flush=True)
+    from app.api.routes.baseline import get_baseline_install_service
+    get_baseline_install_service().reconcile_orphans()
     from app.orchestration.source_intake import default_source_intake_graph, recover_source_intake_jobs
     default_source_intake_graph(get_settings())
-    try:
-        recover_source_intake_jobs()
-    except OperationalError:
-        # Older test/development databases may predate durable source intake.
-        pass
+    recover_source_intake_jobs()
     yield
 
 

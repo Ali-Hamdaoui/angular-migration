@@ -26,6 +26,10 @@ if ([System.IO.Path]::GetPathRoot($data) -eq $data -or
     throw "Refusing unsafe data root: $data"
 }
 
+if (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) {
+    throw "Refusing to remove database files while the backend is listening on port 8000. Stop the backend and retry."
+}
+
 New-Item -ItemType Directory -Path $data -Force | Out-Null
 foreach ($path in @($db, "$db-wal", "$db-shm")) {
     if (Test-Path -LiteralPath $path) {

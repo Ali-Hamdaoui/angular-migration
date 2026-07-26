@@ -7,7 +7,7 @@ from app.api.analysis_contracts import AnalysisCreateRequest, G04DecisionApiRequ
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.analysis import AnalysisPackage, AnalysisNarrative, AnalysisReview, G04Decision, G04DecisionResult
 from app.domain.contracts import ArtifactType
-from app.repositories.models import ArtifactMetadataModel, Base, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, ParityBaselineEvidenceModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService, AnalysisEvidenceError
 from app.api.routes import analysis as analysis_routes
@@ -71,6 +71,10 @@ def setup(tmp_path: Path, *, agent=None):
         session.add(MigrationRunModel(id="run-1", status="RUNNING", run_phase="ANALYSIS", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, actor="operator", artifact_root=str(tmp_path / "artifacts"), created_at=NOW, updated_at=NOW))
         session.add(G03ApprovalModel(id="g03-1", run_id="run-1", gate_id="G03", gate_version="g03-v1", idempotency_key="g03-1", actor="operator", status="approved", decision="approved", package_checksum="sha256:" + "1" * 64, evidence_set_checksum="sha256:" + "2" * 64, qualification_status="qualified", policy_version="g03-v1", state_version=1, event_sequence=1, sandbox_fingerprint="sha256:" + "3" * 64, execution_profile_checksum="sha256:" + "4" * 64, package={}, artifact_ids=[], comment=None, created_at=NOW, updated_at=NOW))
         session.add(ArtifactMetadataModel(id="metadata-" + source.ref.artifact_id, run_id="run-1", stage_id=None, artifact_type="json", relative_path=source.ref.relative_path, checksum=source.ref.checksum, created_at=NOW))
+        evidence = [source.ref.artifact_id]
+        checksums = {source.ref.artifact_id: source.ref.checksum}
+        session.add(DiscoveryEvidenceModel(id="discovery-1", run_id="run-1", idempotency_key="discovery-1", request_checksum="sha256:" + "d" * 64, actor="operator", status="completed", scanner_results=[], artifact_ids=evidence, artifact_checksums=checksums, prerequisite_artifact_ids=[], error_code=None, state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
+        session.add(ParityBaselineEvidenceModel(id="parity-1", run_id="run-1", idempotency_key="parity-1", request_checksum="sha256:" + "e" * 64, actor="operator", status="completed", payload={}, artifact_ids=[], artifact_checksums={}, prerequisite_artifact_ids=[], error_code=None, state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
 
     def scope():
         from contextlib import contextmanager
@@ -103,9 +107,11 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
     assert all(checksum.startswith("sha256:") for checksum in result.artifact_checksums.values())
     with sessions() as session:
         events = list(session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence))
-        assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "ANALYSIS_REVIEWER_STARTED", "ANALYSIS_REVIEWER_COMPLETED", "G04_CREATED"]
+        assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "G04_CREATED"]
+        invocation = session.query(LlmInvocationModel).filter_by(run_id="run-1", role="phase_proposer").one()
+        assert invocation.status == "completed" and invocation.task_type == "analysis_summary"
         assert session.query(ArtifactMetadataModel).filter(ArtifactMetadataModel.run_id == "run-1").count() == 9
-        assert session.query(MigrationRunModel).one().state_version == 6
+        assert session.query(MigrationRunModel).one().state_version == result.state_version
     store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
     package = store.read_artifact_by_id(result.artifact_ids[-1])
     assert package.ref.checksum == result.artifact_checksums[result.artifact_ids[-1]]
@@ -142,7 +148,7 @@ def test_analysis_rejects_stale_or_tampered_prerequisite_before_provider(tmp_pat
 def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     service, payload, sessions, _ = setup(tmp_path)
     analysis = service.generate("run-1", payload, "operator")
-    decision = G04DecisionApiRequest(expected_state_version=6, idempotency_key="g04-decision-1", gate_version="g04-v1", package_checksum=analysis.package_checksum, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE_WITH_COMMENT, comment="Proceed with documented risks.")
+    decision = G04DecisionApiRequest(expected_state_version=analysis.state_version, idempotency_key="g04-decision-1", gate_version="g04-v1", package_checksum=analysis.package_checksum, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE_WITH_COMMENT, comment="Proceed with documented risks.")
 
     result = service.decide_g04("run-1", decision, "operator")
     replay = service.decide_g04("run-1", decision, "operator")
@@ -150,8 +156,8 @@ def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     assert result.accepted is True
     assert replay.idempotent_replay is True
     with sessions() as session:
-        assert session.query(WorkflowEventModel).count() == 6
-        assert session.query(MigrationRunModel).one().state_version == 7
+        assert session.query(WorkflowEventModel).count() == 3
+        assert session.query(MigrationRunModel).one().state_version == result.state_version
     with pytest.raises(AnalysisEvidenceError) as stale:
         service.decide_g04("run-1", decision.model_copy(update={"idempotency_key": "g04-decision-2", "package_artifact_set_checksum": "sha256:" + "a" * 64}), "operator")
     assert stale.value.code == "STALE_STATE_VERSION"
@@ -167,6 +173,12 @@ def test_analysis_dependency_failure_preserves_redacted_failure_evidence(tmp_pat
     with sessions() as session:
         assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == ["ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_FAILED"]
         assert session.query(WorkflowEventModel).filter(WorkflowEventModel.payload.like("%secret-provider-detail%")).count() == 0
+
+
+def test_analysis_latency_accepts_naive_sqlite_timestamp(tmp_path: Path):
+    service, _, _, _ = setup(tmp_path)
+
+    assert service._latency_ms(NOW, NOW.replace(tzinfo=None)) == 0
 
 
 def test_versioned_analysis_api_exposes_safe_contract_and_authenticated_actor(tmp_path):
@@ -227,7 +239,7 @@ def test_i04_g04_reject_decision_is_recorded_without_becoming_approval(tmp_path:
     assert result.accepted is False
     assert result.status == "reject"
     with sessions() as session:
-        assert session.query(MigrationRunModel).one().state_version == 7
+        assert session.query(MigrationRunModel).one().state_version == result.state_version
         assert session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence).all()[-1].event_type == "G04_REJECTED"
 
 

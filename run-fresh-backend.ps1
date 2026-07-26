@@ -3,7 +3,7 @@ param(
     [string]$RepoRoot = "C:\Users\abdelilah.mortaki\Desktop\angular-migration",
     [string]$SourceRoot = "C:\Users\abdelilah.mortaki\Desktop\angular-crud-poc",
     [string]$TargetBaseRoot = "C:\Users\abdelilah.mortaki\Desktop\angularRus",
-    [int]$Port = 8765
+    [int]$Port = 8000
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,7 +45,7 @@ $env:ALLOWED_TARGET_ROOTS = $TargetBaseRoot
 $env:BACKEND_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 $env:NPM_CONFIG_REGISTRY = "https://registry.npmjs.org/"
 $env:NPM_CONFIG_STRICT_SSL = "true"
-$env:LLM_ENABLED = "false"
+$env:LLM_ENABLED = "true"
 
 Set-Location $backendRoot
 

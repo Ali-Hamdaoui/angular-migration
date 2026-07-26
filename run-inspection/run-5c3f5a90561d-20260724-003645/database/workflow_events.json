@@ -1,0 +1,1000 @@
+[
+  {
+    "actor": "control-tower",
+    "event_type": "RUN_CREATED",
+    "id": "event-18d1d2dc8d07",
+    "idempotency_key": "run-create-preflight-e5c14d632273",
+    "occurred_at": "2026-07-23 23:28:45.119958",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_set_checksum": "sha256:1a44d3eada3550cb7a043d3d793d4eff6fab91950dac26309dbbfd57e0e1ea47",
+      "client_constraints": "{\"allow_optional_modernization\": false, \"preserve_api_contracts\": true, \"preserve_authentication_authorization\": true, \"preserve_behavior\": true, \"preserve_business_logic\": true, \"preserve_ui\": true}",
+      "gate_id": "G01",
+      "graph_thread_id": "source-intake-run-5c3f5a90561d",
+      "input_checksum": "sha256:ab2eb1c938223cde9675fc3cda12160a2d25ddbeb300f42c851e1519940a4db3",
+      "next_state_version": 2,
+      "policy_snapshot_checksum": "sha256:1377ccc03495bdf26c24cdcce56306042266cb0b93c686c654ee810fbfd34b39",
+      "preflight_id": "preflight-e5c14d632273",
+      "previous_state_version": 1,
+      "reason": "created from approved G01 preflight",
+      "resolved_output_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f",
+      "run_root": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d",
+      "source_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angular-crud-poc",
+      "target_parent_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus"
+    },
+    "reason": "created from approved G01 preflight",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 1,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "RUN_START_ACCEPTED",
+    "id": "event-c885d2424fde",
+    "idempotency_key": "run-start-run-5c3f5a90561d:accepted",
+    "occurred_at": "2026-07-23 23:28:45.470411",
+    "payload": {
+      "actor": "control-tower",
+      "graph_thread_id": "source-intake-run-5c3f5a90561d",
+      "next_run_status": "SOURCE_VALIDATION_RUNNING",
+      "next_state_version": 3,
+      "previous_run_status": "CREATED",
+      "previous_state_version": 2,
+      "reason": "source-intake handoff accepted"
+    },
+    "reason": "source-intake handoff accepted",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 2,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SOURCE_INTAKE_QUEUED",
+    "id": "event-7bea862c23d4",
+    "idempotency_key": "run-start-run-5c3f5a90561d:queued",
+    "occurred_at": "2026-07-23 23:28:45.477290",
+    "payload": {
+      "actor": "control-tower",
+      "graph_thread_id": "source-intake-run-5c3f5a90561d",
+      "job_id": "intake-b9a5bb1fba1d",
+      "next_state_version": 3,
+      "previous_state_version": 3,
+      "reason": "source-intake work item persisted before dispatch"
+    },
+    "reason": "source-intake work item persisted before dispatch",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 3,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SOURCE_INTAKE_STARTED",
+    "id": "event-a26ae50b85c5",
+    "idempotency_key": "run-start-run-5c3f5a90561d:started",
+    "occurred_at": "2026-07-23 23:28:45.510177",
+    "payload": {
+      "actor": "control-tower",
+      "attempt": 1,
+      "job_id": "intake-b9a5bb1fba1d",
+      "next_state_version": 3,
+      "previous_state_version": 3,
+      "reason": "durable source-intake worker started",
+      "worker_id": "source-intake-19848"
+    },
+    "reason": "durable source-intake worker started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 4,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SNAPSHOT_STARTED",
+    "id": "event-adb6f2532c7b",
+    "idempotency_key": "run-start-run-5c3f5a90561d:snapshot:started",
+    "occurred_at": "2026-07-23 23:28:45.526601",
+    "payload": {
+      "actor": "control-tower",
+      "next_run_status": "SOURCE_VALIDATION_RUNNING",
+      "next_state_version": 4,
+      "previous_run_status": "SOURCE_VALIDATION_RUNNING",
+      "previous_state_version": 3,
+      "reason": "source snapshot acquisition started"
+    },
+    "reason": "source snapshot acquisition started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 5,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SNAPSHOT_PROGRESS_UPDATED",
+    "id": "event-ca089d420e80",
+    "idempotency_key": "run-start-run-5c3f5a90561d:snapshot:progress",
+    "occurred_at": "2026-07-23 23:28:45.532982",
+    "payload": {
+      "actor": "control-tower",
+      "next_state_version": 5,
+      "phase": "copying",
+      "previous_state_version": 4,
+      "reason": "source snapshot acquisition is copying files",
+      "snapshot_id": "snapshot-dc6abfc688be"
+    },
+    "reason": "source snapshot acquisition is copying files",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 6,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SNAPSHOT_CREATED",
+    "id": "event-6016d049595e",
+    "idempotency_key": "run-start-run-5c3f5a90561d:snapshot",
+    "occurred_at": "2026-07-23 23:28:46.453857",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 7,
+      "fingerprint": "sha256:55ea4200fbf4e0b4e49d0b86f12c73729ce8ee5cf90851382f52328e183557b6",
+      "next_run_status": "SOURCE_VALIDATED",
+      "next_state_version": 6,
+      "previous_run_status": "SOURCE_VALIDATION_RUNNING",
+      "previous_state_version": 5,
+      "reason": "immutable source snapshot created and evidence finalized",
+      "snapshot_id": "snapshot-dc6abfc688be"
+    },
+    "reason": "immutable source snapshot created and evidence finalized",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 7,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SOURCE_INTAKE_COMPLETED",
+    "id": "event-dbe51177b972",
+    "idempotency_key": "run-start-run-5c3f5a90561d:completed",
+    "occurred_at": "2026-07-23 23:28:46.671114",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 7,
+      "job_id": "intake-b9a5bb1fba1d",
+      "next_state_version": 6,
+      "previous_state_version": 6,
+      "reason": "source snapshot and validation evidence finalized",
+      "snapshot_id": "snapshot-dc6abfc688be"
+    },
+    "reason": "source snapshot and validation evidence finalized",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 8,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "G02_CREATED",
+    "id": "event-20c09dc8ba31",
+    "idempotency_key": "run-start-run-5c3f5a90561d:g02:created",
+    "occurred_at": "2026-07-23 23:28:46.677345",
+    "payload": {
+      "actor": "control-tower",
+      "next_state_version": 7,
+      "package_checksum": "sha256:2dcbfb4917dc06938eef5c9ab4a6cecfeb82343afee7427741a8a0a78d0b94be",
+      "previous_state_version": 6,
+      "reason": "G02 evidence package created",
+      "snapshot_id": "snapshot-dc6abfc688be"
+    },
+    "reason": "G02 evidence package created",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 9,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SOURCE_INTEGRITY_VERIFIED",
+    "id": "event-726777f7365c",
+    "idempotency_key": "run-start-run-5c3f5a90561d:g02:integrity",
+    "occurred_at": "2026-07-23 23:28:46.677345",
+    "payload": {
+      "actor": "control-tower",
+      "next_approval_status": "pending",
+      "next_phase_status": "waiting_approval",
+      "next_state_version": 8,
+      "previous_approval_status": "approved",
+      "previous_phase_status": "running",
+      "previous_state_version": 7,
+      "reason": "G02 source integrity evaluated",
+      "snapshot_id": "snapshot-dc6abfc688be",
+      "source_fingerprint": "sha256:55ea4200fbf4e0b4e49d0b86f12c73729ce8ee5cf90851382f52328e183557b6"
+    },
+    "reason": "G02 source integrity evaluated",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 10,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "G02_APPROVED",
+    "id": "event-cfd1e15554ab",
+    "idempotency_key": "g02-run-5c3f5a90561d-approved-sha256:2dcbfb4917dc06938eef5c9ab4a6cecfeb82343afee7427741a8a0a78d0b94be",
+    "occurred_at": "2026-07-23 23:29:15.089591",
+    "payload": {
+      "actor": "control-tower",
+      "decision": "approved",
+      "next_approval_status": "approved",
+      "next_phase_status": "running",
+      "next_state_version": 9,
+      "package_checksum": "sha256:2dcbfb4917dc06938eef5c9ab4a6cecfeb82343afee7427741a8a0a78d0b94be",
+      "previous_approval_status": "pending",
+      "previous_phase_status": "waiting_approval",
+      "previous_state_version": 8,
+      "reason": "G02 decision recorded"
+    },
+    "reason": "G02 decision recorded",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 11,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "EXECUTION_PROFILE_RESOLUTION_STARTED",
+    "id": "event-55de7b47184c",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:runtime:started",
+    "occurred_at": "2026-07-23 23:29:16.515082",
+    "payload": {
+      "actor": "control-tower",
+      "next_state_version": 10,
+      "previous_state_version": 9,
+      "reason": "execution profile resolution started",
+      "source_angular_exact": "^18.0.0"
+    },
+    "reason": "execution profile resolution started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 12,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "EXECUTION_PROFILE_RESOLVED",
+    "id": "event-46cddb930c72",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:runtime",
+    "occurred_at": "2026-07-23 23:29:16.515082",
+    "payload": {
+      "actor": "control-tower",
+      "next_state_version": 11,
+      "policy_version": "angular-source-runtime-v1",
+      "previous_state_version": 10,
+      "reason": "execution profile resolution completed",
+      "status": "resolved"
+    },
+    "reason": "execution profile resolution completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 13,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_WORKSPACE_STARTED",
+    "id": "event-d3f0933881cd",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:baseline-workspace:started",
+    "occurred_at": "2026-07-23 23:29:18.666205",
+    "payload": {
+      "actor": "control-tower",
+      "next_state_version": 12,
+      "previous_state_version": 11,
+      "reason": "baseline sandbox creation started",
+      "snapshot_id": "snapshot-dc6abfc688be"
+    },
+    "reason": "baseline sandbox creation started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 14,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_WORKSPACE_READY",
+    "id": "event-72c2aa0d222a",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:baseline-workspace",
+    "occurred_at": "2026-07-23 23:29:19.366123",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 3,
+      "next_state_version": 13,
+      "previous_state_version": 12,
+      "reason": "baseline sandbox created",
+      "sandbox_fingerprint": "sha256:34a450b68d846a3e091e1b98e81937163449916acb5294adcda10a1e17ae22a7",
+      "snapshot_id": "snapshot-dc6abfc688be"
+    },
+    "reason": "baseline sandbox created",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 15,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "LOCKFILE_PREQUALIFICATION_COMPLETED",
+    "id": "event-0c8949fffdba",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:baseline-prequalify",
+    "occurred_at": "2026-07-23 23:29:19.725397",
+    "payload": {
+      "actor": "control-tower",
+      "checksum": "sha256:c08ca42d2f22d47bbdadf50c2e747b8d6be7d2548d55741f0b54f4ee8b15af8e",
+      "next_state_version": 14,
+      "previous_state_version": 13,
+      "reason": "baseline package prequalification completed",
+      "status": "qualified"
+    },
+    "reason": "baseline package prequalification completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 16,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_INSTALL_AUTHORIZED",
+    "id": "event-7a83b4caf495",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:baseline-authorize",
+    "occurred_at": "2026-07-23 23:29:19.746668",
+    "payload": {
+      "actor": "control-tower",
+      "comment": "Automatically authorized after clean baseline prequalification.",
+      "decision": "authorize",
+      "next_state_version": 15,
+      "previous_state_version": 14,
+      "reason": "baseline install authorization decided"
+    },
+    "reason": "baseline install authorization decided",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 17,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_QUEUED",
+    "id": "event-cb1c6dd59d34",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:npm-ci:COMMAND_QUEUED:a4db339cecea4a7c8cbef883a66f3cd1",
+    "occurred_at": "2026-07-23 23:29:19.779475",
+    "payload": {
+      "actor": "control-tower",
+      "command_id": "npm-ci-bootstrap",
+      "next_state_version": 16,
+      "previous_state_version": 15,
+      "reason": "baseline npm ci command queued"
+    },
+    "reason": "baseline npm ci command queued",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 18,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_STARTED",
+    "id": "event-f9d296ea2eb3",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:npm-ci:COMMAND_STARTED:e1085e2aa0a64d0d9e9a4198c14de43f",
+    "occurred_at": "2026-07-23 23:29:19.811476",
+    "payload": {
+      "actor": "control-tower",
+      "execution_id": "execution-d976c9156f0c",
+      "next_state_version": 17,
+      "previous_state_version": 16,
+      "reason": "baseline npm ci command started"
+    },
+    "reason": "baseline npm ci command started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 19,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-f1cc9310a673",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:npm-ci:COMMAND_OUTPUT_CHUNK:494a2efdc38a4bb39d972ddf34115d28",
+    "occurred_at": "2026-07-23 23:30:24.379638",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "\nadded 1215 packages, and audited 1216 packages in 1m\n\n142 packages are looking for funding\n  run `npm fund` for details\n\n86 vulnerabilities (10 low, 24 moderate, 48 high, 4 critical)\n\nTo address issues that do not require attention, run:\n  npm audit fix\n\nTo address all issues (including breaking changes), run:\n  npm audit fix --force\n\nRun `npm audit` for details.\n",
+      "execution_id": "execution-d976c9156f0c",
+      "next_state_version": 18,
+      "previous_state_version": 17,
+      "reason": "baseline command output chunk",
+      "stream": "stdout"
+    },
+    "reason": "baseline command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 20,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-49cc32b18615",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:npm-ci:COMMAND_OUTPUT_CHUNK:1111e51ce2b24bedba72a8e3fdd94a65",
+    "occurred_at": "2026-07-23 23:30:24.396256",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.\nnpm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported\nnpm warn deprecated abab@2.0.6: Use your platform's native atob() and btoa() methods instead\nnpm warn deprecated domexception@4.0.0: Use your platform's native DOMException instead\n",
+      "execution_id": "execution-d976c9156f0c",
+      "next_state_version": 19,
+      "previous_state_version": 18,
+      "reason": "baseline command output chunk",
+      "stream": "stderr"
+    },
+    "reason": "baseline command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 21,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_AVAILABLE",
+    "id": "event-9e42731b02fc",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:npm-ci:COMMAND_OUTPUT_AVAILABLE:c7283671837745e7925a77bab57217e3",
+    "occurred_at": "2026-07-23 23:30:24.815900",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 15,
+      "execution_id": "execution-d976c9156f0c",
+      "next_state_version": 20,
+      "previous_state_version": 19,
+      "reason": "baseline npm ci output finalized"
+    },
+    "reason": "baseline npm ci output finalized",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 22,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_INSTALL_SUCCEEDED",
+    "id": "event-4bf11f891b15",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:npm-ci:BASELINE_INSTALL_SUCCEEDED:fc6da7200d9f4ad099466e50973e7b71",
+    "occurred_at": "2026-07-23 23:30:24.827640",
+    "payload": {
+      "actor": "control-tower",
+      "execution_id": "execution-d976c9156f0c",
+      "next_state_version": 21,
+      "previous_state_version": 20,
+      "reason": "baseline npm ci command completed",
+      "reconstruction_status": "not_required",
+      "status": "succeeded"
+    },
+    "reason": "baseline npm ci command completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 23,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_TARGETS_DISCOVERED",
+    "id": "event-33681b0bc7af",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:BASELINE_TARGETS_DISCOVERED",
+    "occurred_at": "2026-07-23 23:30:25.064488",
+    "payload": {
+      "actor": "control-tower",
+      "kind": "build",
+      "next_state_version": 22,
+      "package_json_checksum": "sha256:68412aeb57b59b3284d30d46f496f776a7ae3891ef9dc52ad687330a946364ab",
+      "previous_state_version": 21,
+      "reason": "baseline validation targets discovered",
+      "target_count": 2
+    },
+    "reason": "baseline validation targets discovered",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 24,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_BUILD_STARTED",
+    "id": "event-f82611b76353",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:BASELINE_BUILD_STARTED",
+    "occurred_at": "2026-07-23 23:30:25.067316",
+    "payload": {
+      "actor": "control-tower",
+      "kind": "build",
+      "next_state_version": 23,
+      "previous_state_version": 22,
+      "reason": "baseline build validation started",
+      "target_count": 2
+    },
+    "reason": "baseline build validation started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 25,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-f18383637c93",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:output:1",
+    "occurred_at": "2026-07-23 23:30:44.228329",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "- Building...\n\n\u25b2 [WARNING] bundle initial exceeded maximum budget. Budget 512.00 kB was not met by 2.05 kB with a total of 514.05 kB.\n\n\n\u25b2 [WARNING] 2 rules skipped due to selector errors:\n  .form-floating>~label -> Did not expect successive traversals.\n  .form-floating>~label -> Did not expect successive traversals.\n\n\n",
+      "command_id": "angular__Angular-CRUD-Operations__build__production",
+      "kind": "build",
+      "next_state_version": 24,
+      "previous_state_version": 23,
+      "reason": "baseline validation command output chunk",
+      "sequence": 1,
+      "stream": "stderr"
+    },
+    "reason": "baseline validation command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 26,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-2d01bc093d00",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:output:2",
+    "occurred_at": "2026-07-23 23:30:44.237720",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "Initial chunk files   | Names         |  Raw size | Estimated transfer size\nmain-UXAEVDGY.js      | main          | 248.31 kB |                65.14 kB\nstyles-DZ6UBGXD.css   | styles        | 231.61 kB |                22.68 kB\npolyfills-A7MJM4D4.js | polyfills     |  34.13 kB |                11.06 kB\n\n                      | Initial total | 514.05 kB |                98.89 kB\n\nOutput location: C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\baseline-sandbox\\dist\\angular-crud-operations\n\nApplication bundle generation complete. [16.416 seconds]\n\n",
+      "command_id": "angular__Angular-CRUD-Operations__build__production",
+      "kind": "build",
+      "next_state_version": 25,
+      "previous_state_version": 24,
+      "reason": "baseline validation command output chunk",
+      "sequence": 2,
+      "stream": "stdout"
+    },
+    "reason": "baseline validation command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 27,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-b78fa610d419",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:output:3",
+    "occurred_at": "2026-07-23 23:30:55.610098",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "- Building...\n\n\u25b2 [WARNING] bundle initial exceeded maximum budget. Budget 512.00 kB was not met by 2.05 kB with a total of 514.05 kB.\n\n\n\u25b2 [WARNING] 2 rules skipped due to selector errors:\n  .form-floating>~label -> Did not expect successive traversals.\n  .form-floating>~label -> Did not expect successive traversals.\n\n\n",
+      "command_id": "script__build",
+      "kind": "build",
+      "next_state_version": 26,
+      "previous_state_version": 25,
+      "reason": "baseline validation command output chunk",
+      "sequence": 3,
+      "stream": "stderr"
+    },
+    "reason": "baseline validation command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 28,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-364993f7fec9",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:output:4",
+    "occurred_at": "2026-07-23 23:30:55.626158",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "\n> angular-crud-operations@0.0.0 build\n> ng build\n\nInitial chunk files   | Names         |  Raw size | Estimated transfer size\nmain-UXAEVDGY.js      | main          | 248.31 kB |                65.14 kB\nstyles-DZ6UBGXD.css   | styles        | 231.61 kB |                22.68 kB\npolyfills-A7MJM4D4.js | polyfills     |  34.13 kB |                11.06 kB\n\n                      | Initial total | 514.05 kB |                98.89 kB\n\nOutput location: C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\baseline-sandbox\\dist\\angular-crud-operations\n\nApplication bundle generation complete. [9.010 seconds]\n\n",
+      "command_id": "script__build",
+      "kind": "build",
+      "next_state_version": 27,
+      "previous_state_version": 26,
+      "reason": "baseline validation command output chunk",
+      "sequence": 4,
+      "stream": "stdout"
+    },
+    "reason": "baseline validation command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 29,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_BUILD_COMPLETED",
+    "id": "event-260831bf2733",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:build:BASELINE_BUILD_COMPLETED",
+    "occurred_at": "2026-07-23 23:31:34.022746",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 9,
+      "kind": "build",
+      "next_state_version": 28,
+      "previous_state_version": 27,
+      "reason": "baseline build validation completed",
+      "status": "passed"
+    },
+    "reason": "baseline build validation completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 30,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_TARGETS_DISCOVERED",
+    "id": "event-5a8e22d2e37e",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:test:BASELINE_TARGETS_DISCOVERED",
+    "occurred_at": "2026-07-23 23:31:35.384332",
+    "payload": {
+      "actor": "control-tower",
+      "kind": "test",
+      "next_state_version": 29,
+      "package_json_checksum": "sha256:68412aeb57b59b3284d30d46f496f776a7ae3891ef9dc52ad687330a946364ab",
+      "previous_state_version": 28,
+      "reason": "baseline validation targets discovered",
+      "target_count": 2
+    },
+    "reason": "baseline validation targets discovered",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 31,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_TESTS_STARTED",
+    "id": "event-b80436a9c85a",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:test:BASELINE_TESTS_STARTED",
+    "occurred_at": "2026-07-23 23:31:35.387704",
+    "payload": {
+      "actor": "control-tower",
+      "kind": "test",
+      "next_state_version": 30,
+      "previous_state_version": 29,
+      "reason": "baseline test validation started",
+      "target_count": 2
+    },
+    "reason": "baseline test validation started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 32,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-0a033affcb71",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:test:output:1",
+    "occurred_at": "2026-07-23 23:32:01.612121",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "\n> angular-crud-operations@0.0.0 test\n> jest\n\n---------------------|---------|----------|---------|---------|-------------------\nFile                 | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s \n---------------------|---------|----------|---------|---------|-------------------\nAll files            |   98.07 |    90.47 |     100 |   98.07 |                   \n app                 |    97.2 |    83.33 |     100 |    97.2 |                   \n  app.component.html |     100 |      100 |     100 |     100 |                   \n  app.component.ts   |   94.44 |       80 |     100 |   94.44 | 47-49,53          \n app/models          |     100 |      100 |     100 |     100 |                   \n  mode.enum.ts       |     100 |      100 |     100 |     100 |                   \n app/services        |     100 |      100 |     100 |     100 |                   \n  user.service.ts    |     100 |      100 |     100 |     100 |                   \n---------------------|---------|----------|---------|---------|-------------------\n",
+      "command_id": "script__test",
+      "kind": "test",
+      "next_state_version": 31,
+      "previous_state_version": 30,
+      "reason": "baseline validation command output chunk",
+      "sequence": 1,
+      "stream": "stdout"
+    },
+    "reason": "baseline validation command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 33,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "COMMAND_OUTPUT_CHUNK",
+    "id": "event-605c58612248",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:test:output:2",
+    "occurred_at": "2026-07-23 23:32:01.620088",
+    "payload": {
+      "actor": "control-tower",
+      "chunk": "PASS src/app/services/user.service.spec.ts (16.113 s)\nPASS src/app/app.component.spec.ts (18.955 s)\n\nTest Suites: 2 passed, 2 total\nTests:       14 passed, 14 total\nSnapshots:   0 total\nTime:        22.33 s\nRan all test suites.\n",
+      "command_id": "script__test",
+      "kind": "test",
+      "next_state_version": 32,
+      "previous_state_version": 31,
+      "reason": "baseline validation command output chunk",
+      "sequence": 2,
+      "stream": "stderr"
+    },
+    "reason": "baseline validation command output chunk",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 34,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_TESTS_COMPLETED",
+    "id": "event-759f8b3db2e0",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:test:BASELINE_TESTS_COMPLETED",
+    "occurred_at": "2026-07-23 23:32:02.681441",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 5,
+      "kind": "test",
+      "next_state_version": 33,
+      "previous_state_version": 32,
+      "reason": "baseline test validation completed",
+      "status": "blocked"
+    },
+    "reason": "baseline test validation completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 35,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_TARGETS_DISCOVERED",
+    "id": "event-88b3fa0f1662",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:lint:BASELINE_TARGETS_DISCOVERED",
+    "occurred_at": "2026-07-23 23:32:03.533741",
+    "payload": {
+      "actor": "control-tower",
+      "kind": "lint",
+      "next_state_version": 34,
+      "package_json_checksum": "sha256:68412aeb57b59b3284d30d46f496f776a7ae3891ef9dc52ad687330a946364ab",
+      "previous_state_version": 33,
+      "reason": "baseline validation targets discovered",
+      "target_count": 1
+    },
+    "reason": "baseline validation targets discovered",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 36,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_LINT_STARTED",
+    "id": "event-475e8111dcb5",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:lint:BASELINE_LINT_STARTED",
+    "occurred_at": "2026-07-23 23:32:03.537145",
+    "payload": {
+      "actor": "control-tower",
+      "kind": "lint",
+      "next_state_version": 35,
+      "previous_state_version": 34,
+      "reason": "baseline lint validation started",
+      "target_count": 1
+    },
+    "reason": "baseline lint validation started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 37,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_LINT_COMPLETED",
+    "id": "event-1a5d4cc74bbc",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:lint:BASELINE_LINT_COMPLETED",
+    "occurred_at": "2026-07-23 23:32:03.693792",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 2,
+      "kind": "lint",
+      "next_state_version": 36,
+      "previous_state_version": 35,
+      "reason": "baseline lint validation completed",
+      "status": "passed"
+    },
+    "reason": "baseline lint validation completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 38,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "BASELINE_QUALIFIED",
+    "id": "event-6d221ce1ada9",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:g03:qualification",
+    "occurred_at": "2026-07-23 23:32:04.132059",
+    "payload": {
+      "actor": "control-tower",
+      "next_run_status": "BASELINE_QUALIFIED",
+      "next_state_version": 37,
+      "package_checksum": "sha256:d5b300b0d30e8da3f1511977855dd5321564980b378e3493afc51eaafd394a99",
+      "previous_run_status": "SOURCE_VALIDATED",
+      "previous_state_version": 36,
+      "qualification_status": "qualified",
+      "reason": "baseline qualification recorded"
+    },
+    "reason": "baseline qualification recorded",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 39,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "G03_CREATED",
+    "id": "event-238b955ec2c8",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:g03:g03-created",
+    "occurred_at": "2026-07-23 23:32:04.140785",
+    "payload": {
+      "actor": "control-tower",
+      "evidence_set_checksum": "sha256:73515fd5e962ec9a53faf0e63bd6285f706530c1b7690b9243dea08a892e9713",
+      "next_state_version": 38,
+      "package_checksum": "sha256:d5b300b0d30e8da3f1511977855dd5321564980b378e3493afc51eaafd394a99",
+      "previous_state_version": 37,
+      "reason": "G03 approval package created"
+    },
+    "reason": "G03 approval package created",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 40,
+    "stage_id": null
+  },
+  {
+    "actor": "reviewer",
+    "event_type": "G03_APPROVED",
+    "id": "event-6016faf30dee",
+    "idempotency_key": "g03-1784849567281",
+    "occurred_at": "2026-07-23 23:32:47.299250",
+    "payload": {
+      "actor": "reviewer",
+      "decision": "approved",
+      "next_run_status": "BASELINE_QUALIFIED",
+      "next_state_version": 39,
+      "package_checksum": "sha256:d5b300b0d30e8da3f1511977855dd5321564980b378e3493afc51eaafd394a99",
+      "previous_run_status": "BASELINE_QUALIFIED",
+      "previous_state_version": 38,
+      "reason": "G03 decision recorded"
+    },
+    "reason": "G03 decision recorded",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 41,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "DISCOVERY_STARTED",
+    "id": "event-834c92130df7",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:DISCOVERY_STARTED:",
+    "occurred_at": "2026-07-23 23:32:47.381733",
+    "payload": {
+      "actor": "control-tower",
+      "next_state_version": 40,
+      "previous_state_version": 39,
+      "reason": "discovery started"
+    },
+    "reason": "discovery started",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 42,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-487766ba0854",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:builders_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.553396",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-6e73415df7d44ab3a748f9e9fcb8db1d",
+      "next_state_version": 41,
+      "previous_state_version": 40,
+      "reason": "scanner completed",
+      "scanner": "builders_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 43,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-09c328afba7c",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:dependencies_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.666557",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-717eea21dc3b4e7d93588d58b9f16e16",
+      "next_state_version": 42,
+      "previous_state_version": 41,
+      "reason": "scanner completed",
+      "scanner": "dependencies_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 44,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-c17652511547",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:ssr_pwa_i18n_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.772777",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-54d8b3eaadef49b6a823daa46bef51c9",
+      "next_state_version": 43,
+      "previous_state_version": 42,
+      "reason": "scanner completed",
+      "scanner": "ssr_pwa_i18n_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 45,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-94ff42da9f6d",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:state_management_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.803838",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-b197dec2cd43476fa1bc4be0f0e4e2dc",
+      "next_state_version": 44,
+      "previous_state_version": 43,
+      "reason": "scanner completed",
+      "scanner": "state_management_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 46,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-5608d667e212",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:test_lint_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.864272",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-1a3563152bd942b785bda98cac9965a3",
+      "next_state_version": 45,
+      "previous_state_version": 44,
+      "reason": "scanner completed",
+      "scanner": "test_lint_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 47,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-4658bba4c317",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:ui_theme_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.894082",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-8b9cedd3a5b64b5c96762fa49a283d69",
+      "next_state_version": 46,
+      "previous_state_version": 45,
+      "reason": "scanner completed",
+      "scanner": "ui_theme_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 48,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "SCANNER_COMPLETED",
+    "id": "event-ea40795cfc53",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:SCANNER_COMPLETED:workspace_inventory.json",
+    "occurred_at": "2026-07-23 23:32:47.920941",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_id": "artifact-898e16e72a5049b58292610cf738d7a4",
+      "next_state_version": 47,
+      "previous_state_version": 46,
+      "reason": "scanner completed",
+      "scanner": "workspace_inventory.json"
+    },
+    "reason": "scanner completed",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 49,
+    "stage_id": null
+  },
+  {
+    "actor": "control-tower",
+    "event_type": "DISCOVERY_BLOCKED",
+    "id": "event-703f456405b3",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:discovery:DISCOVERY_BLOCKED:",
+    "occurred_at": "2026-07-23 23:32:47.925698",
+    "payload": {
+      "actor": "control-tower",
+      "artifact_count": 7,
+      "next_state_version": 48,
+      "previous_state_version": 47,
+      "reason": "discovery blocked"
+    },
+    "reason": "discovery blocked",
+    "run_id": "run-5c3f5a90561d",
+    "sequence": 50,
+    "stage_id": null
+  }
+]

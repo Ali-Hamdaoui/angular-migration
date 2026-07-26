@@ -50,3 +50,27 @@ def test_windows_utf8_bom_in_angular_metadata_is_supported(tmp_path):
 
     assert inventory.angular_json_present is True
     assert any(item.target_id == "angular:app:build" for item in inventory.targets)
+
+
+def test_approved_jest_builder_reuses_equivalent_npm_test_target(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "jest"}}), encoding="utf-8")
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"architect": {"test": {"builder": "@angular-builders/jest:run"}}}}}), encoding="utf-8")
+
+    inventory = BaselineTargetDiscoveryService().discover(tmp_path)
+    angular = next(item for item in inventory.targets if item.target_id == "angular:app:test")
+    script = next(item for item in inventory.targets if item.target_id == "script:test")
+
+    assert angular.supported is False
+    assert angular.blocker == "EQUIVALENT_CANONICAL_TARGET"
+    assert angular.canonical_target_id == script.target_id
+    assert normalize_command_result(angular, exit_code=None, duration_ms=None).status is BaselineTargetStatus.SKIPPED_NOT_APPLICABLE
+    assert script.supported is True
+
+
+def test_unrelated_custom_test_builder_remains_blocked(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "node custom-runner.js"}}), encoding="utf-8")
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"architect": {"test": {"builder": "@angular-builders/jest:run"}}}}}), encoding="utf-8")
+
+    inventory = BaselineTargetDiscoveryService().discover(tmp_path)
+    target = next(item for item in inventory.targets if item.target_id == "angular:app:test")
+    assert normalize_command_result(target, exit_code=None, duration_ms=None).status is BaselineTargetStatus.BLOCKED

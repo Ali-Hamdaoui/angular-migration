@@ -1,89 +1,117 @@
 # S2-F04 Verification Record
 
-## Feature
+Verification was refreshed on 2026-07-26 at 14:45 +01:00 from working tree
+`4135dfa` on branch `hermes/01-command-runtime` (working tree modified).
 
-S2-F04 — Generate a checksum-bound Analysis phase review chain and decide G04.
+## Verified root cause and correction
 
-This record covers S2-F04-I04 and verifies the completed I01 backend contract,
-I02 persistence/API evidence boundary, and I03 frontend projection. The feature
-does not authorize Planning Agent behavior, repair roles, repository browsing,
-support-level determination by AI, or workflow advancement from the browser.
+The reviewer lifecycle hook created its invocation and then assigned
+`row.reviewer_invocation_id` without loading `row`. The resulting
+`UnboundLocalError` occurred before reviewer transport, and the hook transaction
+rolled back the reviewer invocation and lifecycle events. The reviewer handler
+then misclassified the programming error as `LLM_INTERNAL_GATEWAY_ERROR`.
 
-## Acceptance mapping
+The service now uses `_require_analysis_row()` keyed by both run ID and Analysis
+idempotency key. Reviewer persistence is committed by the hook session before
+the gateway call. Analysis responses expose proposer, reviewer, and failed
+invocation IDs independently; no proposer fallback is used.
 
-| Requirement | Verification |
-| --- | --- |
-| Deterministic facts remain authoritative | Analysis application tests bind the narrative to registered artifact IDs/checksums and reject mismatches before provider calls. |
-| Proposer/Reviewer review chain | Tests require a checksum-bound phase Proposer result, a non-authoring phase Reviewer result, one bounded revision, and Reviewer acceptance before G04 can be created. |
-| Evidence is persisted and immutable | I02 integration tests assert registered input, Proposer, Reviewer, final-reviewed-analysis, human-readable, usage, and G04 package artifacts with SHA-256 checksums and safe links. |
-| Durable event chain | Frontend and backend tests cover `ANALYSIS_AGENT_*`, `ANALYSIS_REVIEWER_*`, and `G04_*`, including duplicate suppression and sequence-gap recovery. |
-| G04 decisions are bound and append-only | Backend tests cover approval, rejection, idempotent replay, state/package/workspace/plan binding, package-integrity failure, stale records, and protected-transition blocking. |
-| Failure and security behavior | Provider failure is redacted and fails closed; invalid prerequisite checksums create no Analysis events; blocked/schema-invalid UI content is rendered as text and never as HTML. |
-| Authoritative frontend projection | Component tests cover empty, completed split-view, backend failure/correlation ID, stale conflict, blocked analysis, artifact links, provenance, usage/cost, and required-comment validation. |
+## Fresh automated evidence
 
-## Automated verification
+Environment: Python 3.14.6; Node v20.11.1; npm 10.2.4.
 
-Executed from the repository root or the `frontend` directory as shown:
+RED, before the production fix:
 
-```powershell
-python -m pytest backend/tests/test_analysis_application_service_s2_f04_i01.py backend/tests/test_analysis_evidence_persistence_api_s2_f04_i02.py -q
-python -m pytest -q
-cd frontend
-npm test
-npm run lint
-npm run typecheck
-npm run build
+```text
+python -m pytest backend/tests/test_analysis_reviewer_lifecycle_regression.py -q
+1 failed
+AssertionError: status='failed', error_code='ANALYSIS_REVIEW_FAILED',
+cause_code='LLM_INTERNAL_GATEWAY_ERROR', failure_stage='phase_reviewer'
 ```
 
-Expected results for the current implementation:
+The diagnostic run recorded one fake-gateway request, no durable reviewer
+invocation/start event, and the failed-invocation projection incorrectly pointed
+at the proposer.
 
-- Feature 4 backend regression suite passes, including Review-chain, integrity,
-  and protected-progression coverage.
-- Full backend suite passes: 370 passed, 2 skipped.
-- Full frontend suite passes.
-- Typecheck and production build pass.
-- Lint has one pre-existing warning in `BaselinePreparationPanel.tsx`.
-- An isolated Alembic upgrade → downgrade → upgrade round trip passes through
-  revision `20260719_03`.
+GREEN, after the fix:
 
-## Manual verification scenario
+```text
+python -m pytest backend/tests/test_analysis_reviewer_lifecycle_regression.py backend/tests/test_analysis_evidence_persistence_api_s2_f04_i02.py backend/tests/test_analysis_application_service_s2_f04_i01.py -q
+22 passed, 2 warnings
+```
 
-1. Start the backend and frontend with an authenticated local reviewer identity.
-2. Open an authoritative run that has the approved G03 baseline and registered deterministic evidence.
-3. Open the Analysis/G04 panel and confirm the empty state before generation.
-4. Generate analysis and observe `ANALYSIS_AGENT_STARTED`, running state, `ANALYSIS_AGENT_COMPLETED`, and `G04_CREATED`.
-5. Confirm the split view separates registered deterministic artifact references from the AI narrative.
-6. Inspect provider/role/prompt/schema provenance, token counts, estimated cost, five artifact links, and the G04 package checksum.
-7. Refresh or disconnect/reconnect while the operation is running; confirm the panel rehydrates from the backend snapshot without duplicate action.
-8. Submit `approve`, `approve_with_comment`, `request_modification`, and `reject` in isolated runs. Confirm only backend-authoritative state changes are displayed.
-9. Repeat with a stale state version or changed package checksum. Confirm `STALE_STATE_VERSION` or `STALE_ANALYSIS_PACKAGE`, snapshot reload, and no progression to the next phase.
-10. Repeat with a provider failure, blocked/schema-invalid response, unauthorized actor, or tampered prerequisite checksum. Confirm correlation guidance, fail-closed behavior, preserved safe evidence, and no illegal transition.
+The real-service regression records two provider calls, two invocation rows,
+`failed_invocation_id = null`, pending G04, and this event sequence:
 
-## Evidence to retain
+```text
+ANALYSIS_AGENT_STARTED
+LLM_INVOCATION_STARTED        proposer
+LLM_INVOCATION_COMPLETED      proposer
+ANALYSIS_AGENT_COMPLETED
+ANALYSIS_REVIEWER_STARTED
+LLM_INVOCATION_STARTED        reviewer
+LLM_INVOCATION_COMPLETED      reviewer
+ANALYSIS_REVIEWER_COMPLETED
+G04_CREATED
+```
 
-- Analysis artifact IDs and SHA-256 checksums.
-- G04 package artifact ID/checksum.
-- Analysis and G04 event IDs/sequences.
-- State versions before generation and after the decision.
-- Correlation ID for any failure or authorization rejection.
-- Screenshots or screen recording of the split view and one negative path.
+Additional fresh checks:
 
-## Executed manual-environment check
+```text
+python -m ruff check backend/app backend/tests --select F823
+All checks passed!
+python -m ruff check backend/app backend/tests
+All checks passed!
+python -m pytest backend/tests/test_azure_response_boundary.py backend/tests/test_llm_gateway.py backend/tests/test_analysis_reviewer_lifecycle_regression.py -q
+32 passed, 2 warnings
+python -m pytest backend/tests/test_persistence.py::test_alembic_feature_schema_upgrades_and_rolls_back_on_temporary_sqlite -q
+1 passed, 1 warning
+```
 
-On 2026-07-19 the local environment was inspected before attempting the live
-scenario. `LLM_ENABLED` was `false`, Azure endpoint/deployment/API-key settings
-were absent, and no backend or frontend server was running. A live authenticated
-Azure OpenAI/browser run was therefore not attempted: it would only fail at the
-configured provider boundary and could not produce valid evidence.
+The complete backend suite ran for 5:02 and produced `549 passed, 4 skipped,
+7 failed`. The remaining failures are outside S2-F04: two legacy S2-F03
+expectation mismatches, and one readiness expectation mismatch. They are not
+reported as a passing full-backend verification.
 
-The automated FastAPI + temporary SQLite + Artifact Store seam was executed
-instead. It exercised an authenticated actor, G03 prerequisite, Proposer and
-Reviewer chain, immutable artifacts, G04 decisions, stale integrity rejection,
-and protected-transition guard. Retain this record with the command output when
-an operator executes the live scenario below.
+## Database migration
 
-## Remaining environment prerequisite
+Added `20260726_25_analysis_failure_origin.py`, down revision `20260726_24`.
+It adds durable failure origin, technical stage, transport-started, and provider
+request correlation fields to Analysis metadata. Existing records are preserved.
 
-The live Azure/browser scenario remains blocked until an authorized operator
-provides a configured Azure deployment and starts the authenticated backend and
-frontend. The existing unrelated lint warning remains unchanged.
+```text
+python -m alembic -c alembic.ini current       -> 20260726_24
+python -m alembic -c alembic.ini upgrade heads -> 20260726_25
+python -m alembic -c alembic.ini downgrade 20260726_24
+python -m alembic -c alembic.ini upgrade heads -> 20260726_25
+```
+
+The temporary SQLite Alembic round trip passed. The standalone `alembic`
+executable is not installed; `python -m alembic` is the available canonical
+command.
+
+## Frontend and manual workflow
+
+`npm ci` was blocked by Windows `EPERM` while unlinking
+`frontend/node_modules/@next/swc-win32-x64-msvc/next-swc.win32-x64-msvc.node`;
+Node 20.11.1 also does not satisfy several installed package engine ranges.
+Consequently `npm test`, lint, typecheck, and build could not execute because
+their binaries were unavailable after the interrupted install. No live Azure or
+authenticated browser workflow was run: the repository environment has no
+authorized provider configuration. A real post-G03 workflow, controlled
+provider failure, retry, and restart recovery therefore remain unverified.
+
+## Scope and remaining risks
+
+Implemented changes include reviewer lifecycle persistence, error-origin
+classification, explicit invocation lineage, safe frontend projection, provider
+transport result correlation, append-only retry API, and restart handling for
+retry-waiting source-intake jobs.
+
+Retry and restart paths still need dedicated end-to-end tests against a real
+source-intake job and provider failure. Frontend verification and full backend
+green status remain blocked by the environment/legacy failures above.
+
+No branch was created. No commit, push, merge, or rebase was performed. No
+SQLite records were manually edited; the database was changed only through the
+Alembic upgrade/downgrade commands shown above.

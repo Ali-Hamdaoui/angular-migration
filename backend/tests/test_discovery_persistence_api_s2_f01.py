@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -14,22 +15,25 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.api.routes import discovery as discovery_routes
 from app.api.routes import runs as runs_routes
 from app.main import app
-from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, MigrationRunModel, SourceSnapshotModel, WorkflowEventModel
 from app.services.discovery_evidence_application_service import DiscoveryEvidenceApplicationService
+from app.services.discovery_service import DiscoveryService
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 
 
 def fixture(tmp_path):
-    workspace = tmp_path / "source-snapshot"
-    workspace.mkdir()
+    snapshot_parent = tmp_path / "source-snapshot"
+    workspace = snapshot_parent / "snapshot-1"
+    workspace.mkdir(parents=True)
     (workspace / "package.json").write_text(json.dumps({"dependencies": {"@angular/core": "18.2.0"}, "scripts": {"test": "ng test"}}), encoding="utf-8")
     (workspace / "angular.json").write_text(json.dumps({"projects": {"app": {"projectType": "application", "architect": {"build": {"builder": "@angular-devkit/build-angular:application"}}}}}), encoding="utf-8")
     engine = create_engine(f"sqlite:///{tmp_path / 'state.db'}")
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     with sessions() as session:
-        session.add(MigrationRunModel(id="run-1", status="CREATED", run_phase="DISCOVERY_BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(tmp_path / "artifacts"), workspace_aliases={"SOURCE_SNAPSHOT": str(workspace)}, created_at=NOW, updated_at=NOW))
+        session.add(MigrationRunModel(id="run-1", status="CREATED", run_phase="DISCOVERY_BASELINE", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, artifact_root=str(tmp_path / "artifacts"), workspace_aliases={"SOURCE_SNAPSHOT": str(snapshot_parent)}, created_at=NOW, updated_at=NOW))
+        session.add(SourceSnapshotModel(id="snapshot-1", run_id="run-1", idempotency_key="snapshot-1", actor="operator", status="created", source_path=str(workspace), snapshot_path=str(workspace), policy_version="snapshot-v1", file_count=2, total_size_bytes=1, exclusions=[], git_metadata={}, artifact_ids=[], state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
         session.add(ArtifactMetadataModel(id="metadata-baseline", run_id="run-1", stage_id=None, artifact_type="json", relative_path="baseline.json", checksum="sha256:baseline", created_at=NOW))
         session.add(G03ApprovalModel(id="g03-1", run_id="run-1", gate_id="G03", gate_version="g03-v1", idempotency_key="g03-1", actor="operator", status="approved", decision="approved", package_checksum="sha256:package", evidence_set_checksum="sha256:evidence", qualification_status="qualified", policy_version="g03-v1", state_version=1, event_sequence=1, sandbox_fingerprint="sha256:sandbox", execution_profile_checksum="sha256:profile", package={}, artifact_ids=[], comment=None, created_at=NOW, updated_at=NOW))
         session.commit()
@@ -54,6 +58,21 @@ def test_discovery_persists_immutable_evidence_events_and_idempotent_replay(tmp_
         record = session.get(DiscoveryEvidenceModel, result.discovery_id)
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
         assert record is not None and len(result.artifact_ids) == 7
+        snapshot = session.get(SourceSnapshotModel, "snapshot-1")
+        assert snapshot is not None and snapshot.snapshot_path.endswith("source-snapshot\\snapshot-1")
+        assert session.get(MigrationRunModel, "run-1").workspace_aliases["SOURCE_SNAPSHOT"].endswith("source-snapshot")
+        assert {item["scanner"] for item in record.scanner_results} == {"workspace", "dependencies", "builders", "test_lint", "ssr_pwa_i18n", "ui_theme", "state_management"}
+        assert all(item["status"] == "completed" for item in record.scanner_results)
+        assert any("angular.json" in finding["source_references"] for item in record.scanner_results for finding in item["findings"])
+        assert any("package.json" in finding["source_references"] for item in record.scanner_results for finding in item["findings"])
+        for artifact_id in result.artifact_ids:
+            hashes = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts").read_artifact_by_id(artifact_id).envelope.input_hashes
+            assert hashes["authoritative_snapshot_id"] == "snapshot-1"
+            assert hashes["input_relative_path"] in {"package.json", "angular.json", "angular.json,package.json"}
+            assert hashes["input_checksum"].startswith("sha256:")
+            assert hashes["policy_version"] == "discovery-v1"
+        assert all(event.payload["discovery_root"].endswith("source-snapshot\\snapshot-1") for event in events if event.event_type == "SCANNER_COMPLETED")
+        assert session.get(MigrationRunModel, "run-1").run_phase == "DISCOVERY_BASELINE"
         assert [event.event_type for event in events] == ["DISCOVERY_STARTED", *["SCANNER_COMPLETED"] * 7, "DISCOVERY_COMPLETED"]
         assert [event.sequence for event in events] == list(range(1, 10))
         assert all(value.startswith("sha256:") for value in result.artifact_checksums.values())
@@ -119,4 +138,63 @@ def test_discovery_execution_failure_persists_a_blocked_result_and_event(tmp_pat
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1").order_by(WorkflowEventModel.sequence)))
         assert record is not None and record.artifact_ids == []
         assert [event.event_type for event in events] == ["DISCOVERY_STARTED", "DISCOVERY_BLOCKED"]
+    engine.dispose()
+
+
+def test_discovery_blocks_missing_required_scanner_inputs(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    (tmp_path / "source-snapshot" / "snapshot-1" / "package.json").unlink()
+    result = DiscoveryEvidenceApplicationService(session_scope_factory=scope, now_provider=lambda: NOW).capture("run-1", request("missing-input"))
+    assert result.status == "blocked"
+    assert result.error_code == "DISCOVERY_SCANNER_BLOCKED"
+    with sessions() as session:
+        record = session.get(DiscoveryEvidenceModel, result.discovery_id)
+        assert record.status == "blocked"
+        assert [item["status"] for item in record.scanner_results].count("unknown") >= 3
+        event = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.event_type == "DISCOVERY_BLOCKED"))
+        assert event.payload["blocked_scanners"]
+        assert event.payload["unknown_reasons"]["dependencies"] == ["PACKAGE_JSON_MISSING"]
+        run = session.get(MigrationRunModel, "run-1")
+        assert run.run_phase == "DISCOVERY_BASELINE" and run.phase_status == "blocked" and run.status == "DIAGNOSTIC_HOLD"
+    engine.dispose()
+
+
+def test_discovery_angular_json_statuses_are_distinguished(tmp_path):
+    root = tmp_path / "nested" / "source-snapshot" / "snapshot-1"
+    root.mkdir(parents=True)
+    service = DiscoveryService()
+
+    assert service._builders(root).unknowns == ("ANGULAR_JSON_MISSING",)
+    (root / "angular.json").write_text("{", encoding="utf-8")
+    assert service._builders(root).unknowns == ("ANGULAR_JSON_INVALID",)
+    (root / "angular.json").write_bytes(b"\xff")
+    assert service._builders(root).unknowns == ("ANGULAR_JSON_UNREADABLE",)
+
+
+@pytest.mark.parametrize("content, expected_status", [
+    ('{"projects": {"app": {"architect": {"build": {"builder": "cli"},},},},}', "completed"),
+    ('// Angular workspace\n{"projects": {"app": {"architect": {"build": {"builder": "cli"}}}}}', "completed"),
+    ('\ufeff{"projects": {"app": {"architect": {"build": {"builder": "cli"}}}}}', "completed"),
+    ('{"projects": {"app": {', "unknown"),
+])
+def test_discovery_angular_jsonc_parser_handles_cli_syntax_and_rejects_malformed_json(tmp_path, content, expected_status):
+    root = tmp_path / "nested" / "source-snapshot" / "snapshot-1"
+    root.mkdir(parents=True)
+    (root / "angular.json").write_text(content, encoding="utf-8")
+    result = DiscoveryService()._builders(root)
+    assert result.status == expected_status
+    if expected_status == "unknown":
+        assert result.unknowns == ("ANGULAR_JSON_INVALID",)
+
+
+def test_production_discovery_chain_uses_nested_persisted_snapshot_root(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    result = DiscoveryEvidenceApplicationService(session_scope_factory=scope, now_provider=lambda: NOW).capture("run-1", request("nested-chain"))
+    assert result.status == "completed"
+    assert all(item["status"] == "completed" for item in result.scanner_results)
+    with sessions() as session:
+        events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == "run-1", WorkflowEventModel.event_type == "SCANNER_COMPLETED")))
+        assert len(events) == 7
+        assert all(event.payload["snapshot_id"] == "snapshot-1" for event in events)
+        assert all(event.payload["discovery_root"].endswith("source-snapshot\\snapshot-1") for event in events)
     engine.dispose()

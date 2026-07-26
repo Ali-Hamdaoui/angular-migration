@@ -165,7 +165,7 @@ class BaselineValidationApplicationService:
     @staticmethod
     def _latest_sequence(session, run_id): return int(session.scalar(select(func.max(WorkflowEventModel.sequence)).where(WorkflowEventModel.run_id == run_id)) or 0)
     @staticmethod
-    def _target_dict(target): return {"target_id": target.target_id, "kind": target.kind.value, "project": target.project, "configuration": target.configuration, "command_id": target.command_id, "executable": target.executable, "arguments": list(target.arguments), "supported": target.supported, "blocker": target.blocker}
+    def _target_dict(target): return {"target_id": target.target_id, "kind": target.kind.value, "project": target.project, "configuration": target.configuration, "command_id": target.command_id, "executable": target.executable, "arguments": list(target.arguments), "supported": target.supported, "blocker": target.blocker, "builder": target.builder, "canonical_target_id": target.canonical_target_id, "support_reason": target.support_reason}
     @staticmethod
     def _result_dict(result): return {"target_id": result.target_id, "kind": result.kind.value, "status": result.status.value, "exit_code": result.exit_code, "duration_ms": result.duration_ms, "warnings": list(result.warnings), "test_count": result.test_count, "failed_tests": list(result.failed_tests), "output_location": result.output_location, "artifact_ids": list(result.artifact_ids), "blocker": result.blocker}
     @staticmethod

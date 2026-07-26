@@ -11,6 +11,7 @@ export type BaselineMatrixTarget = {
   arguments: string[];
   supported: boolean;
   blocker: string | null;
+  builder: string | null;
 };
 
 export type BaselineMatrixResult = {
