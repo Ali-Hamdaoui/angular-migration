@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from collections.abc import Callable, Mapping
 from enum import Enum
 from typing import Any, Protocol
@@ -227,8 +228,27 @@ class PromptSchemaRegistry:
         return _azure_strict_schema(registered[0].model_json_schema())
 
 
+@dataclass(frozen=True)
+class ProviderTransportResult(Mapping[str, Any]):
+    body: Mapping[str, Any]
+    provider_request_id: str | None = None
+    provider_status: int | None = None
+    response_content_type: str | None = None
+    response_bytes: int = 0
+    response_sha256: str = ""
+
+    def __getitem__(self, key: str) -> Any:
+        return self.body[key]
+
+    def __iter__(self):
+        return iter(self.body)
+
+    def __len__(self) -> int:
+        return len(self.body)
+
+
 class ProviderTransport(Protocol):
-    def request(self, *, endpoint: str, api_key: str, api_version: str, deployment: str, payload: dict[str, Any], timeout: float) -> Mapping[str, Any]: ...
+    def request(self, *, endpoint: str, api_key: str, api_version: str, deployment: str, payload: dict[str, Any], timeout: float) -> Mapping[str, Any] | ProviderTransportResult: ...
 
 
 class UrllibAzureTransport:
@@ -282,7 +302,7 @@ class UrllibAzureTransport:
                     raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response was not valid JSON.', failure_stage='response_json_decode', failure_subtype='LLM_RESPONSE_JSON_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True) from exc
                 if not isinstance(parsed_body, Mapping):
                     raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response top-level shape was invalid.', failure_stage='response_shape_validation', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True)
-                return parsed_body
+                return ProviderTransportResult(body=parsed_body, provider_request_id=metadata['provider_request_id'], provider_status=metadata['provider_status'], response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum)
         except AzureGatewayError:
             raise
         except urllib.error.HTTPError as exc:
@@ -348,7 +368,9 @@ class AzureOpenAILLMGateway:
         attempt = 0
         while True:
             try:
-                raw = self._transport.request(endpoint=deployment.endpoint, api_key=deployment.api_key, api_version=deployment.api_version, deployment=deployment.deployment, payload=payload, timeout=self._settings.llm_timeout_seconds)
+                transport_result = self._transport.request(endpoint=deployment.endpoint, api_key=deployment.api_key, api_version=deployment.api_version, deployment=deployment.deployment, payload=payload, timeout=self._settings.llm_timeout_seconds)
+                provider_request_id = transport_result.provider_request_id if isinstance(transport_result, ProviderTransportResult) else None
+                raw = transport_result.body if isinstance(transport_result, ProviderTransportResult) else transport_result
                 _validate_response_state(raw)
                 validated = self._registry.validate(request.response_schema, _extract_structured_output(raw))
                 usage_data = _extract_usage(raw)
@@ -356,7 +378,7 @@ class AzureOpenAILLMGateway:
                 budget = decide_budget(request.run_id, [*(prior_usage or []), usage], token_budget=self._settings.llm_token_budget, cost_budget_usd=self._settings.llm_cost_budget_usd)
                 if budget.action in {LlmBudgetAction.BLOCK_NEW_LLM_CALLS, LlmBudgetAction.DIAGNOSTIC_HOLD}:
                     raise AzureGatewayError(LlmFailureCode.BUDGET, budget.reason)
-                return LlmResponse(response_id=f'llm-response-{uuid4().hex[:12]}', request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status='completed', summary='Azure OpenAI response validated by the governed gateway.', structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, request_manifest=self.last_request_manifest or {})
+                return LlmResponse(response_id=f'llm-response-{uuid4().hex[:12]}', request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status='completed', summary='Azure OpenAI response validated by the governed gateway.', structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, provider_request_id=provider_request_id, request_manifest=self.last_request_manifest or {})
             except AzureGatewayError as exc:
                 if not exc.retryable or attempt >= self._settings.llm_max_transport_retries:
                     exc.retry_count = attempt

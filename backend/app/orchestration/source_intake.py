@@ -27,7 +27,7 @@ from app.api.g02_initialization import G02PackageInitializationRequest
 from app.api.discovery_contracts import DiscoveryCaptureRequest
 from app.domain.contracts import RunStatus, WorkflowEventType
 from app.domain.snapshot import CreateSourceSnapshotRequest
-from app.repositories.models import ArtifactMetadataModel, DiscoveryEvidenceModel, ExecutionProfileModel, G02ApprovalModel, G03ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
+from app.repositories.models import AnalysisMetadataModel, ArtifactMetadataModel, DiscoveryEvidenceModel, ExecutionProfileModel, G02ApprovalModel, G03ApprovalModel, MigrationRunModel, SourceIntakeJobModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.services.g02_application_service import G02ApprovalApplicationService
 from app.services.baseline_application_service import BaselineApplicationService
@@ -77,19 +77,25 @@ class SourceIntakeDispatcher:
     def recover(self) -> int:
         """Re-dispatch jobs left queued, running, or waiting at restart."""
         with session_scope() as session:
-            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_g03"}))))
+            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_g03", "waiting_retry"}))))
             # A new backend instance owns recovery. Requeue work owned by a
             # previous process before dispatching it; attempt-specific
             # idempotency keys keep resumed steps from creating duplicate
             # authoritative evidence.
             for job in jobs:
                 if job.status == "running" and job.worker_id != self._worker_id:
+                    analysis = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == job.run_id).order_by(AnalysisMetadataModel.created_at.desc()))
+                    if analysis is not None and analysis.status == "failed":
+                        job.status = "waiting_retry" if bool(analysis.retryable) else "failed"
+                        job.started_at = None
+                        continue
                     approved = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == job.run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value))
                     job.status = "waiting_g03" if approved is not None else "queued"
                     job.started_at = None
-        for job in jobs:
+        dispatchable = [job for job in jobs if job.status != "waiting_retry"]
+        for job in dispatchable:
             self.start(run_id=job.run_id, thread_id=job.thread_id)
-        return len(jobs)
+        return len(dispatchable)
 
     def _run(self, run_id: str, thread_id: str) -> None:
         try:

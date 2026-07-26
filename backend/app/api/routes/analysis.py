@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 
-from app.api.analysis_contracts import AnalysisCreateRequest, AnalysisResponse, G04DecisionApiRequest, G04DecisionResponse
+from app.api.analysis_contracts import AnalysisCreateRequest, AnalysisResponse, AnalysisRetryRequest, G04DecisionApiRequest, G04DecisionResponse
 from app.api.authentication import authenticated_actor
 from app.api.errors import error_response
 from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService, AnalysisEvidenceError
@@ -31,6 +31,14 @@ def get_analysis(run_id: str, request: Request, actor: str = Depends(authenticat
         if result is None:
             return error_response(request, status_code=404, error_code="ANALYSIS_NOT_FOUND", message="Analysis evidence was not found.")
         return result
+    except AnalysisEvidenceError as error:
+        return _error(request, error)
+
+
+@router.post("/runs/{run_id}/analysis/retries", response_model=AnalysisResponse)
+def retry_analysis(run_id: str, payload: AnalysisRetryRequest, request: Request, actor: str = Depends(authenticated_actor), service: AnalysisEvidenceApplicationService = Depends(get_service)):
+    try:
+        return service.retry(run_id, payload, actor)
     except AnalysisEvidenceError as error:
         return _error(request, error)
 
