@@ -176,7 +176,10 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
         provider.generate(request)
     assert deployment_error.value.code == "LLM_DEPLOYMENT_FAILED"
     assert deployment_error.value.status_code == 502
-    assert deployment_error.value.details == {"failure_stage": "phase_proposer", "provider_http_status": 404, "provider_error_code": "DeploymentNotFound"}
+    assert deployment_error.value.details["failure_stage"] == "phase_proposer"
+    assert deployment_error.value.details["provider_http_status"] == 404
+    assert deployment_error.value.details["provider_error_code"] == "DeploymentNotFound"
+    assert deployment_error.value.details["transport_started"] is False
 
     stale = AnalysisAgentService(
         gateway=FakeGateway(lambda _: {}),

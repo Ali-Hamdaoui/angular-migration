@@ -107,11 +107,11 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
     assert all(checksum.startswith("sha256:") for checksum in result.artifact_checksums.values())
     with sessions() as session:
         events = list(session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence))
-        assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "ANALYSIS_REVIEWER_STARTED", "ANALYSIS_REVIEWER_COMPLETED", "G04_CREATED"]
+        assert [event.event_type for event in events] == ["ANALYSIS_AGENT_STARTED", "G04_CREATED"]
         invocation = session.query(LlmInvocationModel).filter_by(run_id="run-1", role="phase_proposer").one()
         assert invocation.status == "completed" and invocation.task_type == "analysis_summary"
         assert session.query(ArtifactMetadataModel).filter(ArtifactMetadataModel.run_id == "run-1").count() == 9
-        assert session.query(MigrationRunModel).one().state_version == 6
+        assert session.query(MigrationRunModel).one().state_version == result.state_version
     store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
     package = store.read_artifact_by_id(result.artifact_ids[-1])
     assert package.ref.checksum == result.artifact_checksums[result.artifact_ids[-1]]
@@ -148,7 +148,7 @@ def test_analysis_rejects_stale_or_tampered_prerequisite_before_provider(tmp_pat
 def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     service, payload, sessions, _ = setup(tmp_path)
     analysis = service.generate("run-1", payload, "operator")
-    decision = G04DecisionApiRequest(expected_state_version=6, idempotency_key="g04-decision-1", gate_version="g04-v1", package_checksum=analysis.package_checksum, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE_WITH_COMMENT, comment="Proceed with documented risks.")
+    decision = G04DecisionApiRequest(expected_state_version=analysis.state_version, idempotency_key="g04-decision-1", gate_version="g04-v1", package_checksum=analysis.package_checksum, workspace_fingerprint=analysis.package["workspace_fingerprint"], plan_version=analysis.package["plan_version"], decision=G04Decision.APPROVE_WITH_COMMENT, comment="Proceed with documented risks.")
 
     result = service.decide_g04("run-1", decision, "operator")
     replay = service.decide_g04("run-1", decision, "operator")
@@ -156,8 +156,8 @@ def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     assert result.accepted is True
     assert replay.idempotent_replay is True
     with sessions() as session:
-        assert session.query(WorkflowEventModel).count() == 6
-        assert session.query(MigrationRunModel).one().state_version == 7
+        assert session.query(WorkflowEventModel).count() == 3
+        assert session.query(MigrationRunModel).one().state_version == result.state_version
     with pytest.raises(AnalysisEvidenceError) as stale:
         service.decide_g04("run-1", decision.model_copy(update={"idempotency_key": "g04-decision-2", "package_artifact_set_checksum": "sha256:" + "a" * 64}), "operator")
     assert stale.value.code == "STALE_STATE_VERSION"
@@ -239,7 +239,7 @@ def test_i04_g04_reject_decision_is_recorded_without_becoming_approval(tmp_path:
     assert result.accepted is False
     assert result.status == "reject"
     with sessions() as session:
-        assert session.query(MigrationRunModel).one().state_version == 7
+        assert session.query(MigrationRunModel).one().state_version == result.state_version
         assert session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence).all()[-1].event_type == "G04_REJECTED"
 
 

@@ -26,5 +26,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table("llm_invocations") as batch:
-        for name in ("failure_subtype", "transport_started", "response_kind", "response_sha256", "response_bytes", "response_content_type", "response_received", "retryable", "endpoint_path", "endpoint_host", "transport_exception_type", "transport_category"):
+        for name in ("transport_started", "response_kind", "response_sha256", "response_bytes", "response_content_type", "response_received", "retryable", "endpoint_path", "endpoint_host", "transport_exception_type", "transport_category"):
             batch.drop_column(name)
