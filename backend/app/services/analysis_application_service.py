@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.domain.analysis import (
     AnalysisNarrative,
@@ -67,8 +67,12 @@ class AnalysisGatewayNarrative(BaseModel):
     summary: str
     risk_groups: list[AnalysisGatewayRisk]
     unresolved_questions: list[str]
-    evidence_confidence: str
-    recommended_next_action: str
+    evidence_confidence: str = Field(
+        description="A short confidence label only, such as high, medium, low, or unknown.",
+    )
+    recommended_next_action: str = Field(
+        description="One concise, non-authoritative next action in 256 characters or fewer.",
+    )
 
     @model_validator(mode="after")
     def reject_authoritative_fields(self) -> "AnalysisGatewayNarrative":
@@ -214,6 +218,8 @@ class AnalysisAgentService:
             # Compatibility with older test/provider fixtures: echoed hashes
             # are discarded and never participate in validation.
             raw.pop("deterministic_input_checksum", None)
+            raw["evidence_confidence"] = self._bounded_display_text(raw.get("evidence_confidence"), 64)
+            raw["recommended_next_action"] = self._bounded_display_text(raw.get("recommended_next_action"), 256)
             for risk in raw.get("risk_groups", []):
                 if isinstance(risk, dict):
                     risk.setdefault("description", risk.get("name", ""))
@@ -229,6 +235,10 @@ class AnalysisAgentService:
             manifest = getattr(self.gateway, "last_request_manifest", None) or {}
             details = {"failure_stage": exc.failure_stage or "phase_proposer", "failure_subtype": exc.failure_subtype, "provider_http_status": exc.provider_status, "provider_error_code": exc.provider_code, "sanitized_provider_message": exc.provider_message, "provider_request_id": exc.provider_request_id, "resolved_deployment": getattr(self.gateway, "deployment_name", None), "endpoint_host": manifest.get("endpoint_host"), "endpoint_path": manifest.get("endpoint_path"), "retry_count": exc.retry_count, "retryable": exc.retryable, "response_received": exc.response_received, "response_content_type": exc.response_content_type, "response_bytes": exc.response_bytes, "response_sha256": exc.response_sha256, "response_kind": exc.response_kind, "transport_started": exc.transport_started, "transport_exception_type": type(exc.__cause__).__name__ if exc.__cause__ else None, "request_manifest": manifest}
             raise AnalysisApplicationError(code, "The governed Azure OpenAI proposer failed; G04 remains unavailable.", 502, details={key: value for key, value in details.items() if value is not None and (key != "retry_count" or value)}) from exc
+        except ValidationError as exc:
+            self._hook("failed_invocation", role=LlmRole.PHASE_PROPOSER, revision=revision, request=llm_request, error=exc)
+            fields = [".".join(str(part) for part in error.get("loc", ())) for error in exc.errors()]
+            raise AnalysisApplicationError("LLM_RESPONSE_INVALID", "The Analysis proposer returned an invalid bounded response; G04 remains unavailable.", 502, details={"failure_stage": "analysis_proposer", "failure_subtype": "LLM_RESPONSE_CONTRACT_INVALID", "validation_fields": fields}) from exc
         except Exception as exc:
             self._hook("failed_invocation", role=LlmRole.PHASE_PROPOSER, revision=revision, request=llm_request, error=exc)
             raise AnalysisApplicationError("LLM_INTERNAL_GATEWAY_ERROR", "The Analysis proposer failed; G04 remains unavailable.", 503, details={"failure_stage": "analysis_proposer", "failure_subtype": "LLM_INTERNAL_GATEWAY_ERROR", "exception_class": type(exc).__name__}) from exc
@@ -265,6 +275,13 @@ class AnalysisAgentService:
     @staticmethod
     def _checksum(value: dict[str, Any]) -> str:
         return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _bounded_display_text(value: object, limit: int) -> object:
+        """Enforce display-only field bounds after structured provider validation."""
+        if not isinstance(value, str):
+            return value
+        return " ".join(value.split())[:limit]
 
     def _hook(self, name: str, **payload: Any) -> None:
         callback = self.invocation_hooks.get(name)

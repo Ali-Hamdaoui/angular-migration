@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.api.analysis_contracts import AnalysisResponse, G04DecisionResponse
 from app.artifact_store import LocalFilesystemArtifactStore
+from app.core.datetime import normalize_persisted_utc
 from app.domain.analysis import AnalysisArtifactInput, AnalysisPackage, AnalysisRequest, G04Decision, G04DecisionRequest
 from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.llm_gateway import AzureGatewayError, LlmRole
@@ -244,12 +245,12 @@ class AnalysisEvidenceApplicationService:
                 row = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == run_id, AnalysisMetadataModel.idempotency_key == request.idempotency_key))
                 invocation = session.get(LlmInvocationModel, row.invocation_id)
                 transition = self._transition(session, run, request, WorkflowEventType.LLM_INVOCATION_COMPLETED, "analysis proposer LLM invocation completed", {"invocation_id": invocation.id, "role": "phase_proposer"})
-                finished = self.now(); response = data.get("response"); invocation.status = "completed"; invocation.completed_at = finished; invocation.latency_ms = max(0, int((finished - invocation.started_at).total_seconds() * 1000)); invocation.provider_request_id = getattr(response, "response_id", None); invocation.deployment_alias = getattr(response, "model_deployment_alias", invocation.deployment_alias); invocation.prompt_version = getattr(response, "prompt_version", None) or invocation.prompt_version; invocation.schema_version = getattr(response, "schema_version", None) or invocation.schema_version; invocation.pricing_version = getattr(response, "pricing_version", None) or invocation.pricing_version; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence
+                finished = self.now(); response = data.get("response"); invocation.status = "completed"; invocation.completed_at = finished; invocation.latency_ms = self._latency_ms(finished, invocation.started_at); invocation.provider_request_id = getattr(response, "response_id", None); invocation.deployment_alias = getattr(response, "model_deployment_alias", invocation.deployment_alias); invocation.prompt_version = getattr(response, "prompt_version", None) or invocation.prompt_version; invocation.schema_version = getattr(response, "schema_version", None) or invocation.schema_version; invocation.pricing_version = getattr(response, "pricing_version", None) or invocation.pricing_version; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence
             elif role is LlmRole.PHASE_REVIEWER:
                 revision = data.get("revision", 0)
                 invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id, LlmInvocationModel.idempotency_key == f"{request.idempotency_key}:reviewer:{revision}"))
                 transition = self._transition(session, run, request, WorkflowEventType.LLM_INVOCATION_COMPLETED, "analysis reviewer LLM invocation completed", {"invocation_id": invocation.id, "role": "phase_reviewer"})
-                finished = self.now(); response = data.get("response"); invocation.status = "completed"; invocation.completed_at = finished; invocation.latency_ms = max(0, int((finished - invocation.started_at).total_seconds() * 1000)); invocation.provider_request_id = getattr(response, "response_id", None); invocation.deployment_alias = getattr(response, "model_deployment_alias", invocation.deployment_alias); invocation.prompt_version = getattr(response, "prompt_version", None) or invocation.prompt_version; invocation.schema_version = getattr(response, "schema_version", None) or invocation.schema_version; invocation.pricing_version = getattr(response, "pricing_version", None) or invocation.pricing_version; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence
+                finished = self.now(); response = data.get("response"); invocation.status = "completed"; invocation.completed_at = finished; invocation.latency_ms = self._latency_ms(finished, invocation.started_at); invocation.provider_request_id = getattr(response, "response_id", None); invocation.deployment_alias = getattr(response, "model_deployment_alias", invocation.deployment_alias); invocation.prompt_version = getattr(response, "prompt_version", None) or invocation.prompt_version; invocation.schema_version = getattr(response, "schema_version", None) or invocation.schema_version; invocation.pricing_version = getattr(response, "pricing_version", None) or invocation.pricing_version; invocation.state_version = transition.next_state_version; invocation.event_sequence = transition.event_sequence
                 completed = self._transition(session, run, request, WorkflowEventType.ANALYSIS_REVIEWER_COMPLETED, "analysis reviewer completed", {"invocation_id": invocation.id})
                 invocation.state_version = completed.next_state_version; invocation.event_sequence = completed.event_sequence
 
@@ -337,7 +338,7 @@ class AnalysisEvidenceApplicationService:
             if details.get("failure_stage") == "phase_reviewer":
                 reviewer = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id, LlmInvocationModel.role == "phase_reviewer", LlmInvocationModel.status.in_({"in_progress", "failed"})).order_by(LlmInvocationModel.created_at.desc()))
                 if reviewer is not None:
-                    reviewer.status = "failed"; reviewer.failure_code = error_code; reviewer.provider_http_status = details.get("provider_http_status"); reviewer.provider_error_code = details.get("provider_error_code"); reviewer.sanitized_provider_message = details.get("sanitized_provider_message"); reviewer.provider_request_id = details.get("provider_request_id"); reviewer.failure_stage = "phase_reviewer"; reviewer.completed_at = now; reviewer.latency_ms = max(0, int((now - reviewer.started_at).total_seconds() * 1000))
+                    reviewer.status = "failed"; reviewer.failure_code = error_code; reviewer.provider_http_status = details.get("provider_http_status"); reviewer.provider_error_code = details.get("provider_error_code"); reviewer.sanitized_provider_message = details.get("sanitized_provider_message"); reviewer.provider_request_id = details.get("provider_request_id"); reviewer.failure_stage = "phase_reviewer"; reviewer.completed_at = now; reviewer.latency_ms = self._latency_ms(now, reviewer.started_at)
             session.flush(); return self._analysis_dto(session, row)
 
     def _artifact(self, session, store, run_id, path, content, artifact_type):
@@ -436,6 +437,14 @@ class AnalysisEvidenceApplicationService:
     @staticmethod
     def _checksum(value):
         return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _latency_ms(finished: datetime, started: datetime | None) -> int | None:
+        normalized_started = normalize_persisted_utc(started)
+        normalized_finished = normalize_persisted_utc(finished)
+        if normalized_started is None or normalized_finished is None:
+            return None
+        return max(0, int((normalized_finished - normalized_started).total_seconds() * 1000))
 
     def _analysis_dto(self, session, row, replay=False):
         gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == row.run_id).order_by(G04ApprovalModel.state_version.desc(), G04ApprovalModel.created_at.desc()))

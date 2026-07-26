@@ -188,6 +188,66 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
     assert stale_error.value.code == "STALE_STATE_VERSION"
 
 
+def test_generate_reports_invalid_proposer_response_without_exposing_content():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    provider = AnalysisAgentService(
+        gateway=FakeGateway(lambda _: {
+            "summary": "x" * 12_001,
+            "risk_groups": [],
+            "unresolved_questions": [],
+            "evidence_confidence": "high",
+            "recommended_next_action": "Review the evidence.",
+        }),
+        artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"),
+    )
+
+    with pytest.raises(AnalysisApplicationError) as error:
+        provider.generate(request)
+
+    assert error.value.code == "LLM_RESPONSE_INVALID"
+    assert error.value.details["failure_subtype"] == "LLM_RESPONSE_CONTRACT_INVALID"
+    assert error.value.details["validation_fields"] == ["summary"]
+
+
+def test_analysis_gateway_schema_describes_bounded_confidence_and_next_action():
+    service = AnalysisAgentService(gateway=FakeGateway(lambda _: {}), artifact_reader=lambda _: AnalysisArtifact("artifact", "sha256:" + "a" * 64, "{}"))
+
+    schema = service.registry.json_schema(service.schema_name)
+    assert "short confidence label" in schema["properties"]["evidence_confidence"]["description"]
+    assert "256 characters or fewer" in schema["properties"]["recommended_next_action"]["description"]
+
+
+def test_generate_bounds_overlong_display_only_analysis_fields():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    service: AnalysisAgentService
+
+    def output(gateway_request):
+        if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY:
+            return {
+                "summary": "Bounded evidence.",
+                "risk_groups": [],
+                "unresolved_questions": [],
+                "evidence_confidence": "high " * 20,
+                "recommended_next_action": "Review the deterministic evidence before continuing. " * 10,
+            }
+        return {
+            "decision": "accept",
+            "notes": [],
+            "risks": [],
+            "policy_concerns": [],
+            "confidence": "high",
+            "proposer_output_checksum": service._checksum(__import__("json").loads(gateway_request.context[-1].content)),
+        }
+
+    service = AnalysisAgentService(gateway=FakeGateway(output), artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"))
+    package = service.generate(request)
+
+    assert len(package.narrative.evidence_confidence) <= 64
+    assert len(package.narrative.recommended_next_action) <= 256
+
+
 def test_reviewer_requests_one_bounded_revision_before_accepting():
     checksum = "sha256:" + "a" * 64
     request = _request(checksum)

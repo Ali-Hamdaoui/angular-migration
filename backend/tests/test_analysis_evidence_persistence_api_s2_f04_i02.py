@@ -171,6 +171,12 @@ def test_analysis_dependency_failure_preserves_redacted_failure_evidence(tmp_pat
         assert session.query(WorkflowEventModel).filter(WorkflowEventModel.payload.like("%secret-provider-detail%")).count() == 0
 
 
+def test_analysis_latency_accepts_naive_sqlite_timestamp(tmp_path: Path):
+    service, _, _, _ = setup(tmp_path)
+
+    assert service._latency_ms(NOW, NOW.replace(tzinfo=None)) == 0
+
+
 def test_versioned_analysis_api_exposes_safe_contract_and_authenticated_actor(tmp_path):
     service, payload, _, _ = setup(tmp_path)
     app.dependency_overrides[analysis_routes.get_service] = lambda: service
