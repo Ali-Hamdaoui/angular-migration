@@ -260,11 +260,16 @@ class AnalysisAgentService:
             review = AnalysisReview.model_validate({**validated, "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": proposer_checksum})
         except AzureGatewayError as exc:
             self._hook("failed_invocation", role=LlmRole.PHASE_REVIEWER, revision=revision, request=llm_request, error=exc)
-            code, details = self._gateway_failure(exc, "phase_reviewer")
-            raise AnalysisApplicationError(code, "The governed Azure OpenAI reviewer failed; G04 remains unavailable.", 502, details={key: value for key, value in details.items() if value is not None}) from exc
+            cause_code, details = self._gateway_failure(exc, "phase_reviewer")
+            details["cause_code"] = cause_code
+            raise AnalysisApplicationError("ANALYSIS_REVIEW_FAILED", "The governed Azure OpenAI reviewer failed; G04 remains unavailable.", 502, details={key: value for key, value in details.items() if value is not None}) from exc
+        except ValidationError as exc:
+            self._hook("failed_invocation", role=LlmRole.PHASE_REVIEWER, revision=revision, request=llm_request, error=exc)
+            fields = [".".join(str(part) for part in error.get("loc", ())) for error in exc.errors()]
+            raise AnalysisApplicationError("ANALYSIS_REVIEW_FAILED", "The Analysis reviewer returned an invalid bounded response; G04 remains unavailable.", 502, details={"cause_code": "LLM_RESPONSE_INVALID", "failure_stage": "phase_reviewer", "failure_subtype": "LLM_RESPONSE_CONTRACT_INVALID", "validation_fields": fields, "retryable": False}) from exc
         except Exception as exc:
             self._hook("failed_invocation", role=LlmRole.PHASE_REVIEWER, revision=revision, request=llm_request, error=exc)
-            raise AnalysisApplicationError("ANALYSIS_REVIEW_FAILED", "The Analysis reviewer failed or returned invalid output; G04 remains unavailable.", 503) from exc
+            raise AnalysisApplicationError("ANALYSIS_REVIEW_FAILED", "The Analysis reviewer failed or returned invalid output; G04 remains unavailable.", 503, details={"cause_code": "LLM_INTERNAL_GATEWAY_ERROR", "failure_stage": "phase_reviewer", "failure_subtype": "LLM_INTERNAL_GATEWAY_ERROR", "retryable": False, "exception_class": type(exc).__name__}) from exc
         review = AnalysisReview.model_validate({**review.model_dump(mode="json"), "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": proposer_checksum})
         return response, review
 

@@ -41,6 +41,7 @@ class AnalysisResponse(ContractModel):
     gate_status: str
     gate_decision: str | None = None
     error_code: str | None = None
+    cause_code: str | None = None
     failure_subtype: str | None = None
     failure_stage: str | None = None
     retryable: bool = False

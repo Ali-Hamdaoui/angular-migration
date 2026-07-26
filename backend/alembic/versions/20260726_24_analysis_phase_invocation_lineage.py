@@ -11,6 +11,7 @@ depends_on = None
 
 def upgrade() -> None:
     with op.batch_alter_table("analysis_metadata") as batch:
+        batch.add_column(sa.Column("cause_code", sa.String(128), nullable=True))
         batch.add_column(sa.Column("proposer_invocation_id", sa.String(64), nullable=True))
         batch.add_column(sa.Column("reviewer_invocation_id", sa.String(64), nullable=True))
         batch.add_column(sa.Column("failed_invocation_id", sa.String(64), nullable=True))
@@ -28,3 +29,4 @@ def downgrade() -> None:
         batch.drop_column("failed_invocation_id")
         batch.drop_column("reviewer_invocation_id")
         batch.drop_column("proposer_invocation_id")
+        batch.drop_column("cause_code")

@@ -33,6 +33,9 @@ class AnalysisMetadataModel(Base):
     artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     package: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     error_code: Mapped[str | None] = mapped_column(String(128))
+    # Stable Analysis domain error and the underlying gateway cause are
+    # deliberately separate: the latter drives retry and audit decisions.
+    cause_code: Mapped[str | None] = mapped_column(String(128))
     failure_subtype: Mapped[str | None] = mapped_column(String(128))
     failure_stage: Mapped[str | None] = mapped_column(String(128))
     retryable: Mapped[bool | None] = mapped_column(default=False)
