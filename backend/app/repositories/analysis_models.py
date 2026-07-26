@@ -24,6 +24,11 @@ class AnalysisMetadataModel(Base):
     workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
     plan_version: Mapped[str | None] = mapped_column(String(128))
     invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
+    # ``invocation_id`` is retained as the proposer compatibility pointer.  The
+    # phase-specific pointers are authoritative for an Analysis attempt.
+    proposer_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
+    reviewer_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
+    failed_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
     artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     package: Mapped[dict[str, Any] | None] = mapped_column(JSON)
