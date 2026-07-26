@@ -243,7 +243,22 @@ class AnalysisAgentService:
             raise AnalysisApplicationError("LLM_RESPONSE_INVALID", "The Analysis proposer returned an invalid bounded response; G04 remains unavailable.", 502, details={"failure_stage": "analysis_proposer", "failure_subtype": "LLM_RESPONSE_CONTRACT_INVALID", "validation_fields": fields}) from exc
         except Exception as exc:
             self._hook("failed_invocation", role=LlmRole.PHASE_PROPOSER, revision=revision, request=llm_request, error=exc)
-            raise AnalysisApplicationError("LLM_INTERNAL_GATEWAY_ERROR", "The Analysis proposer failed; G04 remains unavailable.", 503, details={"failure_stage": "analysis_proposer", "failure_subtype": "LLM_INTERNAL_GATEWAY_ERROR", "exception_class": type(exc).__name__}) from exc
+            is_lifecycle = type(exc).__name__ in {"AnalysisEvidenceError", "AnalysisLifecycleError"}
+            raise AnalysisApplicationError(
+                "ANALYSIS_PROPOSER_FAILED",
+                "The Analysis proposer failed; G04 remains unavailable.",
+                503,
+                details={
+                    "cause_code": "ANALYSIS_PROPOSER_LIFECYCLE_FAILED" if is_lifecycle else "LLM_INTERNAL_GATEWAY_ERROR",
+                    "failure_origin": "application" if is_lifecycle else "application",
+                    "failure_stage": "phase_proposer",
+                    "technical_stage": "proposer_invocation_persistence" if is_lifecycle else "proposer_application",
+                    "failure_subtype": "ANALYSIS_PROPOSER_LIFECYCLE_FAILED" if is_lifecycle else "LLM_INTERNAL_GATEWAY_ERROR",
+                    "transport_started": False,
+                    "retryable": False,
+                    "exception_class": type(exc).__name__,
+                },
+            ) from exc
         return response, narrative
 
     def _review(self, request: AnalysisRequest, context: list[LlmContextSegment], narrative: AnalysisNarrative, proposer_checksum: str, revision: int):
@@ -269,7 +284,23 @@ class AnalysisAgentService:
             raise AnalysisApplicationError("ANALYSIS_REVIEW_FAILED", "The Analysis reviewer returned an invalid bounded response; G04 remains unavailable.", 502, details={"cause_code": "LLM_RESPONSE_INVALID", "failure_stage": "phase_reviewer", "failure_subtype": "LLM_RESPONSE_CONTRACT_INVALID", "validation_fields": fields, "retryable": False}) from exc
         except Exception as exc:
             self._hook("failed_invocation", role=LlmRole.PHASE_REVIEWER, revision=revision, request=llm_request, error=exc)
-            raise AnalysisApplicationError("ANALYSIS_REVIEW_FAILED", "The Analysis reviewer failed or returned invalid output; G04 remains unavailable.", 503, details={"cause_code": "LLM_INTERNAL_GATEWAY_ERROR", "failure_stage": "phase_reviewer", "failure_subtype": "LLM_INTERNAL_GATEWAY_ERROR", "retryable": False, "exception_class": type(exc).__name__}) from exc
+            is_lifecycle = type(exc).__name__ in {"AnalysisEvidenceError", "AnalysisLifecycleError"}
+            raise AnalysisApplicationError(
+                "ANALYSIS_REVIEW_FAILED",
+                "The Analysis reviewer failed or returned invalid output; G04 remains unavailable.",
+                503,
+                details={
+                    "cause_code": "ANALYSIS_REVIEWER_LIFECYCLE_FAILED" if is_lifecycle else "LLM_INTERNAL_GATEWAY_ERROR",
+                    "failure_origin": "application" if is_lifecycle else "application",
+                    "workflow_phase": "phase_reviewer",
+                    "failure_stage": "phase_reviewer",
+                    "technical_stage": "reviewer_invocation_persistence" if is_lifecycle else "reviewer_application",
+                    "failure_subtype": "ANALYSIS_REVIEWER_LIFECYCLE_FAILED" if is_lifecycle else "LLM_INTERNAL_GATEWAY_ERROR",
+                    "transport_started": False,
+                    "retryable": False,
+                    "exception_class": type(exc).__name__,
+                },
+            ) from exc
         review = AnalysisReview.model_validate({**review.model_dump(mode="json"), "deterministic_input_checksum": request.artifact_set_checksum, "proposer_output_checksum": proposer_checksum})
         return response, review
 
@@ -279,7 +310,7 @@ class AnalysisAgentService:
         if code is None:
             code = "LLM_SERVER_FAILED" if exc.provider_status and exc.provider_status >= 500 else "LLM_TRANSPORT_FAILED" if exc.code.value == "transport" else "LLM_RESPONSE_INVALID" if exc.code.value in {"schema", "semantic", "empty_output", "protocol"} else f"LLM_{exc.code.value.upper()}_FAILED"
         manifest = getattr(self.gateway, "last_request_manifest", None) or {}
-        details: dict[str, object] = {"failure_stage": phase, "failure_subtype": exc.failure_subtype or "LLM_RESPONSE_UNCLASSIFIED", "provider_http_status": exc.provider_status, "provider_error_code": exc.provider_code, "sanitized_provider_message": exc.provider_message, "provider_request_id": exc.provider_request_id, "resolved_deployment": getattr(self.gateway, "deployment_name", None), "endpoint_host": manifest.get("endpoint_host"), "endpoint_path": manifest.get("endpoint_path"), "retry_count": exc.retry_count, "retryable": exc.retryable, "response_received": exc.response_received, "response_content_type": exc.response_content_type, "response_bytes": exc.response_bytes, "response_sha256": exc.response_sha256, "response_kind": exc.response_kind, "transport_started": exc.transport_started, "transport_exception_type": type(exc.__cause__).__name__ if exc.__cause__ else None, "request_manifest": manifest}
+        details: dict[str, object] = {"failure_origin": "provider" if exc.transport_started else "application", "technical_stage": exc.failure_stage or "http_request", "failure_stage": phase, "failure_subtype": exc.failure_subtype or "LLM_RESPONSE_UNCLASSIFIED", "provider_http_status": exc.provider_status, "provider_error_code": exc.provider_code, "sanitized_provider_message": exc.provider_message, "provider_request_id": exc.provider_request_id, "resolved_deployment": getattr(self.gateway, "deployment_name", None), "endpoint_host": manifest.get("endpoint_host"), "endpoint_path": manifest.get("endpoint_path"), "retry_count": exc.retry_count, "retryable": exc.retryable, "response_received": exc.response_received, "response_content_type": exc.response_content_type, "response_bytes": exc.response_bytes, "response_sha256": exc.response_sha256, "response_kind": exc.response_kind, "transport_started": exc.transport_started, "transport_exception_type": type(exc.__cause__).__name__ if exc.__cause__ else None, "request_manifest": manifest}
         return code, {key: value for key, value in details.items() if value is not None}
 
     @staticmethod

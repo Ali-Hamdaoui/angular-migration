@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -41,6 +41,10 @@ class AnalysisMetadataModel(Base):
     retryable: Mapped[bool | None] = mapped_column(default=False)
     correlation_id: Mapped[str | None] = mapped_column(String(128))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_origin: Mapped[str | None] = mapped_column(String(32))
+    technical_stage: Mapped[str | None] = mapped_column(String(128))
+    transport_started: Mapped[bool | None] = mapped_column(Boolean)
+    provider_request_id: Mapped[str | None] = mapped_column(String(256))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
