@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError } from "@/api/client";
 import { getLlmActivity, getLlmReadiness, getLlmUsage, invokeLlmSmoke } from "@/api/llm";
 import type { LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmUsageResponse } from "@/types/llm";
@@ -35,31 +35,47 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sectionErrors, setSectionErrors] = useState<{ readiness: string | null; activity: string | null; usage: string | null }>({ readiness: null, activity: null, usage: null });
   const [correlationId, setCorrelationId] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refreshing = useRef(false);
+  const refresh = useCallback(async (force = false) => {
+    if (refreshing.current && !force) return;
+    refreshing.current = true;
     setLoading(true);
     setError(null);
-    try {
-      const [nextReadiness, nextActivity, nextUsage] = await Promise.all([getLlmReadiness(), getLlmActivity(runId), getLlmUsage(runId)]);
-      setReadiness(nextReadiness);
-      setActivity(nextActivity);
-      setUsage(nextUsage);
-    } catch (reason: unknown) {
-      if (reason instanceof ApiClientError) {
-        setError('The LLM diagnostics request failed. Review the backend error code and correlation evidence.');
-        if (reason.status === 409) setStale(true);
-        setCorrelationId(correlationFrom(reason));
+    setSectionErrors({ readiness: null, activity: null, usage: null });
+    const result = await Promise.allSettled([getLlmReadiness(), getLlmActivity(runId), getLlmUsage(runId)]);
+    const errors = { readiness: null as string | null, activity: null as string | null, usage: null as string | null };
+    result.forEach((item, index) => {
+      if (item.status === "fulfilled") {
+        if (index === 0) setReadiness(item.value as LlmReadinessResponse);
+        if (index === 1) setActivity(item.value as LlmActivityResponse);
+        if (index === 2) setUsage(item.value as LlmUsageResponse);
         return;
       }
-      setError(reason instanceof ApiClientError && reason.responseBody ? `LLM diagnostics could not be loaded. ${reason.responseBody}` : "LLM diagnostics could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
+      const message = item.reason instanceof ApiClientError
+        ? "The backend could not load this diagnostics section."
+        : "This diagnostics section could not be loaded.";
+      if (index === 0) errors.readiness = message;
+      if (index === 1) errors.activity = message;
+      if (index === 2) errors.usage = message;
+      if (item.reason instanceof ApiClientError) {
+        if (item.reason.status === 409) setStale(true);
+        setCorrelationId(correlationFrom(item.reason));
+      }
+    });
+    setSectionErrors(errors);
+    if (Object.values(errors).some(Boolean)) setError(null);
+    setLoading(false);
+    refreshing.current = false;
   }, [runId]);
 
-  useEffect(() => { void refresh(); }, [refresh, stateVersion]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void refresh(); }, 50);
+    return () => window.clearTimeout(timer);
+  }, [refresh, stateVersion]);
 
   const latest: LlmInvocationResponse | null = activity?.invocations.at(-1) ?? null;
   const running = latest?.status === "in_progress" || working;
@@ -78,7 +94,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
       const result = await invokeLlmSmoke({ run_id: runId, expected_state_version: stateVersion, idempotency_key: operationKey(runId) });
       setCorrelationId(result.correlation_id ?? result.invocation_id);
       await refreshAuthoritativeState?.();
-      await refresh();
+      await refresh(true);
     } catch (reason: unknown) {
       if (reason instanceof ApiClientError && reason.status === 409) { setStale(true); setCorrelationId(correlationFrom(reason)); }
       else if (reason instanceof ApiClientError) { setCorrelationId(correlationFrom(reason)); setError('The governed Azure OpenAI invocation failed. Review the correlation ID and backend evidence.'); }
@@ -93,16 +109,20 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
     {connectionStatus ? <div className={styles.connectionBar} role="status" aria-live="polite">{connectionLabel(connectionStatus)}</div> : null}
     {loading ? <p role="status">Loading LLM diagnostics...</p> : null}
     {error ? <p role="alert">{error}</p> : null}
+    {sectionErrors.readiness ? <p role="alert">Readiness: {sectionErrors.readiness}</p> : null}
+    {sectionErrors.activity ? <p role="alert">Activity: {sectionErrors.activity}</p> : null}
+    {sectionErrors.usage ? <p role="alert">Usage: {sectionErrors.usage}</p> : null}
+    {(sectionErrors.readiness || sectionErrors.activity || sectionErrors.usage) ? <button type="button" onClick={() => void refresh(true)} disabled={loading}>Retry diagnostics</button> : null}
     {stale ? <p role="alert">The run changed while the invocation was requested. Refresh the authoritative state before retrying.</p> : null}
     {readiness?.status === "blocked" ? <p role="alert">Azure OpenAI is not ready: {readiness.error_code ?? "configuration is incomplete"}.</p> : null}
-    {!loading && !error && !activity?.invocations.length ? <p className={styles.note}>No governed LLM invocations have been recorded.</p> : null}
+    {!loading && !sectionErrors.activity && !activity?.invocations.length ? <p className={styles.note}>No governed LLM invocations have been recorded.</p> : null}
     <div className={styles.metadataGrid} aria-label="LLM provenance">
       <div><dt>Provider</dt><dd>{latest?.provider ?? readiness?.provider ?? "unknown"}</dd></div>
       <div><dt>Deployment</dt><dd>{latest?.deployment_alias ?? "unknown"}</dd></div><div><dt>Capability</dt><dd>{latest?.model_capability ?? readiness?.model_capability ?? "unknown"}</dd></div>
       <div><dt>Role</dt><dd>{latest?.role ?? "phase_proposer"}</dd></div>
       <div><dt>Task</dt><dd>{latest?.task_type ?? "smoke_check"}</dd></div>
       <div><dt>Prompt</dt><dd>{latest?.prompt_version ?? "unknown"}</dd></div><div><dt>Schema</dt><dd>{latest?.schema_version ?? "unknown"}</dd></div><div><dt>Pricing</dt><dd>{latest?.pricing_version ?? "unknown"}</dd></div>
-      <div><dt>Budget</dt><dd>{budgetStatus}</dd></div>
+       <div><dt>Budget</dt><dd>{budgetStatus}</dd></div><div><dt>Provider status</dt><dd>{latest?.provider_http_status ?? "none"}</dd></div><div><dt>Provider code</dt><dd>{latest?.provider_error_code ?? "none"}</dd></div><div><dt>Provider message</dt><dd>{latest?.sanitized_provider_message ?? "none"}</dd></div><div><dt>Provider request</dt><dd>{latest?.provider_request_id ?? "none"}</dd></div><div><dt>Failure stage</dt><dd>{latest?.failure_stage ?? "none"}</dd></div>
     </div>
     <ul className={styles.metricList} aria-label="LLM usage totals">
       <li><span>Input tokens</span><strong>{(usage?.input_tokens ?? latest?.input_tokens ?? 0).toLocaleString()}</strong></li>

@@ -17,7 +17,7 @@ describe("BaselineParityPanel", () => {
   beforeEach(() => { vi.clearAllMocks(); getBaselineParitySection.mockRejectedValue(new ApiClientError("missing", 404)); captureBaselineParity.mockResolvedValue(evidence); });
 
   it("shows an empty state and captures evidence", async () => {
-    render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" />);
+    render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" workflowEvents={[{ event_type: "BASELINE_BUILD_COMPLETED" }, { event_type: "BASELINE_TESTS_COMPLETED" }, { event_type: "BASELINE_LINT_COMPLETED" }]} />);
     expect(await screen.findByText("No parity evidence has been captured.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Capture baseline parity" }));
     await waitFor(() => { expect(captureBaselineParity).toHaveBeenCalled(); });
@@ -40,5 +40,20 @@ describe("BaselineParityPanel", () => {
     await screen.findByText("expected 1");
     fireEvent.click(screen.getByRole("button", { name: "Backend integration" }));
     expect(screen.queryByText("super-secret-token")).not.toBeInTheDocument();
+  });
+
+  it("shows an integrity warning when G03 exists without S1-F13 evidence", async () => {
+    render(<BaselineParityPanel runId="run-1" stateVersion={9} connectionStatus="open" workflowEvents={[{ event_type: "G03_CREATED" }]} />);
+    expect(await screen.findByText("Required S1-F13 evidence is missing. The current G03 package is not valid for approval.")).toBeInTheDocument();
+    expect(screen.getByText("integrity error")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Capture baseline parity" })).not.toBeInTheDocument();
+  });
+
+  it("renders a valid empty capture as captured", async () => {
+    getBaselineParitySection.mockResolvedValue({ ...evidence, failures: [], routes: [], backend_integration: {}, anchors: [] });
+    render(<BaselineParityPanel runId="run-1" stateVersion={4} connectionStatus="open" />);
+    expect(await screen.findByText("captured")).toBeInTheDocument();
+    expect(screen.getByText("No pre-existing baseline failures were fingerprinted.")).toBeInTheDocument();
+    expect(screen.queryByText("not captured")).not.toBeInTheDocument();
   });
 });

@@ -79,6 +79,7 @@ class StructuredCommandRequest:
     command: tuple[str, ...]
     working_directory: Path
     environment_allowlist: tuple[str, ...] = ()
+    environment_overrides: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,9 @@ class CommandRegistry:
         CommandDefinition("python-version", "python", ("--version",), ("python.exe", "py", "py.exe")),
         CommandDefinition("python-stream", "python", _LIVE_LOG_FIXTURE_ARGUMENTS, ("python.exe", "py", "py.exe")),
         CommandDefinition("node-version", "node", ("--version",), ("node.exe",)),
+        CommandDefinition("node-exec-path", "node", ("-p", "process.execPath"), ("node.exe",)),
         CommandDefinition("npm-version", "npm", ("--version",), ("npm.cmd",)),
+        CommandDefinition("npm-registry", "npm", ("config", "get", "registry"), ("npm.cmd",)),
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
         CommandDefinition("git-version", "git", ("--version",), ("git.exe",)),
         CommandDefinition("npm-ci-bootstrap", "npm", ("ci",), ("npm.cmd",)),
@@ -138,6 +141,7 @@ class CommandPolicy:
     runtime_profiles: frozenset[str] = frozenset({_DEFAULT_RUNTIME_PROFILE})
     network_profiles: frozenset[str] = frozenset({_DEFAULT_NETWORK_PROFILE})
     environment_allowlist: tuple[str, ...] = ()
+    environment_overrides: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
@@ -176,6 +180,7 @@ class CommandPolicy:
             command=(request.executable, *definition.arguments),
             working_directory=working_directory,
             environment_allowlist=self.environment_allowlist,
+            environment_overrides=dict(self.environment_overrides),
         )
 
     def _resolve_working_directory(self, request: CommandRequestDto) -> Path:
@@ -329,7 +334,7 @@ class WorkerSupervisor:
     )
 
     @staticmethod
-    def _build_safe_environment(allowlist: tuple[str, ...] = ()) -> dict[str, str]:
+    def _build_safe_environment(allowlist: tuple[str, ...] = (), overrides: dict[str, str] | None = None) -> dict[str, str]:
         """Build a sanitized environment blocking secret and backend variables."""
         clean: dict[str, str] = {}
         allowed = set(allowlist)
@@ -338,6 +343,11 @@ class WorkerSupervisor:
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
             if not blocked and (not allowed or var in allowed):
                 clean[var] = value
+        for var, value in (overrides or {}).items():
+            upper = var.upper()
+            if any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS):
+                continue
+            clean[var] = value
         return clean
 
     def run(
@@ -361,7 +371,7 @@ class WorkerSupervisor:
             stderr=subprocess.PIPE,
             text=False,
             shell=False,
-            env=self._build_safe_environment(request.environment_allowlist),
+            env=self._build_safe_environment(request.environment_allowlist, request.environment_overrides),
             creationflags=creationflags,
             **popen_kwargs,
         )

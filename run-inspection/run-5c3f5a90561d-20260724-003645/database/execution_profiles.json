@@ -1,0 +1,57 @@
+[
+  {
+    "artifact_ids": [
+      "artifact-31e66ed6f3224c559958bee682361e6c",
+      "artifact-3d230fe69ae84082aadbd099daea69ba",
+      "artifact-9237c48ad1214422b678c7f9cc8d6af7",
+      "artifact-eada8f6d2fdf484b81240eb14d051a7a",
+      "artifact-4eb827ed3763436b962689ba46c0ede9",
+      "artifact-27b7d9aca876479a9c199234f7bd27e8",
+      "artifact-7e5bbb8d08364a389f3316b0719389c8"
+    ],
+    "blockers": [],
+    "created_at": "2026-07-23 23:29:16.515082",
+    "event_sequence": 13,
+    "guidance": [],
+    "id": "profile-resolution-103593cc58da",
+    "idempotency_key": "intake-intake-b9a5bb1fba1d:runtime",
+    "policy_version": "angular-source-runtime-v1",
+    "profiles": [
+      {
+        "angular_cli_exact": null,
+        "angular_cli_execution": "npx",
+        "architecture": "amd64",
+        "cache_policy": "approved",
+        "certificate_profile": "validated",
+        "checksum": "sha256:b0661a2e634700af0f4d4bc80b6bf050aecb0cd5a896ad80d62c7e02365cfe4b",
+        "compatibility_catalog_version": "angular-source-runtime-v1",
+        "environment_allowlist": [
+          "PATH",
+          "HTTP_PROXY",
+          "HTTPS_PROXY"
+        ],
+        "network_policy": "approved-registries-only",
+        "node_exact": "v22.23.1",
+        "node_executable": "C:\\nvm4w\\nodejs\\node.exe",
+        "npx_exact": "10.9.8",
+        "npx_executable": "C:\\nvm4w\\nodejs\\npx.cmd",
+        "operating_system": "windows",
+        "package_manager": "npm",
+        "package_manager_exact": "10.9.8",
+        "package_manager_executable": "C:\\nvm4w\\nodejs\\npm.cmd",
+        "profile_id": "environment-environment-cb1049a3bf2d",
+        "proxy_profile": "none",
+        "source_angular_exact": "^18.0.0",
+        "validated_at": "2026-07-23T23:29:16.514997Z"
+      }
+    ],
+    "request_checksum": "sha256:786fcbe45e8e88c98a891bf5256be66fdb968ed5c3fb9d2b10bbe1637193640f",
+    "run_id": "run-5c3f5a90561d",
+    "selected_checksum": "sha256:b0661a2e634700af0f4d4bc80b6bf050aecb0cd5a896ad80d62c7e02365cfe4b",
+    "selected_profile_id": "environment-environment-cb1049a3bf2d",
+    "source_angular_exact": "^18.0.0",
+    "state_version": 11,
+    "status": "resolved",
+    "updated_at": "2026-07-23 23:29:16.515082"
+  }
+]

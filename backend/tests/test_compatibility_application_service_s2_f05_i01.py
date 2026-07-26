@@ -41,7 +41,7 @@ def _catalogue():
     )
 
 
-def _candidate(available=True):
+def _candidate(available=True, **changes):
     return RuntimeCandidate(
         profile_id="node-20-approved",
         node_executable=r"C:\Tools\node\node.exe",
@@ -51,6 +51,7 @@ def _candidate(available=True):
         npx_executable=r"C:\Tools\node\npx.cmd",
         npx_exact="10.2.4",
         available=available,
+        **changes,
     )
 
 
@@ -123,6 +124,18 @@ def test_unsupported_family_and_unavailable_runtime_fail_closed():
     unavailable = resolver.resolve(_request(runtime_candidates=(_candidate(available=False),)))
     assert unavailable.status == "blocked"
     assert "NO_COMPATIBLE_STAGE1_PROFILE" in unavailable.package.blockers
+
+
+def test_direct_public_registry_without_proxy_is_accepted():
+    result = CompatibilityResolver(_catalogue()).resolve(_request(runtime_candidates=(_candidate(proxy_configured=False),)))
+    assert result.status == "feasible_with_warnings"
+    assert result.selected_profile is not None
+
+
+def test_registry_unavailable_remains_blocked():
+    result = CompatibilityResolver(_catalogue()).resolve(_request(runtime_candidates=(_candidate(registry_configured=False),)))
+    assert result.status == "blocked"
+    assert "NO_COMPATIBLE_STAGE1_PROFILE" in result.package.blockers
 
 
 def test_catalogue_rejects_unproven_historical_validated_claim():

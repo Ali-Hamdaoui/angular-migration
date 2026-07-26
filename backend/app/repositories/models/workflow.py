@@ -118,6 +118,29 @@ class WorkflowEventModel(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SourceIntakeJobModel(Base):
+    """Durable work item for the run-owned source-intake pipeline."""
+
+    __tablename__ = "source_intake_jobs"
+    __table_args__ = ()
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    snapshot_id: Mapped[str | None] = mapped_column(String(64))
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ApprovalEventModel(Base):
     __tablename__ = "approval_events"
 
@@ -404,6 +427,22 @@ class LlmInvocationModel(Base):
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    provider_http_status: Mapped[int | None] = mapped_column(Integer)
+    provider_error_code: Mapped[str | None] = mapped_column(String(128))
+    sanitized_provider_message: Mapped[str | None] = mapped_column(Text)
+    provider_request_id: Mapped[str | None] = mapped_column(String(256))
+    failure_stage: Mapped[str | None] = mapped_column(String(128))
+    failure_subtype: Mapped[str | None] = mapped_column(String(128))
+    transport_exception_type: Mapped[str | None] = mapped_column(String(128))
+    endpoint_host: Mapped[str | None] = mapped_column(String(255))
+    endpoint_path: Mapped[str | None] = mapped_column(String(128))
+    retryable: Mapped[bool | None] = mapped_column(Boolean)
+    response_received: Mapped[bool | None] = mapped_column(Boolean)
+    response_content_type: Mapped[str | None] = mapped_column(String(128))
+    response_bytes: Mapped[int | None] = mapped_column(Integer)
+    response_sha256: Mapped[str | None] = mapped_column(String(128))
+    response_kind: Mapped[str | None] = mapped_column(String(32))
+    transport_started: Mapped[bool | None] = mapped_column(Boolean)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

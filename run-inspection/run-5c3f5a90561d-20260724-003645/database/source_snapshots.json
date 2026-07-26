@@ -1,0 +1,40 @@
+[
+  {
+    "actor": "control-tower",
+    "artifact_ids": [
+      "artifact-f43f00c5ed144c75a4c69524ddb3f617",
+      "artifact-691d59a288214b299376d899402d4977",
+      "artifact-0ec42fbb1a11419fa80da8a250d11c2b",
+      "artifact-632069641e714dc7a1d14223b1eef74c",
+      "artifact-5dc3b0913f4d4718978c63ad1f110740",
+      "artifact-9ca675f41c0248b58cad96f219511390",
+      "artifact-73c740bf7bea4aa78c920df4765813b7"
+    ],
+    "backend_instance_id": null,
+    "created_at": "2026-07-23 23:28:46.453857",
+    "error_code": null,
+    "error_message": null,
+    "event_sequence": 7,
+    "exclusions": [],
+    "execution_id": null,
+    "file_count": 56,
+    "fingerprint": "sha256:55ea4200fbf4e0b4e49d0b86f12c73729ce8ee5cf90851382f52328e183557b6",
+    "git_metadata": {
+      "available": true,
+      "branch": "main",
+      "head": "ref: refs/heads/main"
+    },
+    "heartbeat_at": null,
+    "id": "snapshot-dc6abfc688be",
+    "idempotency_key": "run-start-run-5c3f5a90561d:snapshot",
+    "manifest_id": "manifest-6c5c7858c28c8ac3",
+    "policy_version": "source-snapshot-policy-v1",
+    "run_id": "run-5c3f5a90561d",
+    "snapshot_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angularRus\\angular-crud-poc-angular-21-a5772c56b09f\\.migration-factory\\runs\\run-5c3f5a90561d\\source-snapshot\\snapshot-dc6abfc688be",
+    "source_path": "C:\\Users\\abdelilah.mortaki\\Desktop\\angular-crud-poc",
+    "state_version": 6,
+    "status": "created",
+    "total_size_bytes": 862230,
+    "updated_at": "2026-07-23 23:28:46.453857"
+  }
+]

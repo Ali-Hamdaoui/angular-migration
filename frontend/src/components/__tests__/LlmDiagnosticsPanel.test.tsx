@@ -32,4 +32,29 @@ describe("LlmDiagnosticsPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run governed smoke check" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("run changed");
   });
+
+  it("keeps readiness and usage visible when activity fails", async () => {
+    vi.mocked(getLlmActivity).mockRejectedValue(new ApiClientError("activity failed", 500, "GET", "/activity", JSON.stringify({ correlation_id: "corr-activity" })));
+    render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
+    expect(await screen.findByText("azure_openai")).toBeInTheDocument();
+    expect(screen.getByText("Activity: The backend could not load this diagnostics section.")).toBeInTheDocument();
+    expect(screen.getByText("$0.000030")).toBeInTheDocument();
+  });
+
+  it("keeps activity visible when usage fails", async () => {
+    vi.mocked(getLlmUsage).mockRejectedValue(new ApiClientError("usage failed", 500));
+    render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
+    expect(await screen.findByText("phase_proposer")).toBeInTheDocument();
+    expect(screen.getByText("Usage: The backend could not load this diagnostics section.")).toBeInTheDocument();
+  });
+
+  it("debounces rapid authoritative state updates into one refresh", async () => {
+    const { rerender } = render(<LlmDiagnosticsPanel runId="run-1" stateVersion={1} />);
+    rerender(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
+    rerender(<LlmDiagnosticsPanel runId="run-1" stateVersion={3} />);
+    await screen.findByText("Estimated total cost");
+    expect(getLlmReadiness).toHaveBeenCalledTimes(1);
+    expect(getLlmActivity).toHaveBeenCalledTimes(1);
+    expect(getLlmUsage).toHaveBeenCalledTimes(1);
+  });
 });

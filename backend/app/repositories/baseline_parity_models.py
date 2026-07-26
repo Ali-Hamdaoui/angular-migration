@@ -12,6 +12,7 @@ class BaselineParityEvidenceModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_checksum: Mapped[str | None] = mapped_column(String(128))
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     parser_version: Mapped[str] = mapped_column(String(128), nullable=False)

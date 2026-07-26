@@ -4,7 +4,7 @@ import pytest
 
 from app.domain.analysis import AnalysisRequest, G04Decision, G04DecisionRequest
 from app.domain.contracts import AgentKind
-from app.llm_gateway import LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
+from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.services.analysis_application_service import AnalysisAgentService, AnalysisApplicationError, AnalysisArtifact
 
 
@@ -168,6 +168,19 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
         provider.generate(request)
     assert provider_error.value.code == "ANALYSIS_PROPOSER_FAILED"
 
+    provider = AnalysisAgentService(
+        gateway=FakeGateway(failure=AzureGatewayError(LlmFailureCode.DEPLOYMENT, "deployment failed", provider_status=404, provider_code="DeploymentNotFound")),
+        artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"),
+    )
+    with pytest.raises(AnalysisApplicationError) as deployment_error:
+        provider.generate(request)
+    assert deployment_error.value.code == "LLM_DEPLOYMENT_FAILED"
+    assert deployment_error.value.status_code == 502
+    assert deployment_error.value.details["failure_stage"] == "phase_proposer"
+    assert deployment_error.value.details["provider_http_status"] == 404
+    assert deployment_error.value.details["provider_error_code"] == "DeploymentNotFound"
+    assert deployment_error.value.details["transport_started"] is False
+
     stale = AnalysisAgentService(
         gateway=FakeGateway(lambda _: {}),
         artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"),
@@ -176,6 +189,66 @@ def test_generate_fails_closed_on_provider_failure_and_stale_state():
     with pytest.raises(AnalysisApplicationError) as stale_error:
         stale.generate(request)
     assert stale_error.value.code == "STALE_STATE_VERSION"
+
+
+def test_generate_reports_invalid_proposer_response_without_exposing_content():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    provider = AnalysisAgentService(
+        gateway=FakeGateway(lambda _: {
+            "summary": "x" * 12_001,
+            "risk_groups": [],
+            "unresolved_questions": [],
+            "evidence_confidence": "high",
+            "recommended_next_action": "Review the evidence.",
+        }),
+        artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"),
+    )
+
+    with pytest.raises(AnalysisApplicationError) as error:
+        provider.generate(request)
+
+    assert error.value.code == "LLM_RESPONSE_INVALID"
+    assert error.value.details["failure_subtype"] == "LLM_RESPONSE_CONTRACT_INVALID"
+    assert error.value.details["validation_fields"] == ["summary"]
+
+
+def test_analysis_gateway_schema_describes_bounded_confidence_and_next_action():
+    service = AnalysisAgentService(gateway=FakeGateway(lambda _: {}), artifact_reader=lambda _: AnalysisArtifact("artifact", "sha256:" + "a" * 64, "{}"))
+
+    schema = service.registry.json_schema(service.schema_name)
+    assert "short confidence label" in schema["properties"]["evidence_confidence"]["description"]
+    assert "256 characters or fewer" in schema["properties"]["recommended_next_action"]["description"]
+
+
+def test_generate_bounds_overlong_display_only_analysis_fields():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    service: AnalysisAgentService
+
+    def output(gateway_request):
+        if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY:
+            return {
+                "summary": "Bounded evidence.",
+                "risk_groups": [],
+                "unresolved_questions": [],
+                "evidence_confidence": "high " * 20,
+                "recommended_next_action": "Review the deterministic evidence before continuing. " * 10,
+            }
+        return {
+            "decision": "accept",
+            "notes": [],
+            "risks": [],
+            "policy_concerns": [],
+            "confidence": "high",
+            "proposer_output_checksum": service._checksum(__import__("json").loads(gateway_request.context[-1].content)),
+        }
+
+    service = AnalysisAgentService(gateway=FakeGateway(output), artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"))
+    package = service.generate(request)
+
+    assert len(package.narrative.evidence_confidence) <= 64
+    assert len(package.narrative.recommended_next_action) <= 256
 
 
 def test_reviewer_requests_one_bounded_revision_before_accepting():
@@ -212,3 +285,26 @@ def test_reviewer_authoring_field_fails_closed():
     with pytest.raises(AnalysisApplicationError) as error:
         service.generate(request)
     assert error.value.code == "ANALYSIS_REVIEW_FAILED"
+    assert error.value.details["cause_code"] == "LLM_RESPONSE_INVALID"
+    assert error.value.details["failure_stage"] == "phase_reviewer"
+
+
+def test_reviewer_gateway_failure_keeps_domain_and_technical_causes_separate():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    service: AnalysisAgentService
+
+    def output(gateway_request):
+        if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY:
+            return {"summary": "Bounded evidence.", "risk_groups": [], "unresolved_questions": [], "evidence_confidence": "high", "recommended_next_action": "Review evidence"}
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, "incomplete response", retryable=True, provider_status=200, provider_request_id="safe-request", failure_subtype="LLM_OUTPUT_LIMIT_REACHED")
+
+    service = AnalysisAgentService(gateway=FakeGateway(output), artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"))
+    with pytest.raises(AnalysisApplicationError) as error:
+        service.generate(request)
+
+    assert error.value.code == "ANALYSIS_REVIEW_FAILED"
+    assert error.value.details["cause_code"] == "LLM_RESPONSE_INVALID"
+    assert error.value.details["failure_subtype"] == "LLM_OUTPUT_LIMIT_REACHED"
+    assert error.value.details["failure_stage"] == "phase_reviewer"
+    assert error.value.details["retryable"] is True

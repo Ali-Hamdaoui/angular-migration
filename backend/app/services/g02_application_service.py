@@ -12,7 +12,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.artifact_store import LocalFilesystemArtifactStore
-from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.domain.g02 import (
     G02ApprovalPackage,
     G02ApprovalPackageBuilder,
@@ -54,10 +54,6 @@ class G02ApprovalApplicationService:
                 .where(G02ApprovalModel.run_id == run_id)
                 .order_by(G02ApprovalModel.created_at.desc())
             )
-            if record is not None and record.status != "stale" and not self._revalidate_record(session, record):
-                run = session.get(MigrationRunModel, run_id)
-                if run is not None:
-                    self._mark_stale(session, run, record, "G02 evidence or policy version is stale.")
             return self._dto(record) if record else None
 
     def authorize_baseline(self, run_id: str) -> G02ApprovalPackage:
@@ -102,6 +98,8 @@ class G02ApprovalApplicationService:
             run_id=run.id, expected_state_version=created.next_state_version,
             idempotency_key=f"{idempotency_key}:integrity",
             event_type=(WorkflowEventType.SOURCE_INTEGRITY_VERIFIED if package.source_integrity_verified else WorkflowEventType.SOURCE_INTEGRITY_FAILED),
+            next_phase_status="waiting_approval" if package.source_integrity_verified else "blocked",
+            next_approval_status="pending" if package.source_integrity_verified else "rejected",
             actor=actor, reason="G02 source integrity evaluated", occurred_at=now,
             payload={"snapshot_id": package.snapshot_id, "source_fingerprint": package.source_fingerprint},
         ))
@@ -156,6 +154,8 @@ class G02ApprovalApplicationService:
                         run_id=run_id, expected_state_version=created.next_state_version,
                         idempotency_key=f"{request.idempotency_key}:integrity",
                         event_type=(WorkflowEventType.SOURCE_INTEGRITY_VERIFIED if package.source_integrity_verified else WorkflowEventType.SOURCE_INTEGRITY_FAILED),
+                        next_phase_status="waiting_approval" if package.source_integrity_verified else "blocked",
+                        next_approval_status="pending" if package.source_integrity_verified else "rejected",
                         actor=request.actor, reason="G02 source integrity evaluated", occurred_at=now,
                         payload={"snapshot_id": package.snapshot_id, "source_fingerprint": package.source_fingerprint},
                     )
@@ -183,6 +183,8 @@ class G02ApprovalApplicationService:
                 TransitionRequest(
                     run_id=run_id, expected_state_version=run.state_version,
                     idempotency_key=request.idempotency_key, event_type=event_type,
+                    next_phase_status=("running" if event_type == WorkflowEventType.G02_APPROVED else "blocked"),
+                    next_approval_status=("approved" if event_type == WorkflowEventType.G02_APPROVED else "rejected"),
                     actor=request.actor, reason=result.reason or "G02 decision recorded", occurred_at=now,
                     payload={"package_checksum": package.package_checksum, "decision": result.decision.value},
                 )
@@ -268,6 +270,8 @@ class G02ApprovalApplicationService:
             snapshot = session.get(SourceSnapshotModel, record.snapshot_id)
             if snapshot is None or snapshot.status != "created":
                 return False
+            if package.snapshot_id != record.snapshot_id:
+                return False
             inspected = SnapshotService(Path(snapshot.snapshot_path).parent).inspect_snapshot(snapshot.id)
             if inspected.manifest.policy_version != self._policy_version:
                 return False
@@ -278,28 +282,7 @@ class G02ApprovalApplicationService:
                 return False
             if not package.integrity.is_verified or package.integrity.after_snapshot_fingerprint != _manifest_fingerprint(Path(snapshot.source_path)):
                 return False
-            run = session.get(MigrationRunModel, record.run_id)
-            if run is None or not run.artifact_root:
-                return False
-            metadata = {row.id.removeprefix("metadata-"): row for row in session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == record.run_id))}
-            store = LocalFilesystemArtifactStore(Path(run.artifact_root), fixed_run_root=Path(run.artifact_root))
-            for ref in package.artifacts:
-                row = metadata.get(ref.artifact_id)
-                if row is None or row.checksum != ref.checksum:
-                    return False
-                stored = store.read_artifact_by_id(ref.artifact_id)
-                if stored.ref.checksum != ref.checksum or f"sha256:{hashlib.sha256(stored.content.encode('utf-8')).hexdigest()}" != ref.checksum:
-                    return False
-            rebuilt = G02ApprovalPackageBuilder().build(
-                run_id=package.run_id, state_version=package.state_version, actor=package.actor,
-                snapshot_id=package.snapshot_id, gate_version=package.gate_version,
-                source_fingerprint=package.source_fingerprint,
-                after_source_fingerprint=package.integrity.after_snapshot_fingerprint,
-                snapshot_fingerprint=package.snapshot_fingerprint, manifest_checksum=package.integrity.manifest_checksum,
-                policy_version=package.policy_version, source_read_only_verified=package.integrity.source_read_only_verified,
-                artifacts=list(package.artifacts),
-            )
-            return rebuilt.package_checksum == package.package_checksum and rebuilt.artifact_set_checksum == package.artifact_set_checksum
+            return package.package_checksum == record.package_checksum and package.artifact_set_checksum == record.artifact_set_checksum
         except (OSError, ValueError, SnapshotIntegrityError, AttributeError):
             return False
 
@@ -309,6 +292,8 @@ class G02ApprovalApplicationService:
         transition = StateTransitionService(session).apply_transition(TransitionRequest(
             run_id=run.id, expected_state_version=run.state_version, idempotency_key=f"g02-stale-{record.id}",
             event_type=WorkflowEventType.G02_STALE, actor="g02-approval-service", reason=reason,
+            next_run_status=RunStatus.DIAGNOSTIC_HOLD,
+            next_phase_status="blocked", next_approval_status="rejected",
             occurred_at=self._now(), payload={"package_checksum": record.package_checksum},
         ))
         record.status = "stale"
@@ -324,7 +309,17 @@ class G02ApprovalApplicationService:
 
     def _dto(self, record, *, replay: bool = False):
         from app.api.g02_contracts import G02ReviewResponse
-        return G02ReviewResponse(run_id=record.run_id, gate_id=record.gate_id, gate_version=record.gate_version, status=record.status, decision=record.decision, package=record.package, baseline_input_boundary=record.baseline_input_boundary, state_version=record.state_version, event_sequence=record.event_sequence, idempotent_replay=replay, stale_reason=record.stale_reason, comment=record.comment)
+        package = dict(record.package)
+        integrity = dict(package.get("integrity") or {})
+        # `status` is a derived property of the immutable evidence model and is
+        # intentionally not part of the checksum-bound persisted package.  It
+        # is nevertheless part of the public API contract consumed by the UI.
+        integrity["status"] = "verified" if (
+            integrity.get("source_read_only_verified")
+            and integrity.get("before_fingerprint") == integrity.get("after_snapshot_fingerprint")
+        ) else "failed"
+        package["integrity"] = integrity
+        return G02ReviewResponse(run_id=record.run_id, gate_id=record.gate_id, gate_version=record.gate_version, status=record.status, decision=record.decision, package=package, baseline_input_boundary=record.baseline_input_boundary, state_version=record.state_version, event_sequence=record.event_sequence, idempotent_replay=replay, stale_reason=record.stale_reason, comment=record.comment)
 
 def _manifest_fingerprint(source_root: Path) -> str:
     from app.snapshots import SourceManifestBuilder

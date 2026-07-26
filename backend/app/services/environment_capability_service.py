@@ -61,18 +61,17 @@ class EnvironmentCapabilityService:
         self._artifact_store.ensure_run_layout(snapshot_id)
 
         runtimes = [self._probe_runtime(name, snapshot_id, idempotency_key, captured_at) for name in self.runtime_names]
+        controlled_probes = self._controlled_probes(runtimes, snapshot_id, idempotency_key, captured_at)
         blockers: list[str] = []
         warnings: list[str] = []
         runtime_by_name = {runtime.name: runtime for runtime in runtimes}
         pair_names = ("node", "npm", "npx")
         pair_available = all(runtime_by_name[name].status == "available" for name in pair_names)
-        pair_roots = {
-            runtime_by_name[name].installation_root for name in pair_names if runtime_by_name[name].installation_root
-        }
-        paired = pair_available and len(pair_roots) == 1
-        if pair_available and not paired:
-            blockers.append("RUNTIME_PAIR_MISMATCH")
-        elif not paired:
+        # npm and npx are often shims or wrappers installed outside the Node
+        # directory.  Each executable is proven by its own controlled probe;
+        # directory equality is not evidence of incompatibility.
+        paired = pair_available
+        if not paired:
             blockers.append("RUNTIME_NODE_NPM_NPX_UNAVAILABLE")
 
         git_ready = runtime_by_name["git"].status == "available"
@@ -110,6 +109,7 @@ class EnvironmentCapabilityService:
             "network": network.model_dump(mode="json"),
             "blockers": blockers,
             "warnings": warnings,
+            "controlled_probes": controlled_probes,
         }
         snapshot = EnvironmentCapabilitySnapshot(**payload, checksum=self._checksum(payload))
         summary = self._artifact_store.write_text_artifact(
@@ -139,6 +139,25 @@ class EnvironmentCapabilityService:
                 "runtime_inventory": inventory.ref.artifact_id,
             },
         )
+
+    def _controlled_probes(self, runtimes, snapshot_id, idempotency_key, now):
+        """Prove executable identity/configuration through the command authority."""
+        by_name = {item.name: item for item in runtimes}
+        probes = {}
+        for name, command_id, arguments in (("node_exec_path", "node-exec-path", ["-p", "process.execPath"]), ("npm_registry", "npm-registry", ["config", "get", "registry"])):
+            runtime = by_name["node" if name == "node_exec_path" else "npm"]
+            if runtime.status != "available":
+                probes[name] = {"status": "not_run", "value": None, "artifact_id": None}
+                continue
+            execution = self._worker.run(CommandRequestDto(command_id=command_id, run_id=snapshot_id, requester="environment-capability-service", executable=runtime.attempted_executable or runtime.executable or command_id.split("-")[0], arguments=arguments, working_directory_alias="run_workspace", runtime_profile_id="source-runtime-profile", timeout_seconds=10, network_profile="none", idempotency_key=f"{idempotency_key}:{command_id}", requested_at=now))
+            value = execution.stdout_artifact.content.strip() if execution.stdout_artifact else None
+            if name == "npm_registry" and value:
+                from urllib.parse import urlsplit, urlunsplit
+                parsed = urlsplit(value.splitlines()[0])
+                value = urlunsplit((parsed.scheme, parsed.hostname or parsed.netloc, parsed.path, parsed.query, parsed.fragment)) if parsed.scheme else value.splitlines()[0]
+            artifact_ref = getattr(execution.stdout_artifact, "ref", None)
+            probes[name] = {"status": "passed" if execution.result.status is CommandStatus.SUCCEEDED else "failed", "value": value, "artifact_id": getattr(artifact_ref, "artifact_id", None)}
+        return probes
 
     def _probe_runtime(
         self,

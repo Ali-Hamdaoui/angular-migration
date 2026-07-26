@@ -14,7 +14,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.baseline import BaselinePrequalificationService, BaselinePrequalificationResult
 from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.repositories.baseline_models import BaselineQualificationModel
-from app.repositories.models import ArtifactMetadataModel, ExecutionProfileModel, MigrationRunModel
+from app.repositories.models import ArtifactMetadataModel, ExecutionProfileModel, MigrationRunModel, SourceSnapshotModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest, StaleStateVersionError
 from app.workspaces.baseline import BaselineSandboxService
@@ -63,16 +63,37 @@ class BaselineApplicationService:
             except Exception as error:
                 raise BaselineApplicationError(getattr(error, "code", "EXECUTION_PROFILE_REQUIRED"), str(error), 409) from error
             self._transition(session, run, request, WorkflowEventType.BASELINE_WORKSPACE_STARTED, "baseline sandbox creation started", {"snapshot_id": package.snapshot_id})
+            snapshot = session.get(SourceSnapshotModel, package.snapshot_id)
+            if snapshot is None:
+                raise BaselineApplicationError("SOURCE_SNAPSHOT_NOT_FOUND", "The approved source snapshot does not exist.", 409)
+            if snapshot.run_id != run_id:
+                raise BaselineApplicationError("SOURCE_SNAPSHOT_RUN_MISMATCH", "The approved source snapshot does not belong to this migration run.", 409)
+
             aliases = run.workspace_aliases or {}
-            snapshot_root = Path(aliases.get("SOURCE_SNAPSHOT", ""))
-            baseline_path = Path(aliases.get("BASELINE_SANDBOX", ""))
-            if not snapshot_root or not baseline_path:
+            source_snapshot_raw = aliases.get("SOURCE_SNAPSHOT")
+            baseline_raw = aliases.get("BASELINE_SANDBOX")
+            if not isinstance(source_snapshot_raw, str) or not source_snapshot_raw.strip() or not isinstance(baseline_raw, str) or not baseline_raw.strip():
                 raise BaselineApplicationError("BASELINE_LAYOUT_REQUIRED", "Registered source-snapshot and baseline aliases are required.", 409)
             try:
-                workspace = self._sandbox.create(run_id=run_id, snapshot_root=snapshot_root, baseline_path=baseline_path, approved_snapshot_fingerprint=package.snapshot_fingerprint, registered_run_root=Path(run.run_root) if run.run_root else None)
-            except (OSError, ValueError) as error:
+                source_snapshot_container = Path(source_snapshot_raw).resolve(strict=True)
+                baseline_path = Path(baseline_raw)
+                snapshot_root = Path(snapshot.snapshot_path).resolve(strict=True)
+                run_root = Path(run.run_root).resolve(strict=True) if run.run_root else None
+            except (OSError, TypeError) as error:
+                raise BaselineApplicationError("BASELINE_WORKSPACE_FAILED", str(error), 422) from error
+            try:
+                snapshot_root.relative_to(source_snapshot_container)
+                if run_root is not None:
+                    snapshot_root.relative_to(run_root)
+            except ValueError as error:
+                raise BaselineApplicationError("BASELINE_LAYOUT_INVALID", "The approved snapshot must remain inside the registered workspace boundaries.", 422) from error
+            try:
+                workspace = self._sandbox.create(run_id=run_id, snapshot_root=snapshot_root, baseline_path=baseline_path, approved_snapshot_fingerprint=package.snapshot_fingerprint, registered_run_root=run_root)
+            except (OSError, ValueError, TypeError) as error:
                 raise BaselineApplicationError("BASELINE_WORKSPACE_FAILED", str(error), 422) from error
             artifacts = self._write_artifact(session, run, "baseline_workspace_manifest.json", {"run_id": run_id, "snapshot_id": package.snapshot_id, "input_fingerprint": workspace.input_fingerprint, "sandbox_fingerprint": workspace.fingerprint, "sandbox_path": str(workspace.sandbox_path), "excluded_paths": list(workspace.excluded_paths)}, request.idempotency_key, now)
+            artifacts += self._write_artifact(session, run, "baseline_copy_report.json", {"status": "verified", "source_snapshot": str(snapshot_root), "baseline_sandbox": str(workspace.sandbox_path), "input_fingerprint": workspace.input_fingerprint, "sandbox_fingerprint": workspace.fingerprint, "excluded_paths": list(workspace.excluded_paths)}, request.idempotency_key, now)
+            artifacts += self._write_artifact(session, run, "baseline_initial_fingerprint.json", {"status": "captured", "fingerprint": workspace.fingerprint, "source_snapshot_fingerprint": workspace.input_fingerprint}, request.idempotency_key, now)
             transition = self._transition(session, run, request, WorkflowEventType.BASELINE_WORKSPACE_READY, "baseline sandbox created", {"snapshot_id": package.snapshot_id, "sandbox_fingerprint": workspace.fingerprint, "artifact_count": len(artifacts)})
             record = BaselineQualificationModel(id=f"baseline-{uuid4().hex[:12]}", run_id=run_id, idempotency_key=request.idempotency_key, actor=request.actor, status="workspace_ready", snapshot_id=package.snapshot_id, sandbox_path=str(workspace.sandbox_path), input_fingerprint=workspace.input_fingerprint, sandbox_fingerprint=workspace.fingerprint, package=None, lockfile=None, sources=[], scripts=[], registry=None, blockers=[], warnings=[], authorization_status="not_authorized", checksum=workspace.fingerprint, artifact_ids=artifacts, state_version=transition.next_state_version, event_sequence=transition.event_sequence, created_at=now, updated_at=now)
             session.add(record)
@@ -93,7 +114,7 @@ class BaselineApplicationService:
             profile = self._selected_profile(session, run_id)
             result = self._prequalifier.qualify(Path(record.sandbox_path), execution_profile=profile, private_auth_configured=request.private_auth_configured)
             artifact_ids = list(record.artifact_ids or [])
-            payloads = {"lockfile_prequalification.json": result.lockfile, "package_source_inventory.json": result.sources, "package_install_script_audit.json": result.scripts, "registry_readiness.json": result.registry, "baseline_install_authorization.json": {"status": result.status, "authorized": result.install_authorized, "review_required": result.authorization_required}}
+            payloads = {"package_manager_detection.json": {"package": result.package, "lockfile": result.lockfile}, "npm_configuration_summary.json": result.registry, "lifecycle_script_risk_report.json": result.scripts, "baseline_preparation_result.json": {"status": result.status, "blockers": list(result.blockers), "warnings": list(result.warnings), "checksum": result.checksum}}
             for name, payload in payloads.items():
                 artifact_ids.append(self._write_artifact(session, run, name, payload, request.idempotency_key, now)[0])
             transition = self._transition(session, run, request, WorkflowEventType.LOCKFILE_PREQUALIFICATION_COMPLETED, "baseline package prequalification completed", {"status": result.status, "checksum": result.checksum})

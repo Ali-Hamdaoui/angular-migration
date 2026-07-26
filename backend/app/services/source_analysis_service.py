@@ -27,7 +27,7 @@ class SourceAnalysisService:
         blockers: list[str] = []
         warnings: list[str] = []
         package = self._read_json(source / "package.json")
-        lockfile_name = "package-lock.json" if (source / "package-lock.json").is_file() else None
+        lockfile_name = next((name for name in ("package-lock.json", "npm-shrinkwrap.json") if (source / name).is_file()), None)
         lockfile = self._read_json(source / lockfile_name) if lockfile_name else {}
         if not package:
             blockers.append("PACKAGE_JSON_MISSING")

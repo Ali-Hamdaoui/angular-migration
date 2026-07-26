@@ -124,10 +124,17 @@ class BaselinePolicyService:
                 self._kind(item) == "build" and self._status(item) in {"failed", "blocked", "timed_out", "cancelled"}
                 for item in evidence.validations
             )
+            required_test_failed = any(
+                self._kind(item) == "test" and self._status(item) in {"failed", "blocked", "timed_out", "cancelled", "unsupported"}
+                for item in evidence.validations
+            )
             if required_build_failed:
                 blockers.append("BASELINE_BUILD_FAILED")
+            if required_test_failed:
+                blockers.append("BASELINE_REQUIRED_TEST_NOT_PROVEN")
             else:
-                warnings.append("BASELINE_VALIDATION_FAILURES_PRESENT")
+                if not required_build_failed:
+                    warnings.append("BASELINE_VALIDATION_FAILURES_PRESENT")
         if any(status in {"not_configured", "manual_validation_required", "deferred_company_tool_required"} for status in validation_statuses):
             warnings.append("BASELINE_VALIDATION_NOT_MACHINE_PROVEN")
 

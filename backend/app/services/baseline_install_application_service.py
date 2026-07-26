@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.api.baseline_contracts import BaselineInstallCancelRequest, BaselineInstallRequest, BaselineInstallResponse
 from app.artifact_store import LocalFilesystemArtifactStore
-from app.command_execution import CommandLogWriter, CommandPolicy, ExecutionWorker
+from app.command_execution import CommandDefinition, CommandLogWriter, CommandPolicy, CommandRegistry, ExecutionWorker
 from app.domain.baseline_installation import BaselineInstallPrerequisites, BaselineInstallationError, BaselineInstallationService, FrozenBaselineCommandPolicy, FrozenBaselineInspectionService
 from app.domain.contracts import ArtifactType, CommandStatus, WorkflowEventType
 from app.repositories.g02_models import G02ApprovalModel
@@ -117,7 +117,8 @@ class BaselineInstallApplicationService:
             before = FrozenBaselineInspectionService().inspect_before(sandbox)
             expected_lock = lockfile.get("lockfile_checksum")
             if expected_lock and before[1].checksum != expected_lock: raise BaselineInstallApplicationError("BASELINE_LOCKFILE_STALE", "The baseline lockfile checksum no longer matches the qualified artifact.", 409)
-            command = FrozenBaselineCommandPolicy().create()
+            selected_executable = next((item.get("package_manager_executable", "npm") for item in profile.profiles if item.get("profile_id") == profile.selected_profile_id and item.get("checksum") == profile.selected_checksum), "npm")
+            command = FrozenBaselineCommandPolicy(selected_executable).create()
             queued = self._transition(session, run, request, WorkflowEventType.COMMAND_QUEUED, "baseline npm ci command queued", {"command_id": command.command_id})
             record = CommandExecutionModel(id=f"execution-{uuid4().hex[:12]}", run_id=run_id, stage_id=None, idempotency_key=request.idempotency_key, requested_by=request.actor, requester=request.actor, command_id=command.command_id, executable=command.executable, arguments=list(command.arguments), shell=False, working_directory_alias=command.working_directory_alias, runtime_profile_id=request.runtime_profile_id, runtime_checksum=request.runtime_checksum, baseline_checksum=baseline.checksum, timeout_seconds=request.timeout_seconds, network_profile=command.network_profile, cancellation_policy="terminate_process_tree", status=CommandStatus.PENDING.value, requested_at=queued_at, artifact_ids=[], blockers=[], state_version=queued.next_state_version, event_sequence=queued.event_sequence, start_fingerprint={"package_json": asdict(before[0]), "lockfile": asdict(before[1])})
             session.add(record); session.flush()
@@ -134,9 +135,9 @@ class BaselineInstallApplicationService:
                 session.add(WorkerLeaseModel(id=f"lease-{uuid4().hex[:12]}", run_id=run_id, execution_id=execution_id, worker_id=record.worker_id, lease_owner=record.worker_id, backend_instance_id=self._backend_instance_id, acquired_at=self._now(), heartbeat_at=self._now(), expires_at=self._now() + timedelta(seconds=request.timeout_seconds)))
             heartbeat_thread = threading.Thread(target=self._heartbeat_loop, args=(execution_id, heartbeat_stop, request.timeout_seconds), daemon=True)
             heartbeat_thread.start()
-            worker = self._worker(self._run_by_id(run_id), request.runtime_profile_id)
+            worker = self._worker(self._run_by_id(run_id), request.runtime_profile_id, command.executable, self._runtime_environment(run_id, request.runtime_profile_id, request.runtime_checksum))
             command_request = command.request(run_id=run_id, runtime_profile_id=request.runtime_profile_id, timeout_seconds=request.timeout_seconds, idempotency_key=request.idempotency_key, actor=request.actor, requested_at=self._now())
-            result = BaselineInstallationService(worker).execute(command_request, sandbox=sandbox, prerequisites=BaselineInstallPrerequisites(True, True, True, True, True), cancel_event=cancel_event, output_callback=lambda stream, chunk: self._output_chunk(run_id, execution_id, request, stream, chunk))
+            result = BaselineInstallationService(worker, command_policy=FrozenBaselineCommandPolicy(command.executable)).execute(command_request, sandbox=sandbox, prerequisites=BaselineInstallPrerequisites(True, True, True, True, True), cancel_event=cancel_event, output_callback=lambda stream, chunk: self._output_chunk(run_id, execution_id, request, stream, chunk))
             if result.command.result.status is CommandStatus.FAILED and result.command.result.exit_code is None:
                 return self._finalize_failure(run_id, execution_id, request, before, sandbox, "BASELINE_INSTALL_ENVIRONMENT_BLOCKED", environment_blocker="PROCESS_START_FAILED")
             return self._finalize(run_id, execution_id, request, before, result)
@@ -223,7 +224,7 @@ class BaselineInstallApplicationService:
             run = self._run(session, run_id)
             record = session.get(CommandExecutionModel, execution_id)
             reconstruction = self._reconstruct_baseline(session, run, execution_id) if result.inspection.reconstruction_required else {"status": "not_required"}
-            artifacts = self._persist_artifacts(session, run, result, request, execution_id, reconstruction)
+            artifacts = self._persist_artifacts(session, run, result, request, execution_id, reconstruction, executable=record.executable)
             status = result.command.result.status
             record.status = status.value
             record.started_at = result.command.result.started_at
@@ -286,7 +287,15 @@ class BaselineInstallApplicationService:
             self._write_artifact(store, run, "04_workflow_state/command_logs/npm-ci-bootstrap-failure.stderr.log", "".join(buffers.get("stderr", [])), ArtifactType.TEXT_LOG, request),
             self._write_artifact(store, run, "01_baseline/lockfile_post_install_verification.json", json.dumps({"package_json": asdict(after[0]), "lockfile": asdict(after[1]), "unchanged": after == before}, indent=2, default=str), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": "failed", "blockers": [blocker], "environment_blocker": environment_blocker, "fingerprints": {"start": {"package_json": asdict(before[0]), "lockfile": asdict(before[1])}, "end": {"package_json": asdict(after[0]), "lockfile": asdict(after[1])}}, "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_authorization.json", json.dumps({"status": "authorized", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_command_manifest.json", json.dumps({"command_id": "npm-ci-bootstrap", "executable": "npm", "arguments": ["ci"], "working_directory_alias": "BASELINE_SANDBOX", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_result.json", json.dumps({"status": "failed", "blockers": [blocker], "environment_blocker": environment_blocker, "detail": detail}, indent=2), ArtifactType.JSON, request),
         ]
+        artifacts.extend([
+            self._write_artifact(store, run, "01_baseline/npm_ci_stdout.log", "".join(buffers.get("stdout", [])), ArtifactType.TEXT_LOG, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_stderr.log", "".join(buffers.get("stderr", [])), ArtifactType.TEXT_LOG, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_command_log.json", json.dumps({"command_id": "npm-ci-bootstrap", "status": "failed", "blocker": blocker}, indent=2), ArtifactType.COMMAND_LOG, request),
+        ])
         self._register_artifacts(session, run, artifacts)
         return [a.ref.artifact_id for a in artifacts]
 
@@ -336,19 +345,31 @@ class BaselineInstallApplicationService:
     @staticmethod
     def _register_artifacts(session, run, artifacts):
         for artifact in artifacts:
-            session.add(ArtifactMetadataModel(id=f"metadata-{artifact.ref.artifact_id}", run_id=run.id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at))
-    def _persist_artifacts(self, session, run, result, request, execution_id, reconstruction):
+            session.add(ArtifactMetadataModel(id=f"metadata-{artifact.ref.artifact_id}", run_id=run.id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at, finalized_at=artifact.ref.created_at, immutable=True))
+    def _persist_artifacts(self, session, run, result, request, execution_id, reconstruction, *, executable="npm"):
         root = Path(run.artifact_root).resolve()
         store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
         artifacts = [result.command.command_log_artifact]
         if result.command.stdout_artifact: artifacts.append(result.command.stdout_artifact)
         if result.command.stderr_artifact: artifacts.append(result.command.stderr_artifact)
+        command_manifest = {"command_id": "npm-ci-bootstrap", "executable": executable, "arguments": ["ci"], "working_directory_alias": "BASELINE_SANDBOX", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}
+        dependency_tree = asdict(result.inspection.dependency_tree) if result.inspection.dependency_tree else {"status": "not_run"}
+        result_payload = {"status": result.command.result.status.value, "exit_code": result.command.result.exit_code, "timed_out": result.command.timed_out, "cancelled": result.command.cancelled, "blockers": list(result.inspection.blockers)}
         artifacts.extend([
-            self._write_artifact(store, run, "01_baseline/npm-ci-command.json", json.dumps({"command_id": "npm-ci-bootstrap", "executable": "npm", "arguments": ["ci"], "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
-            self._write_artifact(store, run, "01_baseline/dependency_tree_verification.json", json.dumps(asdict(result.inspection.dependency_tree) if result.inspection.dependency_tree else {"status": "not_run"}, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_authorization.json", json.dumps({"status": "authorized", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_command_manifest.json", json.dumps(command_manifest, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm-ci-command.json", json.dumps(command_manifest, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/dependency_tree.json", json.dumps(dependency_tree, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/dependency_tree_verification.json", json.dumps(dependency_tree, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/npm_ci_result.json", json.dumps(result_payload, indent=2, default=str), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/lockfile_post_install_verification.json", json.dumps({"package_json": asdict(result.inspection.package_json), "lockfile": asdict(result.inspection.lockfile), "unchanged": not result.inspection.blockers}, indent=2, default=str), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": result.inspection.status, "blockers": list(result.inspection.blockers), "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
         ])
+        if result.command.stdout_artifact:
+            artifacts.append(self._write_artifact(store, run, "01_baseline/npm_ci_stdout.log", result.command.stdout_artifact.content, ArtifactType.TEXT_LOG, request))
+        if result.command.stderr_artifact:
+            artifacts.append(self._write_artifact(store, run, "01_baseline/npm_ci_stderr.log", result.command.stderr_artifact.content, ArtifactType.TEXT_LOG, request))
+        artifacts.append(self._write_artifact(store, run, "01_baseline/npm_ci_command_log.json", result.command.command_log_artifact.content, ArtifactType.COMMAND_LOG, request))
         for index, debug_path in enumerate(self._npm_debug_log_paths(run, result)):
             try:
                 artifacts.append(self._write_artifact(store, run, f"01_baseline/npm-debug/{index:03d}-{debug_path.name}", self._redact(debug_path.read_text(encoding="utf-8", errors="replace")), ArtifactType.TEXT_LOG, request))
@@ -357,9 +378,26 @@ class BaselineInstallApplicationService:
         self._register_artifacts(session, run, artifacts)
         with self._lock: self._output_buffers.pop(execution_id, None)
         return [a.ref.artifact_id for a in artifacts]
-    def _worker(self, run, runtime_profile_id):
+    def _worker(self, run, runtime_profile_id, executable="npm", environment_overrides=None):
         if self._worker_factory is not None: return self._worker_factory(run)
-        baseline = Path((run.workspace_aliases or {})["BASELINE_SANDBOX"]).resolve(); root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root); policy = CommandPolicy(sandbox_root=baseline, working_directory_aliases={"BASELINE_SANDBOX": baseline}, runtime_profiles=frozenset({runtime_profile_id}), network_profiles=frozenset({"approved-registries-only"})); return ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=None))
+        baseline = Path((run.workspace_aliases or {})["BASELINE_SANDBOX"]).resolve(); root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
+        definitions = tuple(CommandDefinition(item.command_id, executable if item.command_id == "npm-ci-bootstrap" else item.executable, item.arguments, tuple(dict.fromkeys((*item.executable_aliases, "npm", "npm.cmd", executable)))) if item.command_id == "npm-ci-bootstrap" else item for item in CommandRegistry().definitions)
+        policy = CommandPolicy(sandbox_root=baseline, registry=CommandRegistry(definitions=definitions), working_directory_aliases={"BASELINE_SANDBOX": baseline}, runtime_profiles=frozenset({runtime_profile_id}), network_profiles=frozenset({"approved-registries-only"}), environment_overrides=environment_overrides or {}); return ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=None))
+
+    def _runtime_environment(self, run_id, profile_id, checksum):
+        with self._scope() as session:
+            profile = self._profile(session, run_id, profile_id, checksum)
+            selected = next((item for item in (profile.profiles or []) if item.get("profile_id") == profile.selected_profile_id and item.get("checksum") == profile.selected_checksum), None) if profile else None
+        if not selected:
+            return {}
+        directories = []
+        for executable in (selected.get("node_executable"), selected.get("package_manager_executable"), selected.get("npx_executable")):
+            if executable:
+                directory = str(Path(executable).parent)
+                if directory not in directories:
+                    directories.append(directory)
+        current_path = os.environ.get("PATH", "")
+        return {"PATH": os.pathsep.join([*directories, current_path]) if current_path else os.pathsep.join(directories)}
 
     def _run_by_id(self, run_id):
         with self._scope() as session: return self._run(session, run_id)

@@ -113,8 +113,8 @@ Start the backend and frontend in separate PowerShell terminals:
 
 The scripts launch:
 
-- Backend: python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
-- Frontend: $env:NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8765"
+- Backend: python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+- Frontend: $env:NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8000"
             npm run dev
 
 If you want to validate the full workspace after startup, run:

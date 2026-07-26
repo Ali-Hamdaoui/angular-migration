@@ -47,6 +47,9 @@ class BaselineTarget:
     working_directory_alias: str = "BASELINE_SANDBOX"
     supported: bool = True
     blocker: str | None = None
+    builder: str | None = None
+    canonical_target_id: str | None = None
+    support_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +104,7 @@ class BaselineTargetDiscoveryService:
                 for kind in BaselineTargetKind:
                     definition = configured.get(kind.value)
                     if isinstance(definition, dict):
-                        targets.extend(self._angular_targets(project_name, kind, definition))
+                        targets.extend(self._angular_targets(project_name, kind, definition, scripts=package.get("scripts", {})))
 
         scripts = package.get("scripts", {})
         if not isinstance(scripts, dict):
@@ -121,7 +124,7 @@ class BaselineTargetDiscoveryService:
                 targets.append(BaselineTarget(f"not-configured:{kind.value}", kind, None, None, "", "", (), supported=False, blocker="NOT_CONFIGURED"))
         return BaselineTargetInventory(tuple(targets), _checksum(package_path), angular is not None)
 
-    def _angular_targets(self, project: str, kind: BaselineTargetKind, definition: dict[str, Any]) -> Iterable[BaselineTarget]:
+    def _angular_targets(self, project: str, kind: BaselineTargetKind, definition: dict[str, Any], *, scripts: Any) -> Iterable[BaselineTarget]:
         builder = definition.get("builder")
         configurations = definition.get("configurations", {})
         if not isinstance(configurations, dict):
@@ -132,13 +135,30 @@ class BaselineTargetDiscoveryService:
         for configuration in selected:
             suffix = f":{configuration}" if configuration else ""
             target_id = f"angular:{project}:{kind.value}{suffix}"
+            if kind is BaselineTargetKind.TEST and self._jest_alias(builder, scripts, definition):
+                yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "", (), supported=False, blocker="EQUIVALENT_CANONICAL_TARGET", builder=builder, canonical_target_id="script:test", support_reason="Approved @angular-builders/jest:run target is equivalent to the root npm test script; the canonical script:test execution is reused.")
+                continue
             if not isinstance(builder, str) or not self._supported_builder(kind, builder):
-                yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "", (), supported=False, blocker="UNSUPPORTED_CUSTOM_TARGET")
+                yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "", (), supported=False, blocker="UNSUPPORTED_CUSTOM_TARGET", builder=builder if isinstance(builder, str) else None)
                 continue
             arguments = ["ng", kind.value, project]
             if configuration:
                 arguments.extend(("--configuration", configuration))
-            yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments))
+            yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments), builder=builder)
+
+    @staticmethod
+    def _jest_alias(builder: Any, scripts: Any, definition: dict[str, Any]) -> bool:
+        """Recognize only the governed Jest builder/script equivalence."""
+        if builder != "@angular-builders/jest:run" or not isinstance(scripts, dict):
+            return False
+        command = scripts.get("test")
+        if not isinstance(command, str) or not command.strip():
+            return False
+        tokens = command.strip().split()
+        if not tokens or tokens[0].lower() not in {"jest", "jest.cmd"}:
+            return False
+        options = definition.get("options", {})
+        return not options or isinstance(options, dict) and not any(key in options for key in ("config", "jestConfig", "runInBand", "watch", "coverage"))
 
     @staticmethod
     def _supported_builder(kind: BaselineTargetKind, builder: str) -> bool:
@@ -151,7 +171,9 @@ class BaselineTargetDiscoveryService:
         if not path.is_file():
             return None
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            # Angular CLI commonly writes UTF-8 JSON with a BOM on Windows.
+            # It is valid project evidence and must not block baseline reads.
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise BaselineMatrixError("ANGULAR_JSON_INVALID") from error
         if not isinstance(value, dict):
@@ -161,7 +183,7 @@ class BaselineTargetDiscoveryService:
 
 def normalize_command_result(target: BaselineTarget, *, exit_code: int | None, duration_ms: int | None, cancelled: bool = False, interrupted: bool = False, warnings: Iterable[str] = (), test_count: int | None = None, failed_tests: Iterable[str] = ()) -> BaselineTargetResult:
     if not target.supported:
-        status = BaselineTargetStatus.SKIPPED_NOT_CONFIGURED if target.blocker == "NOT_CONFIGURED" else BaselineTargetStatus.BLOCKED
+        status = BaselineTargetStatus.SKIPPED_NOT_CONFIGURED if target.blocker == "NOT_CONFIGURED" else BaselineTargetStatus.SKIPPED_NOT_APPLICABLE if target.blocker == "EQUIVALENT_CANONICAL_TARGET" else BaselineTargetStatus.BLOCKED
     elif cancelled:
         status = BaselineTargetStatus.CANCELLED
     elif interrupted:

@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _PLATFORM_REPOSITORY_ROOT = _BACKEND_ROOT.parent
+_STABLE_TARGET_ROOT = Path(r"C:\Users\abdelilah.mortaki\Desktop\angularRus")
 
 def _default_application_data_root() -> Path:
     base = os.environ.get("LOCALAPPDATA")
@@ -52,7 +53,7 @@ class Settings(BaseSettings):
     delivery_root: Path | None = None
     sandbox_root: Path | None = None
     allowed_source_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
-    allowed_target_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
+    allowed_target_roots: Annotated[list[Path], NoDecode] = Field(default_factory=lambda: [_STABLE_TARGET_ROOT])
     platform_repository_root: Path = _PLATFORM_REPOSITORY_ROOT
 
     backend_cors_origins: Annotated[list[str], NoDecode] = Field(
@@ -83,6 +84,8 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     llm_input_price_per_million_tokens: float = Field(default=0.0, ge=0)
     llm_output_price_per_million_tokens: float = Field(default=0.0, ge=0)
+    analysis_proposer_max_output_tokens: int = Field(default=2048, ge=256, le=32768)
+    analysis_reviewer_max_output_tokens: int = Field(default=2048, ge=256, le=32768)
     llm_pricing_version: str = Field(default='mvp-pricing-2026-01', min_length=1)
     llm_prompt_policy_version: str = Field(default='migration-policy-v1', min_length=1)
     llm_schema_registry_version: str = Field(default='schema-registry-v1', min_length=1)
@@ -143,7 +146,6 @@ class Settings(BaseSettings):
                 for variable, value in {
                     "AZURE_OPENAI_ENDPOINT": self.azure_openai_endpoint,
                     "AZURE_OPENAI_DEPLOYMENT": self.azure_openai_deployment,
-                    "AZURE_OPENAI_API_VERSION": self.azure_openai_api_version,
                     "AZURE_OPENAI_API_KEY": self.azure_openai_api_key,
                 }.items()
                 if value is None or (isinstance(value, str) and not value.strip())

@@ -253,6 +253,14 @@ class CancellationPolicy(str, Enum):
 
 
 class WorkflowEventType(str, Enum):
+    ANALYSIS_INPUT_VALIDATION_STARTED = 'ANALYSIS_INPUT_VALIDATION_STARTED'
+    ANALYSIS_INPUT_VALIDATION_COMPLETED = 'ANALYSIS_INPUT_VALIDATION_COMPLETED'
+    ANALYSIS_CONTEXT_PREPARED = 'ANALYSIS_CONTEXT_PREPARED'
+    LLM_REQUEST_PREPARED = 'LLM_REQUEST_PREPARED'
+    LLM_HTTP_REQUEST_STARTED = 'LLM_HTTP_REQUEST_STARTED'
+    LLM_HTTP_RESPONSE_RECEIVED = 'LLM_HTTP_RESPONSE_RECEIVED'
+    LLM_RESPONSE_DECODED = 'LLM_RESPONSE_DECODED'
+    LLM_STRUCTURED_OUTPUT_VALIDATED = 'LLM_STRUCTURED_OUTPUT_VALIDATED'
     LLM_INVOCATION_STARTED = 'LLM_INVOCATION_STARTED'
     LLM_INVOCATION_COMPLETED = 'LLM_INVOCATION_COMPLETED'
     LLM_INVOCATION_FAILED = 'LLM_INVOCATION_FAILED'
@@ -292,6 +300,10 @@ class WorkflowEventType(str, Enum):
     RUN_START_ACCEPTED = "RUN_START_ACCEPTED"
     RUN_STARTED = "RUN_STARTED"
     RUN_START_REJECTED = "RUN_START_REJECTED"
+    SOURCE_INTAKE_QUEUED = "SOURCE_INTAKE_QUEUED"
+    SOURCE_INTAKE_STARTED = "SOURCE_INTAKE_STARTED"
+    SOURCE_INTAKE_COMPLETED = "SOURCE_INTAKE_COMPLETED"
+    SOURCE_INTAKE_FAILED = "SOURCE_INTAKE_FAILED"
     RUN_RECONSTRUCTED = "RUN_RECONSTRUCTED"
     SNAPSHOT_STARTED = "SNAPSHOT_STARTED"
     SNAPSHOT_CREATED = "SNAPSHOT_CREATED"
@@ -905,6 +917,14 @@ class StartAuthoritativeRunRequestDto(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class CancelAuthoritativeRunRequestDto(ContractModel):
+    """Operator-confirmed cancellation of an authoritative run."""
+
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=128)
+
+
 class AuthoritativeRunStateDto(ContractModel):
     run_id: str
     status: RunStatus
@@ -929,12 +949,14 @@ class AuthoritativeRunStateDto(ContractModel):
     catalogue_version: str | None = None
     registry_snapshot: dict[str, object] | None = None
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
+    plan_inputs: dict[str, object] | None = None
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 
 
 class AuthoritativeRunMutationResultDto(ContractModel):
     run_id: str
+    job_id: str | None = None
     status: RunStatus
     state_version: int = Field(ge=1)
     event_sequence: int = Field(ge=1)

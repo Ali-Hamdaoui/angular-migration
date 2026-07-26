@@ -89,9 +89,11 @@ def test_capture_is_available_through_versioned_api(monkeypatch, tmp_path):
 
     with TestClient(app) as client:
         response = client.post("/api/v1/runs/run-1/baseline/parity", json={"expected_state_version": 1, "idempotency_key": "api-1", "actor": "operator"})
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "captured"
+        assert response.status_code == 200
+        assert response.json()["status"] == "captured"
+        for section in ("failures", "routes", "backend-integration", "anchors"):
+            section_response = client.get(f"/api/v1/runs/run-1/baseline/{section}")
+            assert section_response.status_code == 200
     engine.dispose()
 
 

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -24,10 +24,27 @@ class AnalysisMetadataModel(Base):
     workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
     plan_version: Mapped[str | None] = mapped_column(String(128))
     invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
+    # ``invocation_id`` is retained as the proposer compatibility pointer.  The
+    # phase-specific pointers are authoritative for an Analysis attempt.
+    proposer_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
+    reviewer_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
+    failed_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"), index=True)
     artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     artifact_checksums: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     package: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     error_code: Mapped[str | None] = mapped_column(String(128))
+    # Stable Analysis domain error and the underlying gateway cause are
+    # deliberately separate: the latter drives retry and audit decisions.
+    cause_code: Mapped[str | None] = mapped_column(String(128))
+    failure_subtype: Mapped[str | None] = mapped_column(String(128))
+    failure_stage: Mapped[str | None] = mapped_column(String(128))
+    retryable: Mapped[bool | None] = mapped_column(default=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_origin: Mapped[str | None] = mapped_column(String(32))
+    technical_stage: Mapped[str | None] = mapped_column(String(128))
+    transport_started: Mapped[bool | None] = mapped_column(Boolean)
+    provider_request_id: Mapped[str | None] = mapped_column(String(256))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

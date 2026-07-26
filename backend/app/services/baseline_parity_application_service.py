@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,8 +29,10 @@ from app.repositories.models import (
     BaselineValidationModel,
     CommandExecutionModel,
     ExecutionProfileModel,
+    G03ApprovalModel,
     MigrationRunModel,
 )
+from app.repositories.baseline_g03_models import BaselineAssessmentModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
 
@@ -47,6 +50,7 @@ class BaselineParityApplicationService:
         self._fingerprints = BaselineFailureFingerprintService()
 
     def capture(self, run_id: str, request) -> BaselineParityResponse:
+        request_checksum = self._request_checksum(request)
         with self._scope() as session:
             run, baseline = self._run_and_baseline(session, run_id)
             replay = session.scalar(select(BaselineParityEvidenceModel).where(
@@ -54,9 +58,12 @@ class BaselineParityApplicationService:
                 BaselineParityEvidenceModel.idempotency_key == request.idempotency_key,
             ))
             if replay:
+                if replay.request_checksum and replay.request_checksum != request_checksum:
+                    raise BaselineParityApplicationError("IDEMPOTENCY_KEY_REUSED", "The parity idempotency key was reused with a different request.", 409)
                 return self._response(replay, replay=True)
             self._require_state(run, request.expected_state_version)
             self._require_prerequisites(session, run, baseline, request.prerequisite_artifact_ids, request.prerequisite_artifact_checksums)
+            self._invalidate_bound_g03(session, run, actor=request.actor)
             validations = session.scalars(select(BaselineValidationModel).where(
                 BaselineValidationModel.run_id == run_id,
             )).all()
@@ -96,7 +103,8 @@ class BaselineParityApplicationService:
             "baseline_parser_diagnostics.json": {"schema_version": SCHEMA_VERSION, "parser_version": PARSER_VERSION, "diagnostics": diagnostics},
         }
         store = LocalFilesystemArtifactStore(run_root, fixed_run_root=run_root)
-        stored = [store.write_text_artifact(run_id, f"01_baseline/{name}", json.dumps(value, indent=2, sort_keys=True), ArtifactType.JSON, created_by="baseline-parity-service", created_at=self._now(), input_hashes={"baseline": baseline_checksum or ""}, policy_version=PARSER_VERSION) for name, value in payloads.items()]
+        stored = [self._store_or_reuse(store, run_id, f"01_baseline/{name}", json.dumps(value, indent=2, sort_keys=True), baseline_checksum) for name, value in payloads.items()]
+        self._verify_artifacts(store, stored)
         artifact_ids = [item.ref.artifact_id for item in stored]
         artifact_checksums = {item.ref.artifact_id: item.ref.checksum for item in stored}
 
@@ -108,7 +116,7 @@ class BaselineParityApplicationService:
             transition = None
             for suffix, event_type in zip(event_keys, event_types):
                 transition = self._transition(session, run, request, event_type, f"baseline {suffix} parity evidence created", {"schema_version": SCHEMA_VERSION, "artifact_count": len(artifact_ids)}, expected_state_version=run.state_version)
-            record = BaselineParityEvidenceModel(id=f"parity-{uuid4().hex[:12]}", run_id=run_id, idempotency_key=request.idempotency_key, actor=request.actor, status="captured", parser_version=PARSER_VERSION, schema_version=SCHEMA_VERSION, baseline_checksum=baseline_checksum, runtime_profile_id=runtime_profile_id, runtime_checksum=runtime_checksum, failures=failures, routes=routes, backend_integration=backend_integration, anchors=anchors, diagnostics=diagnostics, confidence=confidence, source_artifact_ids=sorted(set(source_artifact_ids)), artifact_ids=artifact_ids, artifact_checksums=artifact_checksums, state_version=transition.next_state_version, event_sequence=transition.event_sequence, created_at=self._now(), updated_at=self._now())
+            record = BaselineParityEvidenceModel(id=f"parity-{uuid4().hex[:12]}", run_id=run_id, idempotency_key=request.idempotency_key, request_checksum=request_checksum, actor=request.actor, status="captured", parser_version=PARSER_VERSION, schema_version=SCHEMA_VERSION, baseline_checksum=baseline_checksum, runtime_profile_id=runtime_profile_id, runtime_checksum=runtime_checksum, failures=failures, routes=routes, backend_integration=backend_integration, anchors=anchors, diagnostics=diagnostics, confidence=confidence, source_artifact_ids=sorted(set(source_artifact_ids)), artifact_ids=artifact_ids, artifact_checksums=artifact_checksums, state_version=transition.next_state_version, event_sequence=transition.event_sequence, created_at=self._now(), updated_at=self._now())
             session.add(record)
             for artifact in stored:
                 session.add(ArtifactMetadataModel(id=f"metadata-{artifact.ref.artifact_id}", run_id=run_id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at))
@@ -145,6 +153,60 @@ class BaselineParityApplicationService:
                         diagnostics.append({"kind": "install", "message": line})
         failures = [self._jsonable(item) for item in self._fingerprints.from_diagnostics(diagnostics)]
         return failures, diagnostics
+
+    def _invalidate_bound_g03(self, session, run, *, actor: str) -> None:
+        assessment = session.scalar(select(BaselineAssessmentModel).where(
+            BaselineAssessmentModel.run_id == run.id,
+        ).order_by(BaselineAssessmentModel.updated_at.desc()))
+        approvals = list(session.scalars(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run.id, G03ApprovalModel.status.in_({"approved", "approved_with_comment", "pending"}))))
+        if assessment is None and not approvals:
+            return
+        reason = "S1-F13 parity evidence was recaptured; G03 requires requalification and reapproval."
+        if assessment is not None and assessment.status != "stale":
+            assessment.status = "stale"
+            assessment.stale_reason = reason
+            assessment.updated_at = self._now()
+        for approval in approvals:
+            approval.status = "stale"
+            approval.stale_reason = reason
+            approval.updated_at = self._now()
+            StateTransitionService(session).append_audit_event(
+                run_id=run.id,
+                idempotency_key=f"s1-f13:{approval.id}:stale",
+                event_type=WorkflowEventType.APPROVAL_MARKED_STALE,
+                actor=actor,
+                reason="G03 approval invalidated by S1-F13 recapture",
+                occurred_at=self._now(),
+                payload={"approval_id": approval.id, "reason": reason},
+            )
+
+    @staticmethod
+    def _request_checksum(request) -> str:
+        payload = json.dumps(request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _store_or_reuse(store, run_id, relative_path, content, baseline_checksum):
+        try:
+            existing = store.read_artifact(run_id, relative_path)
+            expected = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+            if existing.ref.checksum != expected:
+                raise BaselineParityApplicationError("BASELINE_PARITY_ARTIFACT_CHECKSUM_MISMATCH", f"Existing parity artifact is modified: {relative_path}", 409)
+            return existing
+        except Exception as error:
+            if isinstance(error, BaselineParityApplicationError):
+                raise
+            return store.write_text_artifact(run_id, relative_path, content, ArtifactType.JSON, created_by="baseline-parity-service", created_at=datetime.now(UTC), input_hashes={"baseline": baseline_checksum or ""}, policy_version=PARSER_VERSION)
+
+    @staticmethod
+    def _verify_artifacts(store, artifacts) -> None:
+        for artifact in artifacts:
+            try:
+                actual = store.read_artifact_by_id(artifact.ref.artifact_id)
+            except Exception as error:
+                raise BaselineParityApplicationError("BASELINE_PARITY_ARTIFACT_MISSING", "A generated parity artifact could not be verified.", 409) from error
+            if actual.ref.checksum != artifact.ref.checksum:
+                raise BaselineParityApplicationError("BASELINE_PARITY_ARTIFACT_CHECKSUM_MISMATCH", "A generated parity artifact checksum changed.", 409)
 
     @staticmethod
     def _jsonable(value):

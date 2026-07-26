@@ -122,6 +122,8 @@ class LlmResponse(LlmGatewayModel):
     schema_version: str | None = None
     pricing_version: str | None = None
     failure_code: str | None = None
+    provider_request_id: str | None = None
+    request_manifest: dict[str, object] = Field(default_factory=dict)
 
 
 class LlmCostSummary(LlmGatewayModel):

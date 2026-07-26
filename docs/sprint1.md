@@ -16,8 +16,8 @@
 
 ## Version 2.2 architecture and backlog optimization
 
-- The user supplies an exact external `source_path` for the Angular 18.x application and an exact external `output_path` for the complete migration package.
-- The backend canonicalizes, validates, previews, and reserves the exact `output_path`; it does not append an additional generated project directory.
+- The user supplies an exact external `source_path` for the Angular 18.x application and an external target parent for the migration package.
+- The backend canonicalizes, validates, previews, and reserves a unique generated output root beneath that target parent.
 - The original Angular 18.x source remains external, read-only, fingerprinted, and is never a command working directory.
 - The selected external output root contains every run-owned snapshot, sandbox, artifact, log, report, approval, validation record, temporary file, delivery candidate, and the final Angular 21 application.
 - The final Angular 21 application is published only to `<resolved-output-root>/migrated-app` after G13 and G14.
@@ -131,11 +131,13 @@ C:\projects\angular-migration\
 External Angular 18 source selected by the user:
 C:\client-projects\customer-portal-angular-18\
 
-Exact external output root selected by the user:
-D:\angular-migrations\customer-portal-angular-21\
+External target parent selected by the user:
+D:\angular-migrations\
 ```
 
-The backend does not append another generated project directory beneath `output_path`. It canonicalizes the request and returns:
+The backend generates a unique sibling output root beneath the selected target
+parent, for example `customer-portal-angular-21-a1b2c3d4e5f6`. It canonicalizes
+the request and returns:
 
 ```text
 normalized_source_path
@@ -144,7 +146,9 @@ future_migrated_app_path = <resolved-output-root>\migrated-app
 future_run_root          = <resolved-output-root>\.migration-factory\runs\<run-id>
 ```
 
-The frontend may suggest a folder name before the user chooses a path, but suggestions are not authoritative. The exact normalized `output_path` is persisted, reserved, checksum-bound to G01, and reused unchanged through G14.
+The generated output name is persisted, reserved, checksum-bound to G01, and
+reused unchanged through G14. A later migration receives a new suffix and does
+not reuse or overwrite a previous output root.
 
 ### A.5.3 Source acquisition and execution boundary
 
@@ -263,7 +267,7 @@ PATH_LENGTH_RISK_BLOCKED
 UNSAFE_WORKSPACE_LAYOUT
 ```
 
-Containment checks use canonical paths plus Windows reparse-point inspection. The exact `output_path` may be absent, empty and explicitly accepted, or a compatible product-managed resumable root. A non-empty unmanaged destination fails closed. Reservation is for the exact canonical output root, not merely its parent.
+Containment checks use canonical paths plus Windows reparse-point inspection. The generated output root is selected only when absent; a non-empty unmanaged destination fails closed. Reservation is for the exact canonical generated output root, not merely its parent.
 
 Disk estimation covers the snapshot, baseline sandbox, all three stage sandboxes, bounded repair attempts, final assurance, delivery candidate, final application, artifacts, logs, reports, and temporary overhead.
 
@@ -418,7 +422,7 @@ Because Sprint 0 explicitly deferred real source intake, arbitrary-project snaps
 
 Convert the completed Sprint 0 skeleton into the first real, safe, reproducible product increment.
 
-The sprint accepts an external Angular 18.x source path and an exact external output path, normalizes and reserves that exact output root, validates both boundaries, obtains G01, creates a real run, copies the read-only source into an immutable product-owned snapshot through G02, resolves an exact source-compatible ExecutionProfile, creates a separate baseline sandbox, audits package and lifecycle behavior, runs a frozen clean installation plus configured build/test/lint commands, captures baseline parity anchors and known failure fingerprints, and obtains G03.
+The sprint accepts an external Angular 18.x source path and an external target parent, generates and reserves a unique output root beneath that parent, validates both boundaries, obtains G01, creates a real run, copies the read-only source into an immutable product-owned snapshot through G02, resolves an exact source-compatible ExecutionProfile, creates a separate baseline sandbox, audits package and lifecycle behavior, runs a frozen clean installation plus configured build/test/lint commands, captures baseline parity anchors and known failure fingerprints, and obtains G03.
 
 At sprint completion, the run is ready for Sprint 2 discovery and analysis. It is **not migrated**.
 
@@ -952,7 +956,7 @@ A user can select an external Angular 18.x source folder and an exact independen
 
 #### Context
 
-Sprint 0 validated controlled temporary paths only. Production intake must accept arbitrary safe Windows paths while proving that the source, output, sandboxes, artifacts, and final application remain outside the migration-platform repository. The backend validates and reserves the exact user-selected output root; it does not create an additional generated folder beneath it.
+Sprint 0 validated controlled temporary paths only. Production intake must accept arbitrary safe Windows paths while proving that the source, output, sandboxes, artifacts, and final application remain outside the migration-platform repository. The backend validates and reserves a unique generated output root beneath the selected target parent; it does not create the previewed output root during validation.
 
 #### Scope
 
@@ -968,7 +972,7 @@ Sprint 0 validated controlled temporary paths only. Production intake must accep
 - Inspect symlinks, junctions, and reparse points and fail closed on uncertain containment.
 - Block unsupported network locations for the local MVP.
 - Estimate disk requirements for all snapshots, sandboxes, bounded repairs, evidence, candidate, final application, and temporary overhead.
-- Reserve the exact canonical `output_path` with owner, expiry, idempotency, and compare-and-set behavior.
+- Reserve the exact canonical generated output root with owner, expiry, idempotency, and compare-and-set behavior.
 - Generate a lightweight source metadata fingerprint so intake becomes stale when the source materially changes.
 - Persist normalized paths, layout version, repository-root fingerprint, reservation, policy version, and source metadata fingerprint.
 - Display a prominent read-only-source notice and a preview of the complete external output package.
@@ -1045,7 +1049,7 @@ User selects source_path and output_path
 → FastAPI endpoint
 → PathPolicy and WindowsPathInspector canonicalize and validate
 → MigrationWorkspaceLayoutService derives registered future aliases
-→ OutputReservationService reserves the exact output root
+→ OutputReservationService reserves the unique generated output root
 → validation and reservation metadata commit
 → durable event commit
 → frontend displays authoritative path/layout result
@@ -1106,12 +1110,12 @@ User selects source_path and output_path
 
 #### Feature acceptance criteria
 
-- Given safe external source and exact external output paths, when validation completes, then the exact output root is reserved and the UI displays its complete future package layout.
-- Given `output_path` is `D:\angular-migrations\customer-portal-angular-21`, when run-owned paths are previewed, then no additional generated project directory is inserted beneath it.
+- Given a safe external source and target parent, when validation completes, then a unique generated output root is reserved and the UI displays its complete future package layout.
+- Given the target parent is `D:\angular-migrations`, when run-owned paths are previewed, then the generated output root is a unique sibling such as `customer-portal-angular-21-a1b2c3d4e5f6`.
 - Given source or output resolves inside the platform repository, when validation runs, then it is blocked.
 - Given output equals source or either contains the other, when validation runs, then it is blocked.
 - Given a junction/reparse point escapes an approved boundary, when inspected, then validation fails closed.
-- Given another active reservation owns the exact output root, when validation runs, then the result is `OUTPUT_PATH_ALREADY_RESERVED`.
+- Given another active reservation owns a generated output root, when validation runs, then a new unique sibling output root is selected instead of reusing it.
 - Given the output path contains unmanaged files, when validation runs, then it is `OUTPUT_PATH_ALREADY_EXISTS_UNMANAGED`.
 - Given the source changes after validation, when the result is reused, then it is stale and cannot support G01.
 - Given validation fails, then no migration workspace, sandbox, artifact root, or `migrated-app` is created.

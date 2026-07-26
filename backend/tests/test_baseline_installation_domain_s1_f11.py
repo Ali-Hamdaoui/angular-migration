@@ -46,6 +46,21 @@ def test_changed_lockfile_blocks_and_requires_reconstruction(tmp_path) -> None:
     assert result.status == "blocked"
     assert result.reconstruction_required is True
     assert result.blockers == ("PACKAGE_LOCK_CHANGED_AFTER_INSTALL",)
+
+
+def test_npm_shrinkwrap_is_accepted_as_the_frozen_lockfile(tmp_path) -> None:
+    sandbox = tmp_path / "baseline"
+    sandbox.mkdir()
+    (sandbox / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
+    (sandbox / "npm-shrinkwrap.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
+    service = FrozenBaselineInspectionService()
+
+    before_package, before_lockfile = service.inspect_before(sandbox)
+    result = service.inspect_after(sandbox, before_package_json=before_package, before_lockfile=before_lockfile, command_status=CommandStatus.FAILED)
+
+    assert before_lockfile.path.endswith("npm-shrinkwrap.json")
+    assert result.lockfile.path.endswith("npm-shrinkwrap.json")
+    assert result.lockfile.present is True
 def test_missing_install_prerequisite_fails_closed() -> None:
     prerequisites = BaselineInstallPrerequisites(True, True, True, False, True)
     try:

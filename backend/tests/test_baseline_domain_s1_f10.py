@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.domain.baseline import (
@@ -10,6 +11,23 @@ from app.domain.baseline import (
     PackageSourceInventory,
     LifecycleScriptAuditor,
 )
+from app.domain.execution_profile import RuntimeCandidate, RuntimeResolutionRequest, SourceRuntimeResolver
+
+
+def _profile(**changes):
+    candidate = RuntimeCandidate(
+        profile_id="node-20",
+        node_executable=r"C:\Tools\node\node.exe",
+        node_exact="20.11.1",
+        npm_executable=r"C:\Tools\node\npm.cmd",
+        npm_exact="10.2.4",
+        npx_executable=r"C:\Tools\node\npx.cmd",
+        npx_exact="10.2.4",
+        **changes,
+    )
+    result = SourceRuntimeResolver().resolve(RuntimeResolutionRequest(source_angular_exact="18.2.3", source_typescript_exact="5.5.4", source_rxjs_exact="7.8.1", candidates=(candidate,), validated_at=datetime(2026, 7, 15, tzinfo=UTC)))
+    assert result.selected_profile is not None
+    return result.selected_profile
 
 
 def _package(root: Path, *, dependency="1.0.0", locked="1.0.0", script=None):
@@ -74,3 +92,32 @@ def test_prequalification_requires_execution_profile_before_install_authorizatio
     assert result.status == "blocked"
     assert "EXECUTION_PROFILE_REQUIRED" in result.blockers
     assert not result.install_authorized
+
+
+def test_direct_public_registry_without_proxy_is_qualified(tmp_path: Path):
+    _package(tmp_path)
+    result = BaselinePrequalificationService().qualify(tmp_path, execution_profile=_profile(proxy_configured=False))
+    assert result.status == "qualified"
+    assert result.registry.proxy_configured is False
+
+
+def test_approved_proxy_is_qualified(tmp_path: Path):
+    _package(tmp_path)
+    result = BaselinePrequalificationService().qualify(tmp_path, execution_profile=_profile(proxy_configured=True))
+    assert result.status == "qualified"
+
+
+def test_required_proxy_missing_is_blocked(tmp_path: Path):
+    _package(tmp_path)
+    profile = _profile(proxy_configured=False).model_copy(update={"proxy_profile": "required"})
+    result = BaselinePrequalificationService().qualify(tmp_path, execution_profile=profile)
+    assert result.status == "blocked"
+    assert "REGISTRY_PROXY_UNAVAILABLE" in result.blockers
+
+
+def test_invalid_registry_certificate_is_blocked(tmp_path: Path):
+    _package(tmp_path)
+    profile = _profile().model_copy(update={"certificate_profile": "invalid"})
+    result = BaselinePrequalificationService().qualify(tmp_path, execution_profile=profile)
+    assert result.status == "blocked"
+    assert "REGISTRY_CERTIFICATE_INVALID" in result.blockers

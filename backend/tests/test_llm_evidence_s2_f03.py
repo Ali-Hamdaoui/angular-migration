@@ -9,9 +9,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.llm_contracts import LlmSmokeRequest
+from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
 from app.domain.contracts import AgentKind, WorkflowEventType
-from app.llm_gateway import LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
+from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.llm_gateway.contracts import LlmContextSegment
 from app.repositories.models import ArtifactMetadataModel, Base, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel, WorkflowEventModel
 from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
@@ -22,6 +23,7 @@ NOW = datetime(2026, 7, 18, tzinfo=UTC)
 class FakeGateway:
     def __init__(self, *, fail: Exception | None = None):
         self.fail = fail
+        self.deployment_name = 'resolved-deployment'
 
     def complete(self, request: LlmRequest):
         if self.fail:
@@ -69,6 +71,7 @@ def test_smoke_persists_immutable_artifacts_usage_and_ordered_events(tmp_path):
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == 'run-1').order_by(WorkflowEventModel.sequence)))
         assert [event.event_type for event in events] == [WorkflowEventType.LLM_INVOCATION_STARTED.value, WorkflowEventType.LLM_INVOCATION_COMPLETED.value]
         assert session.scalar(select(LlmInvocationModel)) is not None
+        assert session.scalar(select(LlmInvocationModel)).deployment_alias == 'resolved-deployment'
         assert session.scalar(select(UsageCostRecordModel)) is not None
         assert session.scalar(select(ArtifactMetadataModel)) is not None
     engine.dispose()
@@ -99,4 +102,18 @@ def test_smoke_failure_persists_redacted_failure_evidence(tmp_path):
     with sessions() as session:
         event = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.event_type == WorkflowEventType.LLM_INVOCATION_FAILED.value))
         assert event is not None
+    engine.dispose()
+
+
+def test_smoke_persists_specific_provider_failure_metadata(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    failure = AzureGatewayError(LlmFailureCode.SERVER, 'provider failed', provider_status=500, provider_code='InternalServerError', provider_message='safe provider message', provider_request_id='azure-request-1')
+    service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=FakeGateway(fail=failure), now_provider=lambda: NOW)
+
+    result = service.smoke(request('provider-failure'))
+
+    with sessions() as session:
+        artifact = LocalFilesystemArtifactStore(tmp_path / 'artifacts', fixed_run_root=tmp_path / 'artifacts').read_artifact_by_id(result.artifact_ids[0])
+        payload = json.loads(artifact.content)
+        assert payload == {'error_code': 'server', 'message': 'LLM invocation failed.', 'provider_error_code': 'InternalServerError', 'provider_http_status': 500, 'provider_message': 'safe provider message', 'provider_request_id': 'azure-request-1', 'resolved_deployment': 'resolved-deployment'}
     engine.dispose()

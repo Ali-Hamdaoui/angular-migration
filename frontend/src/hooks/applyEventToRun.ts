@@ -114,6 +114,12 @@ function applyEventToRunProjection(run: MigrationRunDto, event: MigrationEventDt
     }
 
     case "artifact_created": {
+      const checksum = event.payload.checksum;
+      // An artifact event without its authoritative checksum is incomplete.
+      // Leave the persisted projection untouched; the next authoritative
+      // refresh will either supply the complete artifact or expose the real
+      // registration failure.
+      if (typeof checksum !== "string" || checksum.length === 0) return run;
       const newArtifact: ArtifactRefDto = {
         artifact_id: event.payload.artifact_id as string,
         run_id: run.run_id,
@@ -121,7 +127,7 @@ function applyEventToRunProjection(run: MigrationRunDto, event: MigrationEventDt
         artifact_type: event.payload.artifact_type as ArtifactType,
         relative_path: event.payload.relative_path as string,
         created_at: event.occurred_at,
-        checksum: (event.payload.checksum as string | null) ?? "mock-event-checksum",
+        checksum,
       };
       const exists = run.artifacts.some((a) => a.artifact_id === newArtifact.artifact_id);
       const artifacts = exists

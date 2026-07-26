@@ -6,11 +6,17 @@ from app.domain.contracts import ContractModel
 
 
 class LlmReadinessResponse(ContractModel):
-    status: Literal['ready', 'blocked']
+    status: Literal['disabled', 'configuration_incomplete', 'configured_unverified', 'ready', 'degraded', 'blocked']
     provider: str = 'azure_openai'
     deployment_configured: bool
     model_capability: str
     error_code: str | None = None
+    llm_enabled: bool = False
+    endpoint_configured: bool = False
+    authentication_configured: bool = False
+    schema_capability_configured: bool = False
+    last_smoke_check_status: str | None = None
+    last_checked_at: str | None = None
 
 
 class LlmSmokeRequest(ContractModel):
@@ -48,6 +54,19 @@ class LlmInvocationResponse(ContractModel):
     retries: int = 0
     latency_ms: int | None = None
     failure_code: str | None = None
+    provider_http_status: int | None = None
+    provider_error_code: str | None = None
+    sanitized_provider_message: str | None = None
+    provider_request_id: str | None = None
+    failure_stage: str | None = None
+    failure_subtype: str | None = None
+    retryable: bool = False
+    response_received: bool | None = None
+    response_content_type: str | None = None
+    response_bytes: int | None = None
+    response_sha256: str | None = None
+    response_kind: str | None = None
+    transport_started: bool | None = None
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False
