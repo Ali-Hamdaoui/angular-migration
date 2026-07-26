@@ -282,3 +282,26 @@ def test_reviewer_authoring_field_fails_closed():
     with pytest.raises(AnalysisApplicationError) as error:
         service.generate(request)
     assert error.value.code == "ANALYSIS_REVIEW_FAILED"
+    assert error.value.details["cause_code"] == "LLM_RESPONSE_INVALID"
+    assert error.value.details["failure_stage"] == "phase_reviewer"
+
+
+def test_reviewer_gateway_failure_keeps_domain_and_technical_causes_separate():
+    checksum = "sha256:" + "a" * 64
+    request = _request(checksum)
+    service: AnalysisAgentService
+
+    def output(gateway_request):
+        if gateway_request.task_type is LlmTaskType.ANALYSIS_SUMMARY:
+            return {"summary": "Bounded evidence.", "risk_groups": [], "unresolved_questions": [], "evidence_confidence": "high", "recommended_next_action": "Review evidence"}
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, "incomplete response", retryable=True, provider_status=200, provider_request_id="safe-request", failure_subtype="LLM_OUTPUT_LIMIT_REACHED")
+
+    service = AnalysisAgentService(gateway=FakeGateway(output), artifact_reader=lambda artifact_id: AnalysisArtifact(artifact_id, checksum, "{}"))
+    with pytest.raises(AnalysisApplicationError) as error:
+        service.generate(request)
+
+    assert error.value.code == "ANALYSIS_REVIEW_FAILED"
+    assert error.value.details["cause_code"] == "LLM_RESPONSE_INVALID"
+    assert error.value.details["failure_subtype"] == "LLM_OUTPUT_LIMIT_REACHED"
+    assert error.value.details["failure_stage"] == "phase_reviewer"
+    assert error.value.details["retryable"] is True

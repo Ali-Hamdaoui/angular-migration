@@ -7,7 +7,7 @@ from app.api.analysis_contracts import AnalysisCreateRequest, G04DecisionApiRequ
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.analysis import AnalysisPackage, AnalysisNarrative, AnalysisReview, G04Decision, G04DecisionResult
 from app.domain.contracts import ArtifactType
-from app.repositories.models import ArtifactMetadataModel, Base, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, ParityBaselineEvidenceModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService, AnalysisEvidenceError
 from app.api.routes import analysis as analysis_routes
@@ -71,6 +71,10 @@ def setup(tmp_path: Path, *, agent=None):
         session.add(MigrationRunModel(id="run-1", status="RUNNING", run_phase="ANALYSIS", phase_status="running", approval_status="approved", repair_status="not_required", state_version=1, actor="operator", artifact_root=str(tmp_path / "artifacts"), created_at=NOW, updated_at=NOW))
         session.add(G03ApprovalModel(id="g03-1", run_id="run-1", gate_id="G03", gate_version="g03-v1", idempotency_key="g03-1", actor="operator", status="approved", decision="approved", package_checksum="sha256:" + "1" * 64, evidence_set_checksum="sha256:" + "2" * 64, qualification_status="qualified", policy_version="g03-v1", state_version=1, event_sequence=1, sandbox_fingerprint="sha256:" + "3" * 64, execution_profile_checksum="sha256:" + "4" * 64, package={}, artifact_ids=[], comment=None, created_at=NOW, updated_at=NOW))
         session.add(ArtifactMetadataModel(id="metadata-" + source.ref.artifact_id, run_id="run-1", stage_id=None, artifact_type="json", relative_path=source.ref.relative_path, checksum=source.ref.checksum, created_at=NOW))
+        evidence = [source.ref.artifact_id]
+        checksums = {source.ref.artifact_id: source.ref.checksum}
+        session.add(DiscoveryEvidenceModel(id="discovery-1", run_id="run-1", idempotency_key="discovery-1", request_checksum="sha256:" + "d" * 64, actor="operator", status="completed", scanner_results=[], artifact_ids=evidence, artifact_checksums=checksums, prerequisite_artifact_ids=[], error_code=None, state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
+        session.add(ParityBaselineEvidenceModel(id="parity-1", run_id="run-1", idempotency_key="parity-1", request_checksum="sha256:" + "e" * 64, actor="operator", status="completed", payload={}, artifact_ids=[], artifact_checksums={}, prerequisite_artifact_ids=[], error_code=None, state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW))
 
     def scope():
         from contextlib import contextmanager
