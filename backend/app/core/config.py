@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     llm_input_price_per_million_tokens: float = Field(default=0.0, ge=0)
     llm_output_price_per_million_tokens: float = Field(default=0.0, ge=0)
+    analysis_proposer_max_output_tokens: int = Field(default=2048, ge=256, le=32768)
+    analysis_reviewer_max_output_tokens: int = Field(default=2048, ge=256, le=32768)
     llm_pricing_version: str = Field(default='mvp-pricing-2026-01', min_length=1)
     llm_prompt_policy_version: str = Field(default='migration-policy-v1', min_length=1)
     llm_schema_registry_version: str = Field(default='schema-registry-v1', min_length=1)

@@ -69,7 +69,7 @@ def test_http_error_status_is_preserved_without_raw_body(monkeypatch, status, ex
     assert "private" not in str(caught.value)
 
 
-@pytest.mark.parametrize("status,subtype", [("failed", "LLM_RESPONSE_FAILED"), ("incomplete", "LLM_RESPONSE_INCOMPLETE"), ("in_progress", "LLM_RESPONSE_INCOMPLETE")])
+@pytest.mark.parametrize("status,subtype", [("failed", "LLM_RESPONSE_FAILED"), ("incomplete", "LLM_OUTPUT_LIMIT_REACHED"), ("in_progress", "LLM_RESPONSE_INCOMPLETE")])
 def test_responses_status_is_not_treated_as_completed(status, subtype):
     with pytest.raises(AzureGatewayError) as caught:
         _validate_response_state({"status": status, "incomplete_details": {"reason": "max_output_tokens"}})
