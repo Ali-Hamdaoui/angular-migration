@@ -55,6 +55,11 @@ def test_rejects_prerequisite_checksum_mismatch():
     assert error.value.code == "PREREQUISITE_ARTIFACT_CHECKSUM_MISMATCH"
 
 
+def test_accepts_runtime_profile_identifier_from_execution_profile_service():
+    result = PlanningApplicationService().generate(request(execution_profile_id="environment-env-123"))
+    assert result.first_stage_plan.execution_profile_id == "environment-env-123"
+
+
 def test_blocks_unsupported_builder_before_stage_plan_is_returned():
     with pytest.raises(PlanningApplicationError) as error:
         PlanningApplicationService().generate(request(builder="vendor:custom"))

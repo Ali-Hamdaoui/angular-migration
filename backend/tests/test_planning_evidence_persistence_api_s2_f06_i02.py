@@ -1,4 +1,6 @@
 from datetime import UTC, datetime
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,9 @@ from app.repositories.models import (
     MigrationRunModel,
     StageExecutionPlanModel,
     WorkflowEventModel,
+    ExecutionProfileModel,
 )
+from app.repositories.compatibility_models import CompatibilityResolutionModel, G05ApprovalModel
 from app.repositories.session import create_database_engine
 from app.services.planning_evidence_application_service import PlanningEvidenceApplicationService
 
@@ -76,6 +80,46 @@ def setup(tmp_path: Path):
         builder="@angular-devkit/build-angular:application",
         prerequisite_artifacts=[{"artifact_id": prerequisite.ref.artifact_id, "checksum": prerequisite.ref.checksum}],
     )
+    artifact_set_checksum = "sha256:" + hashlib.sha256(json.dumps([(prerequisite.ref.artifact_id, prerequisite.ref.checksum)], separators=(",", ":")).encode()).hexdigest()
+    payload = payload.model_copy(update={"input_fingerprint": artifact_set_checksum})
+    package_checksum = "sha256:" + "2" * 64
+    profile_checksum = "sha256:" + "6" * 64
+    package = {
+        "source_exact": payload.source_exact,
+        "source_family": payload.source_family,
+        "target_family": payload.target_family,
+        "catalogue_version": payload.catalogue_version,
+        "selected_profile": {"profile_id": payload.execution_profile_id, "checksum": profile_checksum},
+        "route": [
+            {"source_family": item[0], "target_family": item[1], "stage_id": item[2], "target_angular_exact": item[3], "target_cli_exact": payload.target_cli_exact if index == 0 else item[3]}
+            for index, item in enumerate(payload.stage_route)
+        ],
+    }
+    with sessions.begin() as session:
+        session.add(ExecutionProfileModel(
+            id="profile-resolution-1", run_id="run-1", idempotency_key="profile-1", request_checksum="sha256:" + "7" * 64,
+            policy_version="angular-source-runtime-v1", status="resolved", source_angular_exact=payload.source_exact,
+            selected_profile_id=payload.execution_profile_id, selected_checksum=profile_checksum,
+            profiles=[{"profile_id": payload.execution_profile_id, "checksum": profile_checksum}], blockers=[], guidance=[], artifact_ids=[],
+            state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW,
+        ))
+        session.add(CompatibilityResolutionModel(
+            id="resolution-1", run_id="run-1", idempotency_key="feasibility-1", request_checksum="sha256:" + "3" * 64,
+            actor="operator", status="resolved", catalogue_version=payload.catalogue_version, catalogue_checksum="sha256:" + "4" * 64,
+            registry_snapshot_id="registry-1", registry_snapshot_checksum="sha256:" + "5" * 64, registry_snapshot={},
+            runtime_candidates=[], source_exact=payload.source_exact, source_family=payload.source_family,
+            target_family=payload.target_family, support_level="supported", route=package["route"], selected_profile=package["selected_profile"],
+            blockers=[], warnings=[], package=package, package_checksum=package_checksum,
+            artifact_set_checksum=artifact_set_checksum, artifact_ids=[prerequisite.ref.artifact_id], artifact_checksums={prerequisite.ref.artifact_id: prerequisite.ref.checksum},
+            workspace_fingerprint=None, plan_version=None, state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW,
+        ))
+        session.add(G05ApprovalModel(
+            id="g05-1", run_id="run-1", gate_id="G05", gate_version="g05-v1", idempotency_key="gate:feasibility-1",
+            actor="operator", status="approved", decision="approve", package_checksum=package_checksum,
+            artifact_set_checksum=artifact_set_checksum, workspace_fingerprint=None, plan_version=None,
+            state_version=1, event_sequence=1, artifact_ids=[prerequisite.ref.artifact_id], comment=None,
+            stale_reason=None, expires_at=None, created_at=NOW, updated_at=NOW,
+        ))
     return service, payload, sessions, store
 
 

@@ -7,7 +7,7 @@ from app.api.analysis_contracts import AnalysisCreateRequest, G04DecisionApiRequ
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.analysis import AnalysisPackage, AnalysisNarrative, AnalysisReview, G04Decision, G04DecisionResult
 from app.domain.contracts import ArtifactType
-from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, ParityBaselineEvidenceModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, ParityBaselineEvidenceModel, PlanningJobModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService, AnalysisEvidenceError
 from app.api.routes import analysis as analysis_routes
@@ -163,6 +163,25 @@ def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     assert stale.value.code == "STALE_STATE_VERSION"
 
 
+def test_approved_g04_creates_one_durable_planning_job_and_updates_run_projection(tmp_path):
+    service, payload, sessions, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+    analysis = service.generate("run-1", payload, "operator")
+    decision = G04DecisionApiRequest(
+        expected_state_version=analysis.state_version,
+        idempotency_key="g04-planning-job",
+        gate_version=analysis.gate_version,
+        package_checksum=analysis.package_checksum,
+        workspace_fingerprint=analysis.package["workspace_fingerprint"],
+        plan_version=analysis.package["plan_version"],
+        decision=G04Decision.APPROVE,
+    )
+
+    service.decide_g04("run-1", decision, "operator")
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        job = session.query(PlanningJobModel).one()
+        assert (run.run_phase, run.status, run.phase_status, run.approval_status) == ("FEASIBILITY_PLANNING", "PLANNING_RUNNING", "running", "approved")
+        assert (job.status, job.current_step) == ("queued_after_g04", "resolving_feasibility")
 def test_analysis_dependency_failure_preserves_redacted_failure_evidence(tmp_path):
     service, payload, sessions, _ = setup(tmp_path, agent=FakeAnalysisAgent(failure=RuntimeError("secret-provider-detail")))
 

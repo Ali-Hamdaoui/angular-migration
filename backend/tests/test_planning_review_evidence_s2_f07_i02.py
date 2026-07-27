@@ -323,3 +323,15 @@ def test_revision_and_decision_reject_stale_or_conflicting_requests(tmp_path):
     with pytest.raises(PlanningReviewEvidenceError) as error:
         service.revise("run-1", stale, "operator")
     assert error.value.code == "STALE_STATE_VERSION"
+
+
+def test_active_plan_without_review_returns_bootstrap_projection(tmp_path):
+    generated, _, _, service = setup(tmp_path)
+
+    projection = service.get("run-1", "operator")
+
+    assert projection is not None
+    assert projection.status == "not_started"
+    assert projection.plan_checksum == generated.plan.checksum
+    assert projection.stage_plan_checksum == generated.first_stage_plan.checksum
+    assert projection.gate_status == "not_created"
