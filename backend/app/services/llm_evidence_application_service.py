@@ -101,31 +101,32 @@ class LlmEvidenceApplicationService:
             return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_BUDGET_BLOCKED', 'The configured LLM budget blocks new Assistant calls.'), actor=actor)
         response = None
         provider_usage = None
+        started_monotonic = self.clock()
         try:
             response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy='Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.', context=request.context + [LlmContextSegment(segment_id='question', label='user question', content=request.question)], response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens))
             provider_usage = response.usage
             validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
-            return self._complete_assistant(request, checksum, invocation_id, response, validated, actor)
+            return self._complete_assistant(request, checksum, invocation_id, response, validated, actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except StructuredOutputValidationError:
-            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID', 'Assistant governed invocation returned an invalid structured response.'), actor=actor, usage=provider_usage)
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID', 'Assistant governed invocation returned an invalid structured response.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except AzureGatewayError as error:
-            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor)
+            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except Exception as error:
-            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID' if response is not None else 'LLM_PROVIDER_FAILURE', 'Assistant governed invocation failed.'), actor=actor, usage=provider_usage)
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID' if response is not None else 'LLM_PROVIDER_FAILURE', 'Assistant governed invocation failed.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
 
-    def _complete_assistant(self, request, checksum, invocation_id, response, validated, actor):
+    def _complete_assistant(self, request, checksum, invocation_id, response, validated, actor, *, latency_ms):
         with self.scope() as session:
             row = session.get(LlmInvocationModel, invocation_id)
             run = session.get(MigrationRunModel, request.run_id)
-            row.status = 'completed'; row.completed_at = self.now(); row.retries = response.usage.retry_count; row.redacted_summary = response.redaction.redacted_text; row.state_version = run.state_version
+            row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.redacted_summary = response.redaction.redacted_text; row.state_version = run.state_version
             session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))
             result = self._dto(session, row)
             return result.model_copy(update={'structured_output': validated})
 
-    def _fail_assistant(self, request, checksum, invocation_id, error, *, actor, usage=None):
+    def _fail_assistant(self, request, checksum, invocation_id, error, *, actor, usage=None, latency_ms=None):
         with self.scope() as session:
             row = session.get(LlmInvocationModel, invocation_id); run = session.get(MigrationRunModel, request.run_id)
-            row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now()
+            row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.latency_ms = latency_ms
             diagnostic = getattr(error, 'provider_code', None) or getattr(error, 'provider_message', None)
             row.redacted_summary = ('Assistant provider rejected the request: ' + ': '.join(filter(None, [getattr(error, 'provider_code', None), getattr(error, 'provider_message', None)])))[:360] if diagnostic else 'Assistant invocation failed; provider details redacted.'
             if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':

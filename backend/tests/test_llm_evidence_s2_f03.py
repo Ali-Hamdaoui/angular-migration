@@ -117,7 +117,7 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
 
         def request(self, **kwargs):
             self.calls.append(kwargs)
-            return {'output': [{'content': [{'text': json.dumps({'answer': 'ok', 'citations': []})}]}], 'usage': {'input_tokens': 3, 'output_tokens': 2}}
+            return {'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}, {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'ok', 'citations': []})}]}], 'usage': {'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5}}
 
     transport = Transport()
     registry = PromptSchemaRegistry()
@@ -140,4 +140,9 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     assert result.role == 'assistant'
     assert result.task_type == 'assistant_response'
     assert result.prompt_version == 'assistant-response-v1'
+    assert result.latency_ms is not None
+    with sessions() as session:
+        invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
+        assert invocation is not None and invocation.status == 'completed' and invocation.failure_code is None and invocation.latency_ms is not None
+        assert session.scalar(select(UsageCostRecordModel).where(UsageCostRecordModel.invocation_id == result.invocation_id)) is not None
     engine.dispose()

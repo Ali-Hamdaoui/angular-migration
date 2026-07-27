@@ -70,6 +70,13 @@ class _StructuredResponse(BaseModel):
     answer: str
 
 
+def _responses_body(text: str, *, message_first: bool = False) -> dict[str, object]:
+    message = {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}
+    reasoning = {'type': 'reasoning', 'content': [], 'summary': []}
+    output = [message, reasoning] if message_first else [reasoning, message]
+    return {'status': 'completed', 'output': output, 'usage': {'input_tokens': 11, 'output_tokens': 71, 'total_tokens': 82}}
+
+
 class _FakeAzureTransport:
     def __init__(self, responses: list[object]) -> None:
         self.responses = responses
@@ -121,6 +128,51 @@ def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp
     assert 'secret-value-1234567890' not in str(transport.calls[0]['payload'])
     assert transport.calls[0]['api_key'] == 'super-secret-api-key'
     assert transport.calls[0]['payload']['model'] == 'gpt-5-mini-private'
+
+
+@pytest.mark.parametrize('message_first', [False, True])
+def test_azure_gateway_decodes_reasoning_first_and_message_first_responses(tmp_path: Path, message_first: bool) -> None:
+    transport = _FakeAzureTransport([_responses_body(json.dumps({'answer': 'validated'}), message_first=message_first)])
+    response = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry()).complete(_azure_request())
+    assert response.structured_output == {'answer': 'validated'}
+    assert response.usage.input_tokens == 11
+    assert response.usage.output_tokens == 71
+
+
+def test_azure_gateway_traverses_message_content_until_output_text(tmp_path: Path) -> None:
+    body = _responses_body(json.dumps({'answer': 'validated'}))
+    body['output'][1]['content'] = [{'type': 'refusal', 'refusal': 'not applicable'}, {'type': 'output_text', 'text': '{"answer":"validated"}'}]
+    response = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert response.structured_output == {'answer': 'validated'}
+
+
+@pytest.mark.parametrize('body, code', [
+    ({'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_assistant_message'),
+    ({'status': 'completed', 'output': [{'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'refusal'}]}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_output_text'),
+    ({'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'incomplete'),
+])
+def test_azure_gateway_reports_bounded_protocol_diagnostics(tmp_path: Path, body: dict[str, object], code: str) -> None:
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.PROTOCOL
+    assert error.value.provider_code == code
+    assert 'validated' not in (error.value.provider_message or '')
+
+
+def test_azure_gateway_invalid_json_is_protocol(tmp_path: Path) -> None:
+    body = _responses_body('not-json')
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.PROTOCOL
+    assert error.value.provider_code == 'invalid_json'
+    assert 'not-json' not in (error.value.provider_message or '')
+
+
+def test_azure_gateway_valid_json_schema_mismatch_is_schema(tmp_path: Path) -> None:
+    body = _responses_body(json.dumps({'answer': 42}))
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.SCHEMA
 
 
 def test_assistant_prompt_and_role_policy_are_explicit_and_typed(tmp_path: Path) -> None:
