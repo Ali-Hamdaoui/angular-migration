@@ -82,7 +82,7 @@ def _create_run(repository: MigrationRunRepository, now: datetime) -> MigrationR
 def test_alembic_creates_initial_sqlite_schema(tmp_path: Path) -> None:
     database_url = f"sqlite:///{tmp_path / 'migration-factory.db'}"
 
-    command.upgrade(_alembic_config(database_url), "head")
+    command.upgrade(_alembic_config(database_url), "heads")
 
     engine = create_database_engine(database_url)
     inspector = inspect(engine)
@@ -109,7 +109,7 @@ def test_alembic_feature_schema_upgrades_and_rolls_back_on_temporary_sqlite(tmp_
     database_url = f"sqlite:///{tmp_path / 'round-trip.db'}"
     config = _alembic_config(database_url)
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "heads")
     engine = create_database_engine(database_url)
     assert {"migration_plans", "stage_execution_plans", "active_plan_versions"}.issubset(inspect(engine).get_table_names())
     engine.dispose()
@@ -119,7 +119,7 @@ def test_alembic_feature_schema_upgrades_and_rolls_back_on_temporary_sqlite(tmp_
     assert not {"migration_plans", "stage_execution_plans", "active_plan_versions", "compatibility_resolutions"}.intersection(inspect(engine).get_table_names())
     engine.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "heads")
     engine = create_database_engine(database_url)
     assert {"migration_plans", "stage_execution_plans", "active_plan_versions"}.issubset(inspect(engine).get_table_names())
     engine.dispose()

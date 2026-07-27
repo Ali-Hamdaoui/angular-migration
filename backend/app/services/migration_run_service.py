@@ -20,6 +20,7 @@ from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 from app.services.migration_workspace_layout_service import MigrationWorkspaceLayoutService, WorkspaceLayoutError
+from app.services.workflow_projection_service import WorkflowProjectionService
 
 
 class MigrationRunError(ValueError):
@@ -398,7 +399,7 @@ class MigrationRunService:
                 "target_cli_exact": (((package or {}).get("route") or [{}])[0]).get("target_cli_exact") if (package or {}).get("route") else None,
                 "builder": builder,
             } if resolution else None)
-            return {
+            state = {
                 "run_id": run.id, "status": run.status, "run_phase": run.run_phase, "phase_status": run.phase_status,
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,
                 "preflight_id": run.preflight_id, "source_path": run.source_path, "target_parent_path": run.target_parent_path, "generated_output_name": run.generated_output_name, "resolved_output_root": run.resolved_output_root, "run_root": run.run_root, "migrated_app_path": run.migrated_app_path, "target_output_path": run.target_output_path,
@@ -409,6 +410,8 @@ class MigrationRunService:
                 "plan_inputs": plan_inputs,
                 "artifacts": self._artifacts_for_run(session, run_id), "workflow_events": self._events_for_run(session, run_id),
             }
+            state["assistant_projection"] = WorkflowProjectionService().build(session, run_id)
+            return state
 
     def _approved_preflight(self, session, request: CreateRunRequest) -> tuple[dict, ApprovalGateModel]:
         row = session.get(PreflightModel, request.preflight_id)

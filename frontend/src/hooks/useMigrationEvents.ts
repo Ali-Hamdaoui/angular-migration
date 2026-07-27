@@ -40,7 +40,7 @@ export type EventSourceConstructor = typeof EventSource;
 
 export function useMigrationEvents(
   runId: string,
-  createEventSource: EventSourceConstructor = EventSource,
+  createEventSource: EventSourceConstructor = typeof window === "undefined" ? (undefined as unknown as EventSourceConstructor) : window.EventSource,
 ): UseMigrationEventsResult {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [events, setEvents] = useState<MigrationEventDto[]>([]);
@@ -74,6 +74,7 @@ export function useMigrationEvents(
   }, [markRecoveryRequired]);
 
   useEffect(() => {
+    if (!createEventSource) return;
     const url = `${getBackendBaseUrl()}/api/v1/runs/${runId}/events`;
     const source = new createEventSource(url);
     const listeners = new Map<string, EventListener>();

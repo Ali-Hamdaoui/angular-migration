@@ -14,6 +14,7 @@ vi.mock("@/components/AnalysisReviewPanel", () => ({ AnalysisReviewPanel: () => 
 vi.mock("@/components/FeasibilityPanel", () => ({ FeasibilityPanel: () => <h2>feasibility-panel</h2> }));
 vi.mock("@/components/MigrationPlanPanel", () => ({ MigrationPlanPanel: () => <h2>plan-panel</h2> }));
 vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => <h2>plan-review-panel</h2> }));
+vi.mock("@/components/AssistantPanel", () => ({ AssistantPanel: () => <h2>assistant-panel</h2> }));
 
 const initialState: AuthoritativeRunStateDto = {
   run_id: "run-authoritative-1",
@@ -152,5 +153,11 @@ describe("AuthoritativeRunDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Source snapshot/ }));
     expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
     expect(screen.getByLabelText("G03 review")).toHaveAttribute("hidden");
+  });
+  it("renders exactly one Assistant destination with current run context", () => {
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+    fireEvent.click(screen.getByRole("button", { name: "Assistant" }));
+    expect(screen.getByText("assistant-panel")).toBeInTheDocument();
+    expect(document.querySelectorAll("h2").length).toBeGreaterThan(0);
   });
 });

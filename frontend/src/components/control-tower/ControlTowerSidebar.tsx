@@ -12,7 +12,8 @@ export type ControlTowerSection =
   | "parity"
   | "evidence"
   | "llm"
-  | "events";
+  | "events"
+  | "assistant";
 
 type NavigationGroup = { label: string; items: Array<{ key: ControlTowerSection; label: string; icon: string }> };
 
@@ -29,6 +30,7 @@ const groups: NavigationGroup[] = [
     { key: "evidence", label: "Files & Artifacts", icon: "▤" },
     { key: "llm", label: "LLM Diagnostics", icon: "✦" },
     { key: "events", label: "Workflow Events", icon: "≋" },
+    { key: "assistant", label: "Assistant", icon: "✧" },
   ] },
 ];
 
