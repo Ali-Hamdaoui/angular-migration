@@ -24,6 +24,7 @@ from app.repositories.models import (
     DiscoveryEvidenceModel,
     LlmInvocationModel,
     MigrationRunModel,
+    PlanningJobModel,
     UsageCostRecordModel,
     SourceIntakeJobModel,
 )
@@ -31,6 +32,7 @@ from app.repositories.session import session_scope
 from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.services.analysis_application_service import AnalysisAgentService, AnalysisApplicationError, AnalysisArtifact
 from app.state.transition_service import StateTransitionService, TransitionRequest, TransitionError, StaleStateVersionError
+from app.domain.contracts import RunStatus
 
 
 class AnalysisEvidenceError(ValueError):
@@ -221,7 +223,17 @@ class AnalysisEvidenceApplicationService:
                 code = getattr(error, "code", "STALE_ANALYSIS_PACKAGE")
                 raise AnalysisEvidenceError(code, str(error), 409) from error
             event_type = {G04Decision.APPROVE: WorkflowEventType.G04_APPROVED, G04Decision.APPROVE_WITH_COMMENT: WorkflowEventType.G04_APPROVED, G04Decision.REQUEST_MODIFICATION: WorkflowEventType.G04_MODIFICATION_REQUESTED, G04Decision.REJECT: WorkflowEventType.G04_REJECTED}[payload.decision]
-            transition = self._transition(session, run, domain_request, event_type, "G04 decision recorded")
+            transition = self._transition(
+                session,
+                run,
+                domain_request,
+                event_type,
+                "G04 decision recorded",
+                next_run_status=RunStatus.PLANNING_RUNNING if event_type == WorkflowEventType.G04_APPROVED else None,
+                next_run_phase="FEASIBILITY_PLANNING" if event_type == WorkflowEventType.G04_APPROVED else None,
+                next_phase_status="running" if event_type == WorkflowEventType.G04_APPROVED else None,
+                next_approval_status="approved" if event_type == WorkflowEventType.G04_APPROVED else None,
+            )
             now = self.now()
             row = G04ApprovalModel(
                 id="g04-" + uuid4().hex[:12], run_id=run_id, gate_id="G04", gate_version=gate.gate_version,
@@ -233,6 +245,36 @@ class AnalysisEvidenceApplicationService:
                 comment=payload.comment, stale_reason=request_checksum, created_at=now, updated_at=now,
             )
             session.add(row)
+            if event_type == WorkflowEventType.G04_APPROVED:
+                active_job = session.scalar(
+                    select(PlanningJobModel)
+                    .where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"}))
+                    .order_by(PlanningJobModel.created_at.desc())
+                )
+                if active_job is None:
+                    session.add(
+                        PlanningJobModel(
+                            id=f"planning-{run_id}",
+                            run_id=run_id,
+                            thread_id=f"planning:{run_id}",
+                            status="queued_after_g04",
+                            current_step="resolving_feasibility",
+                            actor=actor,
+                            worker_id=None,
+                            attempt=0,
+                            lease_expires_at=None,
+                            idempotency_key=f"planning-after-g04:{run_id}:{payload.package_checksum}",
+                            correlation_id=getattr(payload, "correlation_id", None),
+                            last_error_code=None,
+                            last_error_stage=None,
+                            retryable=None,
+                            state_version=transition.next_state_version,
+                            created_at=now,
+                            started_at=None,
+                            updated_at=now,
+                            completed_at=None,
+                        )
+                    )
             session.flush()
             return self._decision_dto(row)
 
@@ -496,7 +538,7 @@ class AnalysisEvidenceApplicationService:
                 raise AnalysisEvidenceError("ANALYSIS_INPUT_SET_MISMATCH", "The client artifact list does not match server-derived evidence.", 409)
         return canonical
 
-    def _transition(self, session, run, request, event, reason, payload=None):
+    def _transition(self, session, run, request, event, reason, payload=None, **state_changes):
         try:
             semantic = payload or {}
             role = semantic.get("role", "analysis")
@@ -504,7 +546,7 @@ class AnalysisEvidenceApplicationService:
             # Same semantic phase delivery replays; independent proposer and
             # reviewer events never collide merely because they share a type.
             key = f"{request.idempotency_key}:analysis:{role}:{invocation}:{event.value}"
-            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=run.state_version, idempotency_key=key, event_type=event, actor=request.actor, reason=reason, occurred_at=self.now(), payload=payload))
+            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=run.state_version, idempotency_key=key, event_type=event, actor=request.actor, reason=reason, occurred_at=self.now(), payload=payload, **state_changes))
         except StaleStateVersionError as error:
             raise AnalysisEvidenceError("STALE_STATE_VERSION", "The run state version is stale.", 409) from error
         except TransitionError as error:

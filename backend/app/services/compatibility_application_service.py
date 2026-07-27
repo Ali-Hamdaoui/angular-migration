@@ -16,6 +16,7 @@ from app.domain.compatibility import (
     Stage1ExecutionProfile,
 )
 from app.domain.execution_profile import RuntimeCandidate, Version
+from app.services.artifact_binding import canonical_artifact_set_checksum
 
 
 class CompatibilityApplicationError(ValueError):
@@ -178,8 +179,7 @@ class CompatibilityResolver:
 
     @staticmethod
     def _artifact_set_checksum(request):
-        payload = [(item.artifact_id, item.checksum) for item in request.prerequisite_artifacts]
-        return "sha256:" + hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+        return canonical_artifact_set_checksum(request.prerequisite_artifacts)
 
 
 class CompatibilityApplicationService:

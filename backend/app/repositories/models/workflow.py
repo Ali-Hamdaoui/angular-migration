@@ -141,6 +141,33 @@ class SourceIntakeJobModel(Base):
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class PlanningJobModel(Base):
+    """Durable continuation for the post-G04 planning workflow."""
+
+    __tablename__ = "planning_jobs"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_planning_jobs_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    current_step: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_stage: Mapped[str | None] = mapped_column(String(128))
+    retryable: Mapped[bool | None] = mapped_column(Boolean)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ApprovalEventModel(Base):
     __tablename__ = "approval_events"
 

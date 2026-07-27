@@ -15,13 +15,14 @@ from sqlalchemy import select
 from app.api.compatibility_contracts import FeasibilityResponse, G05DecisionRequest, G05DecisionResponse
 from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
 from app.domain.compatibility import CompatibilityCatalogue, CompatibilityResolutionRequest
-from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.repositories.models import (
     ArtifactMetadataModel,
     CompatibilityCatalogueModel,
     CompatibilityResolutionModel,
     G05ApprovalModel,
     MigrationRunModel,
+    PlanningJobModel,
     RegistrySnapshotModel,
     WorkflowEventModel,
 )
@@ -31,6 +32,7 @@ from app.services.compatibility_application_service import (
     CompatibilityApplicationService,
     CompatibilityResolver,
 )
+from app.services.artifact_binding import canonical_artifact_references
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 
 
@@ -58,7 +60,7 @@ class CompatibilityEvidenceApplicationService:
             run = self._authorized_run(session, run_id, actor)
             try:
                 request = self._request(run_id, payload, actor, now)
-            except ValidationError as error:
+            except ValueError as error:
                 raise CompatibilityEvidenceError("DOMAIN_VALIDATION_FAILED", "Feasibility input validation failed.", 422) from error
             policy = dict(run.run_policy_snapshot or {})
             policy.update({"source_angular_exact": request.source_angular_exact, "catalogue_version": request.catalogue_version, "registry_snapshot": {"snapshot_id": request.registry_snapshot_id, "checksum": request.registry_snapshot_checksum}, "runtime_candidates": [item.model_dump(mode="json") for item in request.runtime_candidates]})
@@ -93,7 +95,20 @@ class CompatibilityEvidenceApplicationService:
             evidence_package_checksum = artifact_checksums[artifact_ids[-1]]
             started = self._transition(session, run, payload.idempotency_key + ":started", payload.expected_state_version, WorkflowEventType.COMPATIBILITY_RESOLUTION_STARTED, actor, now, {"catalogue_version": catalogue.version})
             final_type = WorkflowEventType.COMPATIBILITY_RESOLUTION_BLOCKED if result.status == "blocked" else WorkflowEventType.COMPATIBILITY_RESOLUTION_COMPLETED
-            finished = self._transition(session, run, payload.idempotency_key, started.next_state_version, final_type, actor, now, {"status": result.status, "artifact_ids": artifact_ids})
+            finished = self._transition(
+                session,
+                run,
+                payload.idempotency_key,
+                started.next_state_version,
+                final_type,
+                actor,
+                now,
+                {"status": result.status, "artifact_ids": artifact_ids},
+                next_run_status=RunStatus.WAITING_PLAN_APPROVAL if result.status != "blocked" else None,
+                next_run_phase="FEASIBILITY_PLANNING" if result.status != "blocked" else None,
+                next_phase_status="waiting_approval" if result.status != "blocked" else None,
+                next_approval_status="pending" if result.status != "blocked" else None,
+            )
             gate_expires_at = now + self.G05_TTL
             gate_created = StateTransitionService(session).append_audit_event(run_id=run.id, idempotency_key=payload.idempotency_key + ":g05-created", event_type=WorkflowEventType.G05_CREATED, actor=actor, reason="G05 created", occurred_at=now, payload={"package_checksum": evidence_package_checksum, "expires_at": gate_expires_at.isoformat()})
             resolution = CompatibilityResolutionModel(
@@ -110,7 +125,7 @@ class CompatibilityEvidenceApplicationService:
                 expires_at=gate_expires_at,
             )
             session.add(resolution)
-            session.add(G05ApprovalModel(id=f"g05-{uuid4().hex[:12]}", run_id=run_id, gate_id="G05", gate_version=self.GATE_VERSION, idempotency_key="gate:" + payload.idempotency_key, actor=actor, status="blocked" if result.status == "blocked" else "pending", decision=None, package_checksum=evidence_package_checksum, artifact_set_checksum=result.package.artifact_set_checksum, workspace_fingerprint=request.workspace_fingerprint, plan_version=request.plan_version, state_version=gate_created.next_state_version, event_sequence=gate_created.event_sequence, artifact_ids=artifact_ids, comment=None, stale_reason=None, expires_at=gate_expires_at, created_at=now, updated_at=now))
+            session.add(G05ApprovalModel(id=f"g05-{uuid4().hex[:12]}", run_id=run_id, gate_id="G05", gate_version=self.GATE_VERSION, idempotency_key="gate:" + payload.idempotency_key, actor=actor, status="blocked" if result.status == "blocked" else "pending", decision=None, package_checksum=evidence_package_checksum, artifact_set_checksum=result.package.artifact_set_checksum, workspace_fingerprint=request.workspace_fingerprint, plan_version=request.plan_version, state_version=gate_created.next_state_version, event_sequence=gate_created.event_sequence, artifact_ids=artifact_ids, prerequisite_artifact_ids=[item.artifact_id for item in request.prerequisite_artifacts], prerequisite_artifact_checksums={item.artifact_id: item.checksum for item in request.prerequisite_artifacts}, input_bundle_checksum=result.package.artifact_set_checksum, comment=None, stale_reason=None, expires_at=gate_expires_at, created_at=now, updated_at=now))
             session.flush()
             return self._response(session, resolution)
 
@@ -151,9 +166,29 @@ class CompatibilityEvidenceApplicationService:
                 raise CompatibilityEvidenceError("STALE_G05_BINDING", "The G05 workspace or plan binding is stale.", 409)
             self._verify_package(session, run, gate)
             event_type = {"approve": WorkflowEventType.G05_APPROVED, "approve_with_comment": WorkflowEventType.G05_APPROVED, "request_modification": WorkflowEventType.G05_MODIFICATION_REQUESTED, "reject": WorkflowEventType.G05_REJECTED}[payload.decision]
-            transition = self._transition(session, run, payload.idempotency_key, payload.expected_state_version, event_type, actor, now, {"decision": payload.decision, "package_checksum": payload.package_checksum})
-            decision = G05ApprovalModel(id=f"g05-{uuid4().hex[:12]}", run_id=run_id, gate_id="G05", gate_version=gate.gate_version, idempotency_key=payload.idempotency_key, actor=actor, status="approved" if payload.decision in {"approve", "approve_with_comment"} else payload.decision, decision=payload.decision, package_checksum=gate.package_checksum, artifact_set_checksum=gate.artifact_set_checksum, workspace_fingerprint=gate.workspace_fingerprint, plan_version=gate.plan_version, state_version=transition.next_state_version, event_sequence=transition.event_sequence, artifact_ids=gate.artifact_ids, comment=payload.comment.strip() if payload.comment else None, stale_reason=None, expires_at=gate.expires_at, created_at=now, updated_at=now)
+            transition = self._transition(
+                session,
+                run,
+                payload.idempotency_key,
+                payload.expected_state_version,
+                event_type,
+                actor,
+                now,
+                {"decision": payload.decision, "package_checksum": payload.package_checksum},
+                next_run_status=RunStatus.PLANNING_RUNNING if payload.decision in {"approve", "approve_with_comment"} else RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="running" if payload.decision in {"approve", "approve_with_comment"} else "waiting_approval",
+                next_approval_status="approved" if payload.decision in {"approve", "approve_with_comment"} else "pending",
+            )
+            decision = G05ApprovalModel(id=f"g05-{uuid4().hex[:12]}", run_id=run_id, gate_id="G05", gate_version=gate.gate_version, idempotency_key=payload.idempotency_key, actor=actor, status="approved" if payload.decision in {"approve", "approve_with_comment"} else payload.decision, decision=payload.decision, package_checksum=gate.package_checksum, artifact_set_checksum=gate.artifact_set_checksum, workspace_fingerprint=gate.workspace_fingerprint, plan_version=gate.plan_version, state_version=transition.next_state_version, event_sequence=transition.event_sequence, artifact_ids=gate.artifact_ids, prerequisite_artifact_ids=list(gate.prerequisite_artifact_ids or []), prerequisite_artifact_checksums=dict(gate.prerequisite_artifact_checksums or {}), input_bundle_checksum=gate.input_bundle_checksum, comment=payload.comment.strip() if payload.comment else None, stale_reason=None, expires_at=gate.expires_at, created_at=now, updated_at=now)
             session.add(decision)
+            if payload.decision in {"approve", "approve_with_comment"}:
+                job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"})).order_by(PlanningJobModel.created_at.desc()))
+                if job is not None:
+                    job.status = "generating_plan"
+                    job.current_step = "generating_plan"
+                    job.state_version = transition.next_state_version
+                    job.updated_at = now
             session.flush()
             return self._decision_response(decision)
 
@@ -175,7 +210,8 @@ class CompatibilityEvidenceApplicationService:
             return gate
 
     def _request(self, run_id, payload, actor, now):
-        return CompatibilityResolutionRequest(run_id=run_id, expected_state_version=payload.expected_state_version, idempotency_key=payload.idempotency_key, actor=actor, source_angular_exact=payload.source_angular_exact, catalogue_version=payload.catalogue_version, registry_snapshot_id=payload.registry_snapshot_id, registry_snapshot_checksum=payload.registry_snapshot_checksum, prerequisite_artifacts=tuple(payload.prerequisite_artifacts), runtime_candidates=payload.runtime_candidates, workspace_topology=payload.workspace_topology, dependency_findings=payload.dependency_findings, workspace_fingerprint=payload.workspace_fingerprint, plan_version=payload.plan_version, resolved_at=payload.resolved_at or now)
+        references = canonical_artifact_references(payload.prerequisite_artifacts)
+        return CompatibilityResolutionRequest(run_id=run_id, expected_state_version=payload.expected_state_version, idempotency_key=payload.idempotency_key, actor=actor, source_angular_exact=payload.source_angular_exact, catalogue_version=payload.catalogue_version, registry_snapshot_id=payload.registry_snapshot_id, registry_snapshot_checksum=payload.registry_snapshot_checksum, prerequisite_artifacts=tuple(references), runtime_candidates=payload.runtime_candidates, workspace_topology=payload.workspace_topology, dependency_findings=payload.dependency_findings, workspace_fingerprint=payload.workspace_fingerprint, plan_version=payload.plan_version, resolved_at=payload.resolved_at or now)
 
     def _write_evidence(self, session, run, request, result, now):
         store = self._artifact_store_factory(run)
@@ -244,9 +280,9 @@ class CompatibilityEvidenceApplicationService:
                     checksum_mismatches.append(artifact_id)
             return {"filesystem_orphans": missing_metadata, "database_orphans": missing_files, "checksum_mismatches": checksum_mismatches}
 
-    def _transition(self, session, run, key, expected, event_type, actor, now, payload):
+    def _transition(self, session, run, key, expected, event_type, actor, now, payload, **state_changes):
         try:
-            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=expected, idempotency_key=key, event_type=event_type, actor=actor, reason=event_type.value.lower(), occurred_at=now, payload=payload))
+            return StateTransitionService(session).apply_transition(TransitionRequest(run_id=run.id, expected_state_version=expected, idempotency_key=key, event_type=event_type, actor=actor, reason=event_type.value.lower(), occurred_at=now, payload=payload, **state_changes))
         except StaleStateVersionError as error:
             raise CompatibilityEvidenceError("STALE_STATE_VERSION", "The run state version is stale.", 409) from error
         except TransitionError as error:

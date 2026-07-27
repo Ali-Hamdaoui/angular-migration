@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import hashlib
 import json
+import hashlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,13 +14,14 @@ from sqlalchemy import func, select
 from app.api.planning_contracts import PlanCreateRequest, PlanResponse
 from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, WorkflowEventType
-from app.domain.planning import PlanGenerationRequest
+from app.domain.planning import PlanArtifactInput, PlanGenerationRequest
 from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
     BuildSystemDecisionModel,
     CompatibilityResolutionModel,
     G05ApprovalModel,
+    ExecutionProfileModel,
     MigrationPlanModel,
     MigrationRunModel,
     StageExecutionPlanModel,
@@ -28,6 +29,7 @@ from app.repositories.models import (
 )
 from app.repositories.session import session_scope
 from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService
+from app.services.artifact_binding import canonical_artifact_references
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 
 
@@ -62,8 +64,14 @@ class PlanningEvidenceApplicationService:
                     raise PlanningEvidenceError("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key was already used with a different payload.", 409)
                 return self._response(session, existing, replay=True)
             self._require_state(run, payload.expected_state_version)
+            bound_artifacts = self._require_approved_feasibility(session, run, request)
+            request = request.model_copy(
+                update={
+                    "prerequisite_artifacts": tuple(bound_artifacts),
+                    "input_fingerprint": self._approved_artifact_set_checksum(bound_artifacts),
+                }
+            )
             self._validate_prerequisites(session, run, request)
-            self._require_approved_feasibility(session, run, request)
             if session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration")) is not None:
                 raise PlanningEvidenceError("ACTIVE_PLAN_EXISTS", "An active migration plan already exists; use its idempotent request or explicitly replace it.", 409)
             version = (session.scalar(select(func.max(MigrationPlanModel.version)).where(MigrationPlanModel.run_id == run_id)) or 0) + 1
@@ -148,12 +156,6 @@ class PlanningEvidenceApplicationService:
     def _require_approved_feasibility(self, session, run, request):
         gate = session.scalar(select(G05ApprovalModel).where(G05ApprovalModel.run_id == run.id, G05ApprovalModel.gate_id == "G05", G05ApprovalModel.status == "approved").order_by(G05ApprovalModel.state_version.desc(), G05ApprovalModel.created_at.desc()))
         if gate is None:
-            # F06's original persistence fixtures predate the durable G05
-            # table.  Keep those isolated, unbound fixtures readable for
-            # contract/regression coverage; every real run carries a policy
-            # snapshot and must satisfy the current G05 gate below.
-            if not run.run_policy_snapshot and run.approval_status == "approved":
-                return
             raise PlanningEvidenceError("G05_APPROVAL_REQUIRED", "An approved current G05 feasibility package is required before plan generation.", 409)
         resolution = session.scalar(select(CompatibilityResolutionModel).where(CompatibilityResolutionModel.run_id == run.id, CompatibilityResolutionModel.package_checksum == gate.package_checksum).order_by(CompatibilityResolutionModel.created_at.desc()))
         if resolution is None or resolution.package_checksum != gate.package_checksum or resolution.artifact_set_checksum != gate.artifact_set_checksum:
@@ -164,8 +166,29 @@ class PlanningEvidenceApplicationService:
         profile = package.get("selected_profile") or {}
         if request.execution_profile_id != profile.get("profile_id"):
             raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning execution profile does not match the approved Stage 1 profile.", 409)
-        if request.input_fingerprint != resolution.artifact_set_checksum:
-            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning input fingerprint does not match the approved feasibility artifact set.", 409)
+        execution_profile = session.scalar(
+            select(ExecutionProfileModel)
+            .where(
+                ExecutionProfileModel.run_id == run.id,
+                ExecutionProfileModel.selected_profile_id == profile.get("profile_id"),
+            )
+            .order_by(ExecutionProfileModel.created_at.desc())
+        )
+        if execution_profile is None or execution_profile.status not in {"resolved", "selected"}:
+            raise PlanningEvidenceError("PLANNING_RUNTIME_PROFILE_MISSING", "The selected execution profile is not durably resolved for this run.", 409)
+        if execution_profile.selected_checksum != profile.get("checksum"):
+            raise PlanningEvidenceError("STALE_EXECUTION_PROFILE", "The selected execution profile checksum no longer matches the approved G05 binding.", 409)
+        persisted_profile = next(
+            (
+                item
+                for item in execution_profile.profiles
+                if item.get("profile_id") == profile.get("profile_id")
+                and item.get("checksum") == profile.get("checksum")
+            ),
+            None,
+        )
+        if persisted_profile is None:
+            raise PlanningEvidenceError("STALE_EXECUTION_PROFILE", "The approved execution profile record is incomplete or has drifted.", 409)
         approved_route = package.get("route") or []
         if len(request.stage_route) != len(approved_route):
             raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route does not match the approved feasibility route.", 409)
@@ -173,9 +196,23 @@ class PlanningEvidenceApplicationService:
             supplied_cli = request.target_cli_exact if index == 0 and request.target_cli_exact else (supplied[4] if len(supplied) == 5 else supplied[3])
             if tuple(supplied[:3]) != (approved.get("source_family"), approved.get("target_family"), approved.get("stage_id")) or supplied[3] != approved.get("target_angular_exact") or supplied_cli != approved.get("target_cli_exact"):
                 raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route contains an exact target that differs from the approved feasibility package.", 409)
-        supplied_artifact_set = "sha256:" + hashlib.sha256(json.dumps([(item.artifact_id, item.checksum) for item in request.prerequisite_artifacts], separators=(",", ":")).encode()).hexdigest()
-        if supplied_artifact_set != resolution.artifact_set_checksum:
-            raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "Planning prerequisite artifacts do not match the approved feasibility artifact set.", 409)
+        approved_ids = list(gate.prerequisite_artifact_ids or gate.artifact_ids)
+        approved_checksums = dict(gate.prerequisite_artifact_checksums or resolution.artifact_checksums or {})
+        if any(not approved_checksums.get(artifact_id) for artifact_id in approved_ids):
+            raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 artifact bundle is incomplete or tampered.", 409)
+        bound = canonical_artifact_references(
+            {"artifact_id": artifact_id, "checksum": approved_checksums.get(artifact_id)}
+            for artifact_id in approved_ids
+        )
+        if self._approved_artifact_set_checksum(bound) != gate.artifact_set_checksum:
+            raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 artifact bundle is stale or tampered.", 409)
+        return tuple(PlanArtifactInput(**item) for item in bound)
+
+    @staticmethod
+    def _approved_artifact_set_checksum(references):
+        from app.services.artifact_binding import canonical_artifact_set_checksum
+
+        return canonical_artifact_set_checksum(references)
 
     def _verify_artifacts(self, session, run_id, artifact_ids, checksums):
         run = session.get(MigrationRunModel, run_id)

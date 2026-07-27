@@ -13,7 +13,6 @@ from app.domain.contracts import AgentKind
 from app.domain.planning import (
     APPROVED_BUILDERS,
     APPROVED_CATALOGUE_VERSIONS,
-    APPROVED_EXECUTION_PROFILE_PREFIX,
     APPROVED_RECOVERY_POLICIES,
     APPROVED_REPAIR_POLICIES,
     APPROVED_VALIDATION_POLICIES,
@@ -315,7 +314,7 @@ class PlanRevisionService:
                 raise PlanningReviewApplicationError("UNAPPROVED_CATALOGUE", "The catalogue is not approved.", 409)
             plan_values["catalogue_version"] = changes.catalogue_version
         if changes.execution_profile_id is not None:
-            if not changes.execution_profile_id.startswith(APPROVED_EXECUTION_PROFILE_PREFIX):
+            if not changes.execution_profile_id.strip():
                 raise PlanningReviewApplicationError("UNAPPROVED_EXECUTION_PROFILE", "The execution profile is not approved.", 409)
             stage_values["execution_profile_id"] = changes.execution_profile_id
         if changes.target_cli_exact is not None:

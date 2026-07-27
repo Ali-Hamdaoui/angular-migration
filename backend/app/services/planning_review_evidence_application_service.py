@@ -17,7 +17,7 @@ from app.api.planning_review_contracts import (
     PlanReviewResponse,
 )
 from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
-from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.domain.planning import MigrationPlan, StageExecutionPlan
 from app.domain.planning_review import (
     G06DecisionRequest,
@@ -36,6 +36,7 @@ from app.repositories.models import (
     LlmInvocationModel,
     MigrationPlanModel,
     MigrationRunModel,
+    PlanningJobModel,
     PlanApprovalStaleModel,
     PlanRevisionModel,
     PlanningReviewModel,
@@ -363,6 +364,10 @@ class PlanningReviewEvidenceApplicationService:
                     "plan_version": gate.plan_version,
                     "decision": request.decision.value,
                 },
+                next_run_status=RunStatus.STAGE_CREATED if request.decision.value in {"approve", "approve_with_comment"} else RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="completed" if request.decision.value in {"approve", "approve_with_comment"} else "waiting_approval",
+                next_approval_status="approved" if request.decision.value in {"approve", "approve_with_comment"} else "pending",
             )
             gate.status = result.status
             gate.decision = request.decision.value
@@ -372,6 +377,14 @@ class PlanningReviewEvidenceApplicationService:
             gate.state_version = transition.next_state_version
             gate.event_sequence = transition.event_sequence
             gate.updated_at = now
+            if request.decision.value in {"approve", "approve_with_comment"}:
+                job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"})).order_by(PlanningJobModel.created_at.desc()))
+                if job is not None:
+                    job.status = "completed"
+                    job.current_step = "completed"
+                    job.state_version = transition.next_state_version
+                    job.completed_at = now
+                    job.updated_at = now
             session.flush()
             return self._decision_response(gate)
 
@@ -389,7 +402,15 @@ class PlanningReviewEvidenceApplicationService:
                     .where(PlanRevisionModel.run_id == run_id)
                     .order_by(PlanRevisionModel.created_at.desc())
                 )
-                return self._revision_response(session, revision) if revision else None
+                if revision:
+                    return self._revision_response(session, revision)
+                try:
+                    plan, stage = self._active_plan_pair(session, run_id)
+                except PlanningReviewEvidenceError as error:
+                    if error.code == "PLAN_NOT_FOUND":
+                        return None
+                    raise
+                return self._bootstrap_response(plan, stage)
             return self._planning_response(session, review)
 
     def _complete_explanation(self, run_id, request, request_checksum, package):
@@ -417,6 +438,10 @@ class PlanningReviewEvidenceApplicationService:
                 request.actor,
                 now,
                 {"artifact_ids": artifacts[0], "plan_version": request.plan_version},
+                next_run_status=RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="waiting_approval",
+                next_approval_status="pending",
             )
             reviewer_invocation = self._completed_invocation(
                 run, request, request_checksum, package, "phase_reviewer", "planning_review", completed, now
@@ -472,6 +497,12 @@ class PlanningReviewEvidenceApplicationService:
                 updated_at=now,
             )
             session.add(gate)
+            job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"})).order_by(PlanningJobModel.created_at.desc()))
+            if job is not None:
+                job.status = "waiting_g06"
+                job.current_step = "waiting_g06"
+                job.state_version = completed.next_state_version
+                job.updated_at = now
             row.status = "completed"
             row.package = package_json
             row.artifact_ids = artifacts[0]
@@ -953,6 +984,27 @@ class PlanningReviewEvidenceApplicationService:
             idempotent_replay=replay,
         )
 
+    def _bootstrap_response(self, plan, stage):
+        checksums = dict(plan.artifact_checksums or {})
+        checksums.update(stage.artifact_checksums or {})
+        artifact_ids = sorted(checksums)
+        return PlanReviewResponse(
+            run_id=plan.run_id,
+            status="not_started",
+            plan=plan.plan,
+            stage_plan=stage.stage_plan,
+            plan_checksum=plan.checksum,
+            stage_plan_checksum=stage.checksum,
+            artifact_ids=artifact_ids,
+            artifact_checksums=checksums,
+            artifact_links={item: f"/api/v1/artifacts/{item}" for item in artifact_ids},
+            gate_version=self.GATE_VERSION,
+            gate_status="not_created",
+            computed_artifact_set_checksum=self._aggregate_artifact_checksum(checksums),
+            state_version=max(plan.state_version, stage.state_version),
+            event_sequence=max(plan.event_sequence, stage.event_sequence),
+        )
+
     @staticmethod
     def _aggregate_artifact_checksum(checksums: dict[str, str]) -> str:
         """Canonical checksum of the complete current artifact/checksum map."""
@@ -995,7 +1047,7 @@ class PlanningReviewEvidenceApplicationService:
         gate.event_sequence = transition.event_sequence
         gate.updated_at = now
 
-    def _transition(self, session, run, key, expected, event_type, actor, now, payload):
+    def _transition(self, session, run, key, expected, event_type, actor, now, payload, **state_changes):
         try:
             return StateTransitionService(session).apply_transition(
                 TransitionRequest(
@@ -1007,6 +1059,7 @@ class PlanningReviewEvidenceApplicationService:
                     reason=event_type.value.lower(),
                     occurred_at=now,
                     payload=payload,
+                    **state_changes,
                 )
             )
         except StaleStateVersionError as error:

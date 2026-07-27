@@ -73,6 +73,10 @@ def reconcile_feasibility_artifacts(run_id: str, request: Request, actor: str = 
 @router.post("/runs/{run_id}/approvals/G05/decisions", response_model=G05DecisionResponse)
 def decide_g05(run_id: str, payload: G05DecisionRequest, request: Request, actor: str = Depends(authenticated_actor), service: CompatibilityEvidenceApplicationService = Depends(get_service)):
     try:
-        return service.decide_g05(run_id, payload, actor)
+        result = service.decide_g05(run_id, payload, actor)
+        if getattr(result, "accepted", result.get("accepted", False) if isinstance(result, dict) else False):
+            from app.orchestration.planning import dispatch_after_g05
+            dispatch_after_g05(run_id)
+        return result
     except CompatibilityEvidenceError as error:
         return _error(request, error)

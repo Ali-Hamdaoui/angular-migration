@@ -23,7 +23,6 @@ _CHECKSUM = r"^sha256:[0-9a-f]{64}$"
 _SHELL_TOKENS = re.compile(r"[;&|<>`$()\r\n]")
 _EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 APPROVED_CATALOGUE_VERSIONS = frozenset({"catalog-v1", "catalog-v2"})
-APPROVED_EXECUTION_PROFILE_PREFIX = "profile-"
 APPROVED_VALIDATION_POLICIES = frozenset({"angular-stage-standard-v2"})
 APPROVED_RECOVERY_POLICIES = frozenset({"safe-boundary-v1"})
 APPROVED_REPAIR_POLICIES = frozenset({"proposer-reviewer-human-v1"})
@@ -182,8 +181,8 @@ class PlanGenerationRequest(ContractModel):
     def validate_route(self) -> "PlanGenerationRequest":
         if self.catalogue_version not in APPROVED_CATALOGUE_VERSIONS:
             raise ValueError("catalogue version is not approved")
-        if not self.execution_profile_id.startswith(APPROVED_EXECUTION_PROFILE_PREFIX):
-            raise ValueError("execution profile is not approved")
+        if not self.execution_profile_id.strip():
+            raise ValueError("execution profile is required")
         if self.validation_policy_id not in APPROVED_VALIDATION_POLICIES:
             raise ValueError("validation policy is not approved")
         if self.recovery_policy_id not in APPROVED_RECOVERY_POLICIES:
