@@ -1,4 +1,6 @@
 import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,8 @@ from app.llm_gateway import (
     AzureOpenAILLMGateway,
     LlmFailureCode,
     PromptSchemaRegistry,
+    PromptRegistry,
+    RoleRouter,
     MockLlmGateway,
     build_usage_record,
     decide_budget,
@@ -115,6 +119,68 @@ def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp
     assert transport.calls[0]['payload']['store'] is False
     assert 'secret-value-1234567890' not in str(transport.calls[0]['payload'])
     assert transport.calls[0]['api_key'] == 'super-secret-api-key'
+    assert transport.calls[0]['payload']['model'] == 'gpt-5-mini-private'
+
+
+def test_assistant_prompt_and_role_policy_are_explicit_and_typed(tmp_path: Path) -> None:
+    prompt = PromptRegistry.defaults().get('assistant-response-v1', LlmTaskType.ASSISTANT_RESPONSE)
+    assert prompt.version == 'assistant-response-v1'
+    assert prompt.allowed_tasks == frozenset({LlmTaskType.ASSISTANT_RESPONSE})
+    router = RoleRouter(AzureOpenAILLMGateway(settings=_azure_settings(tmp_path))._deployment)
+    assert router.deployment_for(LlmRole.ASSISTANT, LlmTaskType.ASSISTANT_RESPONSE).deployment == 'gpt-5-mini-private'
+    with pytest.raises(AzureGatewayError) as denied:
+        router.deployment_for(LlmRole.PHASE_PROPOSER, LlmTaskType.ASSISTANT_RESPONSE)
+    assert denied.value.code == LlmFailureCode.AUTHORIZATION
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: dict[str, object]) -> None:
+        self.body = json.dumps(body).encode('utf-8')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def test_urllib_transport_uses_dated_responses_url_and_api_key_header(monkeypatch) -> None:
+    captured = {}
+    test_key = 'unit-test-value'
+
+    def fake_urlopen(request, timeout):
+        captured['request'] = request
+        captured['timeout'] = timeout
+        return _FakeHttpResponse({'ok': True})
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    UrllibAzureTransport().request(endpoint='https://example.openai.azure.com/', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+
+    request = captured['request']
+    assert request.full_url == 'https://example.openai.azure.com/openai/responses?api-version=2025-04-01-preview'
+    assert '/openai/deployments/' not in request.full_url
+    assert request.get_header('Api-key') == test_key
+    assert request.get_header('Authorization') is None
+
+
+@pytest.mark.parametrize('status_code', [401, 403])
+def test_urllib_transport_classifies_http_authentication_failures(monkeypatch, status_code) -> None:
+    test_key = 'unit-test-value'
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, status_code, 'provider error', {}, None)
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+    assert error.value.code == LlmFailureCode.AUTHENTICATION
+    assert test_key not in str(error.value)
 
 
 def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) -> None:
