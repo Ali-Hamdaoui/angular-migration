@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { getBackendBaseUrl } from "@/api/client";
 import styles from "./ControlTowerLayout.module.css";
@@ -35,12 +35,15 @@ function state(step: Step, events: Event[]): { status: PipelineStatus; event?: E
 function command(event?: Event) { const value = event?.payload.command; return typeof value === "string" ? value : null; }
 function artifacts(event?: Event) { return [event?.payload.artifact_id, event?.payload.stdout_artifact_id, event?.payload.stderr_artifact_id].filter((value): value is string => typeof value === "string"); }
 
-export function PipelineSection({ state: run, retryError, onRetry, retrying }: { state: AuthoritativeRunStateDto; retryError: string | null; onRetry: () => void; retrying: boolean }) {
-  const visible = run.workflow_events.some((event) => ["BASELINE_QUALIFIED", "BASELINE_QUALIFIED_WITH_KNOWN_FAILURES", "G03_CREATED"].includes(event.event_type)) ? steps : steps.slice(0, -1);
+export function PipelineSection({ state: run, retryError, onRetry, retrying, qualificationAvailable = false, qualificationActionRequired = false, children }: { state: AuthoritativeRunStateDto; retryError: string | null; onRetry: () => void; retrying: boolean; qualificationAvailable?: boolean; qualificationActionRequired?: boolean; children?: (qualificationSelected: boolean) => ReactNode }) {
+  const visible = qualificationAvailable || run.workflow_events.some((event) => ["BASELINE_QUALIFIED", "BASELINE_QUALIFIED_WITH_KNOWN_FAILURES", "G03_CREATED"].includes(event.event_type)) ? steps : steps.slice(0, -1);
   const statuses = visible.map((step) => state(step, run.workflow_events));
-  const [selected, setSelected] = useState(statuses.findIndex((item) => item.status === "running" || item.status === "failed"));
+  const qualificationIndex = visible.findIndex((step) => step.label === "Baseline qualification");
+  const [selected, setSelected] = useState(qualificationActionRequired ? qualificationIndex : statuses.findIndex((item) => item.status === "running" || item.status === "failed"));
   const selectedIndex = selected >= 0 && selected < visible.length ? selected : Math.max(0, statuses.findIndex((item) => item.status === "pending"));
   const completed = statuses.filter((item) => item.status === "completed").length;
+  const qualificationSelected = visible[selectedIndex]?.label === "Baseline qualification";
+  useEffect(() => { if (qualificationActionRequired && qualificationIndex >= 0) setSelected(qualificationIndex); }, [qualificationActionRequired, qualificationIndex]);
   return <section className={styles.pipelineSection} aria-label="Migration workflow progress">
     <div className={styles.pipelineSummary}><div><span className={styles.kicker}>Authoritative progression</span><h3>{visible[selectedIndex]?.label ?? "No active stage"}</h3><p>{completed} of {visible.length} stages complete · Last update {run.updated_at}</p></div><strong>{run.run_phase}</strong></div>
     {retryError ? <p role="alert">{retryError}</p> : null}
@@ -48,5 +51,6 @@ export function PipelineSection({ state: run, retryError, onRetry, retrying }: {
       <button type="button" className={styles.stageButton} onClick={() => setSelected(index)} aria-expanded={isOpen}><span className={styles.stageMarker}>{current.status === "completed" ? "✓" : String(index + 1).padStart(2, "0")}</span><span><strong>{step.label}</strong><small>{current.status}{current.event ? ` · ${current.event.occurred_at}` : ""}</small></span><span aria-hidden="true">{isOpen ? "−" : "+"}</span></button>
       {isOpen ? <div className={styles.stageDetails}><div className={styles.stageTabs}><span>Summary</span><span>Command output</span><span>Artifacts</span></div>{current.event ? <><p>{typeof current.event.payload.message === "string" ? current.event.payload.message : `Latest authoritative event: ${current.event.event_type}`}</p>{command(current.event) ? <details><summary>Command output</summary><pre className={styles.rawLog}>{typeof current.event.payload.chunk === "string" ? current.event.payload.chunk : command(current.event)}</pre></details> : null}{artifacts(current.event).length ? <p>Artifacts: {artifacts(current.event).map((id) => <a key={id} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">{id}</a>)}</p> : null}</> : <p>Pending authoritative evidence.</p>}{index === 0 && current.status === "failed" ? <button type="button" onClick={onRetry} disabled={retrying}>{retrying ? "Retrying…" : "Retry source intake"}</button> : null}</div> : null}
     </li>; })}</ol>
+    {children ? <div hidden={!qualificationSelected} aria-label="G03 review">{children(qualificationSelected)}</div> : null}
   </section>;
 }

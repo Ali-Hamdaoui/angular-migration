@@ -139,4 +139,18 @@ describe("AuthoritativeRunDashboard", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(document.querySelector(".controlTowerScrimOpen")).not.toBeInTheDocument();
   });
+
+  it("shows exactly one actionable G03 panel and keeps it mounted when another stage is selected", () => {
+    const events = [
+      { ...initialState.workflow_events[0], event_type: "G02_APPROVED", sequence: 2 },
+      { ...initialState.workflow_events[0], event_id: "install", event_type: "BASELINE_INSTALL_SUCCEEDED", sequence: 3 },
+    ];
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+    expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
+    expect(screen.getByRole("button", { name: "Qualify baseline" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Source snapshot/ }));
+    expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
+    expect(screen.getByLabelText("G03 review")).toHaveAttribute("hidden");
+  });
 });
