@@ -5,42 +5,81 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
 
 from app.repositories.models import MigrationRunModel, PlanningJobModel
 from app.repositories.session import session_scope
 
 
-PLANNING_JOB_ACTIVE_STATES = frozenset({
+PLANNING_JOB_STATES = frozenset({
+    "queued_after_g04",
+    "resolving_feasibility",
+    "waiting_g05",
+    "generating_plan",
+    "running_planning_review",
+    "waiting_g06",
+    "waiting_retry",
+    "completed",
+    "completed_blocked",
+    "technical_failed",
+})
+PLANNING_JOB_TERMINAL_STATES = frozenset({"completed", "completed_blocked", "technical_failed"})
+PLANNING_JOB_HUMAN_WAIT_STATES = frozenset({"waiting_g05", "waiting_g06"})
+PLANNING_JOB_CLAIMABLE_STATES = frozenset({
     "queued_after_g04", "resolving_feasibility", "generating_plan", "running_planning_review", "waiting_retry"
 })
-PLANNING_JOB_NONTERMINAL_STATES = PLANNING_JOB_ACTIVE_STATES | frozenset({"waiting_g05", "waiting_g06"})
+PLANNING_JOB_ACTIVE_STATES = PLANNING_JOB_CLAIMABLE_STATES
+PLANNING_JOB_NONTERMINAL_STATES = PLANNING_JOB_CLAIMABLE_STATES | PLANNING_JOB_HUMAN_WAIT_STATES
+
+
+def is_terminal_state(status: str) -> bool:
+    return status in PLANNING_JOB_TERMINAL_STATES
+
+
+def is_human_wait_state(status: str) -> bool:
+    return status in PLANNING_JOB_HUMAN_WAIT_STATES
+
+
+def is_claimable_state(status: str) -> bool:
+    return status in PLANNING_JOB_CLAIMABLE_STATES
 
 
 def claim_planning_job(run_id: str, worker_id: str, *, now: datetime | None = None, lease_seconds: int = 120, scope=session_scope):
     now = now or datetime.now(UTC)
     with scope() as session:
-        job = session.scalar(
+        candidate = session.scalar(
             select(PlanningJobModel)
             .where(
                 PlanningJobModel.run_id == run_id,
-                PlanningJobModel.status.in_(PLANNING_JOB_ACTIVE_STATES),
+                PlanningJobModel.status.in_(PLANNING_JOB_CLAIMABLE_STATES),
                 (PlanningJobModel.status != "waiting_retry") | (PlanningJobModel.next_attempt_at.is_(None)) | (PlanningJobModel.next_attempt_at <= now),
                 PlanningJobModel.attempt < PlanningJobModel.max_attempts,
+                or_(PlanningJobModel.lease_expires_at.is_(None), PlanningJobModel.lease_expires_at <= now),
             )
             .order_by(PlanningJobModel.created_at.desc())
         )
-        if job is None:
+        if candidate is None:
             return None
-        if job.lease_expires_at is not None and job.lease_expires_at > now and job.worker_id != worker_id:
+        claimed = session.execute(
+            update(PlanningJobModel)
+            .where(
+                PlanningJobModel.id == candidate.id,
+                PlanningJobModel.status.in_(PLANNING_JOB_CLAIMABLE_STATES),
+                PlanningJobModel.attempt < PlanningJobModel.max_attempts,
+                or_(PlanningJobModel.lease_expires_at.is_(None), PlanningJobModel.lease_expires_at <= now),
+            )
+            .values(
+                worker_id=worker_id,
+                attempt=PlanningJobModel.attempt + 1,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+                started_at=func.coalesce(PlanningJobModel.started_at, now),
+                updated_at=now,
+            )
+        )
+        if claimed.rowcount != 1:
             return None
-        job.worker_id = worker_id
-        job.attempt += 1
-        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
-        job.started_at = job.started_at or now
-        job.updated_at = now
         session.flush()
-        return job.id
+        return candidate.id
 
 
 def recover_planning_jobs(*, now: datetime | None = None, scope=session_scope) -> int:

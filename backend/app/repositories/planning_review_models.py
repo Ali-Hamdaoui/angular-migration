@@ -107,3 +107,26 @@ class G06ApprovalModel(Base):
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class G06DecisionModel(Base):
+    __tablename__ = "g06_decisions"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_g06_decisions_run_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    gate_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    package_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_set_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    stage_plan_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    expected_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    resulting_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

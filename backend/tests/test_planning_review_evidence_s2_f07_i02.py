@@ -304,6 +304,36 @@ def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
         "operator",
     )
     assert decision.accepted is True
+    replay = service.decide_g06(
+        "run-1",
+        G06DecisionApiRequest(
+            expected_state_version=3,
+            idempotency_key="decision-1",
+            gate_version=explanation.gate_version,
+            package_checksum=explanation.package_checksum,
+            artifact_set_checksum=explanation.package["artifact_set_checksum"],
+            plan_checksum=explanation.package["plan_checksum"],
+            stage_plan_checksum=explanation.package["stage_plan_checksum"],
+            decision=G06Decision.APPROVE,
+        ),
+        "operator",
+    )
+    assert replay.idempotent_replay is True
+    with pytest.raises(PlanningReviewEvidenceError, match="different payload"):
+        service.decide_g06(
+            "run-1",
+            G06DecisionApiRequest(
+                expected_state_version=3,
+                idempotency_key="decision-1",
+                gate_version=explanation.gate_version,
+                package_checksum=explanation.package_checksum,
+                artifact_set_checksum=explanation.package["artifact_set_checksum"],
+                plan_checksum=explanation.package["plan_checksum"],
+                stage_plan_checksum=explanation.package["stage_plan_checksum"],
+                decision=G06Decision.REJECT,
+            ),
+            "operator",
+        )
     assert all(
         store.read_artifact_by_id(item).ref.checksum == explanation.artifact_checksums[item]
         for item in explanation.artifact_ids

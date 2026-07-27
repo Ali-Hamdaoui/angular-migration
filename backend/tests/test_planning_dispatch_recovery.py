@@ -6,7 +6,13 @@ from contextlib import contextmanager
 from sqlalchemy.orm import sessionmaker
 
 from app.repositories.models import Base, MigrationRunModel, PlanningJobModel
-from app.services.planning_job_service import claim_planning_job, ensure_planning_job
+from app.services.planning_job_service import (
+    claim_planning_job,
+    ensure_planning_job,
+    is_claimable_state,
+    is_human_wait_state,
+    is_terminal_state,
+)
 
 
 NOW = datetime(2026, 7, 27, tzinfo=UTC)
@@ -65,3 +71,23 @@ def test_feasibility_command_replay_is_idempotent_and_can_start_a_new_terminal_g
 
     assert second.id != first.id
     assert second.status == "queued_after_g04"
+
+
+def test_planning_job_states_have_one_authoritative_classification():
+    expected = {
+        "queued_after_g04": (False, False, True, True),
+        "resolving_feasibility": (False, False, True, True),
+        "waiting_g05": (False, True, False, False),
+        "generating_plan": (False, False, True, True),
+        "running_planning_review": (False, False, True, True),
+        "waiting_g06": (False, True, False, False),
+        "waiting_retry": (False, False, True, True),
+        "completed": (True, False, False, False),
+        "completed_blocked": (True, False, False, False),
+        "technical_failed": (True, False, False, False),
+    }
+    for state, (terminal, human_wait, claimable, active) in expected.items():
+        assert is_terminal_state(state) is terminal
+        assert is_human_wait_state(state) is human_wait
+        assert is_claimable_state(state) is claimable
+        assert (not terminal and not human_wait) is active

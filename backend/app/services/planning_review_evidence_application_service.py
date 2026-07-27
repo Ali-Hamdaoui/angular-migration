@@ -33,6 +33,7 @@ from app.repositories.models import (
     G04ApprovalModel,
     G05ApprovalModel,
     G06ApprovalModel,
+    G06DecisionModel,
     LlmInvocationModel,
     MigrationPlanModel,
     MigrationRunModel,
@@ -269,6 +270,29 @@ class PlanningReviewEvidenceApplicationService:
         now = self._now()
         with self._scope() as session:
             run = self._authorized_run(session, run_id, actor)
+            stored_decision = session.scalar(
+                select(G06DecisionModel).where(
+                    G06DecisionModel.run_id == run_id,
+                    G06DecisionModel.idempotency_key == request.idempotency_key,
+                )
+            )
+            if stored_decision:
+                if stored_decision.request_checksum != request_checksum:
+                    raise PlanningReviewEvidenceError("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key was already used with a different payload.", 409)
+                return G06DecisionResponse(
+                    run_id=stored_decision.run_id,
+                    gate_version=stored_decision.gate_version,
+                    decision=stored_decision.decision,
+                    status=stored_decision.status,
+                    accepted=stored_decision.status == "approved",
+                    package_checksum=stored_decision.package_checksum,
+                    artifact_set_checksum=stored_decision.artifact_set_checksum,
+                    plan_checksum=stored_decision.plan_checksum,
+                    stage_plan_checksum=stored_decision.stage_plan_checksum,
+                    state_version=stored_decision.resulting_state_version,
+                    event_sequence=run.state_version,
+                    idempotent_replay=True,
+                )
             existing = session.scalar(
                 select(G06ApprovalModel).where(
                     G06ApprovalModel.run_id == run_id, G06ApprovalModel.idempotency_key == request.idempotency_key
@@ -385,6 +409,25 @@ class PlanningReviewEvidenceApplicationService:
                     job.state_version = transition.next_state_version
                     job.completed_at = now
                     job.updated_at = now
+            session.add(G06DecisionModel(
+                id="g06-decision-" + uuid4().hex[:12],
+                run_id=run_id,
+                gate_id=gate.gate_id,
+                gate_version=gate.gate_version,
+                idempotency_key=request.idempotency_key,
+                request_checksum=request_checksum,
+                decision=request.decision.value,
+                status=result.status,
+                package_checksum=gate.package_checksum,
+                artifact_set_checksum=gate.artifact_set_checksum,
+                plan_checksum=gate.plan_checksum,
+                stage_plan_checksum=gate.stage_plan_checksum,
+                expected_state_version=request.expected_state_version,
+                resulting_state_version=transition.next_state_version,
+                workspace_fingerprint=gate.workspace_fingerprint,
+                comment=gate.comment,
+                created_at=now,
+            ))
             session.flush()
             return self._decision_response(gate)
 
