@@ -63,8 +63,12 @@ def test_llm_api_returns_stable_correlation_safe_errors_for_invalid_and_stale_re
         app.dependency_overrides.pop(llm_routes.get_service, None)
 
 
-def test_unconfigured_read_only_diagnostics_do_not_construct_azure_gateway(tmp_path) -> None:
+def test_unconfigured_read_only_diagnostics_do_not_construct_azure_gateway(tmp_path, monkeypatch) -> None:
+    def fail_if_constructed(*_args, **_kwargs):
+        raise AssertionError("Azure gateway must not be constructed for read-only diagnostics")
+
+    monkeypatch.setattr("app.services.llm_evidence_application_service.AzureOpenAILLMGateway", fail_if_constructed)
     settings = Settings(_env_file=None, artifact_root=tmp_path / "runs", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes")
     service = LlmEvidenceApplicationService(settings=settings)
-    assert service.readiness().status == "blocked"
+    assert service.readiness().status == "disabled"
     assert service.gateway is None

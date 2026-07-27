@@ -12,10 +12,10 @@ from app.api.llm_contracts import LlmSmokeRequest
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
 from app.domain.contracts import AgentKind, WorkflowEventType
-from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmFailureCode, LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, PromptSchemaRegistry, build_usage_record
 from app.llm_gateway.contracts import LlmContextSegment
 from app.repositories.models import ArtifactMetadataModel, Base, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel, WorkflowEventModel
-from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
+from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService, _AssistantResponse
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 
@@ -116,4 +116,49 @@ def test_smoke_persists_specific_provider_failure_metadata(tmp_path):
         artifact = LocalFilesystemArtifactStore(tmp_path / 'artifacts', fixed_run_root=tmp_path / 'artifacts').read_artifact_by_id(result.artifact_ids[0])
         payload = json.loads(artifact.content)
         assert payload == {'error_code': 'server', 'message': 'LLM invocation failed.', 'provider_error_code': 'InternalServerError', 'provider_http_status': 500, 'provider_message': 'safe provider message', 'provider_request_id': 'azure-request-1', 'resolved_deployment': 'resolved-deployment'}
+
+
+def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azure(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    settings = settings.model_copy(update={
+        'llm_enabled': True,
+        'azure_openai_endpoint': 'https://example.openai.azure.com',
+        'azure_openai_deployment': 'gpt-5-mini',
+        'azure_openai_api_version': '2025-04-01-preview',
+    })
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, **kwargs):
+            self.calls.append(kwargs)
+            return {'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}, {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'ok', 'citations': []})}]}], 'usage': {'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5}}
+
+    transport = Transport()
+    registry = PromptSchemaRegistry()
+    registry.register('assistant-response-v1', _AssistantResponse)
+    gateway = AzureOpenAILLMGateway(settings=settings, transport=transport, registry=registry)
+    service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=gateway, now_provider=lambda: NOW)
+
+    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-1', correlation_id='corr-1', question='Where is the migration now?', context=[]))
+
+    assert result.status == 'completed'
+    assert transport.calls[0]['deployment'] == 'gpt-5-mini'
+    assert transport.calls[0]['payload']['model'] == 'gpt-5-mini'
+    assert transport.calls[0]['payload']['max_output_tokens'] == 20_000
+    assert transport.calls[0]['payload']['text']['format']['strict'] is True
+    assert transport.calls[0]['payload']['text']['format']['name'] == 'assistant-response-v1'
+    assert transport.calls[0]['payload']['text']['format']['type'] == 'json_schema'
+    assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'citations'}
+    assert 'response_format' not in transport.calls[0]['payload']
+    assert 'temperature' not in transport.calls[0]['payload']
+    assert result.role == 'assistant'
+    assert result.task_type == 'assistant_response'
+    assert result.prompt_version == 'assistant-response-v1'
+    assert result.latency_ms is not None
+    with sessions() as session:
+        invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
+        assert invocation is not None and invocation.status == 'completed' and invocation.failure_code is None and invocation.latency_ms is not None
+        assert session.scalar(select(UsageCostRecordModel).where(UsageCostRecordModel.invocation_id == result.invocation_id)) is not None
     engine.dispose()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -14,7 +15,7 @@ from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, Ll
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings, get_settings
 from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
-from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry, decide_budget
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry, StructuredOutputValidationError, decide_budget
 from app.repositories.models import ArtifactMetadataModel, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
@@ -23,6 +24,23 @@ from app.state.transition_service import StaleStateVersionError, StateTransition
 class _SmokeResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
     answer: str
+
+
+class _AssistantResponse(BaseModel):
+    answer: str
+    citations: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class AssistantInvocationRequest:
+    run_id: str
+    expected_state_version: int
+    idempotency_key: str
+    correlation_id: str
+    question: str
+    context: list[LlmContextSegment]
+    role: str = 'assistant'
+    max_output_tokens: int = 20_000
 
 
 class LlmEvidenceError(ValueError):
@@ -53,7 +71,69 @@ class LlmEvidenceApplicationService:
     def _registry() -> PromptSchemaRegistry:
         registry = PromptSchemaRegistry()
         registry.register('llm_smoke_v1', _SmokeResponse)
+        registry.register('assistant-response-v1', _AssistantResponse)
         return registry
+
+    def assistant(self, request: AssistantInvocationRequest, *, actor: str = 'local-operator') -> LlmInvocationResponse:
+        canonical = {"run_id": request.run_id, "expected_state_version": request.expected_state_version, "idempotency_key": request.idempotency_key, "question": request.question, "context": [item.model_dump(mode="json") for item in request.context]}
+        checksum = 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with self.scope() as session:
+            run = session.get(MigrationRunModel, request.run_id)
+            if run is None:
+                raise LlmEvidenceError('RUN_NOT_FOUND', 'Migration run does not exist.', 404)
+            existing = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == request.run_id, LlmInvocationModel.idempotency_key == request.idempotency_key))
+            if existing:
+                if existing.request_checksum != checksum:
+                    raise LlmEvidenceError('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was used with a different payload.', 409)
+                return self._dto(session, existing, replay=True)
+            if run.state_version != request.expected_state_version:
+                raise LlmEvidenceError('STALE_STATE_VERSION', 'The run state version is stale.', 409)
+            prior_usage = list(session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == request.run_id)))
+            if prior_usage and (sum(item.total_tokens for item in prior_usage) >= self.settings.llm_token_budget > 0 or sum(item.total_cost_usd for item in prior_usage) >= self.settings.llm_cost_budget_usd > 0):
+                budget_blocked = True
+            else:
+                budget_blocked = False
+            now = self.now()
+            invocation_id = 'llm-invocation-' + uuid4().hex[:12]
+            row = LlmInvocationModel(id=invocation_id, run_id=run.id, idempotency_key=request.idempotency_key, request_checksum=checksum, correlation_id=request.correlation_id, actor=actor, role=LlmRole.ASSISTANT.value, task_type=LlmTaskType.ASSISTANT_RESPONSE.value, provider='governed_gateway', deployment_alias='assistant', prompt_version='assistant-response-v1', schema_version=self.settings.llm_schema_registry_version, pricing_version=self.settings.llm_pricing_version, stage=None, input_hashes=[checksum], redacted_summary=None, status='in_progress', artifact_ids=[], artifact_checksums={}, state_version=run.state_version, event_sequence=0, retries=0, started_at=now, created_at=now)
+            session.add(row)
+            session.flush()
+        if budget_blocked:
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_BUDGET_BLOCKED', 'The configured LLM budget blocks new Assistant calls.'), actor=actor)
+        response = None
+        provider_usage = None
+        started_monotonic = self.clock()
+        try:
+            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy='Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.', context=request.context + [LlmContextSegment(segment_id='question', label='user question', content=request.question)], response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens))
+            provider_usage = response.usage
+            validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
+            return self._complete_assistant(request, checksum, invocation_id, response, validated, actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except StructuredOutputValidationError:
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID', 'Assistant governed invocation returned an invalid structured response.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except AzureGatewayError as error:
+            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except Exception as error:
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID' if response is not None else 'LLM_PROVIDER_FAILURE', 'Assistant governed invocation failed.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+
+    def _complete_assistant(self, request, checksum, invocation_id, response, validated, actor, *, latency_ms):
+        with self.scope() as session:
+            row = session.get(LlmInvocationModel, invocation_id)
+            run = session.get(MigrationRunModel, request.run_id)
+            row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.redacted_summary = response.redaction.redacted_text; row.state_version = run.state_version
+            session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))
+            result = self._dto(session, row)
+            return result.model_copy(update={'structured_output': validated})
+
+    def _fail_assistant(self, request, checksum, invocation_id, error, *, actor, usage=None, latency_ms=None):
+        with self.scope() as session:
+            row = session.get(LlmInvocationModel, invocation_id); run = session.get(MigrationRunModel, request.run_id)
+            row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.latency_ms = latency_ms
+            diagnostic = getattr(error, 'provider_code', None) or getattr(error, 'provider_message', None)
+            row.redacted_summary = ('Assistant provider rejected the request: ' + ': '.join(filter(None, [getattr(error, 'provider_code', None), getattr(error, 'provider_message', None)])))[:360] if diagnostic else 'Assistant invocation failed; provider details redacted.'
+            if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':
+                usage = usage or type('Usage', (), {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0, 'input_price_per_million': 0.0, 'output_price_per_million': 0.0, 'input_cost_usd': 0.0, 'output_cost_usd': 0.0, 'total_cost_usd': 0.0})()
+                session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=self.settings.llm_pricing_version, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, total_tokens=usage.total_tokens, input_price_per_million=usage.input_price_per_million, output_price_per_million=usage.output_price_per_million, input_cost_usd=usage.input_cost_usd, output_cost_usd=usage.output_cost_usd, total_cost_usd=usage.total_cost_usd, created_at=self.now()))
+            return self._dto(session, row)
 
     def readiness(self) -> LlmReadinessResponse:
         endpoint = bool(self.settings.azure_openai_endpoint)
@@ -150,7 +230,9 @@ class LlmEvidenceApplicationService:
             message = 'LLM invocation failed.'
             details = {'error_code': error.code.value if isinstance(error, AzureGatewayError) else error.code, 'message': message}
             if isinstance(error, AzureGatewayError):
-                details.update({'provider_http_status': error.provider_status, 'provider_error_code': error.provider_code, 'provider_message': error.provider_message, 'provider_request_id': error.provider_request_id, 'failure_subtype': error.failure_subtype, 'resolved_deployment': row.deployment_alias})
+                details.update({'provider_http_status': error.provider_status, 'provider_error_code': error.provider_code, 'provider_message': error.provider_message, 'provider_request_id': error.provider_request_id, 'resolved_deployment': row.deployment_alias})
+                if error.failure_subtype is not None:
+                    details['failure_subtype'] = error.failure_subtype
             artifact = self._artifact(session, store, request.run_id, '04_workflow_state/llm_error_redacted.json', json.dumps(details, sort_keys=True))
             row.status = 'failed'; row.redacted_summary = 'LLM invocation failed; provider details redacted.'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.retries = error.retry_count if isinstance(error, AzureGatewayError) else 0; row.completed_at = self.now(); row.latency_ms = latency; row.artifact_ids = [artifact.ref.artifact_id]; row.artifact_checksums = {artifact.ref.artifact_id: artifact.ref.checksum}
             if isinstance(error, AzureGatewayError):

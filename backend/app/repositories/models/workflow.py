@@ -118,6 +118,78 @@ class WorkflowEventModel(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class AssistantConversationModel(Base):
+    """Run-scoped durable assistant thread metadata."""
+    __tablename__ = "assistant_conversations"
+    __table_args__ = (UniqueConstraint("run_id", "conversation_id", name="uq_assistant_conversation_run"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AssistantMessageModel(Base):
+    """Sanitized, ordered assistant exchange and its authoritative proof."""
+    __tablename__ = "assistant_messages"
+    __table_args__ = (
+        UniqueConstraint("run_id", "idempotency_key", name="uq_assistant_message_run_idempotency"),
+        Index("ix_assistant_messages_conversation_order", "conversation_id", "message_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    conversation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    message_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    input_manifest_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    projection: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    proof_label: Mapped[str] = mapped_column(String(64), nullable=False)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    model_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    correlation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    retry_of_message_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    semantic_state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    operational_event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    intent: Mapped[str] = mapped_column(String(64), nullable=False, default="unsupported")
+    capability_key: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    answer_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="concise")
+
+
+class AssistantLifecycleEventModel(Base):
+    """Durable replayable lifecycle stream for one run-scoped assistant."""
+    __tablename__ = "assistant_lifecycle_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_assistant_lifecycle_run_sequence"),
+        UniqueConstraint("run_id", "idempotency_key", "event_type", name="uq_assistant_lifecycle_request_event"),
+        Index("ix_assistant_lifecycle_run_sequence", "run_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SourceIntakeJobModel(Base):
     """Durable work item for the run-owned source-intake pipeline."""
 
