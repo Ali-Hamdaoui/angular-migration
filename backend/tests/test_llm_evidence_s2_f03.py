@@ -141,7 +141,7 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     gateway = AzureOpenAILLMGateway(settings=settings, transport=transport, registry=registry)
     service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=gateway, now_provider=lambda: NOW)
 
-    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-1', correlation_id='corr-1', question='Where is the migration now?', context=[]))
+    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-1', correlation_id='corr-1', question='SENTINEL_QUESTION', context=[LlmContextSegment(segment_id='history', label='SENTINEL_LABEL', content='SENTINEL_CONTEXT')]))
 
     assert result.status == 'completed'
     assert transport.calls[0]['deployment'] == 'gpt-5-mini'
@@ -151,12 +151,25 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     assert transport.calls[0]['payload']['text']['format']['name'] == 'assistant-response-v1'
     assert transport.calls[0]['payload']['text']['format']['type'] == 'json_schema'
     assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'citations'}
+    schema = transport.calls[0]['payload']['text']['format']['schema']
+    citation_schema = transport.calls[0]['payload']['text']['format']['schema']['$defs']['_AssistantCitation']
+    assert schema['additionalProperties'] is False
+    assert citation_schema['additionalProperties'] is False
+    assert set(citation_schema['required']) == {'artifact_id', 'checksum', 'stage_id'}
     assert 'response_format' not in transport.calls[0]['payload']
     assert 'temperature' not in transport.calls[0]['payload']
     assert result.role == 'assistant'
     assert result.task_type == 'assistant_response'
     assert result.prompt_version == 'assistant-response-v1'
     assert result.latency_ms is not None
+    assert result.structured_output == {'answer': 'ok', 'citations': []}
+    assert result.artifact_ids
+    assert 'SENTINEL_QUESTION' not in (result.redacted_summary or '')
+    assert 'SENTINEL_CONTEXT' not in (result.redacted_summary or '')
+    assert 'SENTINEL_LABEL' in (result.redacted_summary or '')
+    activity = service.activity('run-1')
+    assert activity.invocations[0].structured_output == {'answer': 'ok', 'citations': []}
+    assert 'SENTINEL_CONTEXT' not in (activity.invocations[0].redacted_summary or '')
     with sessions() as session:
         invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
         assert invocation is not None and invocation.status == 'completed' and invocation.failure_code is None and invocation.latency_ms is not None
