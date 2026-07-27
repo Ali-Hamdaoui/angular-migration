@@ -20,21 +20,28 @@ def get_service() -> AssistantContextService:
     return AssistantContextService()
 
 
+def _authorize(service: AssistantContextService, run_id: str, actor: str) -> None:
+    service.authorize(run_id, actor)
+
+
 @router.post("/messages", response_model=AssistantMessageResultDto, status_code=201)
-def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Request, _actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Request, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
     try:
-        return service.answer(payload.model_copy(update={"run_id": run_id}))
+        _authorize(service, run_id, actor)
+        return service.answer(payload.model_copy(update={"run_id": run_id}), actor=actor)
     except AssistantRequestError as error:
         return error_response(request, status_code=error.status_code, error_code=error.code, message=error.message)
 
 
 @router.get("/messages", response_model=AssistantHistoryDto)
-def get_messages(run_id: str, conversation_id: str | None = None, _actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+def get_messages(run_id: str, conversation_id: str | None = None, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+    _authorize(service, run_id, actor)
     return service.history(run_id, conversation_id)
 
 
 @router.get("/events")
-def stream_events(run_id: str, request: Request, _actor: str = Depends(authenticated_actor)):
+def stream_events(run_id: str, request: Request, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+    _authorize(service, run_id, actor)
     raw_last_event_id = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
     last_sequence = int(raw_last_event_id) if raw_last_event_id and raw_last_event_id.isdigit() else 0
 

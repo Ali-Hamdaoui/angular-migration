@@ -439,7 +439,10 @@ class AssistantMessageRequestDto(ContractModel):
     run_id: str | None = None
     message: str = Field(min_length=1)
     conversation_id: str | None = None
-    idempotency_key: str = Field(min_length=1, max_length=128)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    request_id: str | None = None
+    retry_of_message_id: str | None = None
+    answer_mode: str = Field(default="concise", pattern="^(concise|detailed|deep)$")
     client_known_state_version: int | None = Field(default=None, ge=1)
 
 
@@ -485,6 +488,16 @@ class AssistantMessageResultDto(ContractModel):
     response_status: str
     failure_reason: str | None = None
     operational_statistics: "AssistantOperationalStatisticsDto | None" = None
+    request_id: str | None = None
+    retry_of_message_id: str | None = None
+    intent: str = "unsupported"
+    capability_key: str = ""
+    summary: str = ""
+    citations: list[dict[str, object]] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    suggested_follow_ups: list[str] = Field(default_factory=list)
+    next_step_proposals: list[dict[str, object]] = Field(default_factory=list)
+    correlation_id: str | None = None
 
 
 class AssistantHistoryDto(ContractModel):

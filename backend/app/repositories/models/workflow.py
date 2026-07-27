@@ -158,6 +158,13 @@ class AssistantMessageModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     failure_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    retry_of_message_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    semantic_state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    operational_event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    intent: Mapped[str] = mapped_column(String(64), nullable=False, default="unsupported")
+    capability_key: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    answer_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="concise")
 
 
 class AssistantLifecycleEventModel(Base):

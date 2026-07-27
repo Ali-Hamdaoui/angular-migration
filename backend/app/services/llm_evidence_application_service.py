@@ -39,6 +39,7 @@ class AssistantInvocationRequest:
     question: str
     context: list[LlmContextSegment]
     role: str = 'assistant'
+    max_output_tokens: int = 20_000
 
 
 class LlmEvidenceError(ValueError):
@@ -72,7 +73,7 @@ class LlmEvidenceApplicationService:
         registry.register('assistant-response-v1', _AssistantResponse)
         return registry
 
-    def assistant(self, request: AssistantInvocationRequest, *, actor: str = 'assistant') -> LlmInvocationResponse:
+    def assistant(self, request: AssistantInvocationRequest, *, actor: str = 'local-operator') -> LlmInvocationResponse:
         canonical = {"run_id": request.run_id, "expected_state_version": request.expected_state_version, "idempotency_key": request.idempotency_key, "question": request.question, "context": [item.model_dump(mode="json") for item in request.context]}
         checksum = 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self.scope() as session:
@@ -92,9 +93,8 @@ class LlmEvidenceApplicationService:
             else:
                 budget_blocked = False
             now = self.now()
-            started = self._transition(session, run, type('Request', (), {'run_id': run.id, 'expected_state_version': run.state_version, 'idempotency_key': request.idempotency_key, 'correlation_id': request.correlation_id})(), WorkflowEventType.LLM_INVOCATION_STARTED, 'Assistant invocation started', {}, actor)
             invocation_id = 'llm-invocation-' + uuid4().hex[:12]
-            row = LlmInvocationModel(id=invocation_id, run_id=run.id, idempotency_key=request.idempotency_key, request_checksum=checksum, correlation_id=request.correlation_id, actor=actor, role=LlmRole.ASSISTANT.value, task_type=LlmTaskType.ASSISTANT_RESPONSE.value, provider='governed_gateway', deployment_alias='assistant', prompt_version='assistant-response-v1', schema_version=self.settings.llm_schema_registry_version, pricing_version=self.settings.llm_pricing_version, stage=None, input_hashes=[checksum], redacted_summary=None, status='in_progress', artifact_ids=[], artifact_checksums={}, state_version=started.next_state_version, event_sequence=started.event_sequence, retries=0, started_at=now, created_at=now)
+            row = LlmInvocationModel(id=invocation_id, run_id=run.id, idempotency_key=request.idempotency_key, request_checksum=checksum, correlation_id=request.correlation_id, actor=actor, role=LlmRole.ASSISTANT.value, task_type=LlmTaskType.ASSISTANT_RESPONSE.value, provider='governed_gateway', deployment_alias='assistant', prompt_version='assistant-response-v1', schema_version=self.settings.llm_schema_registry_version, pricing_version=self.settings.llm_pricing_version, stage=None, input_hashes=[checksum], redacted_summary=None, status='in_progress', artifact_ids=[], artifact_checksums={}, state_version=run.state_version, event_sequence=0, retries=0, started_at=now, created_at=now)
             session.add(row)
             session.flush()
         if budget_blocked:
@@ -102,7 +102,7 @@ class LlmEvidenceApplicationService:
         response = None
         provider_usage = None
         try:
-            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy='Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.', context=request.context + [LlmContextSegment(segment_id='question', label='user question', content=request.question)], response_schema='assistant-response-v1', max_output_tokens=512))
+            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy='Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.', context=request.context + [LlmContextSegment(segment_id='question', label='user question', content=request.question)], response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens))
             provider_usage = response.usage
             validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
             return self._complete_assistant(request, checksum, invocation_id, response, validated, actor)
@@ -119,8 +119,6 @@ class LlmEvidenceApplicationService:
             run = session.get(MigrationRunModel, request.run_id)
             row.status = 'completed'; row.completed_at = self.now(); row.retries = response.usage.retry_count; row.redacted_summary = response.redaction.redacted_text; row.state_version = run.state_version
             session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))
-            event = self._transition(session, run, type('Request', (), {'run_id': run.id, 'expected_state_version': run.state_version, 'idempotency_key': request.idempotency_key, 'correlation_id': request.correlation_id})(), WorkflowEventType.LLM_INVOCATION_COMPLETED, 'Assistant invocation completed', {'invocation_id': row.id}, actor)
-            row.state_version = event.next_state_version; row.event_sequence = event.event_sequence
             result = self._dto(session, row)
             return result.model_copy(update={'structured_output': validated})
 
@@ -131,9 +129,6 @@ class LlmEvidenceApplicationService:
             if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':
                 usage = usage or type('Usage', (), {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0, 'input_price_per_million': 0.0, 'output_price_per_million': 0.0, 'input_cost_usd': 0.0, 'output_cost_usd': 0.0, 'total_cost_usd': 0.0})()
                 session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=self.settings.llm_pricing_version, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, total_tokens=usage.total_tokens, input_price_per_million=usage.input_price_per_million, output_price_per_million=usage.output_price_per_million, input_cost_usd=usage.input_cost_usd, output_cost_usd=usage.output_cost_usd, total_cost_usd=usage.total_cost_usd, created_at=self.now()))
-            event_type = WorkflowEventType.LLM_BUDGET_BLOCKED if row.failure_code == 'LLM_BUDGET_BLOCKED' else WorkflowEventType.LLM_INVOCATION_FAILED
-            event = self._transition(session, run, type('Request', (), {'run_id': run.id, 'expected_state_version': run.state_version, 'idempotency_key': request.idempotency_key, 'correlation_id': request.correlation_id})(), event_type, 'Assistant invocation failed', {'invocation_id': row.id, 'error_code': row.failure_code}, actor)
-            row.state_version = event.next_state_version; row.event_sequence = event.event_sequence
             return self._dto(session, row)
 
     def readiness(self) -> LlmReadinessResponse:
