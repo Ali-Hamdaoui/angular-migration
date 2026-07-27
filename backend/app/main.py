@@ -53,6 +53,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     recover_source_intake_jobs()
     from app.services.planning_job_service import recover_planning_jobs
     recover_planning_jobs()
+    from app.orchestration.planning import dispatch_due_planning_jobs
+    dispatch_due_planning_jobs()
     yield
 
 

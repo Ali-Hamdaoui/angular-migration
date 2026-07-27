@@ -925,6 +925,21 @@ class CancelAuthoritativeRunRequestDto(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class PlanningJobProjectionDto(ContractModel):
+    id: str
+    status: str
+    current_step: str
+    attempt: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    retryable: bool | None = None
+    next_attempt_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_error_stage: str | None = None
+    correlation_id: str | None = None
+    updated_at: datetime
+
+
 class AuthoritativeRunStateDto(ContractModel):
     run_id: str
     status: RunStatus
@@ -950,6 +965,7 @@ class AuthoritativeRunStateDto(ContractModel):
     registry_snapshot: dict[str, object] | None = None
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
     plan_inputs: dict[str, object] | None = None
+    planning_job: PlanningJobProjectionDto | None = None
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
 

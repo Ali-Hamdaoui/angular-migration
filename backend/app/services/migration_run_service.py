@@ -15,7 +15,7 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, RunPhase, RunStatus, WorkflowEventDto, WorkflowEventType
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
-from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
+from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, PlanningJobModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
@@ -398,15 +398,24 @@ class MigrationRunService:
                 "target_cli_exact": (((package or {}).get("route") or [{}])[0]).get("target_cli_exact") if (package or {}).get("route") else None,
                 "builder": builder,
             } if resolution else None)
+            planning_job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id).order_by(PlanningJobModel.created_at.desc()))
             return {
                 "run_id": run.id, "status": run.status, "run_phase": run.run_phase, "phase_status": run.phase_status,
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,
                 "preflight_id": run.preflight_id, "source_path": run.source_path, "target_parent_path": run.target_parent_path, "generated_output_name": run.generated_output_name, "resolved_output_root": run.resolved_output_root, "run_root": run.run_root, "migrated_app_path": run.migrated_app_path, "target_output_path": run.target_output_path,
                 "graph_thread_id": run.graph_thread_id, "created_at": run.created_at, "updated_at": run.updated_at,
                 "workspace_aliases": dict(run.workspace_aliases or {}),
-                "source_angular_exact": (run.run_policy_snapshot or {}).get("source_angular_exact"), "catalogue_version": (run.run_policy_snapshot or {}).get("catalogue_version"),
+                "source_angular_exact": run.source_version_detected, "catalogue_version": (run.run_policy_snapshot or {}).get("catalogue_version"),
                 "registry_snapshot": (run.run_policy_snapshot or {}).get("registry_snapshot"), "runtime_candidates": (run.run_policy_snapshot or {}).get("runtime_candidates", []),
                 "plan_inputs": plan_inputs,
+                "planning_job": ({
+                    "id": planning_job.id, "status": planning_job.status, "current_step": planning_job.current_step,
+                    "attempt": planning_job.attempt, "max_attempts": planning_job.max_attempts,
+                    "retryable": planning_job.retryable, "next_attempt_at": planning_job.next_attempt_at,
+                    "last_error_code": planning_job.last_error_code, "last_error_message": planning_job.last_error_message,
+                    "last_error_stage": planning_job.last_error_stage, "correlation_id": planning_job.correlation_id,
+                    "updated_at": planning_job.updated_at,
+                } if planning_job else None),
                 "artifacts": self._artifacts_for_run(session, run_id), "workflow_events": self._events_for_run(session, run_id),
             }
 

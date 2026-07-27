@@ -101,8 +101,8 @@ class CompatibilityResolver:
             and npm.major == entry.npm_major
             and npx
             and npx.major == entry.npm_major
-            and (entry.node_exact is None or candidate.node_exact == entry.node_exact)
-            and (entry.npm_exact is None or candidate.npm_exact == entry.npm_exact)
+            and (entry.node_exact is None or str(node) == entry.node_exact)
+            and (entry.npm_exact is None or str(npm) == entry.npm_exact)
             and (candidate.angular_cli_exact is None or candidate.angular_cli_exact == (entry.cli_exact or entry.target_cli_exact))
             and candidate.registry_configured
             and candidate.certificate_valid

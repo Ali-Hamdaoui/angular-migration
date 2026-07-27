@@ -27,6 +27,18 @@ class FeasibilityCreateRequest(ContractModel):
     resolved_at: datetime | None = None
 
 
+class FeasibilityResolveActionRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class PlanningCommandResponse(ContractModel):
+    job_id: str
+    status: str
+    current_step: str
+    correlation_id: str | None = None
+
+
 class G05DecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
