@@ -10,9 +10,9 @@ const tabs = ["Commands", "Builder", "Validation", "Recovery", "Forbidden change
 type Tab = (typeof tabs)[number];
 
 export function MigrationPlanPanel({ runId, initialState, connectionStatus, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts?: unknown[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
-  const { plan, status, error } = usePlanProjection({ runId, stateVersion: initialState.state_version, workflowEvents, connectionStatus, refreshAuthoritativeState });
+  const { plan, status, error } = usePlanProjection({ runId, stateVersion: initialState.state_version, planningJob: initialState.planning_job, workflowEvents, connectionStatus, refreshAuthoritativeState });
   const [tab, setTab] = useState<Tab>("Commands");
-  const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "running" ? "Generating plan..." : status;
+  const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "queued" ? "Planning queued" : status === "resolving_feasibility" ? "Resolving feasibility" : status === "waiting_g05" ? "Waiting for G05 approval" : status === "generating_plan" ? "Generating migration plan" : status === "running_planning_review" ? "Reviewing migration plan" : status === "waiting_retry" ? "Planning retry scheduled" : status === "technical_failed" ? "Planning failed" : status === "completed_blocked" ? "Feasibility blocked" : status === "waiting_g06" ? "Waiting for G06 approval" : status === "completed" ? "Planning approved" : status === "running" ? "Generating plan..." : status;
 
   useEffect(() => { if (status === "success") setTab("Commands"); }, [status, plan?.plan_checksum]);
 
@@ -25,7 +25,8 @@ export function MigrationPlanPanel({ runId, initialState, connectionStatus, work
     {status === "blocked" ? <p role="alert">Plan evidence is blocked or failed integrity validation. Refresh the authoritative run and review the backend guidance.</p> : null}
     {status === "stale" ? <p role="alert">The plan request used a stale state version. The authoritative snapshot was reloaded; review prerequisites before retrying.</p> : null}
     {status === "loading" ? <p role="status">Loading authoritative MigrationPlan...</p> : null}
-    {status === "empty" ? <p className={styles.note}>Planning is queued or waiting for the authoritative G05 decision. No manual plan-generation action is required.</p> : null}
+    {status === "empty" ? <p className={styles.note}>No persisted migration plan is available yet.</p> : null}
+    {initialState.planning_job && ["waiting_retry", "technical_failed"].includes(status) ? <div role="alert"><p>{initialState.planning_job.last_error_code ?? "PLANNING_FAILED"}{initialState.planning_job.last_error_stage ? " at " + initialState.planning_job.last_error_stage : ""}</p><p>{initialState.planning_job.last_error_message ?? "The planning continuation could not complete."}</p><p>Attempt {initialState.planning_job.attempt} of {initialState.planning_job.max_attempts}{initialState.planning_job.next_attempt_at ? "; next attempt " + initialState.planning_job.next_attempt_at : ""}{initialState.planning_job.correlation_id ? "; correlation " + initialState.planning_job.correlation_id : ""}</p></div> : null}
     {plan && stage ? <>
       <div className={panelStyles.grid}><div><span>Source</span><strong>{plan.plan.source_exact} ({plan.plan.source_family})</strong></div><div><span>Target</span><strong>{plan.plan.target_family}</strong></div><div><span>Plan version</span><strong>{plan.plan.version}</strong></div><div><span>Plan checksum</span><code>{plan.plan_checksum}</code></div></div>
       <h3>Major-stage route</h3><ol className={panelStyles.route}>{route.map((stageId, index) => <li className={panelStyles.routeItem} key={stageId}><span className={panelStyles.routeNumber}>{index + 1}</span><strong>{stageId}</strong><span className={styles.status}>{index === 0 ? "Stage 1 exact" : "Family route"}</span></li>)}</ol>

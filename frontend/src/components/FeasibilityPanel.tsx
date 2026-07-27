@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError } from "@/api/client";
 import { decideG05, getFeasibility, queueFeasibilityResolution } from "@/api/compatibility";
 import type { FeasibilityResponse, G05Decision } from "@/types/compatibility";
@@ -19,12 +19,12 @@ function correlationFrom(error: ApiClientError) {
   try { return (JSON.parse(error.responseBody ?? "{}") as { correlation_id?: string }).correlation_id ?? "unavailable"; } catch { return "unavailable"; }
 }
 
-function operationKey(prefix: string, runId: string) { return `${prefix}-${runId}-${Date.now()}`; }
+function operationKey(prefix: string, runId: string) { return `${prefix}-${runId}`; }
 
 type Feature5Inputs = AuthoritativeRunStateDto & { source_angular_exact?: string | null; runtime_candidates?: Array<Record<string, unknown>>; registry_snapshot?: { snapshot_id?: string; checksum?: string } | null; catalogue_version?: string | null };
 function sourceVersion(state: AuthoritativeRunStateDto) { return (state as Feature5Inputs).source_angular_exact ?? null; }
 
-export function FeasibilityPanel({ runId, initialState, connectionStatus, artifacts, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts: ArtifactRefDto[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
+export function FeasibilityPanel({ runId, initialState, connectionStatus, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts: ArtifactRefDto[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
   const [feasibility, setFeasibility] = useState<FeasibilityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -33,6 +33,15 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
   const [stale, setStale] = useState(false);
   const [decision, setDecision] = useState<G05Decision>("approve");
   const [comment, setComment] = useState("");
+  const operationKeys = useRef(new Map<string, string>());
+  const stableOperationKey = (prefix: string) => {
+    const key = operationKey(prefix, runId);
+    const existing = operationKeys.current.get(key);
+    if (existing) return existing;
+    const created = `${key}-${crypto.randomUUID()}`;
+    operationKeys.current.set(key, created);
+    return created;
+  };
   const latestEvent = useMemo(() => [...workflowEvents].reverse().find((event) => F05_EVENTS.includes(event.event_type)), [workflowEvents]);
   const inputs = initialState as Feature5Inputs;
   const exactSource = sourceVersion(initialState);
@@ -57,7 +66,7 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
   async function resolve() {
     setWorking(true); setError(null); setStale(false);
     try {
-      await queueFeasibilityResolution(runId, { expected_state_version: initialState.state_version, idempotency_key: operationKey("feasibility", runId) });
+      await queueFeasibilityResolution(runId, { expected_state_version: initialState.state_version, idempotency_key: stableOperationKey("feasibility") });
       setEmpty(false);
       await refresh();
       await refreshAuthoritativeState?.();
@@ -72,7 +81,7 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
     if (decision === "approve_with_comment" && !comment.trim()) { setError("Add a comment before approving with comment."); return; }
     setWorking(true); setError(null); setStale(false);
     try {
-      const result = await decideG05(runId, { expected_state_version: feasibility.state_version, idempotency_key: operationKey("g05", runId), gate_version: feasibility.gate_version, package_checksum: feasibility.package_checksum, artifact_set_checksum: String(feasibility.package.artifact_set_checksum ?? ""), workspace_fingerprint: (feasibility.package.workspace_fingerprint as string | null | undefined) ?? null, plan_version: (feasibility.package.plan_version as string | null | undefined) ?? null, decision, comment: comment.trim() || null });
+      const result = await decideG05(runId, { expected_state_version: feasibility.state_version, idempotency_key: stableOperationKey("g05"), gate_version: feasibility.gate_version, package_checksum: feasibility.package_checksum, artifact_set_checksum: String(feasibility.package.artifact_set_checksum ?? ""), workspace_fingerprint: (feasibility.package.workspace_fingerprint as string | null | undefined) ?? null, plan_version: (feasibility.package.plan_version as string | null | undefined) ?? null, decision, comment: comment.trim() || null });
       setFeasibility((current) => current ? { ...current, gate_status: result.status, gate_decision: result.decision, state_version: result.state_version, event_sequence: result.event_sequence } : current);
       await refreshAuthoritativeState?.();
       await refresh();

@@ -6,7 +6,15 @@ import { decideG06, explainPlan, getPlanReview, revisePlan } from "@/api/plannin
 import type { G06Decision, PlanReviewChanges, PlanReviewResponse } from "@/types/planning";
 
 export type PlanReviewStatus = "loading" | "empty" | "running" | "success" | "blocked" | "stale" | "reconnecting" | "failure" | "authorization";
-const operationKey = (runId: string, action: string) => `planning-review-${action}-${runId}-${Date.now()}`;
+const operationKeys = new Map<string, string>();
+const operationKey = (runId: string, action: string) => {
+  const key = `planning-review-${action}-${runId}`;
+  const existing = operationKeys.get(key);
+  if (existing) return existing;
+  const created = key + "-" + crypto.randomUUID();
+  operationKeys.set(key, created);
+  return created;
+};
 const correlationId = (error: unknown) => { try { return JSON.parse(error instanceof ApiClientError ? error.responseBody ?? "{}" : "{}").correlation_id ?? "unavailable"; } catch { return "unavailable"; } };
 
 export function usePlanReview({ runId, stateVersion, workflowEvents, connectionStatus, refreshAuthoritativeState }: { runId: string; stateVersion: number; workflowEvents: Array<{ event_type: string; sequence: number }>; connectionStatus: string; refreshAuthoritativeState: () => Promise<unknown> }) {
