@@ -28,8 +28,10 @@ from app.repositories.models import (
     WorkflowEventModel,
 )
 from app.repositories.session import session_scope
+from app.domain.compatibility import calculate_stage1_profile_checksum
 from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService
-from app.services.artifact_binding import canonical_artifact_references
+from app.services.artifact_binding import canonical_artifact_references, canonical_artifact_set_checksum
+from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 
 
@@ -176,14 +178,16 @@ class PlanningEvidenceApplicationService:
         )
         if execution_profile is None or execution_profile.status not in {"resolved", "selected"}:
             raise PlanningEvidenceError("PLANNING_RUNTIME_PROFILE_MISSING", "The selected execution profile is not durably resolved for this run.", 409)
-        if execution_profile.selected_checksum != profile.get("checksum"):
+        if not profile.get("source_execution_profile_checksum") or execution_profile.selected_checksum != profile.get("source_execution_profile_checksum"):
             raise PlanningEvidenceError("STALE_EXECUTION_PROFILE", "The selected execution profile checksum no longer matches the approved G05 binding.", 409)
+        if calculate_stage1_profile_checksum(profile) != profile.get("stage1_profile_checksum") or profile.get("checksum") != profile.get("stage1_profile_checksum"):
+            raise PlanningEvidenceError("STALE_EXECUTION_PROFILE", "The approved Stage 1 profile checksum is invalid.", 409)
         persisted_profile = next(
             (
                 item
                 for item in execution_profile.profiles
                 if item.get("profile_id") == profile.get("profile_id")
-                and item.get("checksum") == profile.get("checksum")
+                and item.get("checksum") == execution_profile.selected_checksum
             ),
             None,
         )
@@ -198,14 +202,21 @@ class PlanningEvidenceApplicationService:
                 raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route contains an exact target that differs from the approved feasibility package.", 409)
         approved_ids = list(gate.prerequisite_artifact_ids or gate.artifact_ids)
         approved_checksums = dict(gate.prerequisite_artifact_checksums or resolution.artifact_checksums or {})
+        if not gate.input_bundle_checksum:
+            raise PlanningEvidenceError("G05_INPUT_BUNDLE_MISSING", "The approved G05 input bundle is incomplete.", 409)
         if any(not approved_checksums.get(artifact_id) for artifact_id in approved_ids):
             raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 artifact bundle is incomplete or tampered.", 409)
         bound = canonical_artifact_references(
             {"artifact_id": artifact_id, "checksum": approved_checksums.get(artifact_id)}
             for artifact_id in approved_ids
         )
-        if self._approved_artifact_set_checksum(bound) != gate.artifact_set_checksum:
-            raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 artifact bundle is stale or tampered.", 409)
+        if canonical_artifact_set_checksum(bound) != gate.artifact_set_checksum:
+            raise PlanningEvidenceError("G05_ARTIFACT_SET_CHECKSUM_MISMATCH", "The approved G05 artifact bundle is stale or tampered.", 409)
+        expected_bundle = CompatibilityEvidenceApplicationService._input_bundle_checksum(
+            bound, gate.package_checksum, gate.workspace_fingerprint, gate.plan_version
+        )
+        if gate.input_bundle_checksum != expected_bundle:
+            raise PlanningEvidenceError("G05_INPUT_BUNDLE_STALE", "The approved G05 input bundle checksum is stale or tampered.", 409)
         return tuple(PlanArtifactInput(**item) for item in bound)
 
     @staticmethod

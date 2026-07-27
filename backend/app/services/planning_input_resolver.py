@@ -91,6 +91,7 @@ class PlanningInputResolver:
             source_angular_exact=source_exact, catalogue_version=catalogue.version,
             registry_snapshot_id=registry.snapshot_id, registry_snapshot_checksum=registry.checksum,
             prerequisite_artifacts=list(references), runtime_candidates=runtime,
+            source_execution_profile_checksum=profile_record.selected_checksum,
             workspace_fingerprint=gate.workspace_fingerprint,
             resolved_at=now,
         )
