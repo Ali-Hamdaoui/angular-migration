@@ -27,7 +27,7 @@ class GovernedFakeProvider:
         if self.fail:
             raise RuntimeError("provider unavailable")
         usage = build_usage_record(run_id=request.run_id, stage_id=None, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="isolated-fake", input_tokens=7, output_tokens=5, input_price_per_million=1.0, output_price_per_million=2.0)
-        return LlmResponse(response_id=f"fake-{self.calls}", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="isolated-fake", status="completed", summary="safe", structured_output={"answer": "The governed fake answer.", "citations": [{"artifact_id": "approved-evidence", "checksum": "sha256:approved"}]}, usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="assistant", schema_version="schema", pricing_version="pricing")
+        return LlmResponse(response_id=f"fake-{self.calls}", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="isolated-fake", status="completed", summary="safe", structured_output={"answer": "The governed fake answer.", "citations": [{"artifact_id": "approved-evidence", "checksum": "sha256:approved", "stage_id": None}]}, usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="assistant", schema_version="schema", pricing_version="pricing")
 
 
 def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):

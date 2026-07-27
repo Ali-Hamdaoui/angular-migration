@@ -15,10 +15,13 @@ from app.domain.contracts import (
 from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
+    ExecutionProfileModel,
+    G02ApprovalModel,
     LlmInvocationModel,
     MigrationRunModel,
     MigrationStageModel,
     StageStepModel,
+    SourceSnapshotModel,
     UsageCostRecordModel,
     WorkflowEventModel,
 )
@@ -56,6 +59,9 @@ class WorkflowProjectionService:
         invocations = list(session.scalars(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id).order_by(LlmInvocationModel.created_at, LlmInvocationModel.id)))
         usage = {item.invocation_id: item for item in session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == run_id))}
         artifacts = list(session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id).order_by(ArtifactMetadataModel.created_at, ArtifactMetadataModel.id)))
+        snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
+        g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
+        execution_profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
 
         current_stage = next((item for item in reversed(stages) if item.status not in {"PASSED", "CANCELLED"}), None) or (stages[-1] if stages else None)
         current_step = next((item for item in reversed(steps) if item.status not in {"PASSED", "CANCELLED"}), None)
@@ -91,16 +97,37 @@ class WorkflowProjectionService:
             total_cost_usd=sum(item.total_cost_usd for item in records) if records else None,
         )
         referenced_artifact_ids = [artifact_id for event in events for artifact_id in (event.payload.get("artifact_ids", []) if isinstance(event.payload.get("artifact_ids", []), list) else [])]
+        if snapshot is not None and snapshot.status == "created":
+            referenced_artifact_ids.extend(snapshot.artifact_ids or [])
+        if g02 is not None and g02.status == "approved":
+            referenced_artifact_ids.extend(g02.artifact_ids or [])
+        if execution_profile is not None:
+            referenced_artifact_ids.extend(execution_profile.artifact_ids or [])
         referenced_order = {artifact_id: index for index, artifact_id in enumerate(referenced_artifact_ids)}
-        selected_artifacts = [item for item in artifacts if item.immutable and item.id in referenced_order]
+        def canonical_ids(item):
+            return {item.id, item.id.removeprefix("metadata-")}
+        selected_artifacts = [item for item in artifacts if item.immutable and canonical_ids(item) & referenced_order.keys()]
         selected_artifacts.sort(key=lambda item: referenced_order.get(item.id, len(referenced_order)))
         evidence = [AssistantEvidenceReferenceDto(artifact_id=item.id, label=item.relative_path, checksum=item.checksum, run_id=item.run_id, stage_id=item.stage_id, category=item.artifact_type, lineage=item.owner_reference, immutable=item.immutable) for item in selected_artifacts]
         phase_labels = {"PREFLIGHT_SNAPSHOT": "Preflight Snapshot", "DISCOVERY_BASELINE": "Baseline", "FEASIBILITY_PLANNING": "Planning", "STAGED_MIGRATION": "Transformation", "FINAL_ASSURANCE": "Validation", "DELIVERY_REPORTING": "Completion"}
         completed_work = list(completed)
+        if snapshot is not None and snapshot.status == "created":
+            completed_work.append("Immutable source snapshot")
+        if g02 is not None and g02.status == "approved":
+            completed_work.append("G02 approval")
+        completed_work = list(dict.fromkeys(completed_work))
         remaining_work: list[str] = []
         current_gate = run.approval_status if run.approval_status not in {None, "not_required"} else None
         current_stage_value = current_stage.id if current_stage else None
         current_step_value = current_step.name if current_step else None
+        profile_blockers = list(execution_profile.blockers or []) if execution_profile is not None else []
+        profile_guidance = list(execution_profile.guidance or []) if execution_profile is not None else []
+        failed_event = next((event for event in reversed(events) if event.event_type.endswith("_FAILED")), None)
+        blocker_value = profile_blockers[0] if execution_profile is not None and execution_profile.status == "blocked" and profile_blockers else None
+        failure_value = failed_event.event_type if failed_event is not None else None
+        next_action_value = None
+        if blocker_value and profile_guidance:
+            next_action_value = f"{profile_guidance[0]} Retry runtime-profile resolution."
         return AssistantWorkflowProjectionDto(
             application_name=_value(None, supported=False),
             run_id=run_id,
@@ -116,7 +143,7 @@ class WorkflowProjectionService:
             step=_value(current_step_value), gate=_value(current_gate),
             status=_value(run.status), completed_work=completed_work,
             remaining_work=remaining_work,
-            blocker=_value(None), waiting_reason=_value(None), failure_reason=_value(None),
-            repair_state=_value(run.repair_status), next_permitted_action=_value(None),
+            blocker=_value(blocker_value), waiting_reason=_value(None), failure_reason=_value(failure_value),
+            repair_state=_value(run.repair_status), next_permitted_action=_value(next_action_value),
             workflow_state_version=run.state_version, operational_statistics=stats, evidence_references=evidence,
         )

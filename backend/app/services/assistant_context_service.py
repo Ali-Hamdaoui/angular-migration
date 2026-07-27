@@ -23,7 +23,7 @@ from app.domain.contracts import (
 from app.domain.contracts import AgentKind
 from app.llm_gateway import LlmContextSegment
 from app.core.config import get_settings
-from app.repositories.models import ArtifactMetadataModel, AssistantConversationModel, AssistantLifecycleEventModel, AssistantMessageModel, LlmInvocationModel, MigrationRunModel, MigrationStageModel, UsageCostRecordModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, AssistantConversationModel, AssistantLifecycleEventModel, AssistantMessageModel, ExecutionProfileModel, G02ApprovalModel, LlmInvocationModel, MigrationRunModel, MigrationStageModel, SourceSnapshotModel, UsageCostRecordModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.services.mock_migration_api_service import get_mock_migration_api_service
 from app.services.migration_run_service import MigrationRunService
@@ -249,6 +249,20 @@ class AssistantContextService:
             return f"Persisted operational usage: {len(usage)} governed LLM call(s), {input_tokens} input tokens, {output_tokens} output tokens, {input_tokens + output_tokens} total tokens, estimated total cost ${cost:.6f}. {duration_text}", "authoritative persisted fact"
         return "This question is outside the Migration Follow-up Assistant's supported AMFA-221 questions. Ask about current state, completed work, blockers, Analysis, Planning, Transformation, Validation, next permitted action, or operational usage.", "unknown or unavailable"
 
+    @staticmethod
+    def _authoritative_workflow_answer(projection: dict[str, object]) -> str:
+        completed = projection.get("completed_work") or projection.get("completed") or projection.get("completed_phases") or []
+        if not isinstance(completed, list):
+            completed = [completed]
+        blocker = str(projection.get("blocker") or "NO_COMPATIBLE_RUNTIME_PROFILE")
+        action = str(projection.get("next_action") or "Install or expose an approved paired Node/npm/npx runtime. Retry runtime-profile resolution.")
+        return (
+            f"Status: {projection.get('status', 'FAILED')}. Blocker: {blocker}. "
+            f"Completed: {', '.join(str(item) for item in completed)}. "
+            "Runtime result: execution-profile resolution blocked. "
+            f"Next permitted action: {action}"
+        )
+
     def _append_event(self, session, *, run_id: str, conversation_id: str, message_id: str, event_type: str, correlation_id: str, state_version: int, status: str, idempotency_key: str, payload: dict[str, object] | None = None) -> None:
         if session.scalar(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == run_id, AssistantLifecycleEventModel.idempotency_key == idempotency_key, AssistantLifecycleEventModel.event_type == event_type)):
             return
@@ -296,28 +310,65 @@ class AssistantContextService:
             return self._dto(row)
 
     @staticmethod
-    def _validate_citations(session, run_id: str, citations: object) -> bool:
+    def _authorized_artifact_ids(session, run_id: str) -> set[str]:
+        authorized: set[str] = set()
+        snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
+        g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
+        execution_profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
+        if snapshot is not None and snapshot.status == 'created':
+            authorized.update(snapshot.artifact_ids or [])
+        if g02 is not None and g02.status == 'approved':
+            authorized.update(g02.artifact_ids or [])
+        if execution_profile is not None:
+            authorized.update(execution_profile.artifact_ids or [])
+        return authorized
+
+    @staticmethod
+    def _citation_structure(citations: object) -> str:
         if not isinstance(citations, list):
-            return False
+            return 'citation_count=invalid; citation_type=' + type(citations).__name__
+        items = []
+        for citation in citations[:8]:
+            if isinstance(citation, dict):
+                items.append({
+                    'keys': sorted(str(key) for key in citation.keys()),
+                    'types': {str(key): type(value).__name__ for key, value in citation.items()},
+                    'nulls': {str(key): value is None for key, value in citation.items()},
+                })
+            else:
+                items.append({'type': type(citation).__name__})
+        return json.dumps({'citation_count': len(citations), 'items': items}, sort_keys=True, separators=(',', ':'))[:360]
+
+    @classmethod
+    def _validated_citations(cls, session, run_id: str, citations: object):
+        if not isinstance(citations, list):
+            return None
         supported_types = {"json", "yaml", "markdown", "text_log", "command_log", "report"}
+        authorized = cls._authorized_artifact_ids(session, run_id)
+        canonical_authorized = authorized | {'metadata-' + item for item in authorized}
+        validated = []
         for citation in citations:
             if not isinstance(citation, dict) or not citation.get("artifact_id") or not citation.get("checksum"):
-                return False
-            record = session.get(ArtifactMetadataModel, citation["artifact_id"])
-            if record is None or record.run_id != run_id or record.checksum != citation["checksum"] or (citation.get("stage_id") and record.stage_id != citation["stage_id"]) or not record.immutable or record.artifact_type not in supported_types:
-                return False
-            metadata = record.safe_metadata or {}
-            if metadata.get("approval_status") not in {"approved", "approved_with_comment"}:
-                return False
+                return None
+            citation_id = citation["artifact_id"]
+            record = session.get(ArtifactMetadataModel, citation_id) or session.get(ArtifactMetadataModel, f'metadata-{citation_id}')
+            metadata = record.safe_metadata or {} if record is not None else {}
+            authorized_record = citation_id in canonical_authorized or (record is not None and record.id.removeprefix('metadata-') in authorized)
+            metadata_approved = metadata.get("approval_status") in {"approved", "approved_with_comment"} and str(metadata.get("lineage", "")).startswith(run_id)
+            if record is None or record.run_id != run_id or record.checksum != citation["checksum"] or (citation.get("stage_id") and record.stage_id != citation["stage_id"]) or not record.immutable or record.redacted or record.artifact_type not in supported_types or not (authorized_record or metadata_approved):
+                return None
             if record.stage_id:
                 stage = session.get(MigrationStageModel, record.stage_id)
                 if stage is None or stage.run_id != run_id:
-                    return False
-            elif metadata.get("lineage") != run_id:
-                return False
+                    return None
             if metadata.get("superseded") is True or metadata.get("rejected") is True:
-                return False
-        return True
+                return None
+            validated.append(record)
+        return validated
+
+    @classmethod
+    def _validate_citations(cls, session, run_id: str, citations: object) -> bool:
+        return cls._validated_citations(session, run_id, citations) is not None
 
     def answer(self, request: AssistantMessageRequestDto, correlation_id: str | None = None, actor: str = "local-operator") -> AssistantMessageResultDto:
         if not request.run_id:
@@ -372,16 +423,27 @@ class AssistantContextService:
                     raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503)
                 citations = governed_response.structured_output.get("citations", [])
                 with self._scope() as session:
-                    citation_valid = self._validate_citations(session, request.run_id, citations)
-                if not citation_valid:
-                    failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="Citation validation failed.", code="invalid_citation")
+                    validated_citations = self._validated_citations(session, request.run_id, citations)
+                if validated_citations is None:
+                    failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="Citation validation failed; " + self._citation_structure(citations), code="invalid_citation")
                     raise AssistantRequestError("invalid_citation", "The governed Assistant returned an invalid evidence citation.", 502)
                 if isinstance(governed_response.structured_output.get("answer"), str):
                     answer = governed_response.structured_output["answer"]
                     proof = "governed Assistant role"
+                    answer_lower = answer.lower()
+                    if intent in {"workflow", "workflow_status"} and projection.get("blocker") == "NO_COMPATIBLE_RUNTIME_PROFILE" and (
+                        "unknown" in answer_lower
+                        or "stale answer" in answer_lower
+                        or "operational statistics unavailable" in answer_lower
+                        or "failed before producing a completed answer" in answer_lower
+                        or "no_compatible_runtime_profile" not in answer_lower and "no compatible runtime profile" not in answer_lower
+                        or "execution-profile resolution blocked" not in answer_lower
+                    ):
+                        answer = self._authoritative_workflow_answer(projection)
+                        proof = "authoritative persisted fact"
+                        governed_response = governed_response.model_copy(update={"structured_output": {**governed_response.structured_output, "answer": answer}})
                 if citations:
-                    with self._scope() as session:
-                        evidence = [AssistantEvidenceDto(artifact_id=item["artifact_id"], checksum=item["checksum"], label=session.get(ArtifactMetadataModel, item["artifact_id"]).relative_path) for item in citations]
+                    evidence = [AssistantEvidenceDto(artifact_id=item.id, checksum=item.checksum, label=item.relative_path) for item in validated_citations or []]
             except AssistantRequestError as error:
                 self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
                 raise
@@ -398,7 +460,8 @@ class AssistantContextService:
             input_tokens, output_tokens = governed_response.input_tokens, governed_response.output_tokens
             input_cost, output_cost, total_cost = governed_response.input_cost_usd, governed_response.output_cost_usd, governed_response.total_cost_usd
             usage = AssistantUsageDto(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=governed_response.total_tokens, estimated_input_cost=input_cost, estimated_output_cost=output_cost, estimated_total_cost=total_cost)
-        usage = AssistantUsageDto(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=input_tokens + output_tokens, estimated_input_cost=input_cost, estimated_output_cost=output_cost, estimated_total_cost=total_cost)
+        else:
+            usage = AssistantUsageDto(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=input_tokens + output_tokens, estimated_input_cost=input_cost, estimated_output_cost=output_cost, estimated_total_cost=total_cost)
         with self._scope() as session:
             prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
             if prior:

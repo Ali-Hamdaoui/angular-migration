@@ -10,12 +10,14 @@ from app.domain.contracts import AgentKind, AssistantMessageRequestDto
 from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.api.llm_contracts import LlmInvocationResponse
 from app.main import app
-from app.repositories.models import ArtifactMetadataModel, AssistantLifecycleEventModel, AssistantMessageModel, Base, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, AssistantLifecycleEventModel, AssistantMessageModel, Base, ExecutionProfileModel, G02ApprovalModel, LlmInvocationModel, MigrationRunModel, SourceSnapshotModel, UsageCostRecordModel, WorkflowEventModel
 from app.services.assistant_context_service import AssistantContextService
 from app.api.routes import assistant as assistant_routes
 from app.domain.contracts import AssistantWorkflowProjectionDto, ProjectionValue
 from app.core.config import get_settings
 from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
+from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
+from app.services.workflow_projection_service import WorkflowProjectionService
 
 
 class Gateway:
@@ -265,6 +267,32 @@ def test_assistant_usage_matches_governed_invocation_records(tmp_path):
     engine.dispose()
 
 
+def test_failed_runtime_profile_projection_uses_authoritative_records_and_citation_allowlist(tmp_path):
+    engine, scope, sessions = setup(tmp_path)
+    now = datetime.now(UTC)
+    with sessions() as session:
+        run = session.get(MigrationRunModel, "run-1")
+        run.status = "FAILED"
+        run.run_phase = "PREFLIGHT_SNAPSHOT"
+        run.approval_status = "approved"
+        run.state_version = 12
+        for artifact_id in ("artifact-snapshot", "artifact-g02", "artifact-profile"):
+            session.add(ArtifactMetadataModel(id=f"metadata-{artifact_id}", run_id="run-1", stage_id=None, artifact_type="json", relative_path=f"evidence/{artifact_id}.json", checksum=f"sha256:{artifact_id}", immutable=True, created_at=now))
+        session.add(SourceSnapshotModel(id="snapshot-1", run_id="run-1", idempotency_key="snapshot-1", actor="worker", status="created", source_path="source", snapshot_path="snapshot", manifest_id="manifest", fingerprint="sha256:snapshot", policy_version="policy", file_count=1, total_size_bytes=1, exclusions=[], git_metadata={}, artifact_ids=["artifact-snapshot"], state_version=8, event_sequence=2, created_at=now, updated_at=now))
+        session.add(G02ApprovalModel(id="g02-1", run_id="run-1", gate_id="G02", gate_version="v1", idempotency_key="g02-1", actor="operator", status="approved", decision="approved", package_checksum="sha256:package", artifact_set_checksum="sha256:set", snapshot_id="snapshot-1", state_version=9, event_sequence=3, baseline_input_boundary="snapshot", package={}, artifact_ids=["artifact-g02"], created_at=now, updated_at=now))
+        session.add(ExecutionProfileModel(id="profile-1", run_id="run-1", idempotency_key="profile-1", request_checksum="sha256:req", policy_version="policy", status="blocked", source_angular_exact="18.2.0", selected_profile_id=None, selected_checksum=None, profiles=[], blockers=["NO_COMPATIBLE_RUNTIME_PROFILE"], guidance=["Install or expose an approved paired Node/npm/npx runtime."], artifact_ids=["artifact-profile"], state_version=12, event_sequence=5, created_at=now, updated_at=now))
+        session.add(WorkflowEventModel(id="failed-runtime", run_id="run-1", event_type="SOURCE_INTAKE_FAILED", idempotency_key="failed-runtime", actor="worker", reason="failed", sequence=6, payload={}, occurred_at=now))
+        session.commit()
+        projection = WorkflowProjectionService().build(session, "run-1").model_dump(mode="json")
+        _, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-1", "Where is the migration now?")
+    assert projection["status"] == {"value": "FAILED", "availability": "known"}
+    assert projection["blocker"] == {"value": "NO_COMPATIBLE_RUNTIME_PROFILE", "availability": "known"}
+    assert projection["next_permitted_action"]["availability"] == "known"
+    assert {item["artifact_id"] for item in projection["evidence_references"]} == {"metadata-artifact-snapshot", "metadata-artifact-g02", "metadata-artifact-profile"}
+    assert {item["artifact_id"] for item in refs} == {"metadata-artifact-snapshot", "metadata-artifact-g02", "metadata-artifact-profile"}
+    engine.dispose()
+
+
 def test_assistant_uses_shared_projection_over_conversation_and_does_not_infer_fields(tmp_path):
     engine, scope, _ = setup(tmp_path)
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
@@ -397,7 +425,7 @@ def test_budget_block_happens_before_assistant_provider_execution(tmp_path):
 
 def test_wrong_run_citation_is_rejected(tmp_path):
     engine, scope, _ = setup(tmp_path)
-    gateway = CitationGateway([{"artifact_id": "not-run-1", "checksum": "sha256:wrong"}])
+    gateway = CitationGateway([{"artifact_id": "not-run-1", "checksum": "sha256:wrong", "stage_id": None}])
     with pytest.raises(Exception, match="citation"):
         AssistantContextService(session_scope_factory=scope, gateway=gateway).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="wrong-citation"))
     engine.dispose()
@@ -410,9 +438,9 @@ def test_citation_requires_approved_supported_lineage_and_immutable_artifact(tmp
         session.add(ArtifactMetadataModel(id="approved", run_id="run-1", stage_id=None, artifact_type="report", relative_path="evidence/report.json", checksum="sha256:approved", owner_reference="arbitrary-owner", immutable=True, safe_metadata={"approval_status": "approved", "lineage": "run-1"}, created_at=now))
         session.add(ArtifactMetadataModel(id="unapproved", run_id="run-1", stage_id=None, artifact_type="report", relative_path="evidence/unapproved.json", checksum="sha256:unapproved", immutable=True, safe_metadata={"approval_status": "pending", "lineage": "run-1"}, created_at=now))
         session.commit()
-    valid = AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([{"artifact_id": "approved", "checksum": "sha256:approved"}])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="valid-citation"))
+    valid = AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([{"artifact_id": "approved", "checksum": "sha256:approved", "stage_id": None}])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="valid-citation"))
     assert valid.answer == "Cited answer."
-    for key, citation in (("bad-checksum", {"artifact_id": "approved", "checksum": "sha256:wrong"}), ("missing", {"artifact_id": "missing", "checksum": "sha256:none"}), ("unapproved", {"artifact_id": "unapproved", "checksum": "sha256:unapproved"}), ("foreign-stage", {"artifact_id": "approved", "checksum": "sha256:approved", "stage_id": "foreign-stage"})):
+    for key, citation in (("bad-checksum", {"artifact_id": "approved", "checksum": "sha256:wrong", "stage_id": None}), ("missing", {"artifact_id": "missing", "checksum": "sha256:none", "stage_id": None}), ("unapproved", {"artifact_id": "unapproved", "checksum": "sha256:unapproved", "stage_id": None}), ("foreign-stage", {"artifact_id": "approved", "checksum": "sha256:approved", "stage_id": "foreign-stage"})):
         with pytest.raises(Exception, match="citation"):
             AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([citation])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key=key))
     engine.dispose()
