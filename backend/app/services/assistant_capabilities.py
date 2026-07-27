@@ -1,6 +1,6 @@
 """Deterministic in-process registry for governed Assistant capabilities."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 
@@ -35,25 +35,31 @@ class AssistantCapabilityRegistry:
 def default_capability_registry() -> AssistantCapabilityRegistry:
     registry = AssistantCapabilityRegistry()
     for key, intent in (
-        ("workflow_status", "workflow_status"), ("failure_explanation", "blocker_or_failure"),
-        ("analysis", "analysis_explanation"), ("planning", "planning_explanation"),
-        ("transformation", "transformation_explanation"), ("validation", "validation_explanation"),
-        ("usage", "usage_and_cost"), ("next_steps", "next_steps"),
+        ("workflow_status", "workflow_status"),
+        ("failure_explanation", "blocker_or_failure"),
+        ("completed_work", "completed_work"),
+        ("analysis", "analysis_explanation"),
+        ("planning", "planning_explanation"),
+        ("transformation", "transformation_explanation"),
+        ("validation", "validation_explanation"),
+        ("usage", "usage_and_cost"),
+        ("next_steps", "next_steps"),
+        ("general_migration_question", "general_migration_question"),
     ):
         registry.register(AssistantCapability(key, frozenset({intent}), response_policy="strict_read_only"))
     return registry
 
 
 def classify_intent(question: str) -> str:
-    """Classify natural variants deterministically and fail closed."""
+    """Classify common migration questions; unknown read-only questions stay answerable."""
     q = " ".join(question.lower().split())
     if any(term in q for term in ("approve", "reject", "execute", "apply", "patch", "modify files", "change workflow", "run command")):
-        return "unsupported"  # mutation guard is handled separately by the caller
+        return "unsupported"  # the caller converts this to the explicit mutation guard
     if any(term in q for term in ("token", "cost", "usage", "consumed", "duration")):
         return "usage_and_cost"
     if any(term in q for term in ("current migration", "migration state", "where is", "what is the current", "workflow", "status", "gate")):
         return "workflow_status"
-    if any(term in q for term in ("why did", "why has", "stop", "blocker", "failure", "failed", "error")):
+    if any(term in q for term in ("why", "stop", "blocker", "failure", "failed", "error", "root cause")):
         return "blocker_or_failure"
     if any(term in q for term in ("completed", "done", "finished")):
         return "completed_work"
@@ -67,4 +73,4 @@ def classify_intent(question: str) -> str:
         return "transformation_explanation"
     if any(term in q for term in ("validation", "test", "lint")):
         return "validation_explanation"
-    return "unsupported"
+    return "general_migration_question"

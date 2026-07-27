@@ -477,6 +477,7 @@ class AssistantUsageDto(ContractModel):
 
 class AssistantMessageResultDto(ContractModel):
     message_id: str
+    model: str = "deterministic_projection"
     message_order: int = Field(ge=1)
     conversation_id: str
     run_id: str

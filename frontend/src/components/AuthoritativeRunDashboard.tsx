@@ -21,7 +21,7 @@ import { MigrationPlanPanel } from "./MigrationPlanPanel";
 import { PlanReviewPanel } from "./PlanReviewPanel";
 import { CommandPolicyInspector } from "./CommandPolicyInspector";
 import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
-import { AssistantPanel } from "./AssistantPanel";
+import { AssistantDock } from "./AssistantPanel";
 import { LlmDiagnosticsPanel } from "./LlmDiagnosticsPanel";
 import { ControlTowerHeader } from "./control-tower/ControlTowerHeader";
 import { ControlTowerSidebar, type ControlTowerSection } from "./control-tower/ControlTowerSidebar";
@@ -69,8 +69,8 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
         <section hidden={activeSection !== "evidence"} className="controlTowerSection" aria-labelledby="evidence-navigation-item">{heading("Files & Artifacts", "Immutable evidence registered by the backend.")}<section className={styles.panel} aria-label="Run evidence">{state.artifacts.length === 0 ? <p className={styles.note}>No run artifacts are available.</p> : <ul className={styles.list}>{state.artifacts.map((artifact) => <li key={artifact.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`} target="_blank" rel="noreferrer"><code>{artifact.relative_path}</code></a><span>{artifact.checksum}</span></li>)}</ul>}</section></section>
         <section hidden={activeSection !== "llm"} className="controlTowerSection" aria-labelledby="llm-navigation-item">{heading("LLM Diagnostics", "Provider activity and usage projected from the run.")}<LlmDiagnosticsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} refreshAuthoritativeState={refresh} workflowEvents={state.workflow_events} /></section>
         <section hidden={activeSection !== "events"} className="controlTowerSection" aria-labelledby="events-navigation-item">{heading("Workflow Events", "Searchable ordered history from the authoritative stream.")}<WorkflowEventsSection events={state.workflow_events} /></section>
-        <section hidden={activeSection !== "assistant"} className="controlTowerSection" aria-labelledby="assistant-navigation-item">{heading("Assistant", "Read-only answers grounded in the authoritative run projection.")}<AssistantPanel runId={state.run_id} phase={state.run_phase} stateVersion={state.state_version} workflowStatus={state.status} /></section>
       </div>
+      <AssistantDock runId={state.run_id} phase={state.run_phase} stateVersion={state.state_version} workflowStatus={state.status} />
     </div>
   </main>;
 }

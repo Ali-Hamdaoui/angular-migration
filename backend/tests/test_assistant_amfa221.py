@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 import pytest
 
-from app.domain.contracts import AgentKind, AssistantMessageRequestDto
+from app.domain.contracts import AgentKind, ArtifactType, AssistantMessageRequestDto
 from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.api.llm_contracts import LlmInvocationResponse
 from app.main import app
@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
 from app.services.workflow_projection_service import WorkflowProjectionService
+from app.artifact_store.local_store import LocalFilesystemArtifactStore
 
 
 class Gateway:
@@ -120,13 +121,15 @@ def test_in_process_post_persists_and_get_restores_ordered_history(tmp_path):
         engine.dispose()
 
 
-def test_mutation_is_refused_and_unsupported_is_unknown(tmp_path):
+def test_mutation_is_refused_and_generic_read_only_question_remains_answerable(tmp_path):
     engine, scope, _ = setup(tmp_path)
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
     mutation = service.answer(AssistantMessageRequestDto(run_id="run-1", message="Approve the current gate.", idempotency_key="mutation"))
-    unsupported = service.answer(AssistantMessageRequestDto(run_id="run-1", message="What is the weather?", idempotency_key="unsupported"))
+    generic = service.answer(AssistantMessageRequestDto(run_id="run-1", message="Explain this migration in plain language.", idempotency_key="generic"))
     assert "read-only" in mutation.answer
-    assert unsupported.proof_label == "unknown or unavailable"
+    assert generic.proof_label == "authoritative persisted fact"
+    assert "Current migration context" in generic.answer
+    assert generic.model == "test-assistant"
     engine.dispose()
 
 
@@ -196,12 +199,11 @@ def test_observed_g02_projection_maps_authoritative_progress_and_zero_usage(tmp_
     operations = service.answer(AssistantMessageRequestDto(run_id="run-1", conversation_id=current.conversation_id, message="How much token usage and cost has the migration consumed?", idempotency_key="observed-usage"))
 
     assert "Preflight Snapshot" in current.answer
-    assert "Current gate: unknown" in current.answer
-    assert "G02" not in current.answer
+    assert "Current gate: G02 pending" in current.answer
     assert "Workflow state version: " in current.answer
-    assert "next permitted action is: unknown" in current.answer
-    assert "Source intake" not in completed.answer
-    assert "Source snapshot" not in completed.answer
+    assert "Review and decide G02" in current.answer
+    assert "Source Intake Completed" in completed.answer
+    assert "Snapshot Created" in completed.answer
     assert current.usage.total_tokens == 0
     assert current.usage.estimated_total_cost == 0
     assert operations.usage.total_tokens == 0
@@ -320,6 +322,7 @@ def test_normal_migration_question_uses_governed_assistant_role(tmp_path):
     )
     assert gateway.calls
     assert result.answer == "The authoritative answer is Analysis."
+    assert result.model == "test-assistant"
     with scope() as session:
         assert session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == "run-1")) is not None
         assert session.scalar(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == "run-1")) is not None
@@ -339,6 +342,39 @@ def test_assistant_routes_through_s2_f03_application_service_not_gateway(tmp_pat
     engine.dispose()
 
 
+def test_deep_answer_mode_uses_bounded_output_budget_and_role_aware_history(tmp_path):
+    engine, scope, _ = setup(tmp_path)
+    invocation_service = InvocationServiceSpy()
+    service = AssistantContextService(session_scope_factory=scope, invocation_service=invocation_service)
+    first = service.answer(AssistantMessageRequestDto(run_id="run-1", message="Explain the current migration.", idempotency_key="history-first"))
+    service.answer(AssistantMessageRequestDto(run_id="run-1", conversation_id=first.conversation_id, message="Compare that with the next phase.", answer_mode="deep", idempotency_key="history-deep"))
+    request = invocation_service.calls[-1][0]
+    assert request.max_output_tokens == 8_000
+    history_segment = next(item for item in request.context if item.segment_id == "history")
+    assert '"role": "user"' in history_segment.content
+    assert '"role": "assistant"' in history_segment.content
+    engine.dispose()
+
+
+def test_evidence_retrieval_reads_and_ranks_checksum_bound_artifact_content(tmp_path):
+    engine, scope, sessions = setup(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
+    relevant = store.write_text_artifact("run-1", "03_planning/risk-report.md", "Planning risk: Angular router API requires a staged change.", ArtifactType.MARKDOWN)
+    unrelated = store.write_text_artifact("run-1", "01_baseline/install.txt", "Baseline installation completed.", ArtifactType.TEXT_LOG)
+    with sessions() as session:
+        run = session.get(MigrationRunModel, "run-1")
+        run.artifact_root = str(artifact_root)
+        for item in (relevant, unrelated):
+            session.add(ArtifactMetadataModel(id="metadata-" + item.ref.artifact_id, run_id="run-1", stage_id=None, artifact_type=item.ref.artifact_type.value, relative_path=item.ref.relative_path, checksum=item.ref.checksum, immutable=True, safe_metadata={"approval_status": "approved", "lineage": "run-1"}, created_at=item.ref.created_at))
+        session.commit()
+        segments, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-1", "What is the planning router risk?", limit=1)
+    assert refs[0]["artifact_id"] == "metadata-" + relevant.ref.artifact_id
+    assert refs[0]["excerpt_locator"] == "artifact_content"
+    assert "Angular router API" in segments[0].content
+    engine.dispose()
+
+
 def test_same_idempotency_key_with_changed_request_is_rejected(tmp_path):
     engine, scope, _ = setup(tmp_path)
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
@@ -352,9 +388,9 @@ def test_idempotency_checksum_covers_conversation_and_client_state_version(tmp_p
     engine, scope, _ = setup(tmp_path)
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
     service.answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", conversation_id="conversation-a", client_known_state_version=3, idempotency_key="complete-key"))
-    for conversation_id, state_version in (("conversation-b", 3), ("conversation-a", 4)):
+    for conversation_id, state_version, answer_mode in (("conversation-b", 3, "concise"), ("conversation-a", 4, "concise"), ("conversation-a", 3, "deep")):
         with pytest.raises(Exception, match="different payload"):
-            service.answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", conversation_id=conversation_id, client_known_state_version=state_version, idempotency_key="complete-key"))
+            service.answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", conversation_id=conversation_id, client_known_state_version=state_version, answer_mode=answer_mode, idempotency_key="complete-key"))
     engine.dispose()
 
 

@@ -118,11 +118,13 @@ class AssistantContextService:
                 return str(item.get("value") if item.get("availability") == "known" else fallback)
             stats = data.get("operational_statistics") or {}
             evidence = data.get("evidence_references") or []
+            gate_value = value("gate")
+            gate_status = next((status for status in ("pending", "approved", "rejected") if gate_value.lower().endswith(status)), gate_value)
             return {
                 "application": value("application_name"), "run_id": data.get("run_id", getattr(run, "run_id", "unknown")),
                 "current_angular_version": value("current_angular_version"), "target_angular_version": value("target_angular_version"),
                 "phase": value("phase"), "stage": value("stage"), "step": value("step"), "status": value("status"),
-                "gate": value("gate"), "gate_status": "pending" if value("gate").lower().endswith("pending") else value("gate"), "blocker": value("blocker"), "waiting_reason": value("waiting_reason"),
+                "gate": gate_value, "gate_status": gate_status, "blocker": value("blocker"), "waiting_reason": value("waiting_reason"),
                 "failure_reason": value("failure_reason"), "next_action": value("next_permitted_action"),
                 "completed_phases": data.get("completed_work", []), "remaining_phases": data.get("remaining_work", []),
                 "state_version": int(data.get("workflow_state_version", 1)), "events": [],
@@ -207,7 +209,7 @@ class AssistantContextService:
                 return name
         if any(word in q for word in ("time", "token", "cost", "consumed", "usage")):
             return "operations"
-        return "unsupported"
+        return "general"
 
     def _compose(self, intent: str, projection: dict[str, object]) -> tuple[str, str]:
         intent = {
@@ -215,7 +217,7 @@ class AssistantContextService:
             "completed_work": "completed", "usage_and_cost": "operations",
             "analysis_explanation": "analysis", "planning_explanation": "planning",
             "transformation_explanation": "transformation", "validation_explanation": "validation",
-            "next_steps": "workflow",
+            "next_steps": "workflow", "general_migration_question": "general",
         }.get(intent, intent)
         if intent == "mutation":
             return "This Assistant is read-only and cannot approve gates, execute commands, apply patches, or change workflow state. Use the governed cockpit control for that action.", "model interpretation"
@@ -226,7 +228,7 @@ class AssistantContextService:
             action = projection["next_action"]
             gate = str(projection["gate"])
             gate_status = str(projection["gate_status"])
-            gate_text = gate if gate_status == "pending" and gate.lower().endswith(" pending") else f"{gate} ({gate_status})"
+            gate_text = gate if gate_status in {"pending", "approved", "rejected"} and gate.lower().endswith(f" {gate_status}") else f"{gate} ({gate_status})"
             action_text = str(action).rstrip(".")
             return f"The migration is in the {projection['phase']} phase at {projection['stage']}. Current gate: {gate_text}. {blocker_text}{waiting_text} The next permitted action is: {action_text}. Workflow state version: {projection['state_version']}.", "authoritative persisted fact"
         if intent == "completed":
@@ -247,7 +249,15 @@ class AssistantContextService:
             duration = projection["duration_seconds"]
             duration_text = f"Recorded workflow duration: {float(duration):.2f} seconds." if duration is not None else "Recorded workflow duration: unavailable."
             return f"Persisted operational usage: {len(usage)} governed LLM call(s), {input_tokens} input tokens, {output_tokens} output tokens, {input_tokens + output_tokens} total tokens, estimated total cost ${cost:.6f}. {duration_text}", "authoritative persisted fact"
-        return "This question is outside the Migration Follow-up Assistant's supported AMFA-221 questions. Ask about current state, completed work, blockers, Analysis, Planning, Transformation, Validation, next permitted action, or operational usage.", "unknown or unavailable"
+        completed = ", ".join(str(item) for item in projection.get("completed_phases", [])) or "none recorded"
+        remaining = ", ".join(str(item) for item in projection.get("remaining_phases", [])) or "none recorded"
+        return (
+            f"Current migration context: phase={projection['phase']}; stage={projection['stage']}; "
+            f"status={projection['status']}; gate={projection['gate']}; blocker={projection['blocker']}; "
+            f"next permitted action={projection['next_action']}. Completed work: {completed}. Remaining work: {remaining}. "
+            "I can explain or compare any of these persisted facts; unavailable facts will be identified explicitly.",
+            "authoritative persisted fact",
+        )
 
     @staticmethod
     def _authoritative_workflow_answer(projection: dict[str, object]) -> str:
@@ -275,6 +285,8 @@ class AssistantContextService:
             "message": request.message,
             "conversation_id": request.conversation_id,
             "client_known_state_version": request.client_known_state_version,
+            "answer_mode": request.answer_mode,
+            "retry_of_message_id": request.retry_of_message_id,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -400,7 +412,8 @@ class AssistantContextService:
         stale = request.client_known_state_version is not None and request.client_known_state_version != projection["state_version"]
         intent = classify_intent(request.message)
         capability = self._capabilities.get_for_intent(intent)
-        manifest = {"question": _safe(request.message, 1000), "projection": projection, "history": [_safe(item.answer, 300) for item in reversed(history)], "intent": intent, "capability_key": capability.capability_key if capability else "", "configured_input_limit": 40000}
+        history_context = [{"role": item.role, "content": _safe(item.answer, 600)} for item in reversed(history)]
+        manifest = {"question": _safe(request.message, 1000), "projection": projection, "history": history_context, "intent": intent, "capability_key": capability.capability_key if capability else "", "configured_input_limit": 40000}
         checksum = self._request_checksum(request)
         with self._scope() as session:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_STARTED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="started", idempotency_key=request.idempotency_key, payload={"request_id": request.idempotency_key})
@@ -411,14 +424,20 @@ class AssistantContextService:
             conversation_id = uuid4().hex
         answer, proof = self._compose(intent, projection)
         governed_response = None
-        if intent not in {"mutation", "unsupported"}:
+        evidence = [AssistantEvidenceDto.model_validate(item) for item in projection["evidence"]]
+        if intent != "mutation":
             try:
                 with self._scope() as session:
                     evidence_segments, evidence_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
-                bounded = build_bounded_context([LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))])
+                bounded = build_bounded_context([
+                    LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)),
+                    *evidence_segments,
+                    LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps(history_context, sort_keys=True)),
+                ])
                 manifest["context_manifest"] = bounded.manifest
                 manifest["selected_evidence"] = evidence_refs
-                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=_safe(request.message, 1000), context=bounded.segments, max_output_tokens=20_000), actor=actor)
+                output_budget = {"concise": 1_200, "detailed": 4_000, "deep": 8_000}[request.answer_mode]
+                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=_safe(request.message, 1000), context=bounded.segments, max_output_tokens=output_budget), actor=actor)
                 if governed_response.status != "completed":
                     raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503)
                 citations = governed_response.structured_output.get("citations", [])
@@ -450,7 +469,6 @@ class AssistantContextService:
             except Exception as error:
                 self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed")
                 raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503) from error
-        evidence = [AssistantEvidenceDto.model_validate(item) for item in projection["evidence"]]
         input_tokens = sum(int(item["input_tokens"]) for item in projection["usage"])
         output_tokens = sum(int(item["output_tokens"]) for item in projection["usage"])
         input_cost = sum(float(item.get("input_cost_usd", 0.0)) for item in projection["usage"])
@@ -496,4 +514,7 @@ class AssistantContextService:
     def _dto(row: AssistantMessageModel, *, stale: bool | None = None) -> AssistantMessageResultDto:
         projection = row.projection
         stats = projection.get("operational_statistics")
-        return AssistantMessageResultDto(message_id=row.message_id, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=row.answer, current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=row.proof_label, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None)
+        provenance = row.model_provenance or {}
+        deployment = provenance.get("deployment")
+        model = str(deployment if deployment not in {None, "", "none"} else provenance.get("role") or "deterministic_projection")
+        return AssistantMessageResultDto(message_id=row.message_id, model=model, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=row.answer, current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=row.proof_label, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None)
