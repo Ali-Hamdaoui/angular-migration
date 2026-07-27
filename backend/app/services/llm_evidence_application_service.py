@@ -27,7 +27,7 @@ class _SmokeResponse(BaseModel):
 
 class _AssistantResponse(BaseModel):
     answer: str
-    citations: list[dict[str, str]] = []
+    citations: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,9 @@ class LlmEvidenceApplicationService:
     def _fail_assistant(self, request, checksum, invocation_id, error, *, actor, usage=None):
         with self.scope() as session:
             row = session.get(LlmInvocationModel, invocation_id); run = session.get(MigrationRunModel, request.run_id)
-            row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.redacted_summary = 'Assistant invocation failed; provider details redacted.'
+            row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now()
+            diagnostic = getattr(error, 'provider_code', None) or getattr(error, 'provider_message', None)
+            row.redacted_summary = ('Assistant provider rejected the request: ' + ': '.join(filter(None, [getattr(error, 'provider_code', None), getattr(error, 'provider_message', None)])))[:360] if diagnostic else 'Assistant invocation failed; provider details redacted.'
             if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':
                 usage = usage or type('Usage', (), {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0, 'input_price_per_million': 0.0, 'output_price_per_million': 0.0, 'input_cost_usd': 0.0, 'output_cost_usd': 0.0, 'total_cost_usd': 0.0})()
                 session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=self.settings.llm_pricing_version, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, total_tokens=usage.total_tokens, input_price_per_million=usage.input_price_per_million, output_price_per_million=usage.output_price_per_million, input_cost_usd=usage.input_cost_usd, output_cost_usd=usage.output_cost_usd, total_cost_usd=usage.total_cost_usd, created_at=self.now()))

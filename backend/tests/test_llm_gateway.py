@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -181,6 +182,53 @@ def test_urllib_transport_classifies_http_authentication_failures(monkeypatch, s
         UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
     assert error.value.code == LlmFailureCode.AUTHENTICATION
     assert test_key not in str(error.value)
+
+
+def test_urllib_transport_classifies_payload_rejection_and_redacts_provider_diagnostic(monkeypatch) -> None:
+    test_key = 'api-key-secret-value'
+    prompt = 'source=repository secret=prompt-secret'
+
+    def fake_urlopen(request, timeout):
+        body = json.dumps({'error': {'code': 'InvalidRequest', 'message': f'max_output_tokens is too large; api-key={test_key}; {prompt}'}}).encode()
+        raise urllib.error.HTTPError(request.full_url, 400, 'provider error', {}, BytesIO(body))
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini', 'max_output_tokens': 20000, 'input': [{'content': [{'text': prompt}]}]}, timeout=3)
+    assert error.value.code == LlmFailureCode.PROTOCOL
+    assert error.value.provider_code == 'InvalidRequest'
+    assert 'max_output_tokens is too large' in (error.value.provider_message or '')
+    assert test_key not in repr(error.value.provider_message)
+    assert prompt not in repr(error.value.provider_message)
+
+
+@pytest.mark.parametrize('status_code, expected', [(429, LlmFailureCode.RATE_LIMIT), (500, LlmFailureCode.SERVER), (502, LlmFailureCode.SERVER)])
+def test_urllib_transport_preserves_rate_limit_and_server_taxonomy(monkeypatch, status_code, expected) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, status_code, 'provider error', {}, BytesIO(b'{"error":{"code":"Transient","message":"retry later"}}'))
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key='unit-test-value', api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+    assert error.value.code == expected
+    assert error.value.provider_code == 'Transient'
+
+
+def test_urllib_transport_classifies_known_missing_deployment(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, 'provider error', {}, BytesIO(b'{"error":{"code":"DeploymentNotFound","message":"deployment unavailable"}}'))
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key='unit-test-value', api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+    assert error.value.code == LlmFailureCode.DEPLOYMENT
+    assert error.value.provider_code == 'DeploymentNotFound'
 
 
 def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) -> None:

@@ -31,7 +31,7 @@ class ProjectionGateway(Gateway):
     def complete(self, request):
         self.calls.append(request)
         response = super().complete(request)
-        return response.model_copy(update={"structured_output": {"answer": "The authoritative answer is Analysis."}})
+        return response.model_copy(update={"structured_output": {"answer": "The authoritative answer is Analysis.", "citations": []}})
 
 
 class CitationGateway(ProjectionGateway):

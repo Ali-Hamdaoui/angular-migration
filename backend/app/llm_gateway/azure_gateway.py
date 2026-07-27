@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.parse
@@ -43,10 +44,12 @@ class LlmFailureCode(str, Enum):
 class AzureGatewayError(RuntimeError):
     '''Stable gateway error that never exposes provider data or credentials.'''
 
-    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_code: str | None = None, provider_message: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.provider_code = provider_code
+        self.provider_message = provider_message
 
 
 class StructuredOutputValidationError(AzureGatewayError):
@@ -228,10 +231,41 @@ class UrllibAzureTransport:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode('utf-8'))
         except urllib.error.HTTPError as exc:
-            code = LlmFailureCode.RATE_LIMIT if exc.code == 429 else LlmFailureCode.AUTHENTICATION if exc.code in {401, 403} else LlmFailureCode.SERVER
-            raise AzureGatewayError(code, 'Azure OpenAI request failed.', retryable=exc.code in {408, 429, 500, 502, 503, 504}) from exc
+            provider_code, provider_message = _provider_diagnostic(exc)
+            if exc.code == 429:
+                code = LlmFailureCode.RATE_LIMIT
+            elif exc.code in {401, 403}:
+                code = LlmFailureCode.AUTHENTICATION
+            elif exc.code == 404:
+                code = LlmFailureCode.DEPLOYMENT if provider_code in {'DeploymentNotFound', 'ResourceNotFound'} else LlmFailureCode.PROTOCOL
+            elif exc.code in {400, 422}:
+                code = LlmFailureCode.PROTOCOL
+            else:
+                code = LlmFailureCode.SERVER
+            raise AzureGatewayError(code, 'Azure OpenAI request failed.', retryable=exc.code in {408, 429, 500, 502, 503, 504}, provider_code=provider_code, provider_message=provider_message) from exc
         except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
             raise AzureGatewayError(LlmFailureCode.NETWORK, 'Azure OpenAI network request failed.', retryable=True) from exc
+
+
+_SAFE_PROVIDER_CODE = re.compile(r'[^A-Za-z0-9_.:-]')
+
+
+def _provider_diagnostic(error: urllib.error.HTTPError) -> tuple[str | None, str | None]:
+    try:
+        body = json.loads(error.read(8192).decode('utf-8', errors='replace'))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+        return None, None
+    provider = body.get('error') if isinstance(body, Mapping) else None
+    if not isinstance(provider, Mapping):
+        return None, None
+    raw_code = provider.get('code')
+    provider_code = _SAFE_PROVIDER_CODE.sub('', raw_code)[:80] if isinstance(raw_code, str) else None
+    raw_message = provider.get('message')
+    if not isinstance(raw_message, str):
+        return provider_code, None
+    message = re.sub(r'(?i)(api[-_ ]?key|authorization|bearer|secret|token)\s*[:=]\s*[^\s,;]+', r'\1=[redacted]', raw_message)
+    message = re.sub(r'(?i)(prompt|input|context|source|repository|filesystem)\s*[:=].*', r'\1=[redacted]', message)
+    return provider_code, message[:240]
 
 
 class AzureOpenAILLMGateway:

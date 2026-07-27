@@ -130,7 +130,13 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     assert result.status == 'completed'
     assert transport.calls[0]['deployment'] == 'gpt-5-mini'
     assert transport.calls[0]['payload']['model'] == 'gpt-5-mini'
+    assert transport.calls[0]['payload']['max_output_tokens'] == 20_000
     assert transport.calls[0]['payload']['text']['format']['strict'] is True
+    assert transport.calls[0]['payload']['text']['format']['name'] == 'assistant-response-v1'
+    assert transport.calls[0]['payload']['text']['format']['type'] == 'json_schema'
+    assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'citations'}
+    assert 'response_format' not in transport.calls[0]['payload']
+    assert 'temperature' not in transport.calls[0]['payload']
     assert result.role == 'assistant'
     assert result.task_type == 'assistant_response'
     assert result.prompt_version == 'assistant-response-v1'
