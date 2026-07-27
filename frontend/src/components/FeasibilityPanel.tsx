@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiClientError } from "@/api/client";
-import { decideG05, getFeasibility, resolveFeasibility } from "@/api/compatibility";
+import { decideG05, getFeasibility, queueFeasibilityResolution } from "@/api/compatibility";
 import type { FeasibilityResponse, G05Decision } from "@/types/compatibility";
 import type { ArtifactRefDto, AuthoritativeRunStateDto } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
@@ -38,6 +38,7 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
   const exactSource = sourceVersion(initialState);
   const runtimeCandidates = inputs.runtime_candidates ?? [];
   const registrySnapshot = inputs.registry_snapshot;
+  const planningJob = initialState.planning_job;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -54,20 +55,11 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
   useEffect(() => { void refresh(); }, [refresh, initialState.state_version, latestEvent?.sequence]);
 
   async function resolve() {
-    if (!artifacts.length) return;
     setWorking(true); setError(null); setStale(false);
     try {
-      setFeasibility(await resolveFeasibility(runId, {
-        expected_state_version: initialState.state_version,
-        idempotency_key: operationKey("feasibility", runId),
-        source_angular_exact: exactSource ?? "",
-        catalogue_version: inputs.catalogue_version ?? "catalog-v1",
-        registry_snapshot_id: registrySnapshot?.snapshot_id ?? "",
-        registry_snapshot_checksum: registrySnapshot?.checksum ?? "",
-        prerequisite_artifacts: artifacts.map((artifact) => ({ artifact_id: artifact.artifact_id, checksum: artifact.checksum })),
-        runtime_candidates: runtimeCandidates,
-      }));
+      await queueFeasibilityResolution(runId, { expected_state_version: initialState.state_version, idempotency_key: operationKey("feasibility", runId) });
       setEmpty(false);
+      await refresh();
       await refreshAuthoritativeState?.();
     } catch (reason: unknown) {
       if (reason instanceof ApiClientError && reason.status === 409) { setStale(true); await refresh(); }
@@ -97,7 +89,7 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, artifa
     {loading ? <p role="status">Loading authoritative feasibility...</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {stale ? <p role="alert">The feasibility or G05 state is stale. The authoritative snapshot was reloaded; review the current package before retrying.</p> : null}
-    {!loading && empty ? <><p className={styles.note}>No feasibility package is available yet.</p><button type="button" onClick={() => void resolve()} disabled={working || !artifacts.length}>{working ? "Resolving feasibility..." : "Resolve route and Stage 1 profile"}</button>{!artifacts.length ? <p role="alert">Feasibility is blocked until prerequisite evidence artifacts are available.</p> : null}{!exactSource || !registrySnapshot?.checksum || !runtimeCandidates.length ? <p className={styles.note}>Authoritative source exact version, runtime candidates, and registry snapshot data are required.</p> : null}</> : null}
+    {!loading && empty ? <><p className={styles.note}>No feasibility package is available yet.</p><button type="button" onClick={() => void resolve()} disabled={working}>{working ? "Resolving feasibility..." : "Resolve route and Stage 1 profile"}</button>{!exactSource || !registrySnapshot?.checksum || !runtimeCandidates.length ? <p className={styles.note}>The backend will derive any missing source, runtime, catalogue, and registry evidence before feasibility runs.</p> : null}{planningJob ? <p className={planningJob.last_error_code ? styles.note : undefined} role={planningJob.last_error_code ? "alert" : "status"}>Planning job {planningJob.status} at {planningJob.current_step}{planningJob.last_error_code ? `: ${planningJob.last_error_code}${planningJob.last_error_message ? ` — ${planningJob.last_error_message}` : ""}` : ""}</p> : null}</> : null}
     {feasibility?.status === "in_progress" ? <p role="status">Compatibility resolution is running. This view will refresh from authoritative events and snapshots.</p> : null}
     {feasibility?.status === "blocked" ? <div role="alert"><p>Feasibility is blocked; G05 cannot approve this route.</p><ul className={styles.list}>{feasibility.blockers.map((item) => <li key={item}><code>{item}</code></li>)}</ul></div> : null}
     {feasibility ? <>
