@@ -1,34 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { ArtifactRefDto, AuthoritativeRunStateDto } from "@/types/generated/api";
-import type { PlanCreateRequest } from "@/types/planning";
+import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { usePlanProjection } from "@/hooks/usePlanProjection";
 import styles from "./ControlTowerShell.module.css";
 import panelStyles from "./MigrationPlanPanel.module.css";
 
-type PlanInputs = Partial<Omit<PlanCreateRequest, "expected_state_version" | "idempotency_key" | "prerequisite_artifacts">>;
-type PlanState = AuthoritativeRunStateDto & { plan_inputs?: PlanInputs };
 const tabs = ["Commands", "Builder", "Validation", "Recovery", "Forbidden changes", "Artifacts"] as const;
 type Tab = (typeof tabs)[number];
 
-export function MigrationPlanPanel({ runId, initialState, connectionStatus, artifacts, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts: ArtifactRefDto[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
-  const { plan, status, error, generate } = usePlanProjection({ runId, stateVersion: initialState.state_version, workflowEvents, connectionStatus, refreshAuthoritativeState });
+export function MigrationPlanPanel({ runId, initialState, connectionStatus, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts?: unknown[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
+  const { plan, status, error } = usePlanProjection({ runId, stateVersion: initialState.state_version, workflowEvents, connectionStatus, refreshAuthoritativeState });
   const [tab, setTab] = useState<Tab>("Commands");
-  const inputs = (initialState as PlanState).plan_inputs ?? {};
-  const prerequisiteArtifacts = artifacts.map((artifact) => ({ artifact_id: artifact.artifact_id, checksum: artifact.checksum }));
-  // The backend remains the authority for G05 and complete input validation.
-  // Keep the action available when the projection has enough evidence to make
-  // a request so stale/conflict responses can refresh the authoritative state.
-  const canGenerate = prerequisiteArtifacts.length > 0 && Boolean(inputs.source_exact && inputs.source_family && inputs.target_family && inputs.catalogue_version && inputs.input_fingerprint && inputs.execution_profile_id && inputs.stage_route?.length && inputs.builder);
   const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "running" ? "Generating plan..." : status;
 
   useEffect(() => { if (status === "success") setTab("Commands"); }, [status, plan?.plan_checksum]);
-
-  async function onGenerate() {
-    if (!canGenerate) return;
-    await generate({ ...(inputs as PlanInputs), prerequisite_artifacts: prerequisiteArtifacts } as Omit<PlanCreateRequest, "expected_state_version" | "idempotency_key">);
-  }
 
   const stage = plan?.stage_plan;
   const route = useMemo(() => plan?.plan.route ?? [], [plan]);
@@ -39,7 +25,7 @@ export function MigrationPlanPanel({ runId, initialState, connectionStatus, arti
     {status === "blocked" ? <p role="alert">Plan evidence is blocked or failed integrity validation. Refresh the authoritative run and review the backend guidance.</p> : null}
     {status === "stale" ? <p role="alert">The plan request used a stale state version. The authoritative snapshot was reloaded; review prerequisites before retrying.</p> : null}
     {status === "loading" ? <p role="status">Loading authoritative MigrationPlan...</p> : null}
-    {status === "empty" ? <><p className={styles.note}>No MigrationPlan is available yet.</p><button className={panelStyles.action} type="button" onClick={() => void onGenerate()} disabled={!canGenerate}>Generate MigrationPlan</button>{!canGenerate ? <p role="alert">Generation is blocked until an approved G05 package, prerequisite evidence, and exact planning inputs are available.</p> : null}</> : null}
+    {status === "empty" ? <p className={styles.note}>Planning is queued or waiting for the authoritative G05 decision. No manual plan-generation action is required.</p> : null}
     {plan && stage ? <>
       <div className={panelStyles.grid}><div><span>Source</span><strong>{plan.plan.source_exact} ({plan.plan.source_family})</strong></div><div><span>Target</span><strong>{plan.plan.target_family}</strong></div><div><span>Plan version</span><strong>{plan.plan.version}</strong></div><div><span>Plan checksum</span><code>{plan.plan_checksum}</code></div></div>
       <h3>Major-stage route</h3><ol className={panelStyles.route}>{route.map((stageId, index) => <li className={panelStyles.routeItem} key={stageId}><span className={panelStyles.routeNumber}>{index + 1}</span><strong>{stageId}</strong><span className={styles.status}>{index === 0 ? "Stage 1 exact" : "Family route"}</span></li>)}</ol>

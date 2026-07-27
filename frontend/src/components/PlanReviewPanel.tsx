@@ -22,8 +22,7 @@ export function PlanReviewPanel({ runId, initialState, connectionStatus, refresh
   const [notice, setNotice] = useState<string | null>(null);
   const planVersion = typeof review?.plan?.version === "number" ? review.plan.version : null;
   const priorVersion = review?.diff?.from_version;
-  const artifactSetChecksum = typeof review?.package?.artifact_set_checksum === "string" ? review.package.artifact_set_checksum : "";
-  const canMutate = Boolean(review?.plan && review.stage_plan && review.plan_checksum && artifactSetChecksum);
+  const canMutate = Boolean(review?.plan && review.stage_plan && review.plan_checksum);
   const gateBlocked = !canMutate || !review?.package_checksum || ["stale", "rejected", "blocked"].includes(review?.gate_status ?? "");
   const narrative = review?.package?.narrative && typeof review.package.narrative === "object" ? review.package.narrative as Record<string, unknown> : null;
   useEffect(() => { if (status === "success") setNotice(null); }, [status, review?.plan_checksum]);

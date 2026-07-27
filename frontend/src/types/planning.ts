@@ -99,6 +99,8 @@ export type PlanReviewResponse = {
   gate_status: string;
   gate_decision: G06Decision | null;
   package_checksum: string | null;
+  artifact_set_checksum?: string | null;
+  computed_artifact_set_checksum?: string | null;
   state_version: number;
   event_sequence: number;
   idempotent_replay: boolean;
