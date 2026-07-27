@@ -408,3 +408,43 @@ A blocker report must include:
 * impact;
 * responsible owner or dependency;
 * recommended next action.
+
+## G04-to-G06 durable planning continuation assessment
+
+### Expected behavior
+
+After analysis completes, G04 remains a mandatory human gate. An approved G04 must durably move the run into feasibility planning and enqueue exactly one recoverable planning job. That job must derive feasibility inputs from persisted backend evidence, create G05, wait for human approval, resume after approved G05 to persist a MigrationPlan, first StageExecutionPlan, and Planning Agent review, create G06, and stop after approved G06 without starting transformation.
+
+G02, G04, G05, and G06 approval endpoints must be fixed, non-overlapping namespaces on both compatibility and `/api/v1` surfaces. Planning must require a current checksum-bound approved G05, use evidence-based execution-profile authorization, and use the exact immutable artifact bundle bound by G05. Plan review must return a bootstrap projection when a plan exists without a review.
+
+### Current behavior and reproduced evidence
+
+The audited baseline passed 21 tests. Before the repair, route assembly showed the generic G02 route before G04 on both surfaces; legacy planning bypassed missing G05; browser artifacts were used as planning inputs; and no durable planning job existed. These were reproduced with the new route, gate-integrity, artifact-binding, and profile-authorization regression tests.
+
+### Root causes
+
+1. G02 used a generic `{gate_id}` path that shadowed literal G04.
+2. G04 approval persisted only the gate decision, with no durable continuation record.
+3. Planning had a legacy approved-snapshot bypass around G05.
+4. Planning trusted browser-supplied artifacts and profile identifiers.
+5. G05 did not persist an immutable prerequisite artifact bundle.
+6. G04-to-G05 input derivation was not backend-owned.
+7. G05-to-plan/review continuation was not wired.
+8. Planning review returned 404 before a review row existed.
+9. The frontend manually assembled planning artifacts and exposed a direct generation action.
+
+### Affected and proposed files
+
+Affected areas are the G02/G04/G05/G06 routers and application services, planning evidence/review services, workflow models and migrations, orchestration/input resolution, and the planning/analysis frontend panels. The repair adds fixed routes, durable planning jobs and state projections, canonical artifact binding, backend-owned input resolution, restart recovery, review bootstrap, and focused regression coverage.
+
+### Tests and risks
+
+Focused backend tests, migration upgrade, frontend typecheck, lint, and production build are required. The full backend suite and frontend test runner must be reported separately if their environment-level failures remain. The main remaining risk is end-to-end verification of the complete automatic G04→G05→G06 continuation with realistic persisted evidence and restart/recovery behavior.
+
+### Out of scope
+
+Transformation execution, command execution, repair generation/review, external source mutation, and unrelated branch issues remain out of scope.
+
+### Conclusion
+
+Ready to implement.
