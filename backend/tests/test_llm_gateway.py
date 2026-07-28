@@ -1,4 +1,7 @@
 import json
+from io import BytesIO
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -18,6 +21,8 @@ from app.llm_gateway import (
     AzureOpenAILLMGateway,
     LlmFailureCode,
     PromptSchemaRegistry,
+    PromptRegistry,
+    RoleRouter,
     MockLlmGateway,
     build_usage_record,
     decide_budget,
@@ -63,6 +68,13 @@ def _azure_settings(tmp_path: Path, *, retries: int = 2, token_budget: int = 0) 
 
 class _StructuredResponse(BaseModel):
     answer: str
+
+
+def _responses_body(text: str, *, message_first: bool = False) -> dict[str, object]:
+    message = {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}
+    reasoning = {'type': 'reasoning', 'content': [], 'summary': []}
+    output = [message, reasoning] if message_first else [reasoning, message]
+    return {'status': 'completed', 'output': output, 'usage': {'input_tokens': 11, 'output_tokens': 71, 'total_tokens': 82}}
 
 
 class _FakeAzureTransport:
@@ -116,6 +128,169 @@ def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp
     assert transport.calls[0]['payload']['model'] == 'gpt-5-mini-private'
     assert 'secret-value-1234567890' not in str(transport.calls[0]['payload'])
     assert transport.calls[0]['api_key'] == 'super-secret-api-key'
+    assert transport.calls[0]['payload']['model'] == 'gpt-5-mini-private'
+
+
+@pytest.mark.parametrize('message_first', [False, True])
+def test_azure_gateway_decodes_reasoning_first_and_message_first_responses(tmp_path: Path, message_first: bool) -> None:
+    transport = _FakeAzureTransport([_responses_body(json.dumps({'answer': 'validated'}), message_first=message_first)])
+    response = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry()).complete(_azure_request())
+    assert response.structured_output == {'answer': 'validated'}
+    assert response.usage.input_tokens == 11
+    assert response.usage.output_tokens == 71
+
+
+def test_azure_gateway_traverses_message_content_until_output_text(tmp_path: Path) -> None:
+    body = _responses_body(json.dumps({'answer': 'validated'}))
+    body['output'][1]['content'] = [{'type': 'refusal', 'refusal': 'not applicable'}, {'type': 'output_text', 'text': '{"answer":"validated"}'}]
+    response = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert response.structured_output == {'answer': 'validated'}
+
+
+@pytest.mark.parametrize('body, code, subtype', [
+    ({'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_assistant_message', 'MISSING_OUTPUT'),
+    ({'status': 'completed', 'output': [{'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'refusal'}]}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_output_text', 'REFUSAL_OR_INCOMPLETE_RESPONSE'),
+    ({'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'incomplete', 'REFUSAL_OR_INCOMPLETE_RESPONSE'),
+])
+def test_azure_gateway_reports_bounded_protocol_diagnostics(tmp_path: Path, body: dict[str, object], code: str, subtype: str) -> None:
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body, body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.PROTOCOL
+    assert error.value.provider_code == code
+    assert error.value.failure_subtype == subtype
+    assert 'validated' not in (error.value.provider_message or '')
+
+
+def test_azure_gateway_invalid_json_is_protocol(tmp_path: Path) -> None:
+    body = _responses_body('not-json')
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.PROTOCOL
+    assert error.value.provider_code == 'invalid_json'
+    assert error.value.failure_subtype == 'INVALID_JSON'
+    assert 'not-json' not in (error.value.provider_message or '')
+
+
+def test_azure_gateway_classifies_unknown_output_item(tmp_path: Path) -> None:
+    body = {'status': 'completed', 'output': [{'type': 'tool_call', 'content': []}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.failure_subtype == 'UNSUPPORTED_OUTPUT_ITEM'
+
+
+def test_azure_gateway_valid_json_schema_mismatch_is_schema(tmp_path: Path) -> None:
+    body = _responses_body(json.dumps({'answer': 42}))
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.SCHEMA
+
+
+def test_assistant_prompt_and_role_policy_are_explicit_and_typed(tmp_path: Path) -> None:
+    prompt = PromptRegistry.defaults().get('assistant-response-v1', LlmTaskType.ASSISTANT_RESPONSE)
+    assert prompt.version == 'assistant-response-v1'
+    assert prompt.allowed_tasks == frozenset({LlmTaskType.ASSISTANT_RESPONSE})
+    router = RoleRouter(AzureOpenAILLMGateway(settings=_azure_settings(tmp_path))._deployment)
+    assert router.deployment_for(LlmRole.ASSISTANT, LlmTaskType.ASSISTANT_RESPONSE).deployment == 'gpt-5-mini-private'
+    with pytest.raises(AzureGatewayError) as denied:
+        router.deployment_for(LlmRole.PHASE_PROPOSER, LlmTaskType.ASSISTANT_RESPONSE)
+    assert denied.value.code == LlmFailureCode.AUTHORIZATION
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: dict[str, object]) -> None:
+        self.body = json.dumps(body).encode('utf-8')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def test_urllib_transport_uses_dated_responses_url_and_api_key_header(monkeypatch) -> None:
+    captured = {}
+    test_key = 'unit-test-value'
+
+    def fake_urlopen(request, timeout):
+        captured['request'] = request
+        captured['timeout'] = timeout
+        return _FakeHttpResponse({'ok': True})
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    UrllibAzureTransport().request(endpoint='https://example.openai.azure.com/', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+
+    request = captured['request']
+    assert request.full_url == 'https://example.openai.azure.com/openai/responses?api-version=2025-04-01-preview'
+    assert '/openai/deployments/' not in request.full_url
+    assert request.get_header('Api-key') == test_key
+    assert request.get_header('Authorization') is None
+
+
+@pytest.mark.parametrize('status_code, expected', [(401, LlmFailureCode.AUTHENTICATION), (403, LlmFailureCode.AUTHORIZATION)])
+def test_urllib_transport_classifies_http_authentication_failures(monkeypatch, status_code, expected) -> None:
+    test_key = 'unit-test-value'
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, status_code, 'provider error', {}, None)
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+    assert error.value.code == expected
+    assert test_key not in str(error.value)
+
+
+def test_urllib_transport_classifies_payload_rejection_and_redacts_provider_diagnostic(monkeypatch) -> None:
+    test_key = 'api-key-secret-value'
+    prompt = 'source=repository secret=prompt-secret'
+
+    def fake_urlopen(request, timeout):
+        body = json.dumps({'error': {'code': 'InvalidRequest', 'message': f'max_output_tokens is too large; api-key={test_key}; {prompt}'}}).encode()
+        raise urllib.error.HTTPError(request.full_url, 400, 'provider error', {}, BytesIO(body))
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key=test_key, api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini', 'max_output_tokens': 20000, 'input': [{'content': [{'text': prompt}]}]}, timeout=3)
+    assert error.value.code == LlmFailureCode.INVALID_REQUEST
+    assert error.value.provider_code == 'InvalidRequest'
+    assert 'max_output_tokens is too large' in (error.value.provider_message or '')
+    assert test_key not in repr(error.value.provider_message)
+    assert prompt not in repr(error.value.provider_message)
+
+
+@pytest.mark.parametrize('status_code, expected', [(429, LlmFailureCode.RATE_LIMIT), (500, LlmFailureCode.SERVER), (502, LlmFailureCode.SERVER)])
+def test_urllib_transport_preserves_rate_limit_and_server_taxonomy(monkeypatch, status_code, expected) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, status_code, 'provider error', {}, BytesIO(b'{"error":{"code":"Transient","message":"retry later"}}'))
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key='unit-test-value', api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+    assert error.value.code == expected
+    assert error.value.provider_code == 'Transient'
+
+
+def test_urllib_transport_classifies_known_missing_deployment(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, 'provider error', {}, BytesIO(b'{"error":{"code":"DeploymentNotFound","message":"deployment unavailable"}}'))
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    from app.llm_gateway.azure_gateway import UrllibAzureTransport
+
+    with pytest.raises(AzureGatewayError) as error:
+        UrllibAzureTransport().request(endpoint='https://example.openai.azure.com', api_key='unit-test-value', api_version='2025-04-01-preview', deployment='gpt-5-mini', payload={'model': 'gpt-5-mini'}, timeout=3)
+    assert error.value.code == LlmFailureCode.DEPLOYMENT
+    assert error.value.provider_code == 'DeploymentNotFound'
 
 
 def test_azure_gateway_preserves_provider_deployment_failure_metadata(tmp_path: Path) -> None:
@@ -141,6 +316,41 @@ def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) 
 
     assert response.usage.retry_count == 1
     assert len(transport.calls) == 2
+
+
+def test_azure_gateway_retries_only_max_output_incomplete_with_bounded_controls(tmp_path: Path) -> None:
+    incomplete = {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    transport = _FakeAzureTransport([incomplete, _responses_body(json.dumps({'answer': 'ok'}))])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    response = gateway.complete(_azure_request())
+
+    assert response.structured_output == {'answer': 'ok'}
+    assert response.usage.retry_count == 1
+    assert len(transport.calls) == 2
+    first, second = (call['payload'] for call in transport.calls)
+    assert first['max_output_tokens'] == 512
+    assert second['max_output_tokens'] == 1536
+    assert second['reasoning'] == {'effort': 'low'}
+    assert second['text']['verbosity'] == 'low'
+    assert second['text']['format'] == first['text']['format']
+
+
+def test_azure_gateway_stops_after_one_max_output_retry_and_preserves_transport_evidence(tmp_path: Path) -> None:
+    incomplete = {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    transport = _FakeAzureTransport([incomplete, incomplete])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    with pytest.raises(AzureGatewayError) as error:
+        gateway.complete(_azure_request())
+
+    assert len(transport.calls) == 2
+    assert error.value.failure_subtype == 'REFUSAL_OR_INCOMPLETE_RESPONSE'
+    assert error.value.retryable is True
+    assert error.value.retry_count == 1
+    assert error.value.response_received is True
+    assert error.value.transport_started is True
+    assert error.value.provider_status is None
 
 
 def test_azure_gateway_fails_closed_for_missing_configuration_and_unregistered_schema(tmp_path: Path) -> None:

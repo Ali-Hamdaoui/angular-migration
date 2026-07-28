@@ -5,7 +5,7 @@ import { decideG03, getBaselineSummary, qualifyBaseline } from "@/api/baselineG0
 import type { BaselineAssessmentResponse } from "@/types/generated/api";
 export function BaselineQualificationPanel({runId,stateVersion,workflowEvents=[],refreshAuthoritativeState}:{runId:string;stateVersion:number;workflowEvents?:Array<{event_type:string}>;refreshAuthoritativeState?:()=>Promise<void>}) {
  const [assessment,setAssessment]=useState<BaselineAssessmentResponse|null>(null); const [busy,setBusy]=useState(false); const [error,setError]=useState<string|null>(null);
- const qualificationRecorded=workflowEvents.some((event)=>event.event_type==="BASELINE_BLOCKED" || event.event_type==="BASELINE_QUALIFIED");
+ const qualificationRecorded=workflowEvents.some((event)=>["BASELINE_BLOCKED","BASELINE_QUALIFIED","G03_CREATED","G03_APPROVED","G03_REJECTED"].includes(event.event_type));
  useEffect(()=>{if(!qualificationRecorded)return; void getBaselineSummary(runId).then(setAssessment).catch((reason: unknown)=>{if(!(reason instanceof ApiClientError && reason.status===404))setError("Baseline qualification state could not be loaded.")})},[runId,stateVersion,workflowEvents.length,qualificationRecorded]);
  const canQualify=workflowEvents.some((event)=>event.event_type==="G02_APPROVED") && workflowEvents.some((event)=>event.event_type==="BASELINE_INSTALL_SUCCEEDED");
  const act=async (fn:()=>Promise<BaselineAssessmentResponse>)=>{setBusy(true);setError(null);try{setAssessment(await fn()); await refreshAuthoritativeState?.()}catch(e){setError(e instanceof Error?e.message:"Request failed")}finally{setBusy(false)}};

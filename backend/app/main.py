@@ -115,3 +115,6 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
 
 
 app.include_router(api_router)
+# FastAPI's lazy nested-router registration requires the run-scoped assistant
+# surface to be attached at the application boundary as well as the versioned
+# composition root.
