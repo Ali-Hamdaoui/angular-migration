@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
-import pytest
-from fastapi import HTTPException
 
+from app.api.llm_contracts import LlmInvocationResponse
 from app.api.routes import assistant as assistant_routes
 from app.domain.contracts import AssistantMessageRequestDto
 from app.main import app
@@ -20,7 +21,6 @@ from app.repositories.models import (
     UsageCostRecordModel,
 )
 from app.services.assistant_context_service import AssistantContextService
-from app.api.llm_contracts import LlmInvocationResponse
 
 
 class InvocationSpy:
@@ -37,7 +37,7 @@ class InvocationSpy:
             task_type="assistant_response",
             provider="fake",
             deployment_alias="fake",
-            structured_output={"answer": "Owner answer.", "citations": []},
+            structured_output={"answer": "Owner answer.", "summary": "Owner answer.", "intent": "workflow_status", "capability_key": "workflow_status", "proof_label": "authoritative_persisted_fact", "citations": [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"},
             correlation_id=request.correlation_id,
             prompt_version="prompt",
             schema_version="schema",

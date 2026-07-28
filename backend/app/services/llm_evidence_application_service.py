@@ -6,16 +6,34 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
-from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmSmokeRequest, LlmUsageResponse
+from app.api.llm_contracts import (
+    LlmActivityResponse,
+    LlmInvocationResponse,
+    LlmReadinessResponse,
+    LlmSmokeRequest,
+    LlmUsageResponse,
+)
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings, get_settings
 from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
-from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry, StructuredOutputValidationError, decide_budget
+from app.llm_gateway import (
+    AzureGatewayError,
+    AzureOpenAILLMGateway,
+    LlmBudgetAction,
+    LlmContextSegment,
+    LlmRequest,
+    LlmRole,
+    LlmTaskType,
+    PromptSchemaRegistry,
+    StructuredOutputValidationError,
+    decide_budget,
+)
 from app.repositories.models import ArtifactMetadataModel, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
@@ -34,11 +52,45 @@ class _AssistantCitation(BaseModel):
     stage_id: str | None
 
 
+class _AssistantNextStepProposal(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    action_key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    target_route: str = Field(min_length=1)
+    requires_human_approval: bool
+    executable_by_assistant: Literal[False]
+
+    @model_validator(mode='after')
+    def reject_mutation_language(self):
+        text = f'{self.action_key} {self.label} {self.reason} {self.target_route}'.casefold()
+        if any(term in text for term in ('execute', 'apply patch', 'approve gate', 'change workflow', 'retry command', 'start repair')):
+            raise ValueError('next-step proposals cannot contain mutation commands')
+        return self
+
+
 class _AssistantResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    answer: str
+    answer: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    intent: Literal[
+        'workflow_status', 'blocker_or_failure', 'completed_work', 'remaining_work',
+        'analysis_explanation', 'planning_explanation', 'transformation_explanation',
+        'validation_explanation', 'evidence_question', 'usage_and_cost', 'next_steps',
+        'comparison', 'unsupported',
+    ]
+    capability_key: str = Field(min_length=1)
+    proof_label: Literal[
+        'authoritative_persisted_fact', 'approved_evidence_supported',
+        'model_interpretation', 'unknown_or_unavailable',
+    ]
     citations: list[_AssistantCitation]
+    missing_information: list[str]
+    suggested_follow_ups: list[str]
+    next_step_proposals: list[_AssistantNextStepProposal]
+    confidence: str = Field(min_length=1)
 
 
 @dataclass(frozen=True)
@@ -122,7 +174,7 @@ class LlmEvidenceApplicationService:
             return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID', 'Assistant governed invocation returned an invalid structured response.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except AzureGatewayError as error:
             return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - sanitize and persist every provider boundary failure
             return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID' if response is not None else 'LLM_PROVIDER_FAILURE', 'Assistant governed invocation failed.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000), diagnostic=f'exception_type={type(error).__name__}')
 
     def _complete_assistant(self, request, checksum, invocation_id, response, validated, actor, *, latency_ms):
@@ -210,7 +262,7 @@ class LlmEvidenceApplicationService:
             return self._complete(request, checksum, response, int((self.clock() - started_at) * 1000), authenticated_actor)
         except AzureGatewayError as error:
             return self._fail(request, checksum, invocation_id, error, int((self.clock() - started_at) * 1000), actor=authenticated_actor)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - preserve stable provider failure handling
             return self._fail(request, checksum, invocation_id, LlmEvidenceError('LLM_PROVIDER_FAILURE', 'LLM provider operation failed.'), int((self.clock() - started_at) * 1000), detail=error, actor=authenticated_actor)
 
     def activity(self, run_id: str, *, actor: str = 'local-operator') -> LlmActivityResponse:

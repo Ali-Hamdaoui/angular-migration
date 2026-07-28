@@ -505,7 +505,11 @@ class AssistantMessageResultDto(ContractModel):
     missing_information: list[str] = Field(default_factory=list)
     suggested_follow_ups: list[str] = Field(default_factory=list)
     next_step_proposals: list[dict[str, object]] = Field(default_factory=list)
+    confidence: str = Field(min_length=1)
     correlation_id: str | None = None
+    semantic_state_version: int = Field(default=1, ge=1)
+    operational_event_sequence: int = Field(default=0, ge=0)
+    answer_mode: str = "concise"
 
 
 class AssistantHistoryDto(ContractModel):

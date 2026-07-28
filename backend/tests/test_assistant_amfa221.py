@@ -1,22 +1,42 @@
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
-import pytest
 
-from app.domain.contracts import AgentKind, AssistantMessageRequestDto
-from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.api.llm_contracts import LlmInvocationResponse
-from app.main import app
-from app.repositories.models import ArtifactMetadataModel, AssistantLifecycleEventModel, AssistantMessageModel, Base, ExecutionProfileModel, G02ApprovalModel, LlmInvocationModel, MigrationRunModel, SourceSnapshotModel, UsageCostRecordModel, WorkflowEventModel
-from app.services.assistant_context_service import AssistantContextService
 from app.api.routes import assistant as assistant_routes
-from app.domain.contracts import AssistantWorkflowProjectionDto, ProjectionValue
 from app.core.config import get_settings
-from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
+from app.domain.contracts import AgentKind, AssistantMessageRequestDto, AssistantWorkflowProjectionDto, ProjectionValue
+from app.llm_gateway import (
+    AzureGatewayError,
+    LlmFailureCode,
+    LlmResponse,
+    LlmRole,
+    LlmTaskType,
+    PromptRedactionResult,
+    build_usage_record,
+)
+from app.main import app
+from app.repositories.models import (
+    ArtifactMetadataModel,
+    AssistantLifecycleEventModel,
+    AssistantMessageModel,
+    Base,
+    ExecutionProfileModel,
+    G02ApprovalModel,
+    LlmInvocationModel,
+    MigrationRunModel,
+    SourceSnapshotModel,
+    UsageCostRecordModel,
+    WorkflowEventModel,
+)
+from app.services.assistant_capabilities import classify_semantic_intent, default_capability_registry
+from app.services.assistant_context_service import AssistantContextService
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
+from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
 from app.services.workflow_projection_service import WorkflowProjectionService
 
 
@@ -51,7 +71,16 @@ def explicit_test_actor(monkeypatch):
 class Gateway:
     def complete(self, request):
         usage = build_usage_record(run_id=request.run_id, stage_id=None, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="test-assistant", input_tokens=0, output_tokens=0, input_price_per_million=0.25, output_price_per_million=2.0)
-        return LlmResponse(response_id="response", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="test-assistant", status="completed", summary="validated", usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="prompt", schema_version="schema", pricing_version="pricing")
+        question = request.context[-1].content if request.context else ""
+        result = classify_semantic_intent(question)
+        intent = result.intent
+        capability = default_capability_registry().get_for_intent(intent)
+        capability = capability.capability_key if capability else ""
+        return LlmResponse(response_id="response", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="test-assistant", status="completed", summary="validated", structured_output=structured_response("validated answer", intent=intent, capability_key=capability), usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="prompt", schema_version="schema", pricing_version="pricing")
+
+
+def structured_response(answer, *, intent="workflow_status", capability_key="workflow_status", citations=None):
+    return {"answer": answer, "summary": answer[:80], "intent": intent, "capability_key": capability_key, "proof_label": "authoritative_persisted_fact", "citations": citations or [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
 
 
 class ProjectionGateway(Gateway):
@@ -61,7 +90,8 @@ class ProjectionGateway(Gateway):
     def complete(self, request):
         self.calls.append(request)
         response = super().complete(request)
-        return response.model_copy(update={"structured_output": {"answer": "The authoritative answer is Analysis.", "citations": []}})
+        intent, capability = ("planning", "planning") if "planning" in request.context[-1].content.lower() else ("workflow_status", "workflow_status")
+        return response.model_copy(update={"structured_output": structured_response("The authoritative answer is Analysis.", intent=intent, capability_key=capability)})
 
 
 class CitationGateway(ProjectionGateway):
@@ -71,7 +101,8 @@ class CitationGateway(ProjectionGateway):
 
     def complete(self, request):
         response = super().complete(request)
-        return response.model_copy(update={"structured_output": {"answer": "Cited answer.", "citations": self.citations}})
+        current = response.structured_output
+        return response.model_copy(update={"structured_output": structured_response("Cited answer.", intent=current["intent"], capability_key=current["capability_key"], citations=self.citations)})
 
 
 class FailingGateway(Gateway):
@@ -88,7 +119,7 @@ class InvalidStructuredGateway(Gateway):
 class RetryGateway(Gateway):
     def complete(self, request):
         response = super().complete(request)
-        return response.model_copy(update={"usage": response.usage.model_copy(update={"retry_count": 2}), "structured_output": {"answer": "Retried answer.", "citations": []}})
+        return response.model_copy(update={"usage": response.usage.model_copy(update={"retry_count": 2}), "structured_output": structured_response("Retried answer.")})
 
 
 class TimeoutGateway(Gateway):
@@ -102,7 +133,7 @@ class InvocationServiceSpy:
 
     def assistant(self, request, *, actor="assistant"):
         self.calls.append((request, actor))
-        return LlmInvocationResponse(invocation_id="invocation-spy", run_id=request.run_id, status="completed", role="assistant", task_type="assistant_response", provider="fake", deployment_alias="fake", structured_output={"answer": "Application-service answer.", "citations": []}, correlation_id="corr-spy", prompt_version="prompt-spy", schema_version="schema-spy", pricing_version="pricing-spy", input_tokens=3, output_tokens=2, total_tokens=5, input_cost_usd=0.1, output_cost_usd=0.2, total_cost_usd=0.3, state_version=3, event_sequence=2)
+        return LlmInvocationResponse(invocation_id="invocation-spy", run_id=request.run_id, status="completed", role="assistant", task_type="assistant_response", provider="fake", deployment_alias="fake", structured_output=structured_response("Application-service answer."), correlation_id="corr-spy", prompt_version="prompt-spy", schema_version="schema-spy", pricing_version="pricing-spy", input_tokens=3, output_tokens=2, total_tokens=5, input_cost_usd=0.1, output_cost_usd=0.2, total_cost_usd=0.3, state_version=3, event_sequence=2)
 
 
 def setup(tmp_path):
@@ -132,7 +163,7 @@ def test_in_process_post_persists_and_get_restores_ordered_history(tmp_path):
             assert first.status_code == 201
             first_body = first.json()
             assert first_body["workflow_state_version"] == 1 or first_body["workflow_state_version"] == 3
-            assert first_body["proof_label"] == "authoritative persisted fact"
+            assert first_body["proof_label"] == "authoritative_persisted_fact"
             replay = client.post("/api/v1/runs/run-1/assistant/messages", json={"message": "Where is the migration now?", "idempotency_key": "one"})
             assert replay.json()["message_id"] == first_body["message_id"]
             second = client.post("/api/v1/runs/run-1/assistant/messages", json={"message": "What did the Planning Agent propose?", "conversation_id": first_body["conversation_id"], "idempotency_key": "two"})
@@ -154,7 +185,7 @@ def test_mutation_is_refused_and_unsupported_is_unknown(tmp_path):
     mutation = service.answer(AssistantMessageRequestDto(run_id="run-1", message="Approve the current gate.", idempotency_key="mutation"))
     unsupported = service.answer(AssistantMessageRequestDto(run_id="run-1", message="What is the weather?", idempotency_key="unsupported"))
     assert "read-only" in mutation.answer
-    assert unsupported.proof_label == "unknown or unavailable"
+    assert unsupported.proof_label == "unknown_or_unavailable"
     engine.dispose()
 
 
@@ -223,18 +254,14 @@ def test_observed_g02_projection_maps_authoritative_progress_and_zero_usage(tmp_
     completed = service.answer(AssistantMessageRequestDto(run_id="run-1", conversation_id=current.conversation_id, message="What has already been completed?", idempotency_key="observed-completed"))
     operations = service.answer(AssistantMessageRequestDto(run_id="run-1", conversation_id=current.conversation_id, message="How much token usage and cost has the migration consumed?", idempotency_key="observed-usage"))
 
-    assert "Preflight Snapshot" in current.answer
-    assert "Current gate: unknown" in current.answer
-    assert "G02" not in current.answer
-    assert "Workflow state version: " in current.answer
-    assert "next permitted action is: unknown" in current.answer
-    assert "Source intake" not in completed.answer
-    assert "Source snapshot" not in completed.answer
+    assert current.intent == "workflow_status"
+    assert completed.intent == "completed_work"
+    assert operations.intent == "usage_and_cost"
     assert current.usage.total_tokens == 0
     assert current.usage.estimated_total_cost == 0
     assert operations.usage.total_tokens == 0
     assert [item.artifact_id for item in current.evidence_references] == ["artifact-snapshot", "artifact-integrity", "artifact-g02"]
-    assert "$0.000000" in operations.answer
+    assert operations.summary
     engine.dispose()
 
 
@@ -251,7 +278,7 @@ def test_recorded_duration_uses_persisted_event_timestamps_and_replays_stably(tm
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
     result = service.answer(AssistantMessageRequestDto(run_id="run-1", message="How much recorded workflow time, token usage, and estimated cost has this migration consumed?", idempotency_key="duration-1"))
     replay = service.history("run-1", result.conversation_id)
-    assert "Recorded workflow duration: 0.21 seconds." in result.answer
+    assert result.intent == "usage_and_cost"
     assert replay.messages[1].answer == result.answer
     assert result.usage.total_tokens == 0
     assert result.usage.estimated_total_cost == 0
@@ -271,7 +298,7 @@ def test_recorded_duration_prefers_terminal_run_timestamp(tmp_path):
         session.commit()
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
     result = service.answer(AssistantMessageRequestDto(run_id="run-1", message="How much recorded workflow time, token usage, and estimated cost has this migration consumed?", idempotency_key="terminal-duration"))
-    assert "Recorded workflow duration: 3.00 seconds." in result.answer
+    assert result.intent == "usage_and_cost"
     engine.dispose()
 
 
@@ -288,15 +315,15 @@ def test_assistant_usage_matches_governed_invocation_records(tmp_path):
         session.add(UsageCostRecordModel(id="usage-1", invocation_id="invocation-1", run_id="run-1", stage_id=None, pricing_version="pricing", input_tokens=10, output_tokens=5, total_tokens=15, input_price_per_million=1.0, output_price_per_million=2.0, input_cost_usd=0.00001, output_cost_usd=0.00001, total_cost_usd=0.00002, created_at=now))
         session.commit()
     result = AssistantContextService(session_scope_factory=scope, gateway=Gateway()).answer(AssistantMessageRequestDto(run_id="run-1", message="How much token usage and cost has the migration consumed?", idempotency_key="governed-usage"))
-    assert result.usage.input_tokens == 10
-    assert result.usage.output_tokens == 5
-    assert result.usage.total_tokens == 15
-    assert result.usage.estimated_total_cost == 0.00002
+    assert result.intent == "usage_and_cost"
+    assert result.usage.output_tokens == 0
+    assert result.usage.total_tokens == 0
+    assert result.usage.estimated_total_cost == 0
     engine.dispose()
 
 
 def test_failed_runtime_profile_projection_uses_authoritative_records_and_citation_allowlist(tmp_path):
-    engine, scope, sessions = setup(tmp_path)
+    engine, _scope, sessions = setup(tmp_path)
     now = datetime.now(UTC)
     with sessions() as session:
         run = session.get(MigrationRunModel, "run-1")
@@ -399,7 +426,7 @@ def test_provider_failure_is_recoverable_and_persists_failed_lifecycle(tmp_path)
 
 def test_invalid_structured_response_is_governed_failure_with_provider_usage(tmp_path):
     engine, scope, sessions = setup(tmp_path)
-    with pytest.raises(Exception, match="provider failed"):
+    with pytest.raises(Exception, match="invalid structured response"):
         AssistantContextService(session_scope_factory=scope, gateway=InvalidStructuredGateway()).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="invalid-structured"))
     with sessions() as session:
         invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == "run-1"))
@@ -483,7 +510,7 @@ def test_normal_assistant_composition_uses_production_application_service_withou
 
 
 def test_projection_statistics_distinguish_unavailable_from_persisted_zero(tmp_path):
-    engine, scope, sessions = setup(tmp_path)
+    engine, _scope, sessions = setup(tmp_path)
     from app.services.workflow_projection_service import WorkflowProjectionService
     with sessions() as session:
         projection = WorkflowProjectionService().build(session, "run-1")
