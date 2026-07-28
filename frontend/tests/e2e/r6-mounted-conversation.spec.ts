@@ -181,4 +181,73 @@ test.describe("R6 mounted durable conversation", () => {
     expect(await routeLess.evaluate((element) => element.previousElementSibling?.tagName)).not.toBe("BUTTON");
     console.log(JSON.stringify({ run_id_hash: hash(run), navigation_target: "/api/v1/runs/r6-browser-run/approvals/G02", transition_mutation_request_count: 0, command_request_count: 0, assistant_mutation_request_count: 0 }));
   });
+
+  test("R8 receives started, context-built, and completed live on one connection", async ({ page, request }) => {
+    await control(request, "POST", "/__test__/r6/gateway/mode", { mode: "delayed_success" });
+    const streamRequests: string[] = [];
+    page.on("request", (requestEvent) => { if (requestEvent.url().includes("/assistant/events")) streamRequests.push(requestEvent.url()); });
+    await openAssistant(page);
+    await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/events")).events.map((event: { event_type: string }) => event.event_type)).toEqual(["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT"]);
+    await expect(page.locator('[data-role="user"]')).toHaveCount(2);
+    await control(request, "POST", "/__test__/r6/gateway/release");
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/events")).events.map((event: { event_type: string }) => event.event_type)).toEqual(["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_COMPLETED"]);
+    expect(streamRequests.length).toBeLessThanOrEqual(2);
+  });
+
+  test("R8 idle heartbeat keeps the mounted stream alive before a later submit", async ({ page, request }) => {
+    const streamRequests: string[] = [];
+    page.on("request", (requestEvent) => { if (requestEvent.url().includes("/assistant/events")) streamRequests.push(requestEvent.url()); });
+    await openAssistant(page);
+    const initialStreamCount = streamRequests.length;
+    await page.waitForTimeout(1_500);
+    expect(streamRequests).toHaveLength(initialStreamCount);
+    await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/metrics")).provider_call_count).toBe(1);
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(2);
+    expect(streamRequests).toHaveLength(initialStreamCount);
+  });
+
+  test("R8 reconnect sends the last durable cursor after a harness stream disconnect", async ({ page, request }) => {
+    const streamHeaders: Record<string, string>[] = [];
+    page.on("request", (requestEvent) => { if (requestEvent.url().includes("/assistant/events")) streamHeaders.push(requestEvent.headers()); });
+    await openAssistant(page);
+    await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/events")).events.length).toBe(3);
+    await control(request, "POST", "/__test__/r6/stream/fault?kind=disconnect");
+    await expect.poll(() => streamHeaders.some((headers) => Number(headers["last-event-id"] ?? 0) >= 3), { timeout: 15_000 }).toBe(true);
+  });
+
+  test("R8 ignores duplicate transport delivery without duplicating history", async ({ page, request }) => {
+    const historyGets: string[] = [];
+    page.on("request", (requestEvent) => { if (requestEvent.method() === "GET" && requestEvent.url().includes("/assistant/messages")) historyGets.push(requestEvent.url()); });
+    await control(request, "POST", "/__test__/r6/stream/fault?kind=duplicate");
+    await openAssistant(page);
+    const initialHistoryCount = historyGets.length;
+    await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/events")).events.length).toBe(3);
+    await expect(page.locator('[data-role="user"]')).toHaveCount(2);
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(2);
+    // One reload comes from POST reconciliation and one from COMPLETED
+    // notification reconciliation; duplicate STARTED delivery adds neither.
+    expect(historyGets.length - initialHistoryCount).toBeLessThanOrEqual(2);
+  });
+
+  test("R8 recovers one skipped durable event with one snapshot refresh", async ({ page, request }) => {
+    const historyGets: string[] = [];
+    page.on("request", (requestEvent) => { if (requestEvent.method() === "GET" && requestEvent.url().includes("/assistant/messages")) historyGets.push(requestEvent.url()); });
+    await control(request, "POST", "/__test__/r6/stream/fault?kind=skip");
+    await openAssistant(page);
+    await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/events")).events.length).toBe(3);
+    await expect(page.locator('[data-role="user"]')).toHaveCount(2);
+    await expect(page.locator('[data-role="assistant"]')).toHaveCount(2, { timeout: 15_000 });
+    expect(historyGets.length).toBeGreaterThanOrEqual(2);
+    expect(historyGets.length).toBeLessThanOrEqual(4);
+  });
 });

@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.authentication import assistant_authenticated_actor
 from app.api.routes import assistant as assistant_routes
@@ -29,6 +30,7 @@ from app.llm_gateway import (
 from app.llm_gateway.contracts import LlmUsageRecord as GatewayUsage
 from app.repositories.models import (
     AssistantConversationModel,
+    AssistantLifecycleEventModel,
     AssistantMessageModel,
     Base,
     MigrationRunModel,
@@ -89,13 +91,40 @@ class ControlledGateway:
             raise AzureGatewayError(LlmFailureCode.PROVIDER, "controlled provider failure")
         now = datetime.now(UTC)
         usage = GatewayUsage(usage_id=f"r6-usage-{self.calls}", run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="r6-controlled", input_tokens=8, output_tokens=12, total_tokens=20, input_price_per_million=0, output_price_per_million=0, input_cost_usd=0, output_cost_usd=0, total_cost_usd=0, created_at=now)
-        intent = "next_steps" if "next" in (request.prepared_input or {}).get("serialized_input", "").lower() else "workflow_status"
+        intent = "next_steps" if "next permitted action" in (request.prepared_input or {}).get("serialized_input", "").lower() else "workflow_status"
         capability = "next_steps" if intent == "next_steps" else "workflow_status"
         structured = {"answer": "Controlled Assistant answer.", "summary": "Controlled R6 answer.", "intent": intent, "capability_key": capability, "proof_label": "authoritative_persisted_fact", "citations": [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
         return LlmResponse(response_id=f"r6-response-{self.calls}", request_id=request.request_id, run_id=request.run_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias="r6-controlled", status="completed", summary="controlled", structured_output=structured, usage=usage, redaction=PromptRedactionResult(redacted_text="controlled", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="assistant-response-v1", schema_version="assistant-response-v1", pricing_version="r6-test")
 
 
 gateway = ControlledGateway()
+stream_faults = {"disconnect": False, "duplicate": False, "skip": False}
+
+
+class R8StreamFaultMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if not request.url.path.endswith("/assistant/events"):
+            return response
+        source = response.body_iterator
+
+        async def controlled_body():
+            async for chunk in source:
+                text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+                data_event = "event: " in text and "data: " in text
+                if data_event and stream_faults["skip"]:
+                    stream_faults["skip"] = False
+                    continue
+                yield chunk
+                if data_event and stream_faults["duplicate"]:
+                    stream_faults["duplicate"] = False
+                    yield chunk
+                if stream_faults["disconnect"]:
+                    stream_faults["disconnect"] = False
+                    return
+
+        response.body_iterator = controlled_body()
+        return response
 
 
 class GatewayModeRequest(BaseModel):
@@ -111,9 +140,14 @@ def fixed_actor():
 
 
 app = FastAPI(title="R6 browser harness")
+app.add_middleware(R8StreamFaultMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:3312"], allow_methods=["*"], allow_headers=["*"], allow_credentials=False)
 app.dependency_overrides[assistant_routes.get_service] = get_service
 app.dependency_overrides[assistant_routes.assistant_authenticated_actor] = fixed_actor
+# R8 browser proof keeps the real durable route but injects short test-only
+# liveness values. These controls are not mounted in the production app.
+assistant_routes.ASSISTANT_SSE_POLL_INTERVAL_SECONDS = 0.05
+assistant_routes.ASSISTANT_SSE_HEARTBEAT_INTERVAL_SECONDS = 1.0
 # The production event route imports its session factory directly; redirect
 # that test-only seam as well, without changing the production application.
 assistant_routes.session_scope = scope
@@ -134,6 +168,8 @@ def reset():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     gateway.reset()
+    for key in stream_faults:
+        stream_faults[key] = False
     return {"status": "reset"}
 
 
@@ -183,6 +219,21 @@ def release():
 @control.get("/metrics")
 def metrics():
     return {"provider_call_count": gateway.calls, "provider_started": gateway.started, "provider_released": gateway.released, "current_mode": gateway.mode}
+
+
+@control.get("/events")
+def lifecycle_events():
+    with scope() as session:
+        rows = session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == RUN_ID).order_by(AssistantLifecycleEventModel.sequence)).all()
+        return {"events": [{"sequence": row.sequence, "event_type": row.event_type} for row in rows]}
+
+
+@control.post("/stream/fault")
+def stream_fault(kind: str):
+    if kind not in stream_faults:
+        return {"status": "invalid"}
+    stream_faults[kind] = True
+    return {"status": "armed", "kind": kind}
 
 
 @control.post("/semantic-transition")

@@ -203,8 +203,8 @@ def test_assistant_conversation_and_events_restore_after_session_restart(tmp_pat
     follow_up = first_service.answer(AssistantMessageRequestDto(run_id="run-1", conversation_id=first.conversation_id, message="What is the next permitted action?", idempotency_key="restart-2"))
     with sessions() as session:
         events = list(session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "run-1").order_by(AssistantLifecycleEventModel.sequence)))
-        assert [event.event_type for event in events] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED", "ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED"]
-        assert len({event.sequence for event in events}) == 4
+        assert [event.event_type for event in events] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_COMPLETED", "ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_COMPLETED"]
+        assert len({event.sequence for event in events}) == 6
     engine.dispose()
 
     restarted_engine = create_engine(f"sqlite:///{tmp_path / 'assistant.db'}")
@@ -222,7 +222,7 @@ def test_assistant_conversation_and_events_restore_after_session_restart(tmp_pat
     assert [message.usage.total_tokens for message in restored.messages[1::2]] == [first.usage.total_tokens, follow_up.usage.total_tokens]
     with restarted_sessions() as session:
         events = list(session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "run-1").order_by(AssistantLifecycleEventModel.sequence)))
-        assert len(events) == 4
+        assert len(events) == 6
     with restarted_sessions() as session:
         run = session.get(MigrationRunModel, "run-1")
         run.state_version += 1
@@ -388,7 +388,7 @@ def test_normal_migration_question_uses_governed_assistant_role(tmp_path):
     with scope() as session:
         assert session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == "run-1")) is not None
         assert session.scalar(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == "run-1")) is not None
-        assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "run-1").order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED"]
+        assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "run-1").order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_COMPLETED"]
     engine.dispose()
 
 
@@ -428,7 +428,7 @@ def test_provider_failure_is_recoverable_and_persists_failed_lifecycle(tmp_path)
     with pytest.raises(Exception, match="provider failed"):
         AssistantContextService(session_scope_factory=scope, gateway=FailingGateway()).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="provider-failure"))
     with sessions() as session:
-        assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "run-1").order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_FAILED"]
+        assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "run-1").order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_FAILED"]
         failed = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == "run-1", AssistantMessageModel.idempotency_key == "provider-failure"))
         assert failed is not None and failed.status == "failed" and failed.failure_reason
     engine.dispose()

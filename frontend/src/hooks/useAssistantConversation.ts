@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
-import { ApiClientError, getBackendBaseUrl } from "@/api/client";
+import { getAssistantMessages, sendAssistantMessage, streamAssistantEvents, type AssistantStreamEvent } from "@/api/assistant";
+import { ApiClientError } from "@/api/client";
 import type { AssistantHistory, AssistantMessage } from "@/types/assistant";
 import { assistantReplayDecision } from "@/components/assistantReplay";
 
@@ -40,6 +40,13 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
   const lastTransportOperation = useRef<{ request: Parameters<typeof sendAssistantMessage>[1] } | undefined>(undefined);
   const previousStateVersion = useRef(stateVersion);
   const inFlight = useRef(false);
+  const cursor = useRef(0);
+  const cursorRun = useRef(runId);
+  const eventPayloads = useRef(new Map<number, string>());
+  const gapEpisode = useRef(false);
+  const reconnectAfterRecovery = useRef(false);
+  const historyReloadInFlight = useRef<Promise<AssistantHistory> | null>(null);
+  const lastHistoryReload = useRef<{ at: number; conversationId?: string; history: AssistantHistory } | null>(null);
 
   const adoptHistory = useCallback((history: AssistantHistory) => {
     setMessages(history.messages);
@@ -53,9 +60,30 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
     adoptHistory(history);
     return history;
   }, [adoptHistory, conversationId, runId]);
+  const conversationRef = useRef(conversationId);
+  conversationRef.current = conversationId;
+  const reloadHistory = useCallback((selectedConversationId?: string, force = false) => {
+    if (historyReloadInFlight.current) return historyReloadInFlight.current;
+    const recent = lastHistoryReload.current;
+    if (!force && recent && recent.conversationId === selectedConversationId && Date.now() - recent.at < 250) return Promise.resolve(recent.history);
+    const operation = restore(selectedConversationId).then((history) => {
+      lastHistoryReload.current = { at: Date.now(), conversationId: selectedConversationId, history };
+      return history;
+    }).finally(() => { historyReloadInFlight.current = null; });
+    historyReloadInFlight.current = operation;
+    return operation;
+  }, [restore]);
+  const reloadHistoryRef = useRef(reloadHistory);
+  reloadHistoryRef.current = reloadHistory;
 
   useEffect(() => {
     let active = true;
+    if (cursorRun.current !== runId) {
+      cursor.current = 0;
+      eventPayloads.current.clear();
+      gapEpisode.current = false;
+      cursorRun.current = runId;
+    }
     setState("loading");
     setError(null);
     const selected = urlConversationId();
@@ -69,30 +97,61 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
     if (previousStateVersion.current === stateVersion) return;
     previousStateVersion.current = stateVersion;
     if (!conversationId) return;
-    void restore(conversationId).catch(() => setState("reconnecting"));
-  }, [conversationId, restore, stateVersion]);
+    void reloadHistoryRef.current(conversationId).catch(() => setState("reconnecting"));
+  }, [conversationId, stateVersion]);
 
   useEffect(() => {
     let active = true;
-    let lastSequence = 0;
-    if (typeof window === "undefined" || typeof EventSource === "undefined") return () => { active = false; };
-    const source = new EventSource(`${getBackendBaseUrl()}/api/v1/runs/${encodeURIComponent(runId)}/assistant/events?last_event_id=${lastSequence}`);
-    const refresh = () => restore(conversationId || urlConversationId()).catch(() => { if (active) setState("reconnecting"); });
-    const onLifecycle = (event: MessageEvent<string>) => {
-      try {
-        const payload = JSON.parse(event.data) as { sequence: number; event_type: string };
-        const decision = assistantReplayDecision(lastSequence, payload);
-        if (decision === "ignore") return;
-        if (decision === "gap") { setState("reconnecting"); void refresh(); return; }
-        lastSequence = payload.sequence;
-        if (payload.event_type !== "ASSISTANT_RESPONSE_STARTED") void refresh();
-      } catch { setState("reconnecting"); void refresh(); }
+    let controller: AbortController | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = 100;
+    const refresh = async () => {
+      if (!active) return;
+      setState("reconnecting");
+      try { await reloadHistoryRef.current(conversationRef.current || urlConversationId(), true); gapEpisode.current = false; }
+      catch { /* bounded reconnect loop retains durable messages */ }
     };
-    const lifecycleEvents = ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED", "ASSISTANT_RESPONSE_FAILED"];
-    lifecycleEvents.forEach((name) => source.addEventListener(name, onLifecycle));
-    source.onerror = () => { if (active) { setState("reconnecting"); void refresh(); } };
-    return () => { active = false; lifecycleEvents.forEach((name) => source.removeEventListener(name, onLifecycle)); source.close(); };
-  }, [conversationId, restore, runId]);
+    const handleEvent = (event: AssistantStreamEvent) => {
+      if (!active) return;
+      const decision = assistantReplayDecision(cursor.current, event);
+      const fingerprint = JSON.stringify(event);
+      if (decision === "ignore") {
+        if (event.sequence === cursor.current && eventPayloads.current.get(event.sequence) !== fingerprint) {
+          gapEpisode.current = true;
+          reconnectAfterRecovery.current = true;
+          void refresh().finally(() => controller?.abort());
+        }
+        return;
+      }
+      if (decision === "gap") {
+        if (!gapEpisode.current) { gapEpisode.current = true; reconnectAfterRecovery.current = true; void refresh().finally(() => controller?.abort()); }
+        return;
+      }
+      cursor.current = event.sequence;
+      eventPayloads.current.set(event.sequence, fingerprint);
+      delay = 100;
+      if (event.event_type === "ASSISTANT_RESPONSE_COMPLETED" || event.event_type === "ASSISTANT_RESPONSE_FAILED") void reloadHistoryRef.current(conversationRef.current || urlConversationId(), true).catch(() => setState("reconnecting"));
+    };
+    const connect = async () => {
+      while (active) {
+        controller = new AbortController();
+        try {
+          setState((current) => current === "loading" ? current : "ready");
+          await streamAssistantEvents(runId, cursor.current, controller.signal, handleEvent, () => { delay = 100; });
+        } catch (reason) {
+          if (!active) return;
+          if (reason instanceof DOMException && reason.name === "AbortError" && !reconnectAfterRecovery.current) return;
+          reconnectAfterRecovery.current = false;
+          if (reason instanceof ApiClientError && (reason.status === 401 || reason.status === 403)) { setError(stableError(reason)); setState("failed"); return; }
+          setState("reconnecting");
+          await new Promise<void>((resolve) => { timer = setTimeout(resolve, delay); });
+          delay = Math.min(delay * 2, 2000);
+        }
+      }
+    };
+    void connect();
+    return () => { active = false; controller?.abort(); if (timer) clearTimeout(timer); };
+  }, [runId]);
 
   const submit = useCallback(async (message: string, retryOfMessageId?: string, answerMode?: "concise" | "detailed" | "deep") => {
     if (inFlight.current) return undefined;
@@ -113,29 +172,29 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
     setMessages((current) => [...current, optimistic]); setState("loading"); setError(null);
     try {
       const result = await sendAssistantMessage(runId, operation);
-      await restore(result.conversation_id);
+       await reloadHistory(result.conversation_id);
       return result;
     } catch (reason) {
       const parsed = stableError(reason);
       setError(parsed);
       const selectedConversation = parsed.details?.conversation_id || conversationId;
       if (selectedConversation) {
-        try { await restore(selectedConversation); } catch { /* the durable error remains available on the next reload */ }
+         try { await reloadHistory(selectedConversation); } catch { /* the durable error remains available on the next reload */ }
       }
       setState("failed");
       throw reason;
     } finally {
       inFlight.current = false;
     }
-  }, [conversationId, messages.length, phase, restore, runId, stateVersion, workflowStatus]);
+  }, [conversationId, messages.length, phase, reloadHistory, runId, stateVersion, workflowStatus]);
 
   const retryTransport = useCallback(async () => {
     const operation = lastTransportOperation.current;
     if (!operation) throw new Error("No Assistant transport operation is available to retry.");
     const result = await sendAssistantMessage(runId, operation.request);
-    await restore(result.conversation_id);
+    await reloadHistory(result.conversation_id);
     return result;
-  }, [restore, runId]);
+  }, [reloadHistory, runId]);
 
   return { messages, conversationId, state, error, submit, retryTransport, restore, setState, setMessages };
 }

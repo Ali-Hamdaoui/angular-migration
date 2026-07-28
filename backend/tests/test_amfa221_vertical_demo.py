@@ -104,7 +104,7 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
                 assert [(item.role, item.message_order) for item in session.scalars(select(AssistantMessageModel).order_by(AssistantMessageModel.message_order))] == [("user", 1), ("assistant", 2)]
                 assert session.query(LlmInvocationModel).count() == 1
                 assert session.query(UsageCostRecordModel).count() == 1
-                assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED"]
+                assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_COMPLETED"]
             follow = client.post("/api/v1/runs/demo-run/assistant/messages", json={"message": "What is the next permitted action?", "conversation_id": first_body["conversation_id"], "idempotency_key": "demo-2"})
             assert follow.status_code == 201
             assert provider.calls == 2
@@ -118,13 +118,11 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
                 session.commit()
             history = client.get("/api/v1/runs/demo-run/assistant/messages").json()
             assert all(item["stale"] for item in history["messages"])
-            sse = client.get("/api/v1/runs/demo-run/assistant/events").text
-            assert sse.count("event: ASSISTANT_RESPONSE_STARTED") == 2
-            assert sse.count("event: ASSISTANT_RESPONSE_COMPLETED") == 2
-            replayed = client.get("/api/v1/runs/demo-run/assistant/events", headers={"Last-Event-ID": "2"}).text
-            assert replayed.count("event: ASSISTANT_RESPONSE_STARTED") == 1
-            assert replayed.count("event: ASSISTANT_RESPONSE_COMPLETED") == 1
-            assert '"sequence": 1' not in replayed
+            # The legacy TestClient `.get(...).text` technique waited for a
+            # finite response and is invalid for R8's long-lived stream. The
+            # real bounded HTTP route proof lives in test_assistant_r8_sse.py.
+            with sessions() as session:
+                assert [item.sequence for item in session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == "demo-run").order_by(AssistantLifecycleEventModel.sequence))] == [1, 2, 3, 4, 5, 6]
             mutation = client.post("/api/v1/runs/demo-run/assistant/messages", json={"message": "Apply the patch.", "idempotency_key": "demo-mutation"})
             assert mutation.status_code == 201 and "read-only" in mutation.json()["answer"]
     finally:

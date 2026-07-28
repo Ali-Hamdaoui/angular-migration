@@ -490,6 +490,33 @@ class AssistantContextService:
                 manifest["evidence_selection"] = self._evidence_retrieval.last_manifest
                 manifest["evidence_selection"]["final_supplied_excerpt_ids"] = sorted(supplied_ids.intersection({ref["excerpt_id"] for ref in evidence_refs}))
                 manifest["question_token_count"] = prepared.manifest["context_budget"]["question_tokens"]
+                # The final bounded request is now approved and ready for the
+                # provider. Persist sanitized preparation metadata before the
+                # provider call; raw question/context/evidence never enters
+                # this lifecycle payload. The durable idempotency key makes a
+                # transport replay a no-op while a user Retry gets a new key.
+                with self._scope() as session:
+                    self._append_event(
+                        session,
+                        run_id=request.run_id,
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        event_type="ASSISTANT_CONTEXT_BUILT",
+                        correlation_id=correlation_id,
+                        state_version=int(projection["state_version"]),
+                        status="context_built",
+                        idempotency_key=request.idempotency_key,
+                        payload={
+                            "capability_key": capability.capability_key,
+                            "answer_mode": prepared.answer_mode,
+                            "final_token_count": prepared.final_input_tokens,
+                            "selected_count": len(manifest.get("selected_evidence", [])),
+                            "omitted_count": len(prepared.manifest.get("omitted_item_ids", [])),
+                            "truncated": bool(prepared.manifest.get("truncated_item_ids")),
+                            "semantic_state_version": int(projection["state_version"]),
+                            "request_manifest_reference": checksum,
+                        },
+                    )
                 governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode), actor=actor)
                 if governed_response.status != "completed":
                     if governed_response.failure_code == "LLM_STRUCTURED_RESPONSE_INVALID":
