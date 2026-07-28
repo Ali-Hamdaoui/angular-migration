@@ -31,6 +31,8 @@ def _catalogue():
                 target_cli_exact=f"{major + 1}.0.0",
                 node_major=20,
                 npm_major=10,
+                node_exact="20.11.1",
+                npm_exact="10.2.4",
                 support_level="historical_experimental",
                 fixture_status="incomplete",
                 validation_policy_id="angular-stage-standard-v2",
@@ -42,17 +44,18 @@ def _catalogue():
 
 
 def _candidate(available=True, **changes):
-    return RuntimeCandidate(
-        profile_id="node-20-approved",
-        node_executable=r"C:\Tools\node\node.exe",
-        node_exact="20.11.1",
-        npm_executable=r"C:\Tools\node\npm.cmd",
-        npm_exact="10.2.4",
-        npx_executable=r"C:\Tools\node\npx.cmd",
-        npx_exact="10.2.4",
-        available=available,
-        **changes,
-    )
+    values = {
+        "profile_id": "node-20-approved",
+        "node_executable": r"C:\Tools\node\node.exe",
+        "node_exact": "20.11.1",
+        "npm_executable": r"C:\Tools\node\npm.cmd",
+        "npm_exact": "10.2.4",
+        "npx_executable": r"C:\Tools\node\npx.cmd",
+        "npx_exact": "10.2.4",
+        "available": available,
+    }
+    values.update(changes)
+    return RuntimeCandidate(**values)
 
 
 def _request(**updates):
@@ -81,6 +84,12 @@ def test_resolves_deterministic_ladder_and_checksum_bound_stage1_profile():
     assert result.selected_profile.checksum.startswith("sha256:")
     assert result.gate.gate_id == "G05"
     assert result.gate.status == "pending"
+
+
+def test_accepts_node_runtime_versions_with_the_standard_v_prefix():
+    result = CompatibilityResolver(_catalogue()).resolve(_request(runtime_candidates=(_candidate(node_exact="v20.11.1"),)))
+
+    assert result.selected_profile is not None
 
 
 def test_service_replays_identical_idempotent_request_and_rejects_payload_reuse():

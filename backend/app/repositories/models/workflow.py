@@ -227,12 +227,17 @@ class PlanningJobModel(Base):
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     worker_id: Mapped[str | None] = mapped_column(String(128))
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     correlation_id: Mapped[str | None] = mapped_column(String(128))
     last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
     last_error_stage: Mapped[str | None] = mapped_column(String(128))
     retryable: Mapped[bool | None] = mapped_column(Boolean)
+    first_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    terminal_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -290,7 +295,7 @@ class ArtifactMetadataModel(Base):
 class CommandTemplateModel(Base):
     """One registered command template in the structured registry."""
     __tablename__ = "command_templates"
-    __table_args__ = (UniqueConstraint("command_id", name="uq_command_templates_command_id"),)
+    __table_args__ = (UniqueConstraint("command_id", "version", name="uq_command_templates_command_version"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

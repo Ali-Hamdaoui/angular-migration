@@ -21,10 +21,23 @@ class FeasibilityCreateRequest(ContractModel):
     runtime_candidates: tuple[RuntimeCandidate, ...] = ()
     workspace_topology: str = Field(default="single_application_cli_workspace", min_length=1, max_length=128)
     dependency_findings: tuple[str, ...] = ()
+    source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
     resolved_at: datetime | None = None
+
+
+class FeasibilityResolveActionRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class PlanningCommandResponse(ContractModel):
+    job_id: str
+    status: str
+    current_step: str
+    correlation_id: str | None = None
 
 
 class G05DecisionRequest(ContractModel):

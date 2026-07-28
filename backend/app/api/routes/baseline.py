@@ -9,12 +9,12 @@ from app.services.g02_application_service import G02ApprovalApplicationService
 from app.repositories.models import CommandExecutionModel
 from app.repositories.session import session_scope
 from app.services.command_executor_service import CommandExecutorService
-from app.api.routes.compatibility import default_catalogue
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.compatibility_application_service import CompatibilityResolver
 from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 
 router = APIRouter(prefix="/runs", tags=["baseline"])
-_install_service = BaselineInstallApplicationService(g05_service=CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(default_catalogue())))
+_install_service = BaselineInstallApplicationService(g05_service=CompatibilityEvidenceApplicationService(resolver=CompatibilityResolver(CompatibilityCatalogueProvider().load())))
 
 def get_baseline_service() -> BaselineApplicationService:
     return BaselineApplicationService(

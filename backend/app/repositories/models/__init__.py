@@ -63,6 +63,7 @@ from app.repositories.planning_models import (
     StageExecutionPlanModel,
 )
 from app.repositories.planning_review_models import (
+    G06DecisionModel,
     G06ApprovalModel,
     PlanApprovalStaleModel,
     PlanRevisionModel,
@@ -84,6 +85,7 @@ __all__ = [
     "PlanningReviewModel",
     "PlanApprovalStaleModel",
     "G06ApprovalModel",
+    "G06DecisionModel",
     'LlmInvocationModel',
     'UsageCostRecordModel',
     "AgentExecutionModel",

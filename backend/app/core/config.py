@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     command_timeout_seconds: int = Field(default=300, gt=0)
     command_max_output_bytes: int = Field(default=1_000_000, gt=0)
     worker_lease_seconds: int = Field(default=120, gt=0)
+    planning_worker_poll_seconds: float = Field(default=1.0, gt=0)
     sse_heartbeat_seconds: int = Field(default=15, gt=0)
     sse_replay_retention_events: int = Field(default=1_000, gt=0)
     log_chunk_bytes: int = Field(default=64_000, gt=0)

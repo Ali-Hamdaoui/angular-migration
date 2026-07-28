@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 import re
 import shutil
 from typing import Callable
@@ -11,6 +12,14 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.domain.path_validation import PathRuleResult, PathValidationRequest, PathValidationResult, PathValidationSnapshot
+
+
+def is_portable_absolute_path(value: str) -> bool:
+    """Classify absolute paths without depending on the host OS."""
+    text = str(value).strip()
+    windows = PureWindowsPath(text)
+    posix = PurePosixPath(text)
+    return bool(windows.drive or windows.root or posix.is_absolute())
 
 
 class PathValidationService:

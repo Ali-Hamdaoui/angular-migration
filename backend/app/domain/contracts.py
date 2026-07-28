@@ -26,6 +26,8 @@ class RunStatus(str, Enum):
     WAITING_ANALYSIS_APPROVAL = "WAITING_ANALYSIS_APPROVAL"
     PLANNING_RUNNING = "PLANNING_RUNNING"
     WAITING_PLAN_APPROVAL = "WAITING_PLAN_APPROVAL"
+    WAITING_STAGE_PREPARATION = "WAITING_STAGE_PREPARATION"
+    WAITING_G07_APPROVAL = "WAITING_G07_APPROVAL"
     STAGE_CREATED = "STAGE_CREATED"
     TOOLCHAIN_PROFILE_SELECTED = "TOOLCHAIN_PROFILE_SELECTED"
     SANDBOX_READY = "SANDBOX_READY"
@@ -359,6 +361,9 @@ class WorkflowEventType(str, Enum):
     PARITY_BASELINE_BLOCKED = "PARITY_BASELINE_BLOCKED"
     MIGRATION_PLAN_CREATED = "MIGRATION_PLAN_CREATED"
     STAGE_PLAN_CREATED = "STAGE_PLAN_CREATED"
+    PLANNING_RETRY_SCHEDULED = "PLANNING_RETRY_SCHEDULED"
+    PLANNING_INPUT_RESOLUTION_FAILED = "PLANNING_INPUT_RESOLUTION_FAILED"
+    PLANNING_FAILED = "PLANNING_FAILED"
     PLAN_REVISION_CREATED = "PLAN_REVISION_CREATED"
     APPROVAL_MARKED_STALE = "APPROVAL_MARKED_STALE"
     PLANNING_AGENT_COMPLETED = "PLANNING_AGENT_COMPLETED"
@@ -986,6 +991,21 @@ class CancelAuthoritativeRunRequestDto(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class PlanningJobProjectionDto(ContractModel):
+    id: str
+    status: str
+    current_step: str
+    attempt: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    retryable: bool | None = None
+    next_attempt_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_error_stage: str | None = None
+    correlation_id: str | None = None
+    updated_at: datetime
+
+
 class AuthoritativeRunStateDto(ContractModel):
     run_id: str
     status: RunStatus
@@ -1011,6 +1031,7 @@ class AuthoritativeRunStateDto(ContractModel):
     registry_snapshot: dict[str, object] | None = None
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
     plan_inputs: dict[str, object] | None = None
+    planning_job: PlanningJobProjectionDto | None = None
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
     assistant_projection: "AssistantWorkflowProjectionDto | None" = None

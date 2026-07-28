@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import subprocess
+import asyncio
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -53,7 +54,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     recover_source_intake_jobs()
     from app.services.planning_job_service import recover_planning_jobs
     recover_planning_jobs()
-    yield
+    from app.orchestration.planning import dispatch_due_planning_jobs
+    dispatch_due_planning_jobs()
+    from app.orchestration.planning_worker import planning_worker_loop
+    worker = asyncio.create_task(planning_worker_loop(poll_seconds=settings.planning_worker_poll_seconds))
+    try:
+        yield
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
 
 
 settings = get_settings()

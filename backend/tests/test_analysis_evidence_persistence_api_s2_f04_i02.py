@@ -92,7 +92,7 @@ def setup(tmp_path: Path, *, agent=None):
         return managed()
 
     service = AnalysisEvidenceApplicationService(session_scope_factory=scope, analysis_agent=agent or FakeAnalysisAgent(), now_provider=lambda: NOW)
-    payload = AnalysisCreateRequest(expected_state_version=1, idempotency_key="analysis-1", prerequisite_artifacts=[{"artifact_id": source.ref.artifact_id, "checksum": source.ref.checksum}], workspace_fingerprint="sha256:" + "5" * 64, correlation_id="corr-1")
+    payload = AnalysisCreateRequest(expected_state_version=1, idempotency_key="analysis-1", prerequisite_artifacts=[{"artifact_id": source.ref.artifact_id, "checksum": source.ref.checksum}], workspace_fingerprint=None, correlation_id="corr-1")
     return service, payload, sessions, source
 
 
@@ -103,6 +103,7 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
 
     assert result.status == "completed"
     assert result.gate_status == "pending"
+    assert result.package["workspace_fingerprint"] == "sha256:" + "3" * 64
     assert len(result.artifact_ids) == 8
     assert all(checksum.startswith("sha256:") for checksum in result.artifact_checksums.values())
     with sessions() as session:
@@ -119,6 +120,19 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
     assert "raw_content_stored" in store.read_artifact_by_id(result.artifact_ids[0]).content
 
 
+def test_analysis_rejects_workspace_fingerprint_that_differs_from_approved_g03(tmp_path):
+    service, payload, _, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+
+    with pytest.raises(AnalysisEvidenceError) as error:
+        service.generate(
+            "run-1",
+            payload.model_copy(update={"workspace_fingerprint": "sha256:" + "9" * 64}),
+            "operator",
+        )
+
+    assert error.value.code == "ANALYSIS_WORKSPACE_FINGERPRINT_MISMATCH"
+
+
 def test_analysis_replays_identical_request_and_rejects_changed_payload(tmp_path):
     agent = FakeAnalysisAgent()
     service, payload, _, _ = setup(tmp_path, agent=agent)
@@ -130,7 +144,7 @@ def test_analysis_replays_identical_request_and_rejects_changed_payload(tmp_path
     assert replay.analysis_id == first.analysis_id
     assert agent.calls == 1
     with pytest.raises(AnalysisEvidenceError, match="different payload"):
-        service.generate("run-1", payload.model_copy(update={"workspace_fingerprint": "sha256:" + "6" * 64}), "operator")
+        service.generate("run-1", payload.model_copy(update={"plan_version": "plan-v2"}), "operator")
 
 
 def test_analysis_rejects_stale_or_tampered_prerequisite_before_provider(tmp_path):

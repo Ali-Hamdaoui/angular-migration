@@ -19,6 +19,7 @@ from app.repositories.models import (
     CompatibilityResolutionModel,
     G05ApprovalModel,
     MigrationRunModel,
+    PlanningJobModel,
     RegistrySnapshotModel,
     WorkflowEventModel,
 )
@@ -142,6 +143,8 @@ def test_api_exposes_snapshot_and_decision_with_idempotent_replay(tmp_path):
     with sessions() as session:
         assert session.query(G05ApprovalModel).count() == 2
         assert session.query(MigrationRunModel).one().state_version == 4
+        job = session.query(PlanningJobModel).one()
+        assert (job.status, job.current_step, job.attempt, job.correlation_id) == ("generating_plan", "generating_plan", 0, "planning:run-1")
 
 
 def test_rejects_stale_state_checksum_and_unauthorized_actor_without_mutation(tmp_path):
@@ -167,3 +170,42 @@ def test_reuses_versioned_catalogue_and_registry_metadata_on_new_resolution(tmp_
         assert session.query(CompatibilityCatalogueModel).count() == 1
         assert session.query(RegistrySnapshotModel).count() == 1
         assert session.query(CompatibilityResolutionModel).count() == 2
+
+
+def test_feasibility_requires_physical_workspace_fingerprint(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+
+    with pytest.raises(Exception) as error:
+        service.resolve("run-1", payload.model_copy(update={"workspace_fingerprint": None}), "operator")
+
+    assert getattr(error.value, "code", None) == "COMPATIBILITY_WORKSPACE_FINGERPRINT_REQUIRED"
+    with sessions() as session:
+        assert session.query(CompatibilityResolutionModel).count() == 0
+        assert session.query(G05ApprovalModel).count() == 0
+
+
+def test_g05_cannot_approve_legacy_package_without_workspace_fingerprint(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    result = service.resolve("run-1", payload, "operator")
+    with sessions.begin() as session:
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="pending").one()
+        gate.workspace_fingerprint = None
+
+    decision = G05DecisionRequest(
+        expected_state_version=result.state_version,
+        idempotency_key="g05-missing-fingerprint",
+        gate_version=result.gate_version,
+        package_checksum=result.package_checksum,
+        artifact_set_checksum=result.package["artifact_set_checksum"],
+        workspace_fingerprint=None,
+        decision="approve",
+    )
+
+    with pytest.raises(Exception) as error:
+        service.decide_g05("run-1", decision, "operator")
+
+    assert getattr(error.value, "code", None) == "G05_WORKSPACE_FINGERPRINT_REQUIRED"
+    with sessions() as session:
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1").order_by(G05ApprovalModel.created_at.desc()).first()
+        assert gate.status == "stale"
+        assert "fingerprint" in (gate.stale_reason or "").lower()

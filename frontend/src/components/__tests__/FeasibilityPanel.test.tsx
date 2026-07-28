@@ -1,12 +1,12 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "@/api/client";
-import { decideG05, getFeasibility, resolveFeasibility } from "@/api/compatibility";
+import { decideG05, getFeasibility, queueFeasibilityResolution } from "@/api/compatibility";
 import { FeasibilityPanel } from "@/components/FeasibilityPanel";
 import type { FeasibilityResponse } from "@/types/compatibility";
 import type { ArtifactRefDto, AuthoritativeRunStateDto } from "@/types/generated/api";
 
-vi.mock("@/api/compatibility", () => ({ getFeasibility: vi.fn(), resolveFeasibility: vi.fn(), decideG05: vi.fn() }));
+vi.mock("@/api/compatibility", () => ({ getFeasibility: vi.fn(), queueFeasibilityResolution: vi.fn(), decideG05: vi.fn() }));
 
 const checksum = (letter: string) => `sha256:${letter.repeat(64)}`;
 const artifact: ArtifactRefDto = { artifact_id: "finding-1", run_id: "run-1", stage_id: null, artifact_type: "json", relative_path: "02_analysis/findings.json", created_at: "now", checksum: checksum("a") };
@@ -34,12 +34,35 @@ describe("FeasibilityPanel", () => {
 
   it("renders empty state and reloads the authoritative snapshot after a stale resolve", async () => {
     vi.mocked(getFeasibility).mockRejectedValue(new ApiClientError("missing", 404));
-    vi.mocked(resolveFeasibility).mockRejectedValue(new ApiClientError("stale", 409));
+    vi.mocked(queueFeasibilityResolution).mockRejectedValue(new ApiClientError("stale", 409));
     render(<FeasibilityPanel {...props} />);
     expect(await screen.findByText("No feasibility package is available yet.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resolve route and Stage 1 profile" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("feasibility or G05 state is stale");
-    expect(resolveFeasibility).toHaveBeenCalledWith("run-1", expect.objectContaining({ expected_state_version: 3, prerequisite_artifacts: [{ artifact_id: "finding-1", checksum: checksum("a") }] }));
+    expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.any(String) });
+  });
+
+  it("keeps the backend-owned resolution command actionable when derived inputs are absent", async () => {
+    vi.mocked(getFeasibility).mockRejectedValue(new ApiClientError("missing", 404));
+    vi.mocked(queueFeasibilityResolution).mockResolvedValue({ job_id: "planning-run-1", status: "queued_after_g04", current_step: "resolving_feasibility", correlation_id: "planning:run-1" });
+    render(<FeasibilityPanel {...props} initialState={{ ...state, source_angular_exact: null, runtime_candidates: [], registry_snapshot: null } as unknown as AuthoritativeRunStateDto} />);
+
+    const button = await screen.findByRole("button", { name: "Resolve route and Stage 1 profile" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.any(String) }));
+  });
+
+  it("offers authoritative regeneration when legacy feasibility lacks a workspace fingerprint", async () => {
+    vi.mocked(getFeasibility).mockResolvedValue({ ...response, gate_status: "approved" });
+    vi.mocked(queueFeasibilityResolution).mockResolvedValue({ job_id: "planning-run-2", status: "queued_after_g04", current_step: "resolving_feasibility", correlation_id: "planning:run-1" });
+    render(<FeasibilityPanel {...props} initialState={{ ...state, planning_job: { id: "planning-old", status: "technical_failed", current_step: "generating_plan", attempt: 2, max_attempts: 3, retryable: false, last_error_code: "PLANNING_WORKSPACE_FINGERPRINT_MISSING" } } as unknown as AuthoritativeRunStateDto} />);
+
+    const button = await screen.findByRole("button", { name: "Regenerate fingerprint-bound feasibility" });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.stringContaining("feasibility-rebind-run-1") }));
+    expect(props.refreshAuthoritativeState).toHaveBeenCalled();
   });
 
   it("renders blocked state and keeps G05 unavailable", async () => {

@@ -42,6 +42,9 @@ class ExecutionProfileApplicationService:
                 return self._response(existing, replay=True)
             self._require_g02(session,run_id)
             if run.state_version != request.expected_state_version: raise ExecutionProfileApplicationError("STALE_STATE_VERSION","The run state version is stale.",409)
+            if run.source_version_detected and run.source_version_detected != request.source_angular_exact:
+                raise ExecutionProfileApplicationError("SOURCE_VERSION_MISMATCH", "The persisted exact Angular source version does not match this profile request.", 409)
+            run.source_version_detected = request.source_angular_exact
             resolution=self._resolver.resolve(RuntimeResolutionRequest(source_angular_exact=request.source_angular_exact,source_typescript_exact=request.source_typescript_exact,source_rxjs_exact=request.source_rxjs_exact,candidates=candidates,validated_at=request.validated_at))
             artifact_ids=self._write_artifacts(session,run,resolution,request,request_checksum,now)
             started=StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id,expected_state_version=run.state_version,idempotency_key=request.idempotency_key+":started",event_type=WorkflowEventType.EXECUTION_PROFILE_RESOLUTION_STARTED,actor=request.actor,reason="execution profile resolution started",occurred_at=now,payload={"source_angular_exact":request.source_angular_exact}))

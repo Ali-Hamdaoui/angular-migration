@@ -37,6 +37,7 @@ from app.domain.contracts import (
     CommandPolicyValidateResponseDto,
     WorkflowEventType,
 )
+from app.services.path_validation_service import is_portable_absolute_path
 
 
 class CommandRegistryError(ValueError):
@@ -604,6 +605,8 @@ class CommandPolicyEngineService:
         try:
             root = Path(str(aliases[alias])).resolve(strict=False)
             candidate_input = Path(request.working_directory)
+            if is_portable_absolute_path(str(request.working_directory)) and not candidate_input.is_absolute():
+                return reject("WORKSPACE_CONFINEMENT_VIOLATION", "working directory uses an absolute path from another host")
             candidate = (root / candidate_input).resolve(strict=False) if not candidate_input.is_absolute() else candidate_input.resolve(strict=False)
             candidate.relative_to(root)
         except (OSError, ValueError, RuntimeError, TypeError):

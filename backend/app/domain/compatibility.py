@@ -111,6 +111,7 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     runtime_candidates: tuple[RuntimeCandidate, ...] = ()
     workspace_topology: str = Field(default="single_application_cli_workspace", min_length=1)
     dependency_findings: tuple[str, ...] = ()
+    source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     resolved_at: datetime
@@ -130,7 +131,17 @@ class Stage1ExecutionProfile(CompatibilityModel):
     architecture: str
     catalogue_version: str
     source_angular_exact: str
+    source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    stage1_profile_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+def calculate_stage1_profile_checksum(profile: Stage1ExecutionProfile | dict) -> str:
+    payload = profile.model_dump(mode="json") if hasattr(profile, "model_dump") else dict(profile)
+    payload.pop("source_execution_profile_checksum", None)
+    payload.pop("stage1_profile_checksum", None)
+    payload.pop("checksum", None)
+    return "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class CompatibilityStage(CompatibilityModel):

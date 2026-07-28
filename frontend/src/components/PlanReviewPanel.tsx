@@ -15,7 +15,7 @@ const fields: Array<{ key: keyof PlanReviewChanges; label: string }> = [
 const text = (value: unknown) => typeof value === "string" ? value : "";
 
 export function PlanReviewPanel({ runId, initialState, connectionStatus, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; refreshAuthoritativeState: () => Promise<unknown> }) {
-  const { review, status, error, lastAction, revise, explain, decide } = usePlanReview({ runId, stateVersion: initialState.state_version, workflowEvents: initialState.workflow_events, connectionStatus, refreshAuthoritativeState });
+  const { review, status, error, lastAction, revise, explain, decide } = usePlanReview({ runId, stateVersion: initialState.state_version, workflowEvents: initialState.workflow_events, planningJob: initialState.planning_job, connectionStatus, refreshAuthoritativeState });
   const [changes, setChanges] = useState<PlanReviewChanges>({});
   const [comment, setComment] = useState("");
   const [selectedVersion, setSelectedVersion] = useState("current");

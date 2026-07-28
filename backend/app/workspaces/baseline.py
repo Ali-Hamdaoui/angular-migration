@@ -13,6 +13,9 @@ from collections.abc import Callable
 from app.workspaces.services import BaselineBoundaryError
 
 
+BASELINE_VOLATILE_ROOTS = frozenset({"node_modules", ".angular", "dist", "coverage"})
+
+
 class BaselineCopyCancelled(RuntimeError):
     """Raised when a baseline copy is cancelled before atomic publication."""
 
@@ -74,7 +77,7 @@ class BaselineSandboxService:
                 if cancel_check is not None and cancel_check():
                     raise BaselineCopyCancelled("baseline sandbox copy cancelled before publication")
                 relative = source.relative_to(snapshot_root)
-                if relative.parts and relative.parts[0] in {"node_modules", ".angular", "dist", "coverage"}:
+                if relative.parts and relative.parts[0] in BASELINE_VOLATILE_ROOTS:
                     excluded.append(relative.as_posix())
                     continue
                 if source.is_symlink():
@@ -98,7 +101,7 @@ class BaselineSandboxService:
             run_id=run_id,
             sandbox_path=baseline_path,
             input_fingerprint=input_fingerprint,
-            fingerprint=_tree_fingerprint(baseline_path),
+            fingerprint=baseline_tree_fingerprint(baseline_path),
             excluded_paths=tuple(sorted(set(excluded))),
         )
 
@@ -117,12 +120,26 @@ class BaselineSandboxService:
         return self.create(**kwargs)
 
 
-def _tree_fingerprint(root: Path) -> str:
+def baseline_tree_fingerprint(root: Path) -> str:
+    """Fingerprint approval-critical baseline files, excluding expected generated roots."""
+
+    root = Path(root).resolve(strict=True)
     digest = hashlib.sha256()
     for path in sorted(
-        (item for item in root.rglob("*") if item.is_file()),
+        (
+            item
+            for item in root.rglob("*")
+            if item.is_file()
+            and not (
+                (relative := item.relative_to(root)).parts
+                and relative.parts[0] in BASELINE_VOLATILE_ROOTS
+            )
+        ),
         key=lambda item: item.relative_to(root).as_posix().casefold(),
     ):
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return f"sha256:{digest.hexdigest()}"
+
+
+_tree_fingerprint = baseline_tree_fingerprint
