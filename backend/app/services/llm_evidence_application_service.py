@@ -113,6 +113,9 @@ class AssistantInvocationRequest:
     context: list[LlmContextSegment]
     role: str = 'assistant'
     max_output_tokens: int = 20_000
+    prepared_request: object | None = None
+    adaptive_answer_target: int = 2_000
+    answer_mode: str = 'concise'
 
 
 class LlmEvidenceError(ValueError):
@@ -176,7 +179,8 @@ class LlmEvidenceApplicationService:
         provider_usage = None
         started_monotonic = self.clock()
         try:
-            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy='Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.', context=request.context + [LlmContextSegment(segment_id='question', label='user question', content=request.question)], response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens))
+            prepared = request.prepared_request
+            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy=getattr(prepared, 'policy', 'Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.'), context=list(getattr(prepared, 'context', request.context)), response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens, prepared_input={'serialized_input': prepared.serialized_input, 'manifest': prepared.manifest, 'schema': prepared.schema} if prepared is not None else None, adaptive_answer_target=request.adaptive_answer_target, answer_mode=request.answer_mode))
             provider_usage = response.usage
             validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
             return self._complete_assistant(request, checksum, invocation_id, response, validated, actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
@@ -193,7 +197,10 @@ class LlmEvidenceApplicationService:
             run = session.get(MigrationRunModel, request.run_id)
             artifact_root = Path(run.artifact_root or self.settings.artifact_root)
             store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
-            artifacts = [self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(validated, sort_keys=True))]
+            prepared = request.prepared_request
+            request_manifest = prepared.manifest if prepared is not None else {}
+            artifacts = [self._artifact(session, store, request.run_id, '04_workflow_state/llm_request_manifest.json', json.dumps(request_manifest, sort_keys=True))]
+            artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(validated, sort_keys=True)))
             artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_usage_cost.json', json.dumps(response.usage.model_dump(mode='json'), sort_keys=True)))
             row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.artifact_ids = [a.ref.artifact_id for a in artifacts]; row.artifact_checksums = {a.ref.artifact_id: a.ref.checksum for a in artifacts}; row.redacted_summary = self._assistant_summary(request, response); row.state_version = run.state_version
             session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))

@@ -44,7 +44,7 @@ from app.services.assistant_capabilities import (
     default_capability_registry,
     is_mutation_request,
 )
-from app.services.assistant_context_budget import build_bounded_context
+from app.services.assistant_context_budget import ContextBudgetExceeded, prepare_assistant_request
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
 from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService
 from app.services.migration_run_service import MigrationRunService
@@ -395,7 +395,7 @@ class AssistantContextService:
         semantic_result = classify_semantic_intent(request.message)
         intent = semantic_result.intent
         capability = self._capabilities.dispatch(semantic_result)
-        manifest = {"question": _safe(request.message, 1000), "projection": projection, "history": [_safe(item.answer, 300) for item in reversed(history)], "intent": intent, "capability_key": capability.capability_key if capability else "", "configured_input_limit": 40000}
+        manifest = {"question_sha256": hashlib.sha256(request.message.encode("utf-8")).hexdigest(), "projection_item_count": len(projection), "history_item_count": len(history), "intent": intent, "capability_key": capability.capability_key if capability else ""}
         checksum = self._request_checksum(request)
         with self._scope() as session:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_STARTED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="started", idempotency_key=request.idempotency_key, payload={"request_id": request.idempotency_key})
@@ -418,11 +418,23 @@ class AssistantContextService:
             try:
                 with self._scope() as session:
                     evidence_segments, evidence_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
-                bounded = build_bounded_context([LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))])
-                manifest["context_manifest"] = bounded.manifest
-                manifest["selected_evidence"] = [{key: value for key, value in ref.items() if key != "text"} for ref in evidence_refs]
+                policy = "Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations."
+                registry = getattr(self._invocations, "_registry", None)
+                schema = registry().json_schema("assistant-response-v1") if callable(registry) else {"type": "object", "additionalProperties": False}
+                prepared = prepare_assistant_request(
+                    policy=policy,
+                    schema=schema,
+                    question=_safe(request.message, 1000),
+                    segments=[LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))],
+                    answer_mode=request.answer_mode,
+                )
+                manifest["context_budget"] = prepared.manifest["context_budget"]
+                manifest["selected_evidence"] = [{key: value for key, value in ref.items() if key != "text" and key != "excerpt_locator"} for ref in evidence_refs if ref["excerpt_id"] in set(prepared.manifest["selected_item_ids"])]
+                supplied_ids = set(prepared.manifest["selected_item_ids"])
+                evidence_refs = [ref for ref in evidence_refs if ref["excerpt_id"] in supplied_ids]
                 manifest["evidence_selection"] = self._evidence_retrieval.last_manifest
-                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=_safe(request.message, 1000), context=bounded.segments, max_output_tokens=20_000), actor=actor)
+                manifest["evidence_selection"]["final_supplied_excerpt_ids"] = sorted(supplied_ids.intersection({ref["excerpt_id"] for ref in evidence_refs}))
+                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode), actor=actor)
                 if governed_response.status != "completed":
                     if governed_response.failure_code == "LLM_STRUCTURED_RESPONSE_INVALID":
                         raise AssistantRequestError("assistant_invalid_structured_response", "The governed Assistant returned an invalid structured response.", 502)
@@ -451,6 +463,9 @@ class AssistantContextService:
                         # Provider citations were proven for the old text only.
                         validated_citations = []
                 governed_response = governed_response.model_copy(update={"structured_output": {**governed_response.structured_output, "answer": answer, "proof_label": proof, "citations": validated_citations}})
+            except ContextBudgetExceeded:
+                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest={**manifest, "context_budget_failure": "mandatory_content_exceeds_hard_limit"}, checksum=checksum, reason="The Assistant input could not be bounded safely.", code="assistant_context_budget_exceeded")
+                raise AssistantRequestError("assistant_context_budget_exceeded", "The Assistant input could not be bounded safely.", 413)
             except AssistantRequestError as error:
                 self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
                 raise

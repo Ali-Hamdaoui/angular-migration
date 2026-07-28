@@ -67,6 +67,11 @@ class LlmRequest(LlmGatewayModel):
     max_output_tokens: int = Field(default=512, gt=0)
     role: LlmRole = LlmRole.ASSISTANT
     prompt_name: str | None = None
+    # Assistant-only prepared input. Other roles leave this unset and retain
+    # the historical gateway serialization.
+    prepared_input: dict[str, object] | None = None
+    adaptive_answer_target: int | None = Field(default=None, gt=0)
+    answer_mode: str | None = None
 
     @model_validator(mode="after")
     def require_untrusted_labels_for_repository_context(self) -> "LlmRequest":
