@@ -51,6 +51,37 @@ class PlanningEvidenceApplicationService:
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._artifact_store_factory = artifact_store_factory or self._store_for_run
 
+    def record_failure(self, session, run, job, *, disposition, stage: str, diagnostic=None) -> tuple[str, object]:
+        """Persist diagnostic evidence before exposing a planning failure."""
+        now = self._now()
+        details = {
+            "run_id": run.id,
+            "planning_job_id": job.id,
+            "stage": stage,
+            "attempt": job.attempt,
+            "code": disposition.code,
+            "retryable": disposition.retryable and not disposition.terminal,
+            "logical_file": getattr(diagnostic, "logical_name", None),
+            "resolved_path": str(getattr(diagnostic, "path", "")) if getattr(diagnostic, "path", None) else None,
+            "file_checksum": getattr(diagnostic, "checksum", None),
+            "encoding": getattr(diagnostic, "encoding", None),
+            "bom_detected": getattr(diagnostic, "bom_detected", None),
+            "parser_mode": getattr(diagnostic, "parser_mode", None),
+            "exception_type": getattr(diagnostic, "exception_type", None),
+            "line": getattr(diagnostic, "line", None),
+            "column": getattr(diagnostic, "column", None),
+            "position": getattr(diagnostic, "position", None),
+            "expected_workspace_fingerprint": getattr(diagnostic, "expected_fingerprint", getattr(diagnostic, "expected_workspace_fingerprint", None)),
+            "actual_workspace_fingerprint": getattr(diagnostic, "actual_fingerprint", None),
+            "correlation_id": job.correlation_id,
+            "occurred_at": now.isoformat(),
+        }
+        store = self._store_for_run(run)
+        stored = store.write_text_artifact(run.id, "03_planning/planning-input-resolution-failure.json", json.dumps(details, sort_keys=True, indent=2), ArtifactType.JSON, created_by="planning-evidence", created_at=now, input_hashes={"planning_job": job.id, "attempt": str(job.attempt)}, policy_version="s2-f06-planning-failure-v1")
+        session.add(ArtifactMetadataModel(id="metadata-" + stored.ref.artifact_id, run_id=run.id, stage_id=None, artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, created_at=now, finalized_at=now, immutable=True, correlation_id=job.correlation_id, safe_metadata=details))
+        session.flush()
+        return stored.ref.artifact_id, details
+
     def create(self, run_id: str, payload: PlanCreateRequest, actor: str) -> PlanResponse:
         now = self._now()
         with self._scope() as session:

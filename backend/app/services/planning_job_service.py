@@ -4,11 +4,36 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import hashlib
+from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select, update
 
 from app.repositories.models import MigrationRunModel, PlanningJobModel
 from app.repositories.session import session_scope
+
+
+@dataclass(frozen=True)
+class PlanningFailureDisposition:
+    code: str
+    retryable: bool
+    terminal: bool
+    public_message: str
+
+
+_RETRYABLE_PLANNING_CODES = frozenset({
+    "PLANNING_DATABASE_TRANSIENT",
+    "PLANNING_WORKER_INTERRUPTED",
+    "PLANNING_ARTIFACT_STORAGE_TRANSIENT",
+    "PLANNING_EXTERNAL_SERVICE_TRANSIENT",
+})
+
+
+def classify_planning_failure(error: Exception) -> PlanningFailureDisposition:
+    """Classify only explicitly allowlisted infrastructure failures as retryable."""
+    code = str(getattr(error, "code", "PLANNING_UNEXPECTED_FAILURE"))
+    retryable = code in _RETRYABLE_PLANNING_CODES
+    message = str(getattr(error, "message", error))
+    return PlanningFailureDisposition(code=code, retryable=retryable, terminal=not retryable, public_message=message[:4000])
 
 
 PLANNING_JOB_STATES = frozenset({
