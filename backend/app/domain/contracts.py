@@ -480,6 +480,23 @@ class AssistantUsageDto(ContractModel):
     estimated_total_cost: float = Field(ge=0)
 
 
+class AssistantNextStepProposalDto(ContractModel):
+    """Read-only governed action proposed from the authoritative projection."""
+
+    action_key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    target_route: str = Field(min_length=1)
+    requires_human_approval: bool = False
+    executable_by_assistant: bool = False
+
+    @model_validator(mode="after")
+    def enforce_read_only(self) -> "AssistantNextStepProposalDto":
+        if self.executable_by_assistant:
+            raise ValueError("Assistant next-step proposals cannot execute actions")
+        return self
+
+
 class AssistantMessageResultDto(ContractModel):
     message_id: str
     message_order: int = Field(ge=1)
@@ -509,7 +526,7 @@ class AssistantMessageResultDto(ContractModel):
     citations: list[dict[str, object]] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     suggested_follow_ups: list[str] = Field(default_factory=list)
-    next_step_proposals: list[dict[str, object]] = Field(default_factory=list)
+    next_step_proposals: list[AssistantNextStepProposalDto] = Field(default_factory=list)
     confidence: str = Field(min_length=1)
     correlation_id: str | None = None
     semantic_state_version: int = Field(default=1, ge=1)
@@ -1038,6 +1055,7 @@ class AuthoritativeRunMutationResultDto(ContractModel):
 class ProjectionValue(ContractModel):
     value: Any | None = None
     availability: str = "unavailable"
+    reason: str | None = None
 
 
 class AssistantEvidenceReferenceDto(ContractModel):
@@ -1086,14 +1104,24 @@ class AssistantWorkflowProjectionDto(ContractModel):
     stage: ProjectionValue = ProjectionValue()
     step: ProjectionValue = ProjectionValue()
     gate: ProjectionValue = ProjectionValue()
+    current_gate_id: ProjectionValue = ProjectionValue()
+    gate_state: ProjectionValue = ProjectionValue()
     status: ProjectionValue = ProjectionValue()
     completed_work: list[str] = Field(default_factory=list)
     remaining_work: list[str] = Field(default_factory=list)
     blocker: ProjectionValue = ProjectionValue()
     waiting_reason: ProjectionValue = ProjectionValue()
     failure_reason: ProjectionValue = ProjectionValue()
+    failure_classification: ProjectionValue = ProjectionValue()
     repair_state: ProjectionValue = ProjectionValue()
     next_permitted_action: ProjectionValue = ProjectionValue()
+    next_step_proposals: list[AssistantNextStepProposalDto] = Field(default_factory=list)
+    latest_command_result: ProjectionValue = ProjectionValue()
+    semantic_state_version: int
+    operational_event_sequence: int = 0
+    phase_duration_seconds: ProjectionValue = ProjectionValue()
+    stage_duration_seconds: ProjectionValue = ProjectionValue()
+    pricing_availability: ProjectionValue = ProjectionValue()
     workflow_state_version: int
     operational_statistics: AssistantOperationalStatisticsDto = AssistantOperationalStatisticsDto()
     evidence_references: list[AssistantEvidenceReferenceDto] = Field(default_factory=list)

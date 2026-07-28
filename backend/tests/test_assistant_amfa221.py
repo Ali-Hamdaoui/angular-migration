@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 
@@ -72,8 +73,11 @@ def explicit_test_actor(monkeypatch):
 
 class Gateway:
     def complete(self, request):
+        assert request.role is LlmRole.ASSISTANT
+        assert request.task_type is LlmTaskType.ASSISTANT_RESPONSE
+        assert request.response_schema == "assistant-response-v1"
         usage = build_usage_record(run_id=request.run_id, stage_id=None, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="test-assistant", input_tokens=0, output_tokens=0, input_price_per_million=0.25, output_price_per_million=2.0)
-        question = request.context[-1].content if request.context else ""
+        question = json.loads(request.prepared_input["serialized_input"])["question"] if request.prepared_input else ""
         result = classify_semantic_intent(question)
         intent = result.intent
         capability = default_capability_registry().get_for_intent(intent)
@@ -92,7 +96,8 @@ class ProjectionGateway(Gateway):
     def complete(self, request):
         self.calls.append(request)
         response = super().complete(request)
-        intent, capability = ("planning", "planning") if "planning" in request.context[-1].content.lower() else ("workflow_status", "workflow_status")
+        question = json.loads(request.prepared_input["serialized_input"])["question"] if request.prepared_input else ""
+        intent, capability = ("planning", "planning") if "planning" in question.lower() else ("workflow_status", "workflow_status")
         return response.model_copy(update={"structured_output": structured_response("The authoritative answer is Analysis.", intent=intent, capability_key=capability)})
 
 
@@ -342,8 +347,10 @@ def test_failed_runtime_profile_projection_uses_authoritative_records_and_citati
         session.commit()
         projection = WorkflowProjectionService().build(session, "run-1").model_dump(mode="json")
         _, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-1", "Where is the migration now?")
-    assert projection["status"] == {"value": "FAILED", "availability": "known"}
-    assert projection["blocker"] == {"value": "NO_COMPATIBLE_RUNTIME_PROFILE", "availability": "known"}
+    assert projection["status"]["value"] == "FAILED"
+    assert projection["status"]["availability"] == "known"
+    assert projection["blocker"]["value"] == "NO_COMPATIBLE_RUNTIME_PROFILE"
+    assert projection["blocker"]["availability"] == "known"
     assert projection["next_permitted_action"]["availability"] == "known"
     assert {item["artifact_id"] for item in projection["evidence_references"]} == {"metadata-artifact-snapshot", "metadata-artifact-g02", "metadata-artifact-profile"}
     assert refs == []
@@ -361,6 +368,7 @@ def test_assistant_uses_shared_projection_over_conversation_and_does_not_infer_f
         status=ProjectionValue(value="WAITING", availability="known"),
         blocker=ProjectionValue(value=None, availability="unsupported"),
         next_permitted_action=ProjectionValue(value=None, availability="unsupported"),
+        semantic_state_version=3,
         workflow_state_version=3,
     )
     service._run = lambda _run_id: type("Run", (), {"assistant_projection": projection})()

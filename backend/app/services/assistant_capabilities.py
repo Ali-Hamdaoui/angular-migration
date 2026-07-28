@@ -98,6 +98,20 @@ class AssistantCapabilityRegistry:
         return tuple(self._items.values())
 
 
+def build_next_step_proposals(*, run_id: str, gate_id: str | None, gate_state: str | None, blocker_phase: str | None, terminal: bool, waiting_reason: str | None, command_failed: bool = False) -> list[dict[str, object]]:
+    """Build typed, navigation-only proposals from already projected state."""
+    proposals: list[dict[str, object]] = []
+    if gate_id and str(gate_state).lower() in {"pending", "waiting", "in_review"}:
+        route = {"G02": f"/api/v1/runs/{run_id}/approvals/G02", "G04": f"/api/v1/runs/{run_id}/analysis", "G05": f"/api/v1/runs/{run_id}/feasibility", "G06": f"/api/v1/runs/{run_id}/plan/review"}.get(gate_id)
+        if route:
+            proposals.append({"action_key": f"review_{gate_id.lower()}", "label": f"Review {gate_id} approval", "reason": waiting_reason or f"{gate_id} is pending human review.", "target_route": route, "requires_human_approval": True, "executable_by_assistant": False})
+    if blocker_phase == "runtime_resolution":
+        proposals.append({"action_key": "retry_runtime_profile_resolution", "label": "Retry runtime-profile resolution", "reason": "Install or expose an approved paired Node/npm/npx runtime, then retry the governed resolution.", "target_route": f"/api/v1/runs/{run_id}/execution-profiles", "requires_human_approval": False, "executable_by_assistant": False})
+    if command_failed and not terminal:
+        proposals.append({"action_key": "review_command_failure", "label": "Review failed command", "reason": "The latest command failed and its governed recovery state must be reviewed.", "target_route": f"/api/v1/runs/{run_id}/commands", "requires_human_approval": True, "executable_by_assistant": False})
+    return proposals
+
+
 def default_capability_registry() -> AssistantCapabilityRegistry:
     registry = AssistantCapabilityRegistry()
     for key, intents in (
