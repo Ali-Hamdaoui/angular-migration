@@ -85,3 +85,20 @@ def test_request_supports_new_transport_and_retry_identity():
     assert request.request_id == "request-2"
     assert request.retry_of_message_id == "failed-1"
     assert request.answer_mode == "detailed"
+
+
+def test_failed_provider_response_keeps_code_and_safe_azure_diagnostics():
+    response = type("Response", (), {"failure_code": "LLM_PROVIDER_FAILURE", "provider": "azure_openai", "deployment_alias": "assistant-deployment", "prompt_version": "assistant-response-v1", "schema_version": "assistant-response-v1", "provider_http_status": 503, "provider_error_code": "upstream_error", "sanitized_provider_message": "safe provider message", "provider_request_id": "azure-request-1", "failure_stage": "http_response", "failure_subtype": "HTTP_ERROR_ENVELOPE", "retryable": True, "response_received": True, "response_kind": "json", "transport_started": True})()
+    error = AssistantContextService._provider_failure(response)
+    provenance = AssistantContextService._provider_provenance(response)
+    assert (error.code, error.status_code) == ("LLM_PROVIDER_FAILURE", 503)
+    assert provenance["provider"] == "azure_openai"
+    assert provenance["deployment"] == "assistant-deployment"
+    assert provenance["diagnostics"]["request_id"] == "azure-request-1"
+
+
+def test_protocol_provider_failure_maps_to_bad_gateway():
+    response = type("Response", (), {"failure_code": "protocol", "deployment_alias": "assistant-deployment", "failure_stage": "response_contract_validation", "failure_subtype": "MISSING_STRUCTURED_CONTENT", "retryable": False, "provider_request_id": "azure-request-2", "provider_http_status": None, "provider_error_code": "missing_structured_content", "sanitized_provider_message": "safe shape diagnostic", "response_kind": "json", "response_received": True, "transport_started": True})()
+    error = AssistantContextService._provider_failure(response)
+    assert error.status_code == 502
+    assert error.details["failure_subtype"] == "MISSING_STRUCTURED_CONTENT"

@@ -69,7 +69,7 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
     try:
         with TestClient(app) as client:
             first = client.post("/api/v1/runs/demo-run/assistant/messages", json={"message": "Where is the migration now?", "idempotency_key": "demo-1"})
-            assert first.status_code == 201
+            assert first.status_code == 200
             first_body = first.json()
             assert first_body["answer"] == "The governed fake answer."
             with sessions() as session:
@@ -78,7 +78,7 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
                 assert session.query(UsageCostRecordModel).count() == 1
                 assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED"]
             follow = client.post("/api/v1/runs/demo-run/assistant/messages", json={"message": "What is the next permitted action?", "conversation_id": first_body["conversation_id"], "idempotency_key": "demo-2"})
-            assert follow.status_code == 201
+            assert follow.status_code == 200
             assert provider.calls == 2
             replay = client.post("/api/v1/runs/demo-run/assistant/messages", json={"message": "Where is the migration now?", "idempotency_key": "demo-1"})
             assert replay.json()["message_id"] == first_body["message_id"] and provider.calls == 2
@@ -98,7 +98,7 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
             assert replayed.count("event: ASSISTANT_RESPONSE_COMPLETED") == 1
             assert '"sequence": 1' not in replayed
             mutation = client.post("/api/v1/runs/demo-run/assistant/messages", json={"message": "Apply the patch.", "idempotency_key": "demo-mutation"})
-            assert mutation.status_code == 201 and "read-only" in mutation.json()["answer"]
+            assert mutation.status_code == 200 and "read-only" in mutation.json()["answer"]
     finally:
         assistant_routes.session_scope = original_scope
         app.dependency_overrides.pop(assistant_routes.get_service, None)

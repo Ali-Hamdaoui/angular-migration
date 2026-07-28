@@ -39,11 +39,12 @@ _MAX_HISTORY = 12
 
 
 class AssistantRequestError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 409):
+    def __init__(self, code: str, message: str, status_code: int = 409, details: dict[str, object] | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.details = details or {}
 
 
 def _safe(value: object, limit: int = 500) -> str:
@@ -198,7 +199,17 @@ class AssistantContextService:
     @staticmethod
     def _intent(question: str) -> str:
         q = question.lower()
-        if any(word in q for word in ("approve", "reject", "apply", "execute", "patch", "modify files", "run command")):
+        punctuation = ",.;:!?"
+        clean = q.translate(str.maketrans("", "", punctuation))
+        clean_words = set(clean.split())
+        mutation_keywords = {"approve", "reject", "execute", "apply", "patch"}
+        if mutation_keywords & clean_words:
+            return "mutation"
+        if "change" in clean_words and ("workflow" in clean_words or "state" in clean_words):
+            return "mutation"
+        if "run" in clean_words and "command" in clean_words:
+            return "mutation"
+        if "modify" in clean_words and "files" in clean_words:
             return "mutation"
         if "where is" in q or "now" in q or "blocked" in q or "next permitted" in q or "current gate" in q or "workflow state" in q:
             return "workflow"
@@ -306,7 +317,29 @@ class AssistantContextService:
             status="completed", failure_reason=None, created_at=now,
         ))
 
-    def _persist_failed_result(self, request, *, conversation_id, message_id, correlation_id, projection, manifest, checksum, reason, code):
+    @staticmethod
+    def _provider_failure(response) -> AssistantRequestError:
+        code = response.failure_code or "assistant_provider_failed"
+        status = {"LLM_CONFIGURATION_INCOMPLETE": 409, "RUN_NOT_FOUND": 404, "RUN_NOT_AUTHORIZED": 403, "STALE_STATE_VERSION": 409, "IDEMPOTENCY_KEY_REUSED": 409}.get(code, 502 if code in {"protocol", "schema", "semantic", "empty_output", "LLM_STRUCTURED_RESPONSE_INVALID"} else 503)
+        message = "The governed Assistant provider failed; retry is safe."
+        if code == "LLM_CONFIGURATION_INCOMPLETE":
+            message = "The governed Assistant provider is not configured."
+        return AssistantRequestError(code, message, status, {key: value for key, value in {
+            "retryable": response.retryable, "request_id": response.provider_request_id,
+            "failure_stage": response.failure_stage, "failure_subtype": response.failure_subtype,
+            "provider_status": response.provider_http_status, "provider_error_code": response.provider_error_code,
+            "provider_message": getattr(response, "sanitized_provider_message", None), "deployment": response.deployment_alias,
+            "response_kind": response.response_kind, "response_received": response.response_received,
+            "transport_started": response.transport_started,
+        }.items() if value is not None})
+
+    @staticmethod
+    def _provider_provenance(response) -> dict[str, object]:
+        if response is None:
+            return {"role": "assistant"}
+        return {"role": "assistant", "provider": response.provider, "deployment": response.deployment_alias, "prompt": response.prompt_version, "schema": response.schema_version, "failure_code": response.failure_code, "diagnostics": {"http_status": response.provider_http_status, "error_code": response.provider_error_code, "request_id": response.provider_request_id, "failure_stage": response.failure_stage, "failure_subtype": response.failure_subtype, "retryable": response.retryable, "response_received": response.response_received, "response_kind": response.response_kind, "transport_started": response.transport_started}}
+
+    def _persist_failed_result(self, request, *, conversation_id, message_id, correlation_id, projection, manifest, checksum, reason, code, provider=None):
         with self._scope() as session:
             prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
             if prior:
@@ -316,7 +349,9 @@ class AssistantContextService:
             if not session.scalar(select(AssistantConversationModel).where(AssistantConversationModel.run_id == request.run_id, AssistantConversationModel.conversation_id == conversation_id)):
                 session.add(AssistantConversationModel(id=uuid4().hex, conversation_id=conversation_id, run_id=request.run_id, created_at=now, updated_at=now))
             self._persist_user_message(session, request, conversation_id=conversation_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, message_order=int(count) + 1, now=now)
-            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 2, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer="The Assistant request failed before producing a completed answer.", state_version=int(projection["state_version"]), projection=self._message_projection(projection), evidence=[], proof_label="unknown or unavailable", usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"), model_provenance={"role": "assistant", "failure_code": code}, correlation_id=correlation_id, idempotency_key=request.idempotency_key, status="failed", failure_reason=reason, created_at=now)
+            provenance = self._provider_provenance(provider)
+            provenance["failure_code"] = code
+            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 2, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer="The Assistant request failed before producing a completed answer.", state_version=int(projection["state_version"]), projection=self._message_projection(projection), evidence=[], proof_label="unknown or unavailable", usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"), model_provenance=provenance, correlation_id=correlation_id, idempotency_key=request.idempotency_key, status="failed", failure_reason=reason, created_at=now)
             session.add(row)
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_FAILED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="failed", idempotency_key=request.idempotency_key, payload={"failure_code": code})
             return self._dto(row)
@@ -426,6 +461,7 @@ class AssistantContextService:
         governed_response = None
         evidence = [AssistantEvidenceDto.model_validate(item) for item in projection["evidence"]]
         if intent != "mutation":
+            governed_response = None
             try:
                 with self._scope() as session:
                     evidence_segments, evidence_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
@@ -439,7 +475,7 @@ class AssistantContextService:
                 output_budget = {"concise": 1_200, "detailed": 4_000, "deep": 8_000}[request.answer_mode]
                 governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=_safe(request.message, 1000), context=bounded.segments, max_output_tokens=output_budget), actor=actor)
                 if governed_response.status != "completed":
-                    raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503)
+                    raise self._provider_failure(governed_response)
                 citations = governed_response.structured_output.get("citations", [])
                 with self._scope() as session:
                     validated_citations = self._validated_citations(session, request.run_id, citations)
@@ -464,11 +500,14 @@ class AssistantContextService:
                 if citations:
                     evidence = [AssistantEvidenceDto(artifact_id=item.id, checksum=item.checksum, label=item.relative_path) for item in validated_citations or []]
             except AssistantRequestError as error:
-                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
+                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code, provider=governed_response)
                 raise
             except Exception as error:
-                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed")
-                raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503) from error
+                code = getattr(error, "code", "assistant_provider_failed")
+                status = getattr(error, "status_code", 503)
+                message = "The governed Assistant provider failed; retry is safe."
+                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=message, code=code, provider=governed_response)
+                raise AssistantRequestError(code, message, status) from error
         input_tokens = sum(int(item["input_tokens"]) for item in projection["usage"])
         output_tokens = sum(int(item["output_tokens"]) for item in projection["usage"])
         input_cost = sum(float(item.get("input_cost_usd", 0.0)) for item in projection["usage"])

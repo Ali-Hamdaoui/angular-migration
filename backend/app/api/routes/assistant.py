@@ -24,13 +24,13 @@ def _authorize(service: AssistantContextService, run_id: str, actor: str) -> Non
     service.authorize(run_id, actor)
 
 
-@router.post("/messages", response_model=AssistantMessageResultDto, status_code=201)
+@router.post("/messages", response_model=AssistantMessageResultDto, status_code=200)
 def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Request, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
     try:
         _authorize(service, run_id, actor)
         return service.answer(payload.model_copy(update={"run_id": run_id}), actor=actor)
     except AssistantRequestError as error:
-        return error_response(request, status_code=error.status_code, error_code=error.code, message=error.message)
+        return error_response(request, status_code=error.status_code, error_code=error.code, message=error.message, details=error.details)
 
 
 @router.get("/messages", response_model=AssistantHistoryDto)

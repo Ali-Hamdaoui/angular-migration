@@ -118,6 +118,27 @@ def test_smoke_persists_specific_provider_failure_metadata(tmp_path):
         assert payload == {'error_code': 'server', 'message': 'LLM invocation failed.', 'provider_error_code': 'InternalServerError', 'provider_http_status': 500, 'provider_message': 'safe provider message', 'provider_request_id': 'azure-request-1', 'resolved_deployment': 'resolved-deployment'}
 
 
+def test_assistant_persists_safe_gateway_diagnostics(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    failure = AzureGatewayError(LlmFailureCode.PROTOCOL, 'bad response', provider_code='MISSING_STRUCTURED_CONTENT', provider_message='status=completed; output_types=message', provider_request_id='azure-request-2', deployment_alias='resolved-deployment', failure_stage='response_contract_validation', failure_subtype='MISSING_STRUCTURED_CONTENT', response_received=True, response_kind='json', transport_started=True)
+    service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=FakeGateway(fail=failure), now_provider=lambda: NOW)
+
+    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-failure', correlation_id='corr-assistant-failure', question='safe question', context=[]))
+
+    assert result.status == 'failed'
+    assert result.failure_stage == 'response_contract_validation'
+    assert result.failure_subtype == 'MISSING_STRUCTURED_CONTENT'
+    assert result.provider_request_id == 'azure-request-2'
+    assert result.deployment_alias == 'resolved-deployment'
+    with sessions() as session:
+        row = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
+        assert row.failure_code == 'protocol'
+        assert row.sanitized_provider_message == 'status=completed; output_types=message'
+        assert row.transport_started is True
+        assert 'safe question' not in (row.sanitized_provider_message or '')
+    engine.dispose()
+
+
 def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azure(tmp_path):
     scope, sessions, settings, engine = fixture(tmp_path)
     settings = settings.model_copy(update={
@@ -152,7 +173,7 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     assert transport.calls[0]['payload']['text']['format']['type'] == 'json_schema'
     assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'citations'}
     schema = transport.calls[0]['payload']['text']['format']['schema']
-    citation_schema = transport.calls[0]['payload']['text']['format']['schema']['$defs']['_AssistantCitation']
+    citation_schema = transport.calls[0]['payload']['text']['format']['schema']['properties']['citations']['items']
     assert schema['additionalProperties'] is False
     assert citation_schema['additionalProperties'] is False
     assert set(citation_schema['required']) == {'artifact_id', 'checksum', 'stage_id'}

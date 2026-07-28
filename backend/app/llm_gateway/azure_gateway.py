@@ -51,7 +51,7 @@ class LlmFailureCode(str, Enum):
 class AzureGatewayError(RuntimeError):
     '''Stable gateway error that never exposes provider data or credentials.'''
 
-    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_status: int | None = None, provider_code: str | None = None, provider_message: str | None = None, provider_request_id: str | None = None, failure_stage: str | None = None, failure_subtype: str | None = None, response_received: bool = False, response_content_type: str | None = None, response_bytes: int | None = None, response_sha256: str | None = None, response_kind: str | None = None, transport_started: bool = False) -> None:
+    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_status: int | None = None, provider_code: str | None = None, provider_message: str | None = None, provider_request_id: str | None = None, deployment_alias: str | None = None, failure_stage: str | None = None, failure_subtype: str | None = None, response_received: bool = False, response_content_type: str | None = None, response_bytes: int | None = None, response_sha256: str | None = None, response_kind: str | None = None, transport_started: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
@@ -59,6 +59,7 @@ class AzureGatewayError(RuntimeError):
         self.provider_code = provider_code
         self.provider_message = provider_message
         self.provider_request_id = provider_request_id
+        self.deployment_alias = deployment_alias
         self.failure_stage = failure_stage
         self.failure_subtype = failure_subtype
         self.response_received = response_received
@@ -210,23 +211,23 @@ class PromptSchemaRegistry:
     def validate(self, schema_name: str, value: Mapping[str, Any]) -> dict[str, Any]:
         registered = self._schemas.get(schema_name)
         if registered is None:
-            raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Response schema is not registered.')
+            raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Response schema is not registered.', failure_stage='schema_validation', failure_subtype='ASSISTANT_SCHEMA_VALIDATION')
         model_type, semantic_validator = registered
         try:
             result = model_type.model_validate(value)
         except ValidationError as exc:
-            raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Provider response failed schema validation.') from exc
+            raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Provider response failed schema validation.', failure_stage='schema_validation', failure_subtype='ASSISTANT_SCHEMA_VALIDATION') from exc
         if semantic_validator:
             try:
                 semantic_validator(result.model_dump(mode='json'))
             except Exception as exc:
-                raise StructuredOutputValidationError(LlmFailureCode.SEMANTIC, 'Provider response failed semantic validation.') from exc
+                raise StructuredOutputValidationError(LlmFailureCode.SEMANTIC, 'Provider response failed semantic validation.', failure_stage='schema_validation', failure_subtype='ASSISTANT_SCHEMA_VALIDATION') from exc
         return result.model_dump(mode='json')
 
     def json_schema(self, schema_name: str) -> dict[str, Any]:
         registered = self._schemas.get(schema_name)
         if registered is None:
-            raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Response schema is not registered.')
+            raise StructuredOutputValidationError(LlmFailureCode.SCHEMA, 'Response schema is not registered.', failure_stage='schema_validation', failure_subtype='ASSISTANT_SCHEMA_VALIDATION')
         return _azure_strict_schema(registered[0].model_json_schema())
 
 
@@ -300,7 +301,7 @@ class UrllibAzureTransport:
                 if declared and declared.isdigit() and int(declared) != len(raw_body):
                     raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response body was truncated.', failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_TRUNCATED', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind='truncated', provider_request_id=metadata['provider_request_id'], transport_started=True)
                 if not raw_body:
-                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response body was empty.', failure_stage='response_body_read', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=0, response_sha256=checksum, response_kind='empty', provider_request_id=metadata['provider_request_id'], transport_started=True)
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response body was empty.', failure_stage='response_body_read', failure_subtype='MISSING_OUTPUT', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=0, response_sha256=checksum, response_kind='empty', provider_request_id=metadata['provider_request_id'], transport_started=True)
                 try:
                     decoded = raw_body.decode('utf-8')
                 except UnicodeDecodeError as exc:
@@ -308,7 +309,7 @@ class UrllibAzureTransport:
                 try:
                     parsed_body = json.loads(decoded)
                 except json.JSONDecodeError as exc:
-                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response was not valid JSON.', failure_stage='response_json_decode', failure_subtype='LLM_RESPONSE_JSON_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True) from exc
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response was not valid JSON.', failure_stage='response_json_decode', failure_subtype='INVALID_JSON', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True) from exc
                 if not isinstance(parsed_body, Mapping):
                     raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response top-level shape was invalid.', failure_stage='response_shape_validation', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True)
                 return ProviderTransportResult(body=parsed_body, provider_request_id=metadata['provider_request_id'], provider_status=metadata['provider_status'], response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum)
@@ -317,7 +318,7 @@ class UrllibAzureTransport:
         except urllib.error.HTTPError as exc:
             provider_code, provider_message = _provider_diagnostic(exc)
             code = {400: LlmFailureCode.INVALID_REQUEST, 401: LlmFailureCode.AUTHENTICATION, 403: LlmFailureCode.AUTHORIZATION, 404: LlmFailureCode.DEPLOYMENT, 408: LlmFailureCode.TIMEOUT, 429: LlmFailureCode.RATE_LIMIT}.get(exc.code, LlmFailureCode.SERVER if exc.code >= 500 else LlmFailureCode.PROTOCOL)
-            raise AzureGatewayError(code, 'Azure OpenAI request failed.', retryable=exc.code in {408, 429, 500, 502, 503, 504}, provider_status=exc.code, provider_code=provider_code, provider_message=provider_message, provider_request_id=exc.headers.get('apim-request-id') or exc.headers.get('x-ms-request-id') or exc.headers.get('request-id'), failure_stage='http_response', failure_subtype='LLM_RESPONSE_FAILED', response_received=True, response_content_type=exc.headers.get('Content-Type'), transport_started=True) from exc
+            raise AzureGatewayError(code, 'Azure OpenAI request failed.', retryable=exc.code in {408, 429, 500, 502, 503, 504}, provider_status=exc.code, provider_code=provider_code, provider_message=provider_message, provider_request_id=exc.headers.get('apim-request-id') or exc.headers.get('x-ms-request-id') or exc.headers.get('request-id'), failure_stage='http_response', failure_subtype='HTTP_ERROR_ENVELOPE', response_received=True, response_content_type=exc.headers.get('Content-Type'), transport_started=True) from exc
         except (socket.timeout, TimeoutError) as exc:
             raise AzureGatewayError(LlmFailureCode.TIMEOUT, 'Azure OpenAI request timed out.', retryable=True, failure_stage='http_request', failure_subtype='LLM_TIMEOUT', transport_started=True) from exc
         except urllib.error.URLError as exc:
@@ -401,15 +402,16 @@ class AzureOpenAILLMGateway:
                     raise AzureGatewayError(LlmFailureCode.BUDGET, budget.reason)
                 return LlmResponse(response_id=f'llm-response-{uuid4().hex[:12]}', request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status='completed', summary='Azure OpenAI response validated by the governed gateway.', structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, provider_request_id=provider_request_id, request_manifest=self.last_request_manifest or {})
             except AzureGatewayError as exc:
+                exc.deployment_alias = exc.deployment_alias or deployment.alias
                 if not exc.retryable or attempt >= self._settings.llm_max_transport_retries:
                     exc.retry_count = attempt
                     raise
                 time.sleep(min(2.0, 0.25 * (2 ** attempt)))
                 attempt += 1
             except (ValidationError, ValueError, TypeError) as exc:
-                raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM gateway validation failed.', failure_stage='response_contract_validation', failure_subtype='LLM_RESPONSE_CONTRACT_INVALID') from exc
+                raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM gateway validation failed.', deployment_alias=deployment.alias, failure_stage='response_contract_validation', failure_subtype='UNKNOWN_RESPONSE_SHAPE') from exc
             except Exception as exc:
-                raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'LLM gateway failed safely before completing the response.', failure_stage='gateway_internal', failure_subtype='LLM_INTERNAL_GATEWAY_ERROR') from exc
+                raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'LLM gateway failed safely before completing the response.', deployment_alias=deployment.alias, failure_stage='gateway_internal', failure_subtype='LLM_INTERNAL_GATEWAY_ERROR') from exc
 
     def _redacted_request(self, request: LlmRequest):
         content = json.dumps({'system_policy': request.system_policy, 'context': [segment.model_dump(mode='json') for segment in request.context]}, sort_keys=True)
@@ -461,14 +463,17 @@ def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:
             parsed = json.loads(raw['output_text'])
             if isinstance(parsed, Mapping):
                 return dict(parsed)
-        except json.JSONDecodeError:
-            pass
+            raise _response_protocol_error(raw, provider_code='invalid_json', category='INVALID_JSON', json_decode='non_object')
+        except json.JSONDecodeError as exc:
+            raise _response_protocol_error(raw, provider_code='invalid_json', category='INVALID_JSON') from exc
     if isinstance(raw.get('output'), Mapping):
         value = raw['output'].get('parsed')
         if isinstance(value, Mapping):
             return dict(value)
     items = raw.get('output', []) if isinstance(raw.get('output'), list) else []
     found_message = False
+    saw_unsupported_item = False
+    saw_refusal = False
     for item in items:
         if not isinstance(item, Mapping):
             continue
@@ -477,6 +482,8 @@ def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:
                 continue
             found_message = True
         elif item.get('type') is not None:
+            if item.get('type') not in {'reasoning'}:
+                saw_unsupported_item = True
             continue
         for content in item.get('content', []) if isinstance(item.get('content'), list) else []:
             if not isinstance(content, Mapping):
@@ -484,7 +491,11 @@ def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:
             value = content.get('json') or content.get('parsed')
             if isinstance(value, Mapping):
                 return dict(value)
+            if content.get('type') == 'refusal':
+                saw_refusal = True
+                continue
             if content.get('type') not in {None, 'output_text'}:
+                saw_unsupported_item = True
                 continue
             text = content.get('text')
             if not isinstance(text, str):
@@ -492,9 +503,9 @@ def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:
             try:
                 parsed = json.loads(text)
             except json.JSONDecodeError as exc:
-                raise _response_protocol_error(raw, provider_code='invalid_json', json_decode='invalid') from exc
+                raise _response_protocol_error(raw, provider_code='invalid_json', category='INVALID_JSON', json_decode='invalid') from exc
             if not isinstance(parsed, Mapping):
-                raise _response_protocol_error(raw, provider_code='invalid_json', json_decode='non_object')
+                raise _response_protocol_error(raw, provider_code='invalid_json', category='INVALID_JSON', json_decode='non_object')
             return dict(parsed)
     choices = raw.get('choices') if isinstance(raw.get('choices'), list) else []
     content = choices[0].get('message', {}).get('content') if choices else None
@@ -508,7 +519,13 @@ def _extract_structured_output(raw: Mapping[str, Any]) -> dict[str, Any]:
     found = _find_structured_mapping(raw.get('output'))
     if found is not None:
         return found
-    raise _response_protocol_error(raw, provider_code='missing_output_text' if found_message else 'missing_assistant_message')
+    if not items:
+        raise _response_protocol_error(raw, provider_code='missing_output', category='MISSING_OUTPUT')
+    if saw_unsupported_item and not found_message:
+        raise _response_protocol_error(raw, provider_code='unsupported_output_item', category='UNSUPPORTED_OUTPUT_ITEM')
+    if saw_refusal:
+        raise _response_protocol_error(raw, provider_code='missing_output_text', category='REFUSAL_OR_INCOMPLETE_RESPONSE')
+    raise _response_protocol_error(raw, provider_code='missing_output_text' if found_message else 'missing_assistant_message', category='MISSING_STRUCTURED_CONTENT' if found_message else 'MISSING_OUTPUT')
 
 
 def _response_structure_diagnostic(raw: Mapping[str, Any], *, json_decode: str | None = None) -> str:
@@ -521,8 +538,8 @@ def _response_structure_diagnostic(raw: Mapping[str, Any], *, json_decode: str |
     return '; '.join(parts)[:240]
 
 
-def _response_protocol_error(raw: Mapping[str, Any], *, provider_code: str, json_decode: str | None = None) -> AzureGatewayError:
-    return AzureGatewayError(LlmFailureCode.PROTOCOL, 'Azure OpenAI response did not contain a valid structured message.', provider_code=provider_code, provider_message=_response_structure_diagnostic(raw, json_decode=json_decode), failure_stage='response_contract_validation', failure_subtype='LLM_RESPONSE_SHAPE_INVALID')
+def _response_protocol_error(raw: Mapping[str, Any], *, provider_code: str, category: str = 'UNKNOWN_RESPONSE_SHAPE', json_decode: str | None = None) -> AzureGatewayError:
+    return AzureGatewayError(LlmFailureCode.PROTOCOL, 'Azure OpenAI response did not contain a valid structured message.', provider_code=provider_code, provider_message=_response_structure_diagnostic(raw, json_decode=json_decode), failure_stage='response_contract_validation', failure_subtype=category)
 
 
 def _validate_response_state(raw: Mapping[str, Any]) -> None:
@@ -532,15 +549,15 @@ def _validate_response_state(raw: Mapping[str, Any]) -> None:
     if error is not None:
         provider_code = error.get('code') if isinstance(error, Mapping) else None
         provider_message = error.get('message') if isinstance(error, Mapping) else None
-        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider reported a failed response.', retryable=status in {'queued', 'in_progress'}, provider_code=provider_code if isinstance(provider_code, str) else None, provider_message=_safe_provider_text(provider_message), failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_FAILED')
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider reported a failed response.', retryable=status in {'queued', 'in_progress'}, provider_code=provider_code if isinstance(provider_code, str) else None, provider_message=_safe_provider_text(provider_message), failure_stage='response_state_validation', failure_subtype='HTTP_ERROR_ENVELOPE')
     if status == 'failed':
         raise AzureGatewayError(LlmFailureCode.SERVER, 'Azure OpenAI response failed.', provider_code='failed', provider_message=_response_structure_diagnostic(raw), failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_FAILED')
     if status == 'incomplete':
         reason = incomplete.get('reason') if isinstance(incomplete, Mapping) else None
         subtype = {'max_output_tokens': 'LLM_OUTPUT_LIMIT_REACHED', 'content_filter': 'LLM_CONTENT_FILTERED'}.get(reason, 'LLM_RESPONSE_INCOMPLETE')
-        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response was incomplete.', provider_code='incomplete', provider_message=f"status=incomplete; reason={_SAFE_PROVIDER_CODE.sub('', str(reason or 'unknown'))[:80]}", failure_stage='response_state_validation', failure_subtype=subtype)
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response was incomplete.', provider_code='incomplete', provider_message=f"status=incomplete; reason={_SAFE_PROVIDER_CODE.sub('', str(reason or 'unknown'))[:80]}", failure_stage='response_state_validation', failure_subtype='REFUSAL_OR_INCOMPLETE_RESPONSE')
     if status == 'in_progress':
-        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response was still in progress.', retryable=True, failure_stage='response_state_validation', failure_subtype='LLM_RESPONSE_INCOMPLETE')
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response was still in progress.', retryable=True, failure_stage='response_state_validation', failure_subtype='REFUSAL_OR_INCOMPLETE_RESPONSE')
     if status not in {None, 'completed'}:
         raise _response_protocol_error(raw, provider_code='unexpected_status')
 
@@ -573,9 +590,9 @@ def _find_structured_mapping(value: object) -> dict[str, Any] | None:
 def _extract_usage(raw: Mapping[str, Any]) -> dict[str, int]:
     usage = raw.get('usage')
     if not isinstance(usage, Mapping):
-        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response omitted token usage.')
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response omitted token usage.', failure_stage='response_contract_validation', failure_subtype='UNKNOWN_RESPONSE_SHAPE')
     input_tokens = usage.get('input_tokens', usage.get('prompt_tokens'))
     output_tokens = usage.get('output_tokens', usage.get('completion_tokens'))
     if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
-        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider token usage was invalid.')
+        raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider token usage was invalid.', failure_stage='response_contract_validation', failure_subtype='UNKNOWN_RESPONSE_SHAPE')
     return {'input_tokens': input_tokens, 'output_tokens': output_tokens}

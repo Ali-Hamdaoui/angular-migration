@@ -118,8 +118,8 @@ class LlmEvidenceApplicationService:
             provider_usage = response.usage
             validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
             return self._complete_assistant(request, checksum, invocation_id, response, validated, actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
-        except StructuredOutputValidationError:
-            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID', 'Assistant governed invocation returned an invalid structured response.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except StructuredOutputValidationError as error:
+            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except AzureGatewayError as error:
             return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except Exception as error:
@@ -156,6 +156,23 @@ class LlmEvidenceApplicationService:
         with self.scope() as session:
             row = session.get(LlmInvocationModel, invocation_id); run = session.get(MigrationRunModel, request.run_id)
             row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.latency_ms = latency_ms
+            if isinstance(error, AzureGatewayError):
+                row.deployment_alias = error.deployment_alias or row.deployment_alias
+                row.provider_http_status = error.provider_status
+                row.provider_error_code = error.provider_code
+                row.sanitized_provider_message = error.provider_message
+                row.provider_request_id = error.provider_request_id
+                row.failure_stage = error.failure_stage
+                row.failure_subtype = error.failure_subtype
+                row.retries = error.retry_count
+                row.retryable = error.retryable
+                row.response_received = error.response_received
+                row.response_content_type = error.response_content_type
+                row.response_bytes = error.response_bytes
+                row.response_sha256 = error.response_sha256
+                row.response_kind = error.response_kind
+                row.transport_started = error.transport_started
+                row.transport_exception_type = type(error.__cause__).__name__ if error.__cause__ else None
             provider_diagnostic = getattr(error, 'provider_code', None) or getattr(error, 'provider_message', None)
             row.redacted_summary = ('Assistant provider rejected the request: ' + ': '.join(filter(None, [getattr(error, 'provider_code', None), getattr(error, 'provider_message', None)])))[:360] if provider_diagnostic else (f'Assistant invocation failed; {diagnostic}.' if diagnostic else 'Assistant invocation failed; provider details redacted.')
             if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':

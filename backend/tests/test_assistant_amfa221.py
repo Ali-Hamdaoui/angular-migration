@@ -102,14 +102,14 @@ def test_in_process_post_persists_and_get_restores_ordered_history(tmp_path):
     try:
         with TestClient(app) as client:
             first = client.post("/api/v1/runs/run-1/assistant/messages", json={"message": "Where is the migration now?", "idempotency_key": "one"})
-            assert first.status_code == 201
+            assert first.status_code == 200
             first_body = first.json()
             assert first_body["workflow_state_version"] == 1 or first_body["workflow_state_version"] == 3
             assert first_body["proof_label"] == "authoritative persisted fact"
             replay = client.post("/api/v1/runs/run-1/assistant/messages", json={"message": "Where is the migration now?", "idempotency_key": "one"})
             assert replay.json()["message_id"] == first_body["message_id"]
             second = client.post("/api/v1/runs/run-1/assistant/messages", json={"message": "What did the Planning Agent propose?", "conversation_id": first_body["conversation_id"], "idempotency_key": "two"})
-            assert second.status_code == 201
+            assert second.status_code == 200
             history = client.get(f"/api/v1/runs/run-1/assistant/messages?conversation_id={first_body['conversation_id']}")
             history_messages = history.json()["messages"]
             assert [item["role"] for item in history_messages] == ["user", "assistant", "user", "assistant"]
