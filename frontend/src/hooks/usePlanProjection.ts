@@ -50,7 +50,7 @@ export function usePlanProjection({ runId, stateVersion, planningJob, workflowEv
   useEffect(() => { void refresh(); }, [refresh, stateVersion, latestPlanEvent?.sequence]);
   useEffect(() => {
     if (connectionStatus === "reconnecting" || connectionStatus === "recovering") setStatus("reconnecting");
-    if (connectionStatus === "open" && latestPlanEvent) void refresh();
+    if (connectionStatus === "open") void refresh();
   }, [connectionStatus, latestPlanEvent, refresh]);
 
   const generate = useCallback(async (input: Omit<PlanCreateRequest, "expected_state_version" | "idempotency_key" | "prerequisite_artifacts"> & { prerequisite_artifacts: PlanCreateRequest["prerequisite_artifacts"] }) => {
