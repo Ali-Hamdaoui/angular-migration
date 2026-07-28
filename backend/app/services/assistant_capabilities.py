@@ -50,10 +50,29 @@ def default_capability_registry() -> AssistantCapabilityRegistry:
     return registry
 
 
+def _mutation_detected(question: str) -> bool:
+    """Detect mutation intent using word-level matching to avoid substring gaps."""
+    q = question.lower()
+    words = set(q.split())
+    punctuation = ",.;:!?"
+    clean = q.translate(str.maketrans("", "", punctuation))
+    clean_words = set(clean.split())
+    mutation_keywords = {"approve", "reject", "execute", "apply", "patch"}
+    if mutation_keywords & clean_words:
+        return True
+    if "change" in clean_words and ("workflow" in clean_words or "state" in clean_words):
+        return True
+    if "run" in clean_words and "command" in clean_words:
+        return True
+    if "modify" in clean_words and "files" in clean_words:
+        return True
+    return False
+
+
 def classify_intent(question: str) -> str:
     """Classify common migration questions; unknown read-only questions stay answerable."""
     q = " ".join(question.lower().split())
-    if any(term in q for term in ("approve", "reject", "execute", "apply", "patch", "modify files", "change workflow", "run command")):
+    if _mutation_detected(q):
         return "unsupported"  # the caller converts this to the explicit mutation guard
     if any(term in q for term in ("token", "cost", "usage", "consumed", "duration")):
         return "usage_and_cost"

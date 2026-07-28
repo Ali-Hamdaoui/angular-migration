@@ -46,7 +46,7 @@ function readPresentation(runId: string): PresentationState {
 }
 
 export function AssistantDock(props: { runId: string; phase?: string; stateVersion?: number; workflowStatus?: string }) {
-  const [presentation, setPresentation] = useState<PresentationState>("closed");
+  const [presentation, setPresentation] = useState<PresentationState>(() => readPresentation(props.runId));
   const [status, setStatus] = useState<AssistantStatus>({ pending: false, error: false, model: "Waiting for first answer" });
   const launcherRef = useRef<HTMLButtonElement>(null);
   const restoreRef = useRef<HTMLButtonElement>(null);
@@ -65,11 +65,11 @@ export function AssistantDock(props: { runId: string; phase?: string; stateVersi
     (presentation === "expanded" ? closeRef : presentation === "minimized" ? restoreRef : launcherRef).current?.focus();
   }, [presentation]);
 
-  return <div className={styles.assistantDock}>
-    <div className={styles.assistantPopup} role="dialog" aria-modal="false" aria-label="Migration Follow-up Assistant" hidden={presentation !== "expanded"}>
+  return <div className={styles.assistantDock} data-assistant-presentation={presentation}>
+    <div className={`${styles.assistantPopup} ${styles.assistantExpanded}`} role="dialog" aria-modal="false" aria-label="Migration Follow-up Assistant" aria-hidden={presentation !== "expanded"} hidden={presentation !== "expanded"}>
       <AssistantPanel {...props} onClose={() => changePresentation("closed")} onMinimize={() => changePresentation("minimized")} onStatus={setStatus} closeRef={closeRef} />
     </div>
-    <div className={styles.assistantMinimized} hidden={presentation !== "minimized"}>
+    <div className={styles.assistantMinimized} aria-hidden={presentation !== "minimized"} hidden={presentation !== "minimized"}>
       <span className={styles.assistantIcon} aria-hidden="true">✦</span>
       <span className={styles.assistantMinimizedLabel}><strong>Migration Assistant</strong><small role={status.pending ? "status" : undefined} aria-live="polite">{status.pending ? "Thinking…" : status.error ? "Request failed" : status.model}</small></span>
       {status.pending ? <span className={styles.assistantPending} aria-hidden="true" /> : null}
@@ -77,9 +77,9 @@ export function AssistantDock(props: { runId: string; phase?: string; stateVersi
       <button ref={restoreRef} className={styles.assistantDockButton} type="button" onClick={() => changePresentation("expanded")} aria-label="Expand Assistant">↗</button>
       <button className={styles.assistantDockButton} type="button" onClick={() => changePresentation("closed")} aria-label="Close Assistant">×</button>
     </div>
-    {presentation === "closed" ? <button ref={launcherRef} className={styles.assistantLauncher} type="button" onClick={() => changePresentation("expanded")} aria-expanded={false} aria-label="Open Assistant">
+    <button ref={launcherRef} className={styles.assistantLauncher} type="button" onClick={() => changePresentation("expanded")} aria-expanded={presentation === "expanded"} aria-hidden={presentation !== "closed"} hidden={presentation !== "closed"} aria-label="Open Assistant">
       <span aria-hidden="true">✦</span><span>Ask Assistant</span>
-    </button> : null}
+    </button>
   </div>;
 }
 

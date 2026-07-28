@@ -125,7 +125,11 @@
 
 /* Run-scoped Assistant dock: globally available without becoming workflow navigation. */
 .assistantDock { position: fixed; right: 20px; bottom: 20px; z-index: 80; min-width: 0; max-width: 100%; }
-.assistantLauncher { display: inline-flex; align-items: center; gap: .55rem; min-height: 3rem; border: 1px solid #55a7ff; border-radius: 999px; background: #0d3153; color: #eff7ff; box-shadow: 0 14px 36px rgba(0, 0, 0, .35); padding: .75rem 1rem; font-weight: 800; }
+.assistantExpanded, .assistantMinimized, .assistantLauncher { display: none; }
+.assistantDock[data-assistant-presentation="expanded"] .assistantExpanded { display: grid; }
+.assistantDock[data-assistant-presentation="minimized"] .assistantMinimized { display: flex; }
+.assistantDock[data-assistant-presentation="closed"] .assistantLauncher { display: inline-flex; }
+.assistantLauncher { align-items: center; gap: .55rem; min-height: 3rem; border: 1px solid #55a7ff; border-radius: 999px; background: #0d3153; color: #eff7ff; box-shadow: 0 14px 36px rgba(0, 0, 0, .35); padding: .75rem 1rem; font-weight: 800; }
 .assistantPopup { position: fixed; right: 24px; bottom: 24px; box-sizing: border-box; display: grid; width: min(480px, calc(100vw - 48px)); height: min(760px, calc(100dvh - 48px)); max-height: calc(100dvh - 48px); min-width: 0; min-height: 0; overflow: hidden; border: 1px solid #3d73a6; border-radius: .75rem; background: #081827; box-shadow: 0 24px 70px rgba(0, 0, 0, .55); }
 .assistantPanel { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: .85rem; box-sizing: border-box; min-width: 0; min-height: 0; padding: 1.1rem; overflow: hidden; }
 .assistantHeader { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; min-width: 0; }
@@ -177,3 +181,14 @@
   .assistantSuggestions { grid-template-columns: 1fr; }
   .assistantComposer > div label { margin-left: 0; }
 }
+
+/* State selectors win over the popup/dock layout rules above. */
+.assistantDock[data-assistant-presentation="expanded"] .assistantExpanded { display: grid; }
+.assistantDock[data-assistant-presentation="expanded"] .assistantMinimized,
+.assistantDock[data-assistant-presentation="expanded"] .assistantLauncher,
+.assistantDock[data-assistant-presentation="minimized"] .assistantExpanded,
+.assistantDock[data-assistant-presentation="minimized"] .assistantLauncher,
+.assistantDock[data-assistant-presentation="closed"] .assistantExpanded,
+.assistantDock[data-assistant-presentation="closed"] .assistantMinimized { display: none; }
+.assistantDock[data-assistant-presentation="minimized"] .assistantMinimized { display: flex; }
+.assistantDock[data-assistant-presentation="closed"] .assistantLauncher { display: inline-flex; }

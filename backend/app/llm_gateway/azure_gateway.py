@@ -239,6 +239,7 @@ class ProviderTransportResult(Mapping[str, Any]):
     response_content_type: str | None = None
     response_bytes: int = 0
     response_sha256: str = ""
+    response_kind: str = "json"
 
     def __getitem__(self, key: str) -> Any:
         return self.body[key]
@@ -384,16 +385,26 @@ class AzureOpenAILLMGateway:
         # top-level instructions, never user JSON fields.
         request = request.model_copy(update={'system_policy': f'{prompt.system_policy}\n{request.system_policy}'})
         redacted = self._redacted_request(request)
-        payload = self._payload(request, redacted, deployment.deployment)
         endpoint_parts = urllib.parse.urlsplit(deployment.endpoint)
-        self.last_request_manifest = {'endpoint_host': endpoint_parts.hostname, 'endpoint_path': '/openai/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'max_output_tokens': request.max_output_tokens, 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type']}
         attempt = 0
         while True:
             try:
+                retry_controls = attempt == 1
+                call_request = request.model_copy(update={
+                    'max_output_tokens': self._retry_output_budget(request.max_output_tokens) if retry_controls else request.max_output_tokens,
+                })
+                payload = self._payload(call_request, redacted, deployment.deployment, retry_controls=retry_controls)
+                self.last_request_manifest = {'endpoint_host': endpoint_parts.hostname, 'endpoint_path': '/openai/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'max_output_tokens': call_request.max_output_tokens, 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type'], 'attempt': attempt}
                 transport_result = self._transport.request(endpoint=deployment.endpoint, api_key=deployment.api_key, api_version=deployment.api_version, deployment=deployment.deployment, payload=payload, timeout=self._settings.llm_timeout_seconds)
                 provider_request_id = transport_result.provider_request_id if isinstance(transport_result, ProviderTransportResult) else None
                 raw = transport_result.body if isinstance(transport_result, ProviderTransportResult) else transport_result
-                _validate_response_state(raw)
+                try:
+                    _validate_response_state(raw)
+                except AzureGatewayError as exc:
+                    self._preserve_transport_evidence(exc, transport_result)
+                    if self._is_bounded_incomplete(exc) and attempt == 0:
+                        exc.retryable = True
+                    raise
                 validated = self._registry.validate(request.response_schema, _extract_structured_output(raw))
                 usage_data = _extract_usage(raw)
                 usage = build_usage_record(run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, input_tokens=usage_data['input_tokens'], output_tokens=usage_data['output_tokens'], input_price_per_million=self._settings.llm_input_price_per_million_tokens, output_price_per_million=self._settings.llm_output_price_per_million_tokens, retry_count=attempt)
@@ -403,9 +414,16 @@ class AzureOpenAILLMGateway:
                 return LlmResponse(response_id=f'llm-response-{uuid4().hex[:12]}', request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status='completed', summary='Azure OpenAI response validated by the governed gateway.', structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, provider_request_id=provider_request_id, request_manifest=self.last_request_manifest or {})
             except AzureGatewayError as exc:
                 exc.deployment_alias = exc.deployment_alias or deployment.alias
-                if not exc.retryable or attempt >= self._settings.llm_max_transport_retries:
+                bounded_retry = self._is_bounded_incomplete(exc)
+                if bounded_retry and attempt >= 1:
+                    exc.retryable = True
                     exc.retry_count = attempt
                     raise
+                if not (bounded_retry and attempt == 0) and (not exc.retryable or attempt >= self._settings.llm_max_transport_retries):
+                    exc.retry_count = attempt
+                    raise
+                if bounded_retry and attempt == 0:
+                    exc.retryable = True
                 time.sleep(min(2.0, 0.25 * (2 ** attempt)))
                 attempt += 1
             except (ValidationError, ValueError, TypeError) as exc:
@@ -417,8 +435,36 @@ class AzureOpenAILLMGateway:
         content = json.dumps({'system_policy': request.system_policy, 'context': [segment.model_dump(mode='json') for segment in request.context]}, sort_keys=True)
         return redact_prompt_text(content)
 
-    def _payload(self, request: LlmRequest, redacted: Any, deployment: str) -> dict[str, Any]:
-        return {'model': deployment, 'store': False, 'instructions': request.system_policy, 'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': redacted.redacted_text}]}], 'max_output_tokens': request.max_output_tokens, 'text': {'format': {'type': 'json_schema', 'name': request.response_schema, 'schema': self._registry.json_schema(request.response_schema), 'strict': True}}}
+    @staticmethod
+    def _retry_output_budget(max_output_tokens: int) -> int:
+        return min(32768, max(max_output_tokens + 1024, max_output_tokens * 2))
+
+    @staticmethod
+    def _is_bounded_incomplete(error: AzureGatewayError) -> bool:
+        return error.failure_subtype == 'REFUSAL_OR_INCOMPLETE_RESPONSE' and error.provider_code == 'incomplete' and 'reason=max_output_tokens' in (error.provider_message or '')
+
+    @staticmethod
+    def _preserve_transport_evidence(error: AzureGatewayError, result: Mapping[str, Any] | ProviderTransportResult) -> None:
+        error.transport_started = True
+        error.response_received = True
+        if isinstance(result, ProviderTransportResult):
+            error.provider_status = result.provider_status
+            error.provider_request_id = result.provider_request_id
+            error.response_content_type = result.response_content_type
+            error.response_bytes = result.response_bytes
+            error.response_sha256 = result.response_sha256
+            error.response_kind = result.response_kind
+        else:
+            error.response_kind = 'json'
+
+    def _payload(self, request: LlmRequest, redacted: Any, deployment: str, *, retry_controls: bool = False) -> dict[str, Any]:
+        text = {'format': {'type': 'json_schema', 'name': request.response_schema, 'schema': self._registry.json_schema(request.response_schema), 'strict': True}}
+        if retry_controls:
+            text['verbosity'] = 'low'
+        payload = {'model': deployment, 'store': False, 'instructions': request.system_policy, 'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': redacted.redacted_text}]}], 'max_output_tokens': request.max_output_tokens, 'text': text}
+        if retry_controls:
+            payload['reasoning'] = {'effort': 'low'}
+        return payload
 
 
 def _safe_provider_text(value: object) -> str | None:

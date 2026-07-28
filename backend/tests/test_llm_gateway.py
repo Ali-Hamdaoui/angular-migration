@@ -154,7 +154,7 @@ def test_azure_gateway_traverses_message_content_until_output_text(tmp_path: Pat
 ])
 def test_azure_gateway_reports_bounded_protocol_diagnostics(tmp_path: Path, body: dict[str, object], code: str, subtype: str) -> None:
     with pytest.raises(AzureGatewayError) as error:
-        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body, body]), registry=_registry()).complete(_azure_request())
     assert error.value.code == LlmFailureCode.PROTOCOL
     assert error.value.provider_code == code
     assert error.value.failure_subtype == subtype
@@ -316,6 +316,41 @@ def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) 
 
     assert response.usage.retry_count == 1
     assert len(transport.calls) == 2
+
+
+def test_azure_gateway_retries_only_max_output_incomplete_with_bounded_controls(tmp_path: Path) -> None:
+    incomplete = {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    transport = _FakeAzureTransport([incomplete, _responses_body(json.dumps({'answer': 'ok'}))])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    response = gateway.complete(_azure_request())
+
+    assert response.structured_output == {'answer': 'ok'}
+    assert response.usage.retry_count == 1
+    assert len(transport.calls) == 2
+    first, second = (call['payload'] for call in transport.calls)
+    assert first['max_output_tokens'] == 512
+    assert second['max_output_tokens'] == 1536
+    assert second['reasoning'] == {'effort': 'low'}
+    assert second['text']['verbosity'] == 'low'
+    assert second['text']['format'] == first['text']['format']
+
+
+def test_azure_gateway_stops_after_one_max_output_retry_and_preserves_transport_evidence(tmp_path: Path) -> None:
+    incomplete = {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    transport = _FakeAzureTransport([incomplete, incomplete])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    with pytest.raises(AzureGatewayError) as error:
+        gateway.complete(_azure_request())
+
+    assert len(transport.calls) == 2
+    assert error.value.failure_subtype == 'REFUSAL_OR_INCOMPLETE_RESPONSE'
+    assert error.value.retryable is True
+    assert error.value.retry_count == 1
+    assert error.value.response_received is True
+    assert error.value.transport_started is True
+    assert error.value.provider_status is None
 
 
 def test_azure_gateway_fails_closed_for_missing_configuration_and_unregistered_schema(tmp_path: Path) -> None:
