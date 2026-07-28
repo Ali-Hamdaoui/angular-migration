@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AssistantDock, AssistantPanel } from "@/components/AssistantPanel";
-import { sendAssistantMessage } from "@/api/assistant";
+import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
 import { ApiClientError } from "@/api/client";
 
 vi.mock("@/api/assistant", () => ({
@@ -11,6 +11,7 @@ vi.mock("@/api/assistant", () => ({
 describe("AssistantPanel authoritative rendering", () => {
   beforeEach(() => {
     localStorage.clear();
+    vi.clearAllMocks();
     class ReplayEventSource {
       onmessage: ((event: MessageEvent<string>) => void) | null = null;
       onerror: (() => void) | null = null;
@@ -41,6 +42,22 @@ describe("AssistantPanel authoritative rendering", () => {
     expect(screen.getByRole("button", { name: "Open Assistant" })).toBeInTheDocument();
   });
 
+  it("minimizes and restores the single mounted panel without another history load", async () => {
+    localStorage.setItem("amfa:assistant:run-1:presentation", "expanded");
+    render(<AssistantDock runId="run-1" />);
+    expect(await screen.findByRole("button", { name: "Minimize Assistant" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Migration Follow-up Assistant", hidden: true })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Minimize Assistant" }));
+    expect(screen.getByText("Migration Assistant")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Assistant" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand Assistant" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Expand Assistant" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Migration Follow-up Assistant", hidden: true })).toHaveLength(1);
+    expect(getAssistantMessages).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the composer outside one scrollable conversation region", async () => {
     render(<AssistantPanel runId="run-1" />);
     const conversation = await screen.findByRole("region", { name: "Assistant conversation" });
@@ -56,5 +73,29 @@ describe("AssistantPanel authoritative rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Assistant request failed POST /api/v1/runs/run-1/assistant/messages returned 503");
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("shows transient thinking, keeps the optimistic question, and sends Enter once", async () => {
+    let resolve!: () => void;
+    vi.mocked(sendAssistantMessage).mockReturnValueOnce(new Promise<Awaited<ReturnType<typeof sendAssistantMessage>>>((done) => { resolve = () => done({} as Awaited<ReturnType<typeof sendAssistantMessage>>); }));
+    render(<AssistantPanel runId="run-1" />);
+    const textbox = await screen.findByRole("textbox", { name: "Ask about this migration" });
+    fireEvent.change(textbox, { target: { value: "What is next?" } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(screen.getByRole("article", { name: "user message" })).toHaveTextContent("What is next?");
+    expect(textbox).toHaveValue("");
+    expect(screen.getByRole("status")).toHaveTextContent("Assistant is thinking");
+    expect(sendAssistantMessage).toHaveBeenCalledTimes(1);
+    resolve();
+    await waitFor(() => expect(screen.queryByText(/Assistant is thinking/)).not.toBeInTheDocument());
+  });
+
+  it("keeps suggestions compact and avoids repeated user metadata", async () => {
+    render(<AssistantPanel runId="run-1" />);
+    expect((await screen.findByLabelText("Suggested assistant questions")).querySelectorAll("button")).toHaveLength(3);
+    fireEvent.change(screen.getByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("article", { name: "user message" })).not.toHaveTextContent("Blocker:");
   });
 });
