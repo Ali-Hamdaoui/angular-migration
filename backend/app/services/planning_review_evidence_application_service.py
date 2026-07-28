@@ -45,6 +45,7 @@ from app.repositories.models import (
     UsageCostRecordModel,
 )
 from app.repositories.session import session_scope
+from app.services.planning_job_service import PLANNING_JOB_NONTERMINAL_STATES
 from app.services.planning_review_application_service import (
     PlanRevisionService,
     PlanningAgentService,
@@ -416,7 +417,7 @@ class PlanningReviewEvidenceApplicationService:
             gate.event_sequence = transition.event_sequence
             gate.updated_at = now
             if request.decision.value in {"approve", "approve_with_comment"}:
-                job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"})).order_by(PlanningJobModel.created_at.desc()))
+                job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES)).order_by(PlanningJobModel.created_at.desc()))
                 if job is not None:
                     job.status = "completed"
                     job.current_step = "completed"
@@ -554,10 +555,11 @@ class PlanningReviewEvidenceApplicationService:
                 updated_at=now,
             )
             session.add(gate)
-            job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"})).order_by(PlanningJobModel.created_at.desc()))
+            job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES)).order_by(PlanningJobModel.created_at.desc()))
             if job is not None:
                 job.status = "waiting_g06"
                 job.current_step = "waiting_g06"
+                job.attempt = 0
                 job.state_version = completed.next_state_version
                 job.updated_at = now
             row.status = "completed"

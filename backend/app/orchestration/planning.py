@@ -94,6 +94,7 @@ def resolve_feasibility_step(job_id: str, *, scope=session_scope) -> None:
             job.last_error_message = None
             job.last_error_stage = None
             job.retryable = False
+            job.attempt = 0
             job.lease_expires_at = None
             job.worker_id = None
             job.updated_at = datetime.now(UTC)
@@ -171,6 +172,7 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             job.status = "running_planning_review"
             job.current_step = "running_planning_review"
             job.state_version = plan.state_version
+            job.attempt = 0
             job.lease_expires_at = None
             job.worker_id = None
             job.last_error_code = job.last_error_message = job.last_error_stage = None

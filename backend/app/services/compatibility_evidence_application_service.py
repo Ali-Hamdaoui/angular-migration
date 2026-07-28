@@ -63,6 +63,12 @@ class CompatibilityEvidenceApplicationService:
                 request = self._request(run_id, payload, actor, now)
             except ValueError as error:
                 raise CompatibilityEvidenceError("DOMAIN_VALIDATION_FAILED", "Feasibility input validation failed.", 422) from error
+            if not request.workspace_fingerprint:
+                raise CompatibilityEvidenceError(
+                    "COMPATIBILITY_WORKSPACE_FINGERPRINT_REQUIRED",
+                    "Feasibility must be bound to the approved physical baseline workspace.",
+                    409,
+                )
             policy = dict(run.run_policy_snapshot or {})
             policy.update({"source_angular_exact": request.source_angular_exact, "catalogue_version": request.catalogue_version, "registry_snapshot": {"snapshot_id": request.registry_snapshot_id, "checksum": request.registry_snapshot_checksum}, "runtime_candidates": [item.model_dump(mode="json") for item in request.runtime_candidates]})
             run.run_policy_snapshot = policy
@@ -154,6 +160,14 @@ class CompatibilityEvidenceApplicationService:
                 raise CompatibilityEvidenceError("G05_NOT_FOUND", "Resolve feasibility before deciding G05.", 404)
             if gate.status == "blocked":
                 raise CompatibilityEvidenceError("G05_BLOCKED", "Blocked feasibility cannot be approved.", 409)
+            if payload.decision in {"approve", "approve_with_comment"} and not gate.workspace_fingerprint:
+                self._mark_g05_stale(session, run, gate, actor, now, "G05 workspace fingerprint is missing")
+                session.commit()
+                raise CompatibilityEvidenceError(
+                    "G05_WORKSPACE_FINGERPRINT_REQUIRED",
+                    "The G05 package is not bound to a physical workspace and must be regenerated.",
+                    409,
+                )
             if payload.decision == "approve_with_comment" and not payload.comment or payload.comment is not None and not payload.comment.strip():
                 raise CompatibilityEvidenceError("G05_COMMENT_REQUIRED", "An approval with comment requires a non-empty comment.", 422)
             if gate.expires_at is not None and self._as_utc(gate.expires_at) <= now:
@@ -192,6 +206,7 @@ class CompatibilityEvidenceApplicationService:
                     job = ensure_planning_job(session, run, actor, gate.package_checksum, now, idempotency_key=f"planning-after-g05:{run_id}:{gate.package_checksum}")
                 job.status = "generating_plan"
                 job.current_step = "generating_plan"
+                job.attempt = 0
                 job.state_version = transition.next_state_version
                 job.next_attempt_at = None
                 job.last_error_code = job.last_error_message = job.last_error_stage = None

@@ -13,6 +13,7 @@ from app.repositories.models import (
     CompatibilityCatalogueModel,
     ExecutionProfileModel,
     G04ApprovalModel,
+    G03ApprovalModel,
     MigrationRunModel,
     RegistrySnapshotModel,
     SourceAnalysisModel,
@@ -45,6 +46,7 @@ class PlanningInputResolver:
         gate = session.scalar(select(G04ApprovalModel).where(G04ApprovalModel.run_id == run_id, G04ApprovalModel.gate_id == "G04", G04ApprovalModel.status == "approved").order_by(G04ApprovalModel.state_version.desc(), G04ApprovalModel.created_at.desc()))
         if gate is None:
             raise PlanningInputResolutionError("PLANNING_G04_BINDING_STALE", "A current approved G04 package is required before feasibility planning.")
+        workspace_fingerprint = self._workspace_fingerprint(session, run_id, gate)
         source_exact = self._exact_source_from_evidence(session, run)
         if source_exact is None:
             raise PlanningInputResolutionError("PLANNING_SOURCE_EVIDENCE_MISSING", "Persisted source evidence does not contain an exact Angular version.")
@@ -93,9 +95,33 @@ class PlanningInputResolver:
             registry_snapshot_id=registry.snapshot_id, registry_snapshot_checksum=registry.checksum,
             prerequisite_artifacts=list(references), runtime_candidates=runtime,
             source_execution_profile_checksum=profile_record.selected_checksum,
-            workspace_fingerprint=gate.workspace_fingerprint,
+            workspace_fingerprint=workspace_fingerprint,
             resolved_at=now,
         )
+
+    @staticmethod
+    def _workspace_fingerprint(session, run_id: str, gate: G04ApprovalModel) -> str:
+        g03 = session.scalar(
+            select(G03ApprovalModel)
+            .where(G03ApprovalModel.run_id == run_id, G03ApprovalModel.status == "approved")
+            .order_by(G03ApprovalModel.updated_at.desc())
+        )
+        if g03 is None:
+            raise PlanningInputResolutionError(
+                "PLANNING_G03_BINDING_STALE",
+                "A current approved G03 package is required before feasibility planning.",
+            )
+        if not g03.sandbox_fingerprint:
+            raise PlanningInputResolutionError(
+                "PLANNING_WORKSPACE_FINGERPRINT_MISSING",
+                "The approved G03 package has no physical workspace fingerprint.",
+            )
+        if gate.workspace_fingerprint is not None and gate.workspace_fingerprint != g03.sandbox_fingerprint:
+            raise PlanningInputResolutionError(
+                "PLANNING_G04_WORKSPACE_FINGERPRINT_MISMATCH",
+                "The approved G04 package is bound to a different workspace than G03.",
+            )
+        return gate.workspace_fingerprint or g03.sandbox_fingerprint
 
     @staticmethod
     def _exact_source_from_evidence(session, run: MigrationRunModel) -> str | None:
