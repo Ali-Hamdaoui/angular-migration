@@ -16,6 +16,8 @@ class PlanCreateRequest(ContractModel):
     target_family: str = Field(default="angular-21.x", pattern=r"^angular-(19|20|21)\.x$")
     catalogue_version: str = Field(min_length=1, max_length=128)
     input_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    evidence_set_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    input_workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     execution_profile_id: str = Field(min_length=1, max_length=128)
     stage_route: list[tuple[str, ...]] = Field(min_length=1, max_length=8)
     target_cli_exact: str | None = Field(default=None, max_length=64)

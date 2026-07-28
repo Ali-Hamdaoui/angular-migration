@@ -304,6 +304,10 @@ def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
         "operator",
     )
     assert decision.accepted is True
+    with sessions() as session:
+        active = session.query(ActivePlanVersionModel).filter_by(run_id="run-1", scope="migration").one()
+        assert session.get(MigrationPlanModel, active.migration_plan_id).status == "approved_for_execution"
+        assert session.get(StageExecutionPlanModel, active.stage_plan_id).status == "approved_for_execution"
     replay = service.decide_g06(
         "run-1",
         G06DecisionApiRequest(

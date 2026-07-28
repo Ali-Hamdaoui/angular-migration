@@ -203,4 +203,30 @@ DEFAULT_COMMAND_TEMPLATES: Final[tuple[CommandTemplate, ...]] = (
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
         max_output_bytes=5_000_000,
     ),
+    CommandTemplate(
+        template_id="tpl-npm-ci-final", command_id="npm-ci-final", executable="npm", arguments=("ci",),
+        executable_aliases=("npm.cmd",), description="Final clean install after lockfile verification",
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
+    ),
+    CommandTemplate(
+        template_id="tpl-angular-update-exact", command_id="angular-update-exact", executable="npx",
+        arguments=(), executable_aliases=("npx.cmd",), description="Execute an approved exact Angular update",
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
+    ),
+    CommandTemplate(
+        template_id="tpl-angular-version-verify", command_id="angular-version-verify", executable="npx",
+        arguments=("ng", "version"), executable_aliases=("npx.cmd",), description="Verify Angular versions",
+    ),
+    CommandTemplate(
+        template_id="tpl-npm-script-build-production", command_id="npm-script-build-production", executable="npm",
+        arguments=(), executable_aliases=("npm.cmd",), description="Run a discovered production build target",
+    ),
+    CommandTemplate(
+        template_id="tpl-npm-script-test-ci", command_id="npm-script-test-ci", executable="npm",
+        arguments=(), executable_aliases=("npm.cmd",), description="Run a discovered test target",
+    ),
+    CommandTemplate(
+        template_id="tpl-npm-script-lint", command_id="npm-script-lint", executable="npm",
+        arguments=(), executable_aliases=("npm.cmd",), description="Run a discovered lint target",
+    ),
 )

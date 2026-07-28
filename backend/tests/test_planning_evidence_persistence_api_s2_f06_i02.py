@@ -73,7 +73,7 @@ def setup(tmp_path: Path):
         catalogue_version="catalog-v1",
         input_fingerprint="sha256:" + "1" * 64,
         execution_profile_id="profile-node22-npm10",
-        target_cli_exact="21.0.0",
+        target_cli_exact="19.2.0",
         stage_route=[
             ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"),
             ("angular-19.x", "angular-20.x", "stage-19-to-20", "20.0.0"),

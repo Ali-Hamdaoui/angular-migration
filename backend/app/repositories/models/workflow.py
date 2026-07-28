@@ -223,7 +223,7 @@ class ArtifactMetadataModel(Base):
 class CommandTemplateModel(Base):
     """One registered command template in the structured registry."""
     __tablename__ = "command_templates"
-    __table_args__ = (UniqueConstraint("command_id", name="uq_command_templates_command_id"),)
+    __table_args__ = (UniqueConstraint("command_id", "version", name="uq_command_templates_command_version"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

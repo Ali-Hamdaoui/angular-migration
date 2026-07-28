@@ -58,6 +58,9 @@ from app.state.transition_service import (
 )
 
 
+G06_APPROVAL_NEXT_RUN_STATUS = RunStatus.WAITING_STAGE_PREPARATION
+
+
 class PlanningReviewEvidenceError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 422) -> None:
         self.code, self.message, self.status_code = code, message, status_code
@@ -388,11 +391,22 @@ class PlanningReviewEvidenceApplicationService:
                     "plan_version": gate.plan_version,
                     "decision": request.decision.value,
                 },
-                next_run_status=RunStatus.STAGE_CREATED if request.decision.value in {"approve", "approve_with_comment"} else RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_status=G06_APPROVAL_NEXT_RUN_STATUS if request.decision.value in {"approve", "approve_with_comment"} else RunStatus.WAITING_PLAN_APPROVAL,
                 next_run_phase="FEASIBILITY_PLANNING",
                 next_phase_status="completed" if request.decision.value in {"approve", "approve_with_comment"} else "waiting_approval",
                 next_approval_status="approved" if request.decision.value in {"approve", "approve_with_comment"} else "pending",
             )
+            if request.decision.value in {"approve", "approve_with_comment"}:
+                active_pointer = session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration"))
+                if active_pointer is not None:
+                    active_pointer.migration_plan_id = active_plan.id
+                    active_pointer.stage_plan_id = active_stage.id
+                active_plan.status = "approved_for_execution"
+                active_plan.state_version = transition.next_state_version
+                active_plan.updated_at = now
+                active_stage.status = "approved_for_execution"
+                active_stage.state_version = transition.next_state_version
+                active_stage.updated_at = now
             gate.status = result.status
             gate.decision = request.decision.value
             gate.actor = actor

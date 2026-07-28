@@ -43,12 +43,17 @@ class CommandTemplateReference(ContractModel):
     """A command-registry reference safe to hand to CommandExecutor later."""
 
     command_id: str = Field(min_length=1, max_length=128)
+    template_id: str = Field(min_length=1, max_length=128)
+    template_version: int = Field(ge=1)
+    parameter_bindings: dict[str, str] = Field(default_factory=dict)
     executable: str = Field(min_length=1, max_length=128)
     arguments: tuple[str, ...] = ()
     shell: Literal[False] = False
     working_directory_alias: str = Field(min_length=1, max_length=128)
     timeout_seconds: int = Field(gt=0, le=7200)
     network_profile: str = Field(min_length=1, max_length=128)
+    runtime_profile_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    cancellation_policy: str = "terminate_process_tree"
     conditional: bool = False
 
     @model_validator(mode="after")
@@ -128,6 +133,8 @@ class StageExecutionPlan(ContractModel):
     stage_id: str = Field(min_length=1, max_length=128)
     plan_version: int = Field(ge=1)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
+    evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
     source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
     target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
@@ -165,6 +172,8 @@ class PlanGenerationRequest(ContractModel):
     target_family: str = Field(default="angular-21.x", pattern=r"^angular-(19|20|21)\.x$")
     catalogue_version: str = Field(min_length=1, max_length=128)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
+    evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
     execution_profile_id: str = Field(min_length=1, max_length=128)
     stage_route: tuple[tuple[str, ...], ...] = Field(min_length=1)
     # Older callers and the public F06 contract omit this when the first
@@ -195,6 +204,14 @@ class PlanGenerationRequest(ContractModel):
             raise ValueError("stage route identifiers cannot contain shell syntax")
         if self.target_cli_exact is not None and not _EXACT_VERSION.fullmatch(self.target_cli_exact):
             raise ValueError("target CLI version must be an exact semantic version")
+        first_route_cli = self.stage_route[0][4] if len(self.stage_route[0]) == 5 else None
+        if self.target_cli_exact is not None and first_route_cli is not None and self.target_cli_exact != first_route_cli:
+            raise ValueError("global CLI target must equal the first route CLI target")
+        effective_cli = self.target_cli_exact or first_route_cli or self.stage_route[0][3]
+        core_major = int(self.stage_route[0][3].split(".", 1)[0])
+        cli_major = int(effective_cli.split(".", 1)[0])
+        if cli_major != core_major:
+            raise ValueError("CLI target major must match the Angular core target major")
         if not _EXACT_VERSION.fullmatch(self.source_exact) or any(not _EXACT_VERSION.fullmatch(route[3]) or (len(route) == 5 and not _EXACT_VERSION.fullmatch(route[4])) for route in self.stage_route):
             raise ValueError("source and target versions must be exact semantic versions")
         if self.stage_route[0][0] != self.source_family or self.stage_route[-1][1] != self.target_family:
