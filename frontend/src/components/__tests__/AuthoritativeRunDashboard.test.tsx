@@ -159,4 +159,13 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.queryByRole("button", { name: "Assistant" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Open Assistant" })).toHaveLength(1);
   });
+
+  it("surfaces and navigates to the authoritative G02 review stage", () => {
+    const event = { ...initialState.workflow_events[0], event_type: "G02_CREATED", sequence: 2 };
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, status: "SOURCE_VALIDATED", approval_status: "pending", workflow_events: [event] }} />);
+    expect(screen.getByRole("button", { name: "Open G02 review" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open G02 review" }));
+    expect(screen.getByRole("listitem", { name: "Source review & G02: action required" })).toBeInTheDocument();
+    expect(screen.getByLabelText("G02 source integrity review")).toBeInTheDocument();
+  });
 });
