@@ -177,7 +177,7 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     citation_schema = transport.calls[0]['payload']['text']['format']['schema']['properties']['citations']['items']
     assert schema['additionalProperties'] is False
     assert citation_schema['additionalProperties'] is False
-    assert set(citation_schema['required']) == {'artifact_id', 'checksum', 'stage_id'}
+    assert set(citation_schema['required']) == {'excerpt_id', 'artifact_id', 'checksum_sha256', 'stage_key', 'locator', 'proof_label'}
     assert 'response_format' not in transport.calls[0]['payload']
     assert 'temperature' not in transport.calls[0]['payload']
     assert result.role == 'assistant'

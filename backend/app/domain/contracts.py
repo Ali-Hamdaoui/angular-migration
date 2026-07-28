@@ -464,6 +464,11 @@ class AssistantEvidenceDto(ContractModel):
     artifact_id: str
     checksum: str
     label: str
+    excerpt_id: str | None = None
+    checksum_sha256: str | None = None
+    stage_key: str | None = None
+    locator: dict[str, str] | None = None
+    proof_label: str | None = None
 
 
 class AssistantUsageDto(ContractModel):

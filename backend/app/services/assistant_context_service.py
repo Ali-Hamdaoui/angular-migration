@@ -34,7 +34,6 @@ from app.repositories.models import (
     G02ApprovalModel,
     LlmInvocationModel,
     MigrationRunModel,
-    MigrationStageModel,
     SourceSnapshotModel,
     UsageCostRecordModel,
     WorkflowEventModel,
@@ -326,66 +325,43 @@ class AssistantContextService:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_FAILED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="failed", idempotency_key=request.idempotency_key, payload={"failure_code": code})
             return self._dto(row, session=session)
 
-    @staticmethod
-    def _authorized_artifact_ids(session, run_id: str) -> set[str]:
-        authorized: set[str] = set()
-        snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
-        g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
-        execution_profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
-        if snapshot is not None and snapshot.status == 'created':
-            authorized.update(snapshot.artifact_ids or [])
-        if g02 is not None and g02.status == 'approved':
-            authorized.update(g02.artifact_ids or [])
-        if execution_profile is not None:
-            authorized.update(execution_profile.artifact_ids or [])
-        return authorized
-
-    @staticmethod
-    def _citation_structure(citations: object) -> str:
-        if not isinstance(citations, list):
-            return 'citation_count=invalid; citation_type=' + type(citations).__name__
-        items = []
-        for citation in citations[:8]:
-            if isinstance(citation, dict):
-                items.append({
-                    'keys': sorted(str(key) for key in citation),
-                    'types': {str(key): type(value).__name__ for key, value in citation.items()},
-                    'nulls': {str(key): value is None for key, value in citation.items()},
-                })
-            else:
-                items.append({'type': type(citation).__name__})
-        return json.dumps({'citation_count': len(citations), 'items': items}, sort_keys=True, separators=(',', ':'))[:360]
-
     @classmethod
-    def _validated_citations(cls, session, run_id: str, citations: object):
+    def _validated_citations(cls, citations: object, selected_refs: list[dict[str, object]], *, proof_label: str):
+        """Validate only against the exact excerpts supplied in this call."""
         if not isinstance(citations, list):
             return None
-        supported_types = {"json", "yaml", "markdown", "text_log", "command_log", "report"}
-        authorized = cls._authorized_artifact_ids(session, run_id)
-        canonical_authorized = authorized | {'metadata-' + item for item in authorized}
-        validated = []
+        by_id = {str(item["excerpt_id"]): item for item in selected_refs}
+        validated: list[dict[str, object]] = []
+        seen: set[str] = set()
         for citation in citations:
-            if not isinstance(citation, dict) or not citation.get("artifact_id") or not citation.get("checksum"):
+            if not isinstance(citation, dict):
                 return None
-            citation_id = citation["artifact_id"]
-            record = session.get(ArtifactMetadataModel, citation_id) or session.get(ArtifactMetadataModel, f'metadata-{citation_id}')
-            metadata = record.safe_metadata or {} if record is not None else {}
-            authorized_record = citation_id in canonical_authorized or (record is not None and record.id.removeprefix('metadata-') in authorized)
-            metadata_approved = metadata.get("approval_status") in {"approved", "approved_with_comment"} and str(metadata.get("lineage", "")).startswith(run_id)
-            if record is None or record.run_id != run_id or record.checksum != citation["checksum"] or (citation.get("stage_id") and record.stage_id != citation["stage_id"]) or not record.immutable or record.redacted or record.artifact_type not in supported_types or not (authorized_record or metadata_approved):
+            excerpt_id = citation.get("excerpt_id")
+            selected = by_id.get(str(excerpt_id)) if excerpt_id else None
+            if selected is None:
                 return None
-            if record.stage_id:
-                stage = session.get(MigrationStageModel, record.stage_id)
-                if stage is None or stage.run_id != run_id:
-                    return None
-            if metadata.get("superseded") is True or metadata.get("rejected") is True:
+            exact = {
+                "excerpt_id": selected["excerpt_id"],
+                "artifact_id": selected["artifact_id"],
+                "checksum_sha256": selected["checksum_sha256"],
+                "stage_key": selected["stage_key"],
+                "locator": selected["locator"],
+                "proof_label": selected["proof_label"],
+            }
+            if any(citation.get(key) != value for key, value in exact.items()):
                 return None
-            validated.append(record)
+            if exact["proof_label"] != "approved_evidence_supported" or proof_label not in {"approved_evidence_supported", "model_interpretation"}:
+                return None
+            if str(excerpt_id) not in seen:
+                validated.append(exact)
+                seen.add(str(excerpt_id))
+        if proof_label == "approved_evidence_supported" and not validated:
+            return None
         return validated
 
     @classmethod
-    def _validate_citations(cls, session, run_id: str, citations: object) -> bool:
-        return cls._validated_citations(session, run_id, citations) is not None
+    def _validate_citations(cls, citations: object, selected_refs: list[dict[str, object]], *, proof_label: str) -> bool:
+        return cls._validated_citations(citations, selected_refs, proof_label=proof_label) is not None
 
     def answer(self, request: AssistantMessageRequestDto, correlation_id: str | None = None, actor: str | None = None) -> AssistantMessageResultDto:
         if not request.run_id:
@@ -436,13 +412,16 @@ class AssistantContextService:
             answer = "This Assistant is read-only and cannot approve gates, execute commands, apply patches, or change workflow state. Use the governed cockpit control for that action."
             proof = "model interpretation"
         governed_response = None
+        validated_citations: list[dict[str, object]] = []
+        evidence: list[AssistantEvidenceDto] = []
         if not mutation_request and capability is not None:
             try:
                 with self._scope() as session:
                     evidence_segments, evidence_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
                 bounded = build_bounded_context([LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))])
                 manifest["context_manifest"] = bounded.manifest
-                manifest["selected_evidence"] = evidence_refs
+                manifest["selected_evidence"] = [{key: value for key, value in ref.items() if key != "text"} for ref in evidence_refs]
+                manifest["evidence_selection"] = self._evidence_retrieval.last_manifest
                 governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=_safe(request.message, 1000), context=bounded.segments, max_output_tokens=20_000), actor=actor)
                 if governed_response.status != "completed":
                     if governed_response.failure_code == "LLM_STRUCTURED_RESPONSE_INVALID":
@@ -451,14 +430,13 @@ class AssistantContextService:
                 if governed_response.structured_output.get("intent") != intent or governed_response.structured_output.get("capability_key") != capability.capability_key:
                     raise AssistantRequestError("assistant_invalid_structured_response", "The governed Assistant returned a response for an unexpected capability.", 502)
                 citations = governed_response.structured_output.get("citations", [])
-                with self._scope() as session:
-                    validated_citations = self._validated_citations(session, request.run_id, citations)
+                provider_proof = governed_response.structured_output.get("proof_label", "unknown_or_unavailable")
+                validated_citations = self._validated_citations(citations, evidence_refs, proof_label=provider_proof)
                 if validated_citations is None:
-                    failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="Citation validation failed; " + self._citation_structure(citations), code="invalid_citation")
-                    raise AssistantRequestError("invalid_citation", "The governed Assistant returned an invalid evidence citation.", 502)
+                    raise AssistantRequestError("assistant_invalid_citation", "The governed Assistant returned an invalid evidence citation.", 502)
                 if isinstance(governed_response.structured_output.get("answer"), str):
                     answer = governed_response.structured_output["answer"]
-                    proof = governed_response.structured_output["proof_label"]
+                    proof = provider_proof
                     answer_lower = answer.lower()
                     if intent in {"workflow", "workflow_status"} and projection.get("blocker") == "NO_COMPATIBLE_RUNTIME_PROFILE" and (
                         "unknown" in answer_lower
@@ -469,10 +447,10 @@ class AssistantContextService:
                         or "execution-profile resolution blocked" not in answer_lower
                     ):
                         answer = self._authoritative_workflow_answer(projection)
-                        proof = "authoritative persisted fact"
-                        governed_response = governed_response.model_copy(update={"structured_output": {**governed_response.structured_output, "answer": answer}})
-                if citations:
-                    evidence = [AssistantEvidenceDto(artifact_id=item.id, checksum=item.checksum, label=item.relative_path) for item in validated_citations or []]
+                        proof = "authoritative_persisted_fact"
+                        # Provider citations were proven for the old text only.
+                        validated_citations = []
+                governed_response = governed_response.model_copy(update={"structured_output": {**governed_response.structured_output, "answer": answer, "proof_label": proof, "citations": validated_citations}})
             except AssistantRequestError as error:
                 self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
                 raise
@@ -491,7 +469,19 @@ class AssistantContextService:
             "next_step_proposals": [],
             "confidence": "low" if mutation_request else "medium",
         }
-        evidence = evidence if governed_response is not None and structured.get("citations") else [AssistantEvidenceDto.model_validate(item) for item in projection["evidence"]]
+        if governed_response is not None and hasattr(self._invocations, "persist_validated_response"):
+            # The response artifact must contain the exact final text and
+            # citation subset, including the empty proof set after rebuild.
+            governed_response = self._invocations.persist_validated_response(governed_response, structured)
+        # Projection evidence is never merged into a governed evidence-backed
+        # response. The canonical validated citation subset is the only drawer
+        # and transport evidence for an Assistant answer.
+        if governed_response is not None and structured.get("citations"):
+            evidence = [AssistantEvidenceDto(artifact_id=str(item["artifact_id"]), checksum=str(item["checksum_sha256"]), label=str(next((ref.get("label", item["artifact_id"]) for ref in manifest.get("selected_evidence", []) if ref.get("excerpt_id") == item["excerpt_id"]), item["artifact_id"])), excerpt_id=str(item["excerpt_id"]), checksum_sha256=str(item["checksum_sha256"]), stage_key=str(item["stage_key"]), locator=item["locator"], proof_label=str(item["proof_label"])) for item in structured.get("citations", [])]
+        elif governed_response is not None and structured.get("proof_label") == "authoritative_persisted_fact":
+            evidence = [AssistantEvidenceDto.model_validate(item) for item in projection["evidence"]]
+        else:
+            evidence = []
         input_tokens = sum(int(item["input_tokens"]) for item in projection["usage"])
         output_tokens = sum(int(item["output_tokens"]) for item in projection["usage"])
         input_cost = sum(float(item.get("input_cost_usd", 0.0)) for item in projection["usage"])

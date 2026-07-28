@@ -7,9 +7,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.llm_contracts import LlmInvocationResponse
+from app.artifact_store import LocalFilesystemArtifactStore
 from app.api.routes import assistant as assistant_routes
 from app.core.config import get_settings
 from app.domain.contracts import AgentKind, AssistantMessageRequestDto, AssistantWorkflowProjectionDto, ProjectionValue
+from app.domain.contracts import ArtifactType
 from app.llm_gateway import (
     AzureGatewayError,
     LlmFailureCode,
@@ -79,8 +81,8 @@ class Gateway:
         return LlmResponse(response_id="response", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="test-assistant", status="completed", summary="validated", structured_output=structured_response("validated answer", intent=intent, capability_key=capability), usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="prompt", schema_version="schema", pricing_version="pricing")
 
 
-def structured_response(answer, *, intent="workflow_status", capability_key="workflow_status", citations=None):
-    return {"answer": answer, "summary": answer[:80], "intent": intent, "capability_key": capability_key, "proof_label": "authoritative_persisted_fact", "citations": citations or [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
+def structured_response(answer, *, intent="workflow_status", capability_key="workflow_status", citations=None, proof_label="authoritative_persisted_fact"):
+    return {"answer": answer, "summary": answer[:80], "intent": intent, "capability_key": capability_key, "proof_label": proof_label, "citations": citations or [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
 
 
 class ProjectionGateway(Gateway):
@@ -102,7 +104,7 @@ class CitationGateway(ProjectionGateway):
     def complete(self, request):
         response = super().complete(request)
         current = response.structured_output
-        return response.model_copy(update={"structured_output": structured_response("Cited answer.", intent=current["intent"], capability_key=current["capability_key"], citations=self.citations)})
+        return response.model_copy(update={"structured_output": structured_response("Cited answer.", intent=current["intent"], capability_key=current["capability_key"], citations=self.citations, proof_label="approved_evidence_supported")})
 
 
 class FailingGateway(Gateway):
@@ -344,7 +346,7 @@ def test_failed_runtime_profile_projection_uses_authoritative_records_and_citati
     assert projection["blocker"] == {"value": "NO_COMPATIBLE_RUNTIME_PROFILE", "availability": "known"}
     assert projection["next_permitted_action"]["availability"] == "known"
     assert {item["artifact_id"] for item in projection["evidence_references"]} == {"metadata-artifact-snapshot", "metadata-artifact-g02", "metadata-artifact-profile"}
-    assert {item["artifact_id"] for item in refs} == {"metadata-artifact-snapshot", "metadata-artifact-g02", "metadata-artifact-profile"}
+    assert refs == []
     engine.dispose()
 
 
@@ -480,7 +482,7 @@ def test_budget_block_happens_before_assistant_provider_execution(tmp_path):
 
 def test_wrong_run_citation_is_rejected(tmp_path):
     engine, scope, _ = setup(tmp_path)
-    gateway = CitationGateway([{"artifact_id": "not-run-1", "checksum": "sha256:wrong", "stage_id": None}])
+    gateway = CitationGateway([{"excerpt_id": "excerpt-foreign", "artifact_id": "not-run-1", "checksum_sha256": "sha256:wrong", "stage_key": "run", "locator": {"kind": "line_range", "value": "1-1"}, "proof_label": "approved_evidence_supported"}])
     with pytest.raises(Exception, match="citation"):
         AssistantContextService(session_scope_factory=scope, gateway=gateway).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="wrong-citation"))
     engine.dispose()
@@ -489,15 +491,23 @@ def test_wrong_run_citation_is_rejected(tmp_path):
 def test_citation_requires_approved_supported_lineage_and_immutable_artifact(tmp_path):
     engine, scope, sessions = setup(tmp_path)
     now = datetime.now(UTC)
+    artifact_root = tmp_path / "artifacts"
     with sessions() as session:
-        session.add(ArtifactMetadataModel(id="approved", run_id="run-1", stage_id=None, artifact_type="report", relative_path="evidence/report.json", checksum="sha256:approved", owner_reference="arbitrary-owner", immutable=True, safe_metadata={"approval_status": "approved", "lineage": "run-1"}, created_at=now))
+        session.get(MigrationRunModel, "run-1").artifact_root = str(artifact_root)
+        store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
+        stored = store.write_text_artifact("run-1", "evidence/report.json", "approved evidence for the migration", ArtifactType.REPORT, created_by="test")
+        session.add(ArtifactMetadataModel(id="metadata-" + stored.ref.artifact_id, run_id="run-1", stage_id=None, artifact_type="report", relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, owner_reference="arbitrary-owner", immutable=True, safe_metadata={"approval_status": "approved", "lineage": "run-1"}, created_at=stored.ref.created_at))
         session.add(ArtifactMetadataModel(id="unapproved", run_id="run-1", stage_id=None, artifact_type="report", relative_path="evidence/unapproved.json", checksum="sha256:unapproved", immutable=True, safe_metadata={"approval_status": "pending", "lineage": "run-1"}, created_at=now))
         session.commit()
-    valid = AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([{"artifact_id": "approved", "checksum": "sha256:approved", "stage_id": None}])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="valid-citation"))
+    with scope() as session:
+        _, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-1", "Where is the migration now?")
+    selected = refs[0]
+    citation = {"excerpt_id": selected["excerpt_id"], "artifact_id": selected["artifact_id"], "checksum_sha256": selected["checksum_sha256"], "stage_key": selected["stage_key"], "locator": selected["locator"], "proof_label": selected["proof_label"]}
+    valid = AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([citation])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="valid-citation"))
     assert valid.answer == "Cited answer."
-    for key, citation in (("bad-checksum", {"artifact_id": "approved", "checksum": "sha256:wrong", "stage_id": None}), ("missing", {"artifact_id": "missing", "checksum": "sha256:none", "stage_id": None}), ("unapproved", {"artifact_id": "unapproved", "checksum": "sha256:unapproved", "stage_id": None}), ("foreign-stage", {"artifact_id": "approved", "checksum": "sha256:approved", "stage_id": "foreign-stage"})):
+    for key, invalid in (("bad-checksum", {**citation, "checksum_sha256": "sha256:wrong"}), ("missing", {**citation, "excerpt_id": "missing"}), ("foreign-stage", {**citation, "stage_key": "foreign-stage"})):
         with pytest.raises(Exception, match="citation"):
-            AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([citation])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key=key))
+            AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([invalid])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key=key))
     engine.dispose()
 
 

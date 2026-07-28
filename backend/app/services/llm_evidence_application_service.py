@@ -44,12 +44,22 @@ class _SmokeResponse(BaseModel):
     answer: str
 
 
+class _AssistantLocator(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    kind: Literal['line_range', 'json_pointer', 'record_range']
+    value: str = Field(min_length=1)
+
+
 class _AssistantCitation(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
+    excerpt_id: str = Field(min_length=1)
     artifact_id: str
-    checksum: str
-    stage_id: str | None
+    checksum_sha256: str = Field(min_length=1)
+    stage_key: str = Field(min_length=1)
+    locator: _AssistantLocator
+    proof_label: Literal['approved_evidence_supported']
 
 
 class _AssistantNextStepProposal(BaseModel):
@@ -190,6 +200,29 @@ class LlmEvidenceApplicationService:
             session.flush()
             result = self._dto(session, row)
             return result.model_copy(update={'structured_output': validated})
+
+    def persist_validated_response(self, invocation: LlmInvocationResponse, structured_output: dict[str, object]) -> LlmInvocationResponse:
+        """Replace the canonical response artifact with the final validated response.
+
+        This is deliberately owned by the governed invocation service so the
+        input provider artifact and the final response artifact do not acquire
+        separate persistence owners.
+        """
+        with self.scope() as session:
+            row = session.get(LlmInvocationModel, invocation.invocation_id)
+            run = session.get(MigrationRunModel, invocation.run_id)
+            if row is None or run is None or not row.artifact_ids:
+                raise LlmEvidenceError('LLM_PERSISTENCE_FAILURE', 'The validated Assistant response could not be finalized.', 500)
+            old_id = row.artifact_ids[0]
+            old = session.get(ArtifactMetadataModel, old_id) or session.get(ArtifactMetadataModel, 'metadata-' + old_id)
+            if old is None:
+                raise LlmEvidenceError('LLM_PERSISTENCE_FAILURE', 'The validated Assistant response artifact is unavailable.', 500)
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root or self.settings.artifact_root), fixed_run_root=Path(run.artifact_root or self.settings.artifact_root))
+            final = self._artifact(session, store, run.id, old.relative_path, json.dumps(structured_output, sort_keys=True))
+            row.artifact_ids = [final.ref.artifact_id, *row.artifact_ids[1:]]
+            row.artifact_checksums = {**row.artifact_checksums, final.ref.artifact_id: final.ref.checksum}
+            session.flush()
+            return invocation.model_copy(update={'artifact_ids': row.artifact_ids, 'artifact_checksums': row.artifact_checksums})
 
     @staticmethod
     def _assistant_summary(request, response) -> str:
