@@ -1,4 +1,7 @@
+import json
+
 from app.services.workspace_integrity_service import WorkspaceIntegrityError, WorkspaceIntegrityService
+from app.workspaces.baseline import BaselineSandboxService
 
 
 def test_unchanged_workspace_matches_approved_fingerprint(tmp_path):
@@ -36,3 +39,42 @@ def test_added_file_changes_the_authoritative_tree_fingerprint(tmp_path):
         assert error.actual_fingerprint != expected
     else:
         raise AssertionError("added file unexpectedly passed integrity verification")
+
+
+def test_baseline_fingerprint_remains_valid_after_expected_generated_outputs(tmp_path):
+    run_root = tmp_path / "run"
+    snapshot = run_root / "source-snapshot"
+    sandbox = run_root / "baseline-sandbox"
+    snapshot.mkdir(parents=True)
+    approved_snapshot_fingerprint = "sha256:" + "a" * 64
+    (snapshot / "snapshot-fingerprint.json").write_text(
+        json.dumps({"fingerprint": approved_snapshot_fingerprint}),
+        encoding="utf-8",
+    )
+    (snapshot / "angular.json").write_text('{"projects": {}}', encoding="utf-8")
+    (snapshot / "package.json").write_text('{"scripts": {}}', encoding="utf-8")
+    (snapshot / "package-lock.json").write_text('{"lockfileVersion": 3}', encoding="utf-8")
+
+    baseline = BaselineSandboxService().create(
+        run_id="run-1",
+        snapshot_root=snapshot,
+        baseline_path=sandbox,
+        approved_snapshot_fingerprint=approved_snapshot_fingerprint,
+        registered_run_root=run_root,
+    )
+    for relative_path in (
+        "node_modules/.package-lock.json",
+        ".angular/cache/18.2.0/cache.bin",
+        "dist/portal/browser/main.js",
+        "coverage/lcov.info",
+    ):
+        generated = sandbox / relative_path
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        generated.write_text("generated", encoding="utf-8")
+
+    result = WorkspaceIntegrityService().verify(
+        sandbox,
+        expected_fingerprint=baseline.fingerprint,
+    )
+
+    assert result.actual_fingerprint == baseline.fingerprint
