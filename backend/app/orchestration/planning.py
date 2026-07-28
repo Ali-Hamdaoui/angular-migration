@@ -18,6 +18,7 @@ from app.services.planning_input_resolver import PlanningInputResolutionError, P
 from app.services.planning_job_service import claim_planning_job
 from app.services.planning_review_evidence_application_service import PlanningReviewEvidenceApplicationService
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
+from app.services.project_planning_resolver import ProjectPlanningResolutionError, ProjectPlanningResolver
 
 
 def _mark_retry(job_id: str, *, code: str, stage: str, message: str = "", scope=session_scope) -> None:
@@ -92,12 +93,25 @@ def _approved_plan_request(job_id: str, *, scope=session_scope):
         route = package.get("route") or []
         profile = package.get("selected_profile") or {}
         prerequisites = canonical_artifact_references({"artifact_id": item, "checksum": (gate.prerequisite_artifact_checksums or {}).get(item)} for item in (gate.prerequisite_artifact_ids or []))
-        return job.id, run.id, job.actor, run.state_version, resolution, gate, route, profile, prerequisites
+        workspace = (run.workspace_aliases or {}).get("BASELINE_SANDBOX") or (run.workspace_aliases or {}).get("SOURCE_SNAPSHOT")
+        return job.id, run.id, job.actor, run.state_version, resolution, gate, route, profile, prerequisites, workspace
 
 
 def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
     try:
-        _, run_id, actor, expected_state_version, resolution, gate, route, profile, prerequisites = _approved_plan_request(job_id, scope=scope)
+        _, run_id, actor, expected_state_version, resolution, gate, route, profile, prerequisites, workspace = _approved_plan_request(job_id, scope=scope)
+        if not workspace:
+            raise PlanningInputResolutionError("PLANNING_WORKSPACE_EVIDENCE_MISSING", "No persisted baseline workspace is available for project-aware planning.")
+        try:
+            project_inputs = ProjectPlanningResolver().resolve(workspace)
+        except ProjectPlanningResolutionError as error:
+            raise PlanningInputResolutionError(str(error), "Project-aware planning inputs could not be resolved.") from error
+        if not project_inputs.build_targets:
+            raise PlanningInputResolutionError("PLANNING_BUILD_TARGET_MISSING", "No supported build target is configured.")
+        builder = project_inputs.build_targets[0].builder
+        physical_fingerprint = gate.workspace_fingerprint
+        if not physical_fingerprint:
+            raise PlanningInputResolutionError("PLANNING_WORKSPACE_FINGERPRINT_MISSING", "The approved G05 package has no physical workspace fingerprint.")
         plan = PlanningEvidenceApplicationService(scope=scope).create(run_id, PlanCreateRequest(
             expected_state_version=expected_state_version,
             idempotency_key=f"plan:auto:{run_id}:{gate.package_checksum}",
@@ -105,11 +119,13 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             source_family=resolution.source_family,
             target_family=resolution.target_family,
             catalogue_version=resolution.catalogue_version,
-            input_fingerprint=gate.artifact_set_checksum,
+            input_fingerprint=physical_fingerprint,
+            evidence_set_checksum=gate.artifact_set_checksum,
+            input_workspace_fingerprint=physical_fingerprint,
             execution_profile_id=profile.get("profile_id", ""),
             stage_route=[(item["source_family"], item["target_family"], item["stage_id"], item["target_angular_exact"], item.get("target_cli_exact", item["target_angular_exact"])) for item in route],
             target_cli_exact=route[0].get("target_cli_exact") if route else None,
-            builder="@angular-devkit/build-angular:application",
+            builder=builder,
             prerequisite_artifacts=list(prerequisites),
             correlation_id=f"planning:{run_id}",
         ), actor)
@@ -130,7 +146,7 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
 
 def run_planning_review_step(job_id: str, *, scope=session_scope) -> None:
     try:
-        _, run_id, actor, expected_state_version, _, gate, _, _, prerequisites = _approved_plan_request(job_id, scope=scope)
+        _, run_id, actor, expected_state_version, _, gate, _, _, prerequisites, _ = _approved_plan_request(job_id, scope=scope)
         with scope() as session:
             pointer = session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration"))
             plan = session.get(MigrationPlanModel, pointer.migration_plan_id) if pointer else None
