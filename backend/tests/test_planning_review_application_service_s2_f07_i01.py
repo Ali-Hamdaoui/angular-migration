@@ -16,7 +16,8 @@ from app.domain.planning_review import (
     PlanningExplanationRequest,
     PlanningReviewDecision,
 )
-from app.llm_gateway import LlmRole, LlmTaskType, LlmResponse, PromptRedactionResult
+from app.llm_gateway import AzureGatewayError, LlmRole, LlmTaskType, LlmResponse, PromptRedactionResult
+from app.llm_gateway.azure_gateway import PromptRegistry
 from app.llm_gateway.mock_gateway import build_usage_record
 from app.services.planning_application_service import PlanningApplicationService
 from app.services.planning_review_application_service import (
@@ -47,6 +48,13 @@ def _generation():
         ),
     )
     return PlanningApplicationService().generate(request)
+
+
+def test_default_registry_authorizes_planning_prompt_tasks():
+    registry = PromptRegistry.defaults()
+
+    assert registry.get("planning_agent_v1", LlmTaskType.PLAN_RATIONALE).version == "prompt-planning-agent-v1"
+    assert registry.get("planning_reviewer_v1", LlmTaskType.PLANNING_REVIEW).version == "prompt-planning-reviewer-v1"
 
 
 def _revision_request(result, **changes):
@@ -168,6 +176,51 @@ def test_planning_explanation_is_checksum_bound_and_reviewed():
     assert package.review_status == "accepted"
     assert package.reviewer.decision is PlanningReviewDecision.ACCEPT
     assert package.plan_checksum == result.plan.checksum
+
+
+def test_planning_proposer_failure_retains_safe_gateway_diagnostics():
+    class _FailingGateway:
+        def complete(self, request):
+            raise AzureGatewayError(
+                code="deployment",
+                message="deployment failed",
+                retryable=True,
+                provider_status=503,
+                provider_code="ServiceUnavailable",
+                provider_request_id="safe-request-1",
+                failure_stage="http_response",
+                failure_subtype="LLM_RESPONSE_FAILED",
+                transport_started=True,
+            )
+
+    result = _generation()
+    service = PlanningAgentService(gateway=_FailingGateway())
+
+    with pytest.raises(PlanningReviewApplicationError) as error:
+        service.explain(
+            PlanningExplanationRequest(
+                run_id="run-1",
+                expected_state_version=4,
+                idempotency_key="explain-failure-1",
+                actor="operator",
+                plan=result.plan.model_dump(mode="json"),
+                stage_plan=result.first_stage_plan.model_dump(mode="json"),
+                artifact_set_checksum="sha256:" + "3" * 64,
+                plan_version=1,
+            )
+        )
+
+    assert error.value.code == "PLANNING_PROPOSER_FAILED"
+    assert error.value.details == {
+        "failure_code": "deployment",
+        "failure_stage": "http_response",
+        "failure_subtype": "LLM_RESPONSE_FAILED",
+        "retryable": True,
+        "provider_http_status": 503,
+        "provider_error_code": "ServiceUnavailable",
+        "provider_request_id": "safe-request-1",
+        "transport_started": True,
+    }
 
 
 def test_g06_rejects_stale_binding_and_stage_start_without_approval():

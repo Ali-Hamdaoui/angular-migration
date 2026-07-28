@@ -17,8 +17,25 @@
 - Do not invent build, test, lint, production configuration, project, or builder values.
 - Do not hold database transactions across LLM calls, filesystem copies, subprocesses, or approval waits.
 - Every production change begins with a failing regression test.
+- Planning proposer and reviewer prompts must be registered in the governed production prompt registry; no prompt-name fallback is allowed.
+- A transformation-ready plan must pass the real command-policy and worker-registry path for every generated command before G06 can be approved.
+- Runtime compatibility, package-manager configuration, lockfile integrity, registry source, and exact package metadata are persisted as evidence-bound inputs.
+- G06 approval is not transformation readiness: the run must complete stage preparation, sandbox verification, and G07 evidence before transformation may start.
 
-### Task 1: Correct snapshot-root authority and preserve diagnostic lineage
+### Task 1: Register governed planning prompts and preserve gateway diagnostics
+
+**Files:**
+- Modify: `backend/app/llm_gateway/azure_gateway.py`, `backend/app/services/planning_review_application_service.py`.
+- Modify: prompt registry/schema modules identified by the failing test.
+- Test: new `backend/tests/test_planning_prompt_governance.py`, planning failure-diagnostics tests.
+
+- [ ] Write a failing production-gateway test that requests `planning_agent_v1` with `PLAN_RATIONALE` and `planning_reviewer_v1` with its reviewer task, and assert the registered prompt/version/schema reach a fake transport.
+- [ ] Run the focused tests and confirm they fail because the default registry rejects the planning prompt.
+- [ ] Register both governed prompt definitions with exact task types, schema versions, token/budget policy, and model policy; do not add an unregistered fallback.
+- [ ] Preserve a redacted failure subtype, phase, retryability, provider request ID when available, and transport-started flag in planning diagnostics without storing prompts, secrets, or provider payloads.
+- [ ] Run prompt, gateway, planning-review, and failure-diagnostics regressions.
+
+### Task 2: Correct snapshot-root authority and preserve diagnostic lineage
 
 **Files:**
 - Modify: `backend/app/services/migration_workspace_layout_service.py`, snapshot/discovery handoff service identified by the failing test.
@@ -29,7 +46,7 @@
 - [ ] Make downstream discovery consume the persisted concrete snapshot path while keeping the source alias immutable and parent-contained.
 - [ ] Run the focused test and the existing snapshot/security tests.
 
-### Task 2: Add typed project-aware planning inputs
+### Task 3: Add typed project-aware planning inputs
 
 **Files:**
 - Modify: `backend/app/services/planning_input_resolver.py`, `backend/app/orchestration/planning.py`, `backend/app/domain/planning.py`.
@@ -42,7 +59,7 @@
 - [ ] Remove the hardcoded application builder from orchestration and bind the exact resolved inputs.
 - [ ] Run the new focused suite and planning regressions.
 
-### Task 3: Separate evidence-set and physical-input checksums
+### Task 4: Separate evidence-set and physical-input checksums
 
 **Files:**
 - Modify: `backend/app/domain/planning.py`, planning/compatibility models and services.
@@ -53,23 +70,26 @@
 - [ ] Add `evidence_set_checksum` and `input_workspace_fingerprint` to exact stage-plan/G06 contracts and persistence while retaining auditable legacy fields.
 - [ ] Carry compatibility resolution/catalogue/entry/registry/support/warnings/fixture/profile provenance into exact plan and G06 package checksums.
 - [ ] Reject duplicate global CLI targets unless they equal the first route CLI and match the Angular core major.
+- [ ] Replace blanket `historical_experimental`/`incomplete` readiness with explicit per-stage support and fixture evidence; retain a human-review block when install, update, build, test, or rollback evidence is absent.
+- [ ] Make exact target patch selection an explicit policy: persist the selected Angular/CLI/package versions, registry snapshot, availability proof, and integrity metadata; reject an exact `.0.0` target when that evidence is absent.
 - [ ] Verify clean upgrade/current-schema behavior for the migration.
 
-### Task 4: Bind generated commands to immutable versioned templates
+### Task 5: Establish one authoritative command catalogue
 
 **Files:**
-- Modify: `backend/app/domain/planning.py`, `backend/app/services/planning_application_service.py`, `backend/app/services/command_registry_service.py`.
-- Modify: `backend/app/repositories/models/workflow.py`.
-- Add: Alembic migration replacing command-id-only uniqueness with template identity/version uniqueness.
-- Test: `backend/tests/test_planning_command_registry_contract.py`, command registry/authorization regressions.
+- Create/modify: `backend/app/domain/command_catalogue.py`, `backend/app/domain/command.py`, `backend/app/services/command_registry_service.py`.
+- Modify: `backend/app/services/planning_application_service.py`, `backend/app/command_execution/worker.py`, command-template seed/bootstrap code, and `backend/app/services/command_executor_service.py`.
+- Modify: `backend/app/repositories/models/workflow.py`; add the Alembic migration replacing command-id-only uniqueness with template identity/version uniqueness.
+- Test: `backend/tests/test_planning_command_registry_contract.py`, `backend/tests/test_command_catalogue_consistency.py`.
 
-- [ ] Write failing tests for template resolution, template-version mismatch, missing alias, invalid token/package/project/configuration, and every generated command.
-- [ ] Add `template_id`, `template_version`, typed parameter bindings, resolved argv, runtime checksum, network/timeout/cancellation data to each reference.
-- [ ] Register approved bootstrap/update/version/build/test/lint templates; allow only discovered command variants.
-- [ ] Add a production contract test that loads a generated stage plan and authorizes every reference through the real registry/policy path.
-- [ ] Run command policy and authorization tests.
+- [ ] Write failing tests that load the same catalogue and assert planner output, persisted templates, policy authorization, and worker handlers agree for bootstrap, update, version verification, install, build, test, and lint.
+- [ ] Run the tests and capture the current failures for the mismatched template IDs, arguments, worker registrations, and aliases.
+- [ ] Define each command once with `template_id`, `template_version`, typed parameter bindings, resolved argv rules, allowed logical aliases, runtime checksum, network/timeout/cancellation policy, and worker handler key; make planner, database seeding, policy, and worker registration consume it.
+- [ ] Reject template-version mismatch, missing alias, invalid token/package/project/configuration, undeclared script, and command references not present in the catalogue.
+- [ ] Add a production contract test that loads a generated stage plan and authorizes and resolves every reference through the real registry/policy/worker path.
+- [ ] Run command catalogue, policy, authorization, and worker lookup tests.
 
-### Task 5: Make G06 an atomic executable-plan approval
+### Task 6: Make G06 an atomic executable-plan approval
 
 **Files:**
 - Modify: `backend/app/services/planning_review_evidence_application_service.py`, `backend/app/domain/contracts.py`, `backend/app/state/transition_service.py`.
@@ -81,20 +101,21 @@
 - [ ] Invalidate revised-plan, pointer, evidence, catalogue, or workspace drift approvals and route all state changes through Transition Service.
 - [ ] Run state-machine, gate integrity, and idempotency tests.
 
-### Task 6: Implement idempotent stage preparation and G07
+### Task 7: Implement safe, idempotent stage preparation and G07
 
 **Files:**
 - Create/modify: `backend/app/services/stage_preparation_application_service.py`, `backend/app/api/routes/stage_execution.py`, `backend/app/api/stage_execution_contracts.py`.
 - Modify: stage models and workspace layout/copy services; add Alembic migration for preparation evidence fields if needed.
 - Test: `backend/tests/test_stage_preparation.py`, path/workspace security regressions.
 
-- [ ] Write failing tests for exact stage aggregate/steps, duplicate prepare replay, copy exclusions, source immutability, containment, input fingerprint drift, finalized artifacts, and G07-required progression.
-- [ ] Create/load the exact stage aggregate, lock the approved plan, copy baseline/sealed output into an exact stage sandbox, fingerprint it, and register `STAGE_WORKSPACE_<SOURCE>_TO_<TARGET>`.
+- [ ] Write failing tests for exact stage aggregate/steps, duplicate prepare replay, source==target, target-inside-source, symlink escapes, copy exclusions, source immutability, containment, input fingerprint drift, finalized artifacts, and G07-required progression.
+- [ ] Reject source==target and any target descendant before copying; classify Windows, POSIX, UNC, and mixed-separator paths before canonicalization; clean up partial temporary copies or persist quarantined-residue evidence.
+- [ ] Create/load the exact stage aggregate, lock the approved plan, copy baseline/sealed output into an exact stage sandbox, fingerprint it, filter aliases to approved mutable entries, and register `STAGE_WORKSPACE_<SOURCE>_TO_<TARGET>` as a logical alias bound below the generic stage-sandbox root.
 - [ ] Finalize and register stage-start, profile, input, fingerprint, copy-report, sandbox-verification, plan-lock, and G07 artifacts before exposing `WAITING_G07_APPROVAL`.
 - [ ] Add G07 decision binding and move to `SANDBOX_READY` only after checksum re-verification.
 - [ ] Run stage preparation and path security tests.
 
-### Task 7: Correct stage retrieval and portable containment
+### Task 8: Correct stage retrieval and portable containment
 
 **Files:**
 - Modify: planning/stage retrieval and authorization services, `backend/app/services/path_validation_service.py`.
@@ -104,7 +125,7 @@
 - [ ] Classify paths using `PureWindowsPath`/`PurePosixPath` before canonicalization and enforce containment under the exact registered stage alias.
 - [ ] Run path, authorization, and stage retrieval regressions.
 
-### Task 8: Add durable transformation worker checkpoints
+### Task 9: Add durable transformation worker checkpoints
 
 **Files:**
 - Create/modify: `backend/app/orchestration/stage_worker.py`, `backend/app/services/stage_transformation_service.py`, command execution evidence services.
@@ -113,11 +134,11 @@
 
 - [ ] Write failing tests for one durable step at a time and restart-safe completed mutations.
 - [ ] Implement only registry-authorized bootstrap/update/validation/build/test/lint operations through `CommandExecutor` with durable authorization, execution, output, fingerprints, event, and state-version evidence.
-- [ ] Add lockfile/package/.npmrc integrity checkpoint before final install and seal/copy-forward verification.
-- [ ] Resolve each later stage from the verified sealed prior output and exact compatibility catalogue snapshot.
+- [ ] Add lockfile/package/.npmrc integrity and registry-source checkpoint before final install, including resolved package metadata/integrity where available, and seal/copy-forward verification.
+- [ ] Resolve each later stage from the verified sealed prior output, exact compatibility catalogue snapshot, and a stage-specific Node/npm/Angular/CLI runtime profile; reject a profile that is incompatible with the target Angular major.
 - [ ] Run worker-focused and end-to-end fixture tests.
 
-### Task 9: Complete frontend authoritative projection and verification
+### Task 10: Complete frontend authoritative projection and verification
 
 **Files:**
 - Modify: relevant planning/stage frontend components, API types, and tests.
@@ -126,3 +147,19 @@
 - [ ] Write failing UI tests for planning review failures, G06 wait/approval, preparation/G07, command lifecycle, G08/G09/G12, sealing, and next-stage resolution.
 - [ ] Render only backend snapshots/events, expose correlation IDs and diagnostic artifact links, and enable commands only when exact plan/template/alias checks pass.
 - [ ] Run clean migrations, focused suites, full backend suite, frontend tests/typecheck/lint/build, `git diff --check`, and a read-only acceptance review.
+- [ ] Run the transformation-readiness gate against a real persisted fixture: G05 approved → plan/review → G06 approved → stage preparation → sandbox/G07 evidence → first-command authorization. Record exact pass/fail/skip counts and keep transformation execution disabled until every readiness invariant passes.
+
+## Completion Gate
+
+The plan is complete only when all of the following are demonstrated on the production path:
+
+- [ ] Both planning prompts are authorized by the governed registry and a fake transport receives the expected versioned requests.
+- [ ] Every generated command is accepted by the authoritative policy and has a matching production worker handler.
+- [ ] The logical stage alias resolves below the registered sandbox root and is accepted after alias filtering.
+- [ ] Source-equality, descendant-target, symlink, traversal, partial-copy, and replay tests pass.
+- [ ] Project-aware scripts/build targets and stage-specific runtime profiles are persisted in the executable plan.
+- [ ] G06 is bound to the exact current evidence, plan, stage plan, catalogue, profile, and physical workspace fingerprint.
+- [ ] Stage preparation creates durable stage/step rows and finalized preparation/G07 evidence before any transformation command is authorized.
+- [ ] A restart-safe end-to-end fixture reaches the first authorized transformation command without mutating the source snapshot.
+
+Until this gate passes, report `PLANNING IMPLEMENTED — TRANSFORMATION READINESS UNPROVEN`, not transformation-ready.

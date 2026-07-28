@@ -16,7 +16,7 @@ class CompatibilityCatalogueProvider:
                 target_cli_exact=f"{major + 1}.0.0",
                 node_major=20,
                 npm_major=10,
-                node_exact="20.11.1",
+                node_exact="20.11.1" if major == 18 else "20.19.0",
                 npm_exact="10.2.4",
                 cli_exact=f"{major + 1}.0.0",
                 support_level="historical_experimental",

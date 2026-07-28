@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 
+from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -54,22 +55,35 @@ class StageExecutionPlanService:
         repair = RepairPolicy(policy_id=request.repair_policy_id)
         forbidden = ForbiddenChangePolicy(policy_id="forbidden-modernization-v1")
         commands = {
-            "bootstrap_install": (self._command("npm-ci-bootstrap", "tpl-npm-ci-bootstrap", "npm", ("ci",), request, 3600),),
-            "angular_update": (self._command("angular-update-exact", "tpl-angular-update-exact", "npx", ("--yes", "-p", "@angular/cli@" + target_cli_exact, "ng", "update", "@angular/core@" + target_exact, "@angular/cli@" + target_cli_exact, "--interactive=false"), request, 1800),),
-            "target_version_check": (self._command("angular-version-verify", "tpl-angular-version-verify", "npx", ("ng", "version"), request, 300),),
-            "final_install": (self._command("npm-ci-final", "tpl-npm-ci-final", "npm", ("ci",), request, 3600),),
-            "builds": (self._command("npm-script-build-production", "tpl-npm-script-build-production", "npm", ("run", "build", "--", "--configuration", "production"), request, 3600),),
-            "tests": (self._command("npm-script-test-ci", "tpl-npm-script-test-ci", "npm", ("run", "test", "--", "--watch=false"), request, 3600),),
-            "lint": (self._command("npm-script-lint", "tpl-npm-script-lint", "npm", ("run", "lint"), request, 1800, conditional=True),),
+            "bootstrap_install": (self._command("npm-ci-bootstrap", request),),
+            "angular_update": (self._command("angular-update-exact", request, {"target_cli_exact": target_cli_exact, "target_exact": target_exact}),),
+            "target_version_check": (self._command("angular-version-verify", request),),
+            "final_install": (self._command("npm-ci-final", request),),
+            "builds": (self._command("npm-script-build-production", request, {"build_script": request.resolved_scripts.get("build", "build"), "build_configuration": "production"}),),
+            "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts.get("test", "test"), "test_watch_flag": "--watch=false"}),),
+            "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts.get("lint", "lint")}),),
         }
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
-    def _command(command_id, template_id, executable, arguments, request, timeout, conditional=False):
+    def _command(command_id, request, parameter_bindings=None):
+        definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
         stage_id = request.stage_route[0][2]
         alias = "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_")
-        return CommandTemplateReference(command_id=command_id, template_id=template_id, template_version=1, executable=executable, arguments=tuple(arguments), working_directory_alias=alias, timeout_seconds=timeout, network_profile="approved-registries-only", conditional=conditional)
+        bindings = dict(parameter_bindings or {})
+        return CommandTemplateReference(
+            command_id=definition.command_id,
+            template_id=definition.template_id,
+            template_version=1,
+            parameter_bindings=bindings,
+            executable=definition.executable,
+            arguments=definition.render_arguments(bindings),
+            working_directory_alias=alias,
+            timeout_seconds=definition.timeout_seconds,
+            network_profile=definition.network_profile,
+            conditional=definition.conditional,
+        )
 
 
 class MigrationPlanService:

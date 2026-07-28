@@ -149,6 +149,7 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
         except ProjectPlanningResolutionError as error:
             raise PlanningInputResolutionError(error.code, "An explicit, unambiguous Angular project/build target selection is required.", details=error) from error
         builder = selected_target.builder
+        command_bindings = project_inputs.command_bindings(selected_target)
         physical_fingerprint = integrity.actual_fingerprint
         plan = PlanningEvidenceApplicationService(scope=scope).create(run_id, PlanCreateRequest(
             expected_state_version=expected_state_version,
@@ -161,6 +162,9 @@ def generate_plan_step(job_id: str, *, scope=session_scope) -> None:
             evidence_set_checksum=gate.artifact_set_checksum,
             input_workspace_fingerprint=physical_fingerprint,
             execution_profile_id=profile.get("profile_id", ""),
+            package_manager=project_inputs.package_manager,
+            resolved_scripts=command_bindings["scripts"],
+            project_targets=command_bindings["targets"],
             stage_route=[(item["source_family"], item["target_family"], item["stage_id"], item["target_angular_exact"], item.get("target_cli_exact", item["target_angular_exact"])) for item in route],
             target_cli_exact=route[0].get("target_cli_exact") if route else None,
             builder=builder,

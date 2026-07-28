@@ -29,6 +29,7 @@ from app.domain.command import (
     CommandTemplateStatus,
     DEFAULT_COMMAND_TEMPLATES,
     NetworkProfile,
+    command_arguments_match,
 )
 from app.domain.contracts import (
     CommandTemplateDto,
@@ -114,13 +115,11 @@ class CommandRegistryService:
         """Seed default command templates if the registry is empty."""
         from app.repositories.models.workflow import CommandTemplateModel
 
-        existing = session.scalar(select(CommandTemplateModel).limit(1))
-        if existing is not None:
-            return self.list_templates(session).templates
-
         now = datetime.now(UTC)
-        seeded: list[CommandTemplateDto] = []
+        existing_ids = set(session.scalars(select(CommandTemplateModel.id)).all())
         for tpl in DEFAULT_COMMAND_TEMPLATES:
+            if tpl.template_id in existing_ids:
+                continue
             row = CommandTemplateModel(
                 id=tpl.template_id,
                 command_id=tpl.command_id,
@@ -136,9 +135,8 @@ class CommandRegistryService:
                 updated_at=now,
             )
             session.add(row)
-            seeded.append(self._model_to_dto(row))
         session.flush()
-        return seeded
+        return self.list_templates(session).templates
 
     @staticmethod
     def _model_to_dto(row: Any) -> CommandTemplateDto:
@@ -280,7 +278,7 @@ class CommandPolicyEngineService:
                 checks.append(AuthorizationCheckResult(passed=True, rule_name="executable_matches_template"))
 
             # 4. Arguments match template (exact match)
-            if list(template.arguments) != request.arguments:
+            if not command_arguments_match(tuple(template.arguments), tuple(request.arguments)):
                 checks.append(AuthorizationCheckResult(
                     passed=False,
                     rule_name="arguments_match_template",

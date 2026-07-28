@@ -25,6 +25,10 @@ def test_resolves_application_target_without_inventing_project_or_configuration(
     assert result.build_targets[0].builder.endswith(":application")
     assert result.test_targets[0].project == "portal"
 
+    bindings = result.command_bindings(result.build_targets[0])
+    assert bindings["scripts"] == {"build": "build", "test": "test", "lint": "lint"}
+    assert bindings["targets"] == {"build": "portal:build", "test": "portal:test"}
+
 
 def test_resolves_library_target_and_does_not_create_lint_command_when_absent(tmp_path):
     result = ProjectPlanningResolver().resolve(_workspace(tmp_path, {

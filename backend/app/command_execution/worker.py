@@ -29,6 +29,7 @@ from app.domain.contracts import (
     CommandResultDto,
     CommandStatus,
 )
+from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
 from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
@@ -68,6 +69,21 @@ class CommandDefinition:
     def allowed_executables(self) -> frozenset[str]:
         """Executable names permitted for this fixed command shape."""
         return frozenset((self.executable, *self.executable_aliases))
+
+    def matches_arguments(self, arguments: tuple[str, ...]) -> bool:
+        return command_arguments_match(self.arguments, arguments)
+
+
+def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
+    return tuple(
+        CommandDefinition(
+            definition.command_id,
+            definition.executable,
+            definition.argument_patterns,
+            definition.executable_aliases,
+        )
+        for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
+    )
 
 
 @dataclass(frozen=True)
@@ -121,7 +137,7 @@ class CommandRegistry:
         CommandDefinition("npm-registry", "npm", ("config", "get", "registry"), ("npm.cmd",)),
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
         CommandDefinition("git-version", "git", ("--version",), ("git.exe",)),
-        CommandDefinition("npm-ci-bootstrap", "npm", ("ci",), ("npm.cmd",)),
+        *_transformation_command_definitions(),
     )
 
     def find(self, command_id: str) -> CommandDefinition:
@@ -145,7 +161,7 @@ class CommandPolicy:
 
     def __post_init__(self) -> None:
         aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
-        if not set(aliases).issubset(_MUTABLE_WORKSPACE_ALIASES):
+        if any(name not in _MUTABLE_WORKSPACE_ALIASES and not name.startswith("STAGE_WORKSPACE_") for name in aliases):
             raise CommandPolicyViolation("Only registered mutable workspace aliases may execute commands")
         object.__setattr__(self, "working_directory_aliases", aliases)
 
@@ -167,7 +183,7 @@ class CommandPolicy:
         definition = self.registry.find(request.command_id)
         if request.executable not in definition.allowed_executables:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
-        if tuple(request.arguments) != definition.arguments:
+        if not definition.matches_arguments(tuple(request.arguments)):
             raise CommandPolicyViolation("Arguments do not match the registered command definition")
 
         working_directory = self._resolve_working_directory(request)
@@ -177,7 +193,7 @@ class CommandPolicy:
         return StructuredCommandRequest(
             dto=request,
             definition=definition,
-            command=(request.executable, *definition.arguments),
+            command=(request.executable, *request.arguments),
             working_directory=working_directory,
             environment_allowlist=self.environment_allowlist,
             environment_overrides=dict(self.environment_overrides),

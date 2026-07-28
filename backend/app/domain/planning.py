@@ -141,6 +141,9 @@ class StageExecutionPlan(ContractModel):
     target_exact: str = Field(min_length=1, max_length=64)
     target_cli_exact: str | None = Field(default=None, max_length=64)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    package_manager: str = Field(default="npm", min_length=1, max_length=32)
+    resolved_scripts: dict[str, str] = Field(default_factory=dict)
+    project_targets: dict[str, str] = Field(default_factory=dict)
     commands: dict[str, tuple[CommandTemplateReference, ...]]
     build_system_decision: BuildSystemDecision
     validation_policy: ValidationPolicy
@@ -175,6 +178,9 @@ class PlanGenerationRequest(ContractModel):
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    package_manager: str = Field(default="npm", min_length=1, max_length=32)
+    resolved_scripts: dict[str, str] = Field(default_factory=dict)
+    project_targets: dict[str, str] = Field(default_factory=dict)
     stage_route: tuple[tuple[str, ...], ...] = Field(min_length=1)
     # Older callers and the public F06 contract omit this when the first
     # route entry carries the exact CLI version.  The stage planner derives
@@ -188,6 +194,10 @@ class PlanGenerationRequest(ContractModel):
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":
+        if self.package_manager != "npm":
+            raise ValueError("only npm planning commands are supported")
+        if any(not key or not value or any(token in value for token in "\r\n;|&<>`$()'\"") or any(character.isspace() for character in value) for key, value in {**self.resolved_scripts, **self.project_targets}.items()):
+            raise ValueError("planning command bindings contain unsafe tokens")
         if self.catalogue_version not in APPROVED_CATALOGUE_VERSIONS:
             raise ValueError("catalogue version is not approved")
         if not self.execution_profile_id.strip():

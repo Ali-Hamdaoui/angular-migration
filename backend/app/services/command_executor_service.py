@@ -14,13 +14,14 @@ import subprocess
 import shutil
 import threading
 import queue
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from uuid import uuid4
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -61,6 +62,7 @@ from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
+from app.domain.command import command_arguments_match
 from app.services.job_supervisor_service import JobSupervisorService
 from app.services.command_log_service import CommandLogService
 
@@ -72,6 +74,44 @@ class CommandExecutorError(ValueError):
         self.code = code
         self.message = message
         self.details = details or {}
+
+
+_WORKER_MUTABLE_WORKSPACE_ALIASES = frozenset({
+    "run_workspace",
+    "BASELINE_SANDBOX",
+    "STAGE_SANDBOX",
+    "REPAIR_SANDBOX",
+    "FINAL_ASSURANCE_SANDBOX",
+    "DELIVERY_CANDIDATE",
+})
+
+
+def worker_workspace_aliases(aliases: Mapping[str, str | Path], authorized_alias: str | None) -> dict[str, Path]:
+    """Expose exactly one approved mutable workspace to the worker."""
+    if not authorized_alias:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized command has no bound workspace alias.")
+    path = aliases.get(authorized_alias)
+    if path is None:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not bound for this run.")
+    try:
+        resolved_path = Path(path).resolve(strict=True)
+    except FileNotFoundError as error:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not available.") from error
+    if not resolved_path.is_dir():
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not a directory.")
+    if re.fullmatch(r"STAGE_WORKSPACE_[A-Z0-9_]+", authorized_alias):
+        stage_root = aliases.get("STAGE_SANDBOX")
+        if stage_root is None:
+            raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized stage workspace alias has no stage sandbox root.")
+        try:
+            resolved_root = Path(stage_root).resolve(strict=True)
+        except FileNotFoundError as error:
+            raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The stage sandbox root is not available.") from error
+        if resolved_path == resolved_root or not resolved_path.is_relative_to(resolved_root):
+            raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized stage workspace alias is outside the bound stage sandbox.")
+    elif authorized_alias not in _WORKER_MUTABLE_WORKSPACE_ALIASES:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not mutable.")
+    return {authorized_alias: resolved_path}
 
 
 @dataclass(frozen=True)
@@ -245,7 +285,7 @@ class CommandExecutorService:
             raise CommandExecutorError("COMMAND_TEMPLATE_NOT_FOUND", "The authorized command template is unavailable")
         if template.executable not in {authorization.executable, *(template.executable_aliases or [])}:
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized executable no longer matches the template")
-        if list(template.arguments) != list(authorization.arguments or []):
+        if not command_arguments_match(tuple(template.arguments), tuple(authorization.arguments or [])):
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized arguments no longer match the template")
         if not authorization.execution_profile_id:
             raise CommandExecutorError("EXECUTION_PROFILE_NOT_FOUND", "Authorization has no execution profile")
@@ -257,6 +297,17 @@ class CommandExecutorService:
             raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Execution profile is not approved for this run")
         if not run.run_root or not run.artifact_root or not run.workspace_aliases:
             raise CommandExecutorError("WORKSPACE_NOT_AVAILABLE", "Run-owned workspace configuration is unavailable")
+        if authorization.stage_id and (authorization.workspace_alias or "").startswith("STAGE_WORKSPACE_"):
+            from app.repositories.models import StageWorkspaceBindingModel
+
+            binding = session.scalar(select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == run_id,
+                StageWorkspaceBindingModel.stage_id == authorization.stage_id,
+                StageWorkspaceBindingModel.alias == authorization.workspace_alias,
+                StageWorkspaceBindingModel.active.is_(True),
+            ))
+            if binding is None or (run.workspace_aliases or {}).get(authorization.workspace_alias) != binding.workspace_path:
+                raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized stage workspace alias has no matching durable binding")
 
         now = datetime.now(UTC)
         normalized_payload = {
@@ -412,7 +463,7 @@ class CommandExecutorService:
                 policy = CommandPolicy(
                     sandbox_root=root,
                     registry=CommandRegistry(),
-                    working_directory_aliases=aliases,
+                    working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
                 )
                 store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)

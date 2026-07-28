@@ -53,6 +53,36 @@ class ResolvedPlanningInputs(BaseModel):
             return candidates[0]
         raise ProjectPlanningResolutionError("AMBIGUOUS_ANGULAR_PROJECT_SELECTION")
 
+    def command_bindings(self, selected_build_target: ResolvedTarget) -> dict[str, dict[str, str]]:
+        """Return immutable script and target identities for command generation."""
+        selected_targets = {
+            "build": selected_build_target,
+            "test": self._same_project_target(self.test_targets, selected_build_target.project),
+            "lint": self._same_project_target(self.lint_targets, selected_build_target.project),
+        }
+        scripts = {
+            kind: self._script_name(target.target if target else kind, kind)
+            for kind, target in selected_targets.items()
+        }
+        targets = {
+            kind: f"{target.project}:{target.target}"
+            for kind, target in selected_targets.items()
+            if target is not None
+        }
+        return {"scripts": scripts, "targets": targets}
+
+    def _script_name(self, target_name: str, fallback: str) -> str:
+        if target_name in self.scripts:
+            return target_name
+        if fallback in self.scripts:
+            return fallback
+        related = sorted(name for name in self.scripts if name.startswith(target_name + ":"))
+        return related[0] if len(related) == 1 else target_name
+
+    @staticmethod
+    def _same_project_target(targets: tuple[ResolvedTarget, ...], project: str) -> ResolvedTarget | None:
+        return next((target for target in targets if target.project == project), targets[0] if targets else None)
+
 
 class ProjectPlanningResolver:
     """Read only resolver; it never writes or mutates the supplied workspace."""

@@ -35,13 +35,40 @@ from app.domain.planning_review import (
     PlanningReview,
     PlanningReviewDecision,
 )
-from app.llm_gateway import LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry
+from app.llm_gateway import AzureGatewayError, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry
 
 
 class PlanningReviewApplicationError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 422, details: dict[str, Any] | None = None) -> None:
         self.code, self.message, self.status_code = code, message, status_code
+        self.details = details or {}
         super().__init__(message)
+
+
+def _safe_gateway_failure_details(error: Exception, *, stage: str) -> dict[str, Any]:
+    """Return bounded gateway metadata without persisting provider payloads."""
+    if isinstance(error, AzureGatewayError):
+        code = getattr(error.code, "value", error.code)
+        return {
+            "failure_code": code,
+            "failure_stage": error.failure_stage or stage,
+            "failure_subtype": error.failure_subtype or "LLM_GATEWAY_FAILED",
+            "retryable": bool(error.retryable),
+            "provider_http_status": error.provider_status,
+            "provider_error_code": error.provider_code,
+            "provider_request_id": error.provider_request_id,
+            "transport_started": bool(error.transport_started),
+        }
+    return {
+        "failure_code": "PLANNING_GATEWAY_ERROR",
+        "failure_stage": stage,
+        "failure_subtype": "UNCLASSIFIED_GATEWAY_FAILURE",
+        "retryable": False,
+        "provider_http_status": None,
+        "provider_error_code": None,
+        "provider_request_id": None,
+        "transport_started": False,
+    }
 
 
 class PlanningGatewayNarrative(BaseModel):
@@ -185,7 +212,8 @@ class PlanningAgentService:
             )
         except Exception as exc:
             raise PlanningReviewApplicationError(
-                "PLANNING_PROPOSER_FAILED", "The Planning proposer failed; G06 remains unavailable.", 503
+                "PLANNING_PROPOSER_FAILED", "The Planning proposer failed; G06 remains unavailable.", 503,
+                _safe_gateway_failure_details(exc, stage="phase_proposer"),
             ) from exc
         if narrative.deterministic_plan_checksum != checksum:
             raise PlanningReviewApplicationError(
@@ -226,6 +254,7 @@ class PlanningAgentService:
                 "PLANNING_REVIEW_FAILED",
                 "The Planning reviewer failed or returned invalid output; G06 remains unavailable.",
                 503,
+                _safe_gateway_failure_details(exc, stage="phase_reviewer"),
             ) from exc
         if review.deterministic_plan_checksum != checksum or review.proposer_output_checksum != proposer_checksum:
             raise PlanningReviewApplicationError(

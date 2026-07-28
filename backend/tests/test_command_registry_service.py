@@ -32,6 +32,7 @@ from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
+from app.services.command_executor_service import CommandExecutorError, worker_workspace_aliases
 
 
 @pytest.fixture
@@ -69,6 +70,50 @@ def seeded_registry(registry: CommandRegistryService, db_session: Session) -> Co
 class TestCommandRegistryService:
     """Tests for the structured command template registry."""
 
+    def test_template_matches_only_a_single_token_parameter_binding(self):
+        template = CommandTemplate(
+            template_id="tpl-angular-update-exact",
+            command_id="angular-update-exact",
+            executable="npx",
+            arguments=("--yes", "-p", "@angular/cli@{target_cli_exact}", "ng", "update"),
+        )
+
+        assert template.matches_arguments(("--yes", "-p", "@angular/cli@19.2.0", "ng", "update"))
+        assert not template.matches_arguments(("--yes", "-p", "@angular/cli@19.2.0", "ng", "update", "--force"))
+        assert not template.matches_arguments(("--yes", "-p", "@angular/cli@19.2.0;whoami", "ng", "update"))
+
+    def test_worker_alias_map_exposes_only_the_authorized_stage_workspace(self, tmp_path):
+        stage = tmp_path / "stage"
+        stage_root = tmp_path / "stage-root"
+        stage.mkdir()
+        stage_root.mkdir()
+        stage = stage_root / "angular-18-to-19"
+        stage.mkdir()
+        aliases = {
+            "OUTPUT_ROOT": str(tmp_path / "output"),
+            "STAGE_SANDBOX": str(stage_root),
+            "STAGE_WORKSPACE_ANGULAR_18_TO_19": str(stage),
+        }
+
+        assert worker_workspace_aliases(aliases, "STAGE_WORKSPACE_ANGULAR_18_TO_19") == {
+            "STAGE_WORKSPACE_ANGULAR_18_TO_19": stage,
+        }
+
+    def test_worker_alias_map_rejects_a_stage_alias_outside_the_bound_stage_root(self, tmp_path):
+        stage_root = tmp_path / "stage-root"
+        outside = tmp_path / "outside"
+        stage_root.mkdir()
+        outside.mkdir()
+
+        with pytest.raises(CommandExecutorError, match="authorized stage workspace alias"):
+            worker_workspace_aliases(
+                {
+                    "STAGE_SANDBOX": str(stage_root),
+                    "STAGE_WORKSPACE_ANGULAR_18_TO_19": str(outside),
+                },
+                "STAGE_WORKSPACE_ANGULAR_18_TO_19",
+            )
+
     def test_list_templates_returns_defaults_when_empty(self, registry: CommandRegistryService, db_session: Session):
         """When DB is empty, list_templates returns the default template list."""
         result = registry.list_templates(db_session)
@@ -91,6 +136,22 @@ class TestCommandRegistryService:
         registry.seed_defaults(db_session)
         rows = db_session.query(CommandTemplateModel).all()
         assert len(rows) >= 6
+
+    def test_seed_defaults_adds_missing_templates_to_a_preexisting_registry(self, registry: CommandRegistryService, db_session: Session):
+        now = datetime.now(UTC)
+        db_session.add(CommandTemplateModel(
+            id="tpl-python-version", command_id="python-version", executable="python", arguments=["--version"],
+            executable_aliases=["python.exe"], description="existing", status="active", version=1,
+            allowed_env_vars=[], max_output_bytes=1_000_000, created_at=now, updated_at=now,
+        ))
+        db_session.flush()
+
+        seeded = registry.seed_defaults(db_session)
+
+        assert {template.command_id for template in seeded} >= {
+            "npm-ci-bootstrap", "angular-update-exact", "angular-version-verify", "npm-ci-final",
+            "npm-script-build-production", "npm-script-test-ci", "npm-script-lint",
+        }
 
     def test_get_template_by_id(self, seeded_registry: CommandRegistryService, db_session: Session):
         """Can retrieve a specific template by its ID."""

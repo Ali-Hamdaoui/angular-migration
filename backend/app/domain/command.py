@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import re
+from collections.abc import Mapping
 from typing import Any, Final
 
 
@@ -70,6 +72,79 @@ class CommandTemplate:
 
     def validate_arguments(self, arguments: tuple[str, ...]) -> bool:
         return arguments == self.arguments
+
+    def matches_arguments(self, arguments: tuple[str, ...]) -> bool:
+        """Match concrete arguments against literal tokens and named token fragments."""
+        return command_arguments_match(self.arguments, arguments)
+
+
+@dataclass(frozen=True)
+class TransformationCommandDefinition:
+    """One immutable command authority shared by planning and execution."""
+
+    command_id: str
+    template_id: str
+    executable: str
+    argument_patterns: tuple[str, ...]
+    executable_aliases: tuple[str, ...] = ()
+    timeout_seconds: int = 300
+    network_profile: str = "approved-registries-only"
+    conditional: bool = False
+    allowed_env_vars: tuple[str, ...] = ()
+    max_output_bytes: int | None = 1_000_000
+    description: str = ""
+
+    @property
+    def arguments(self) -> tuple[str, ...]:
+        return self.argument_patterns
+
+    def render_arguments(self, bindings: Mapping[str, str] | None = None) -> tuple[str, ...]:
+        values = dict(bindings or {})
+        rendered: list[str] = []
+        for pattern in self.argument_patterns:
+            rendered.append(
+                re.sub(
+                    r"\{([a-z][a-z0-9_]*)\}",
+                    lambda match: self._binding(match.group(1), values),
+                    pattern,
+                )
+            )
+        result = tuple(rendered)
+        if not command_arguments_match(self.argument_patterns, result):
+            raise ValueError(f"Invalid parameter binding for command {self.command_id}")
+        return result
+
+    @staticmethod
+    def _binding(name: str, bindings: Mapping[str, str]) -> str:
+        value = bindings.get(name)
+        if not isinstance(value, str) or not value or any(
+            character in value for character in "\r\n;|&<>`$()'\""
+        ) or any(character.isspace() for character in value):
+            raise ValueError(f"Invalid command parameter binding: {name}")
+        return value
+
+    def to_template(self) -> CommandTemplate:
+        return CommandTemplate(
+            template_id=self.template_id,
+            command_id=self.command_id,
+            executable=self.executable,
+            arguments=self.argument_patterns,
+            executable_aliases=self.executable_aliases,
+            description=self.description,
+            allowed_env_vars=self.allowed_env_vars,
+            max_output_bytes=self.max_output_bytes,
+        )
+
+
+def command_arguments_match(patterns: tuple[str, ...], arguments: tuple[str, ...]) -> bool:
+    if len(arguments) != len(patterns):
+        return False
+    for pattern, argument in zip(patterns, arguments, strict=True):
+        expression = re.escape(pattern)
+        expression = re.sub(r"\\\{[a-z][a-z0-9_]*\\\}", r"[^\\s;|&<>`$()]+", expression)
+        if re.fullmatch(expression, argument) is None:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -152,6 +227,56 @@ class AuthorizationResult:
 
 
 # Default command templates for Sprint 3 pipeline
+TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinition]] = {
+    "npm-ci-bootstrap": TransformationCommandDefinition(
+        command_id="npm-ci-bootstrap", template_id="tpl-npm-ci", executable="npm", argument_patterns=("ci",),
+        executable_aliases=("npm.cmd",), timeout_seconds=3600,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
+        description="Clean install npm dependencies",
+    ),
+    "angular-update-exact": TransformationCommandDefinition(
+        command_id="angular-update-exact", template_id="tpl-angular-update-exact", executable="npx",
+        argument_patterns=("--yes", "-p", "@angular/cli@{target_cli_exact}", "ng", "update", "@angular/core@{target_exact}", "@angular/cli@{target_cli_exact}", "--interactive=false"),
+        executable_aliases=("npx.cmd",), timeout_seconds=1800,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
+        description="Execute an approved exact Angular update",
+    ),
+    "angular-version-verify": TransformationCommandDefinition(
+        command_id="angular-version-verify", template_id="tpl-angular-version-verify", executable="npx",
+        argument_patterns=("ng", "version"), executable_aliases=("npx.cmd",), timeout_seconds=300,
+        description="Verify Angular versions",
+    ),
+    "npm-ci-final": TransformationCommandDefinition(
+        command_id="npm-ci-final", template_id="tpl-npm-ci-final", executable="npm", argument_patterns=("ci",),
+        executable_aliases=("npm.cmd",), timeout_seconds=3600,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
+        description="Final clean install after lockfile verification",
+    ),
+    "npm-script-build-production": TransformationCommandDefinition(
+        command_id="npm-script-build-production", template_id="tpl-npm-script-build-production", executable="npm",
+        argument_patterns=("run", "{build_script}", "--", "--configuration", "{build_configuration}"),
+        executable_aliases=("npm.cmd",), timeout_seconds=3600,
+        description="Run a discovered production build target",
+    ),
+    "npm-script-test-ci": TransformationCommandDefinition(
+        command_id="npm-script-test-ci", template_id="tpl-npm-script-test-ci", executable="npm",
+        argument_patterns=("run", "{test_script}", "--", "{test_watch_flag}"),
+        executable_aliases=("npm.cmd",), timeout_seconds=3600,
+        description="Run a discovered test target",
+    ),
+    "npm-script-lint": TransformationCommandDefinition(
+        command_id="npm-script-lint", template_id="tpl-npm-script-lint", executable="npm",
+        argument_patterns=("run", "{lint_script}"), executable_aliases=("npm.cmd",), timeout_seconds=1800,
+        conditional=True, description="Run a discovered lint target",
+    ),
+}
+
+
+_TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
+    definition.to_template() for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
+)
+
+
 DEFAULT_COMMAND_TEMPLATES: Final[tuple[CommandTemplate, ...]] = (
     CommandTemplate(
         template_id="tpl-python-version",
@@ -193,40 +318,5 @@ DEFAULT_COMMAND_TEMPLATES: Final[tuple[CommandTemplate, ...]] = (
         executable_aliases=("git.exe",),
         description="Check Git version",
     ),
-    CommandTemplate(
-        template_id="tpl-npm-ci",
-        command_id="npm-ci-bootstrap",
-        executable="npm",
-        arguments=("ci",),
-        executable_aliases=("npm.cmd",),
-        description="Clean install npm dependencies",
-        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
-        max_output_bytes=5_000_000,
-    ),
-    CommandTemplate(
-        template_id="tpl-npm-ci-final", command_id="npm-ci-final", executable="npm", arguments=("ci",),
-        executable_aliases=("npm.cmd",), description="Final clean install after lockfile verification",
-        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
-    ),
-    CommandTemplate(
-        template_id="tpl-angular-update-exact", command_id="angular-update-exact", executable="npx",
-        arguments=(), executable_aliases=("npx.cmd",), description="Execute an approved exact Angular update",
-        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
-    ),
-    CommandTemplate(
-        template_id="tpl-angular-version-verify", command_id="angular-version-verify", executable="npx",
-        arguments=("ng", "version"), executable_aliases=("npx.cmd",), description="Verify Angular versions",
-    ),
-    CommandTemplate(
-        template_id="tpl-npm-script-build-production", command_id="npm-script-build-production", executable="npm",
-        arguments=(), executable_aliases=("npm.cmd",), description="Run a discovered production build target",
-    ),
-    CommandTemplate(
-        template_id="tpl-npm-script-test-ci", command_id="npm-script-test-ci", executable="npm",
-        arguments=(), executable_aliases=("npm.cmd",), description="Run a discovered test target",
-    ),
-    CommandTemplate(
-        template_id="tpl-npm-script-lint", command_id="npm-script-lint", executable="npm",
-        arguments=(), executable_aliases=("npm.cmd",), description="Run a discovered lint target",
-    ),
+    *_TRANSFORMATION_COMMAND_TEMPLATES,
 )
