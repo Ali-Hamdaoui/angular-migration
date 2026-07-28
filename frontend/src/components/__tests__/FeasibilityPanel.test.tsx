@@ -53,6 +53,18 @@ describe("FeasibilityPanel", () => {
     await waitFor(() => expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.any(String) }));
   });
 
+  it("offers authoritative regeneration when legacy feasibility lacks a workspace fingerprint", async () => {
+    vi.mocked(getFeasibility).mockResolvedValue({ ...response, gate_status: "approved" });
+    vi.mocked(queueFeasibilityResolution).mockResolvedValue({ job_id: "planning-run-2", status: "queued_after_g04", current_step: "resolving_feasibility", correlation_id: "planning:run-1" });
+    render(<FeasibilityPanel {...props} initialState={{ ...state, planning_job: { id: "planning-old", status: "technical_failed", current_step: "generating_plan", attempt: 2, max_attempts: 3, retryable: false, last_error_code: "PLANNING_WORKSPACE_FINGERPRINT_MISSING" } } as unknown as AuthoritativeRunStateDto} />);
+
+    const button = await screen.findByRole("button", { name: "Regenerate fingerprint-bound feasibility" });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.stringContaining("feasibility-rebind-run-1") }));
+    expect(props.refreshAuthoritativeState).toHaveBeenCalled();
+  });
+
   it("renders blocked state and keeps G05 unavailable", async () => {
     vi.mocked(getFeasibility).mockResolvedValue({ ...response, status: "blocked", blockers: ["NO_COMPATIBLE_STAGE1_PROFILE"], gate_status: "blocked" });
     render(<FeasibilityPanel {...props} />);
