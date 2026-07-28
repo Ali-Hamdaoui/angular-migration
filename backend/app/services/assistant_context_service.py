@@ -57,11 +57,13 @@ _MAX_HISTORY = 12
 
 
 class AssistantRequestError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 409):
+    def __init__(self, code: str, message: str, status_code: int = 409, *, correlation_id: str | None = None, details: dict[str, object] | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.correlation_id = correlation_id
+        self.details = details or {}
 
 
 def _safe(value: object, limit: int = 500) -> str:
@@ -295,11 +297,30 @@ class AssistantContextService:
     @staticmethod
     def _request_checksum(request: AssistantMessageRequestDto) -> str:
         payload = {
-            "message": request.message,
+            "run_id": request.run_id,
+            "message": _safe_question(request.message),
             "conversation_id": request.conversation_id,
+            "answer_mode": request.answer_mode,
+            "retry_of_message_id": request.retry_of_message_id,
             "client_known_state_version": request.client_known_state_version,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _validate_retry_target(session, request: AssistantMessageRequestDto, *, conversation_id: str | None, correlation_id: str) -> tuple[str, str]:
+        target = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.message_id == request.retry_of_message_id))
+        if target is None:
+            raise AssistantRequestError("assistant_retry_target_not_found", "The requested Assistant failure could not be found.", 404, correlation_id=correlation_id)
+        if target.role != "assistant" or target.status != "failed":
+            raise AssistantRequestError("assistant_retry_target_invalid", "Only a failed Assistant message can be retried.", 422, correlation_id=correlation_id)
+        if conversation_id is not None and target.conversation_id != conversation_id:
+            raise AssistantRequestError("assistant_retry_target_invalid", "The failed Assistant message is not in this conversation.", 422, correlation_id=correlation_id)
+        paired = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.conversation_id == target.conversation_id, AssistantMessageModel.role == "user", AssistantMessageModel.message_order < target.message_order).order_by(AssistantMessageModel.message_order.desc()).limit(1))
+        if paired is None or not paired.answer:
+            raise AssistantRequestError("assistant_retry_target_invalid", "The failed Assistant message has no recoverable original request.", 422, correlation_id=correlation_id)
+        if _safe_question(request.message) != paired.answer or request.answer_mode != target.answer_mode:
+            raise AssistantRequestError("assistant_retry_target_invalid", "Retry must repeat the original question and answer mode.", 422, correlation_id=correlation_id)
+        return target.conversation_id, paired.answer
 
     @staticmethod
     def _message_projection(projection: dict[str, object]) -> dict[str, object]:
@@ -383,25 +404,37 @@ class AssistantContextService:
         request_id = request.request_id or request.idempotency_key or uuid4().hex
         request = request.model_copy(update={"request_id": request_id, "idempotency_key": request.idempotency_key or request_id})
         correlation_id = correlation_id or uuid4().hex
-        conversation_id = request.conversation_id or uuid4().hex
         message_id = uuid4().hex
         with self._scope() as session:
             prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
             if prior:
-                request_checksum = self._request_checksum(request)
+                if request.conversation_id is not None and request.conversation_id != prior.conversation_id:
+                    raise AssistantRequestError("assistant_idempotency_conflict", "The idempotency key was used with a different payload.", 409, correlation_id=correlation_id)
+                request_checksum = self._request_checksum(request.model_copy(update={"conversation_id": prior.conversation_id}))
                 if prior.input_manifest_checksum != request_checksum:
-                    raise AssistantRequestError("idempotency_key_reused", "Idempotency key was used with a different payload.", 409)
+                    raise AssistantRequestError("assistant_idempotency_conflict", "The idempotency key was used with a different payload.", 409, correlation_id=correlation_id)
                 return self._dto(prior, session=session)
-            if request.conversation_id:
+            user_key = hashlib.sha256(("user:" + request.idempotency_key).encode()).hexdigest()
+            prior_user = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == user_key))
+            if prior_user:
+                request_checksum = self._request_checksum(request.model_copy(update={"conversation_id": prior_user.conversation_id}))
+                if prior_user.input_manifest_checksum != request_checksum:
+                    raise AssistantRequestError("assistant_idempotency_conflict", "The idempotency key was used with a different payload.", 409, correlation_id=correlation_id)
+                raise AssistantRequestError("assistant_request_in_progress", "The original Assistant request is still in progress; reuse its transport identifiers.", 409, correlation_id=correlation_id, details={"conversation_id": prior_user.conversation_id, "request_id": prior_user.request_id})
+            if request.retry_of_message_id:
+                conversation_id, _ = self._validate_retry_target(session, request, conversation_id=request.conversation_id, correlation_id=correlation_id)
+            elif request.conversation_id:
                 selected_conversation = request.conversation_id
+                conversation_id = selected_conversation
             else:
                 selected_conversation = session.scalar(select(AssistantConversationModel.conversation_id).where(AssistantConversationModel.run_id == request.run_id).order_by(AssistantConversationModel.updated_at.desc()).limit(1))
+                conversation_id = selected_conversation or uuid4().hex
+            request = request.model_copy(update={"conversation_id": conversation_id})
+            checksum = self._request_checksum(request)
             history_query = select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id)
-            if selected_conversation:
-                history_query = history_query.where(AssistantMessageModel.conversation_id == selected_conversation)
+            if conversation_id:
+                history_query = history_query.where(AssistantMessageModel.conversation_id == conversation_id)
             history = session.scalars(history_query.order_by(AssistantMessageModel.message_order.desc()).limit(_MAX_HISTORY)).all()
-            if selected_conversation:
-                conversation_id = selected_conversation
         run = self._run(request.run_id)
         projection = self._projection(run)
         stale = request.client_known_state_version is not None and request.client_known_state_version != projection["state_version"]
@@ -490,11 +523,13 @@ class AssistantContextService:
                 self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest={**manifest, "context_budget_failure": "mandatory_content_exceeds_hard_limit"}, checksum=checksum, reason="The Assistant input could not be bounded safely.", code="assistant_context_budget_exceeded")
                 raise AssistantRequestError("assistant_context_budget_exceeded", "The Assistant input could not be bounded safely.", 413)
             except AssistantRequestError as error:
-                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
+                failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
+                error.correlation_id = correlation_id
+                error.details = {"message_id": failed.message_id, "conversation_id": failed.conversation_id, "request_id": failed.request_id, "retry_of_message_id": failed.retry_of_message_id}
                 raise
             except Exception as error:
-                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed")
-                raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503) from error
+                failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed")
+                raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503, correlation_id=correlation_id, details={"message_id": failed.message_id, "conversation_id": failed.conversation_id, "request_id": failed.request_id, "retry_of_message_id": failed.retry_of_message_id}) from error
         structured = governed_response.structured_output if governed_response is not None else {
             "answer": answer,
             "summary": answer[:240],

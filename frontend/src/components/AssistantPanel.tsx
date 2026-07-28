@@ -44,6 +44,10 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
       <AssistantMessageBubble message={message} />
       <small>Blocker: {message.current_blocker} · Next: {message.next_permitted_action}</small>
       {message.failure_reason ? <p role="alert">Failure: {message.error_code ? `${message.error_code} · ` : ""}{message.failure_reason}{message.correlation_id ? ` · ${message.correlation_id}` : ""}</p> : null}
+      {message.role === "assistant" && message.response_status === "failed" ? (() => {
+        const original = [...messages].reverse().find((candidate) => candidate.role === "user" && candidate.conversation_id === message.conversation_id && candidate.message_order < message.message_order);
+        return <button type="button" aria-label="Retry assistant response" disabled={state === "loading" || !original} onClick={() => { if (original) void submit(original.answer, message.message_id, message.answer_mode || answerMode).catch(() => undefined); }}>Retry</button>;
+      })() : null}
       {message.summary ? <p>{message.summary}</p> : null}
       {message.intent ? <small>Intent: {message.intent} · Capability: {message.capability_key || "unavailable"} · Mode: {message.answer_mode || "concise"}</small> : null}
       {message.missing_information?.length ? <small>Missing information: {message.missing_information.join(", ")}</small> : null}

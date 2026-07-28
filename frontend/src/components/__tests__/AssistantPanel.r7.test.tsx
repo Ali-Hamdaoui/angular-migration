@@ -1,0 +1,34 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { AssistantPanel } from "@/components/AssistantPanel";
+import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+
+vi.mock("@/api/assistant", () => ({ getAssistantMessages: vi.fn(), sendAssistantMessage: vi.fn() }));
+
+const user = { message_id: "user-1", message_order: 1, conversation_id: "conversation-1", run_id: "run-1", role: "user", answer: "Where is the migration now?", current_phase: "Baseline", current_stage: "unknown", workflow_status: "RUNNING", current_gate: "unknown", current_blocker: "unknown", next_permitted_action: "unknown", workflow_state_version: 1, stale: false, evidence_references: [], proof_label: "user request", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_input_cost: 0, estimated_output_cost: 0, estimated_total_cost: 0 }, response_status: "completed", failure_reason: null, request_id: "original-request", answer_mode: "concise" } as const;
+const failed = { ...user, message_id: "failed-1", message_order: 2, role: "assistant", answer: "The Assistant request failed before producing a completed answer.", response_status: "failed", failure_reason: "The governed Assistant provider failed; retry is safe.", error_code: "assistant_provider_failed", correlation_id: "corr-1", request_id: "original-request" } as const;
+
+describe("mounted R7 retry", () => {
+  beforeEach(() => {
+    vi.mocked(getAssistantMessages).mockResolvedValue({ run_id: "run-1", conversation_id: "conversation-1", messages: [user, failed] } as never);
+    vi.mocked(sendAssistantMessage).mockResolvedValue({ ...failed, message_id: "success-1", message_order: 4, response_status: "completed", failure_reason: null, error_code: null, retry_of_message_id: "failed-1", request_id: "retry-request" } as never);
+    class ReplayEventSource { addEventListener() {} removeEventListener() {} close() {} }
+    Object.defineProperty(window, "EventSource", { configurable: true, value: ReplayEventSource });
+  });
+
+  it("targets the failed message, generates independent IDs, and suppresses rapid double activation", async () => {
+    render(<AssistantPanel runId="run-1" stateVersion={1} workflowStatus="RUNNING" />);
+    const retry = await screen.findByRole("button", { name: "Retry assistant response" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(sendAssistantMessage).toHaveBeenCalledTimes(1));
+    const request = vi.mocked(sendAssistantMessage).mock.calls[0][1];
+    expect(request.retry_of_message_id).toBe("failed-1");
+    expect(request.conversation_id).toBe("conversation-1");
+    expect(request.request_id).toBeTruthy();
+    expect(request.idempotency_key).toBeTruthy();
+    expect(request.request_id).not.toBe("original-request");
+    expect(request.idempotency_key).not.toBe("original-request");
+    expect(screen.getByText(/assistant_provider_failed/)).toBeInTheDocument();
+  });
+});

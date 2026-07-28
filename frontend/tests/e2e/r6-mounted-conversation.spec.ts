@@ -10,6 +10,7 @@ async function openAssistant(page: Page) {
   await page.goto(`/?run_id=${run}`);
   await page.getByRole("button", { name: "Assistant" }).click();
   await expect(page.getByRole("heading", { name: "Migration Follow-up Assistant" })).toBeVisible();
+  await expect(messageEvidence(page)).toHaveCount(2);
 }
 
 async function openConversation(page: Page, conversationId: string) {
@@ -67,6 +68,50 @@ test.describe("R6 mounted durable conversation", () => {
     console.log(JSON.stringify({ run_id_hash: hash(run), stale_states: [], provider_call_count: (await control(request, "GET", "/__test__/r6/metrics")).provider_call_count }));
   });
 
+  test("R7 failure reload and user Retry create one linked new attempt", async ({ page, request }) => {
+    await control(request, "POST", "/__test__/r6/gateway/mode", { mode: "failure" });
+    await openAssistant(page);
+    const transportRequests: object[] = [];
+    page.on("request", (requestEvent) => {
+      if (requestEvent.method() === "POST" && requestEvent.url().endsWith("/assistant/messages")) transportRequests.push(requestEvent.postDataJSON());
+    });
+    await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/metrics")).provider_call_count).toBe(1);
+    await page.reload();
+    await page.getByRole("button", { name: "Assistant" }).click();
+    const retry = page.getByRole("button", { name: "Retry assistant response" });
+    await expect(retry).toBeVisible();
+    const failedHistory = await control(request, "GET", "/api/v1/runs/r6-browser-run/assistant/messages");
+    const failed = failedHistory.messages.find((message: { role: string; response_status: string }) => message.role === "assistant" && message.response_status === "failed");
+    expect(failed).toBeTruthy();
+    await control(request, "POST", "/__test__/r6/gateway/mode", { mode: "delayed_success" });
+    const retryRequests: object[] = [];
+    page.on("request", (requestEvent) => {
+      if (requestEvent.method() === "POST" && requestEvent.url().endsWith("/assistant/messages")) retryRequests.push(requestEvent.postDataJSON());
+    });
+    await retry.click();
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/metrics")).provider_started).toBe(true);
+    await retry.click({ force: true });
+    await expect.poll(async () => (await control(request, "GET", "/__test__/r6/metrics")).provider_call_count).toBe(2);
+    await control(request, "POST", "/__test__/r6/gateway/release");
+    expect(retryRequests).toHaveLength(1);
+    const retryRequest = retryRequests[0] as { request_id: string; idempotency_key: string; retry_of_message_id: string; conversation_id: string };
+    const originalRequest = transportRequests[0] as { request_id: string; idempotency_key: string };
+    expect(retryRequest.request_id).not.toBe(originalRequest.request_id);
+    expect(retryRequest.idempotency_key).not.toBe(originalRequest.idempotency_key);
+    expect(retryRequest.retry_of_message_id).toBe(failed.message_id);
+    expect(retryRequest.conversation_id).toBe(failed.conversation_id);
+    await expect.poll(async () => page.locator('[data-role="assistant"]').count()).toBeGreaterThanOrEqual(2);
+    await page.reload();
+    await expect.poll(async () => page.locator('[data-role="assistant"]').count()).toBeGreaterThanOrEqual(2);
+    const finalHistory = await control(request, "GET", "/api/v1/runs/r6-browser-run/assistant/messages");
+    expect(finalHistory.messages.length).toBeGreaterThanOrEqual(4);
+    expect(finalHistory.messages.slice(-4).map((message: { role: string }) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(finalHistory.messages.at(-1).retry_of_message_id).toBe(failed.message_id);
+    console.log(JSON.stringify({ run_id_hash: hash(run), conversation_id_hash: hash(failed.conversation_id), failed_message_id_hash: hash(failed.message_id), provider_call_count: 2, retry_request_id_hash: hash(retryRequest.request_id), retry_idempotency_key_hash: hash(retryRequest.idempotency_key) }));
+  });
+
   test("conversation A and B remain isolated through URL navigation, reload, and history", async ({ page, request }) => {
     await control(request, "POST", "/__test__/r6/reset");
     await control(request, "POST", "/__test__/r6/seed?kind=both");
@@ -99,6 +144,10 @@ test.describe("R6 mounted durable conversation", () => {
     const initialVersion = initial.messages[1].semantic_state_version;
     await page.getByLabel("Ask about this migration").fill("Where is the migration now?");
     await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(async () => {
+      const history = await control(request, "GET", "/api/v1/runs/r6-browser-run/assistant/messages");
+      return history.messages.filter((message: { role: string }) => message.role === "assistant").length;
+    }).toBe(2);
     await expect(page.locator('[data-role="assistant"]')).toHaveCount(2);
     const afterTelemetry = await control(request, "GET", "/api/v1/runs/r6-browser-run/assistant/messages");
     expect(afterTelemetry.messages.at(-1).stale).toBe(false);

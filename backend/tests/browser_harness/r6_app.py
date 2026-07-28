@@ -69,6 +69,7 @@ class ControlledGateway:
         self._release = threading.Event()
 
     def reset(self):
+        self.mode = "success"
         self.started = False
         self.released = False
         self.calls = 0

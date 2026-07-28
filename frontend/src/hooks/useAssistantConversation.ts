@@ -7,11 +7,13 @@ import { assistantReplayDecision } from "@/components/assistantReplay";
 const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const conversationParam = "conversation_id";
 
-function stableError(reason: unknown) {
+type AssistantErrorState = { code?: string; message: string; correlationId?: string | null; details?: { conversation_id?: string; message_id?: string; request_id?: string } };
+
+function stableError(reason: unknown): AssistantErrorState {
   if (reason instanceof ApiClientError && reason.responseBody) {
     try {
-      const body = JSON.parse(reason.responseBody) as { error_code?: string; message?: string; correlation_id?: string };
-      return { code: body.error_code, message: body.message || reason.message, correlationId: body.correlation_id };
+      const body = JSON.parse(reason.responseBody) as { error_code?: string; message?: string; correlation_id?: string; details?: { conversation_id?: string; message_id?: string; request_id?: string } };
+      return { code: body.error_code, message: body.message || reason.message, correlationId: body.correlation_id, details: body.details };
     } catch { /* keep the sanitized transport message */ }
   }
   return { message: reason instanceof Error ? reason.message : "The Assistant could not answer." };
@@ -34,8 +36,10 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [conversationId, setConversationId] = useState<string>();
   const [state, setState] = useState<"empty" | "loading" | "ready" | "failed" | "reconnecting">("loading");
-  const [error, setError] = useState<{ code?: string; message: string; correlationId?: string | null } | null>(null);
+  const [error, setError] = useState<AssistantErrorState | null>(null);
+  const lastTransportOperation = useRef<{ request: Parameters<typeof sendAssistantMessage>[1] } | undefined>(undefined);
   const previousStateVersion = useRef(stateVersion);
+  const inFlight = useRef(false);
 
   const adoptHistory = useCallback((history: AssistantHistory) => {
     setMessages(history.messages);
@@ -91,7 +95,10 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
   }, [conversationId, restore, runId]);
 
   const submit = useCallback(async (message: string, retryOfMessageId?: string, answerMode?: "concise" | "detailed" | "deep") => {
+    if (inFlight.current) return undefined;
+    inFlight.current = true;
     const requestId = id();
+    const idempotencyKey = id();
     const optimistic: AssistantMessage = {
       message_id: `optimistic-${requestId}`, message_order: messages.length + 1,
       conversation_id: conversationId ?? "pending", run_id: runId, role: "user", answer: message,
@@ -101,16 +108,34 @@ export function useAssistantConversation(runId: string, stateVersion: number, ph
       usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_input_cost: 0, estimated_output_cost: 0, estimated_total_cost: 0 },
       response_status: "pending", failure_reason: null, request_id: requestId, retry_of_message_id: retryOfMessageId,
     };
+    const operation = { message, conversation_id: conversationId, request_id: requestId, idempotency_key: idempotencyKey, retry_of_message_id: retryOfMessageId, answer_mode: answerMode, client_known_state_version: stateVersion };
+    lastTransportOperation.current = { request: operation };
     setMessages((current) => [...current, optimistic]); setState("loading"); setError(null);
     try {
-      const result = await sendAssistantMessage(runId, { message, conversation_id: conversationId, request_id: requestId, idempotency_key: requestId, retry_of_message_id: retryOfMessageId, answer_mode: answerMode, client_known_state_version: stateVersion });
-      setConversationId(result.conversation_id); replaceUrlConversationId(result.conversation_id);
-      setMessages((current) => [...current.filter((item) => item.message_id !== optimistic.message_id), result]); setState("ready"); return result;
+      const result = await sendAssistantMessage(runId, operation);
+      await restore(result.conversation_id);
+      return result;
     } catch (reason) {
-      setError(stableError(reason)); setState("failed");
+      const parsed = stableError(reason);
+      setError(parsed);
+      const selectedConversation = parsed.details?.conversation_id || conversationId;
+      if (selectedConversation) {
+        try { await restore(selectedConversation); } catch { /* the durable error remains available on the next reload */ }
+      }
+      setState("failed");
       throw reason;
+    } finally {
+      inFlight.current = false;
     }
-  }, [conversationId, messages.length, phase, runId, stateVersion, workflowStatus]);
+  }, [conversationId, messages.length, phase, restore, runId, stateVersion, workflowStatus]);
 
-  return { messages, conversationId, state, error, submit, restore, setState, setMessages };
+  const retryTransport = useCallback(async () => {
+    const operation = lastTransportOperation.current;
+    if (!operation) throw new Error("No Assistant transport operation is available to retry.");
+    const result = await sendAssistantMessage(runId, operation.request);
+    await restore(result.conversation_id);
+    return result;
+  }, [restore, runId]);
+
+  return { messages, conversationId, state, error, submit, retryTransport, restore, setState, setMessages };
 }

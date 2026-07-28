@@ -30,7 +30,7 @@ def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Requ
         _authorize(service, run_id, actor)
         return service.answer(payload.model_copy(update={"run_id": run_id}), actor=actor)
     except AssistantRequestError as error:
-        return error_response(request, status_code=error.status_code, error_code=error.code, message=error.message)
+        return error_response(request, status_code=error.status_code, error_code=error.code, message=error.message, details=error.details, correlation_id=error.correlation_id)
 
 
 @router.get("/messages", response_model=AssistantHistoryDto)
