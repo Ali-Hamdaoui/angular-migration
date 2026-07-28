@@ -486,7 +486,7 @@ class AssistantNextStepProposalDto(ContractModel):
     action_key: str = Field(min_length=1)
     label: str = Field(min_length=1)
     reason: str = Field(min_length=1)
-    target_route: str = Field(min_length=1)
+    target_route: str | None = Field(default=None, min_length=1)
     requires_human_approval: bool = False
     executable_by_assistant: bool = False
 
@@ -517,6 +517,7 @@ class AssistantMessageResultDto(ContractModel):
     usage: AssistantUsageDto
     response_status: str
     failure_reason: str | None = None
+    error_code: str | None = None
     operational_statistics: "AssistantOperationalStatisticsDto | None" = None
     request_id: str | None = None
     retry_of_message_id: str | None = None
