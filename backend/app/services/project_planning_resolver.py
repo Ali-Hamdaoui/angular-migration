@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.services.workspace_configuration_reader import WorkspaceConfigurationError, WorkspaceConfigurationReader
+
 
 class ProjectPlanningResolutionError(ValueError):
-    pass
+    def __init__(self, code: str, *, cause: Exception | None = None) -> None:
+        self.code = code
+        self.cause = cause
+        self.details = cause
+        super().__init__(code)
 
 
 class ResolvedTarget(BaseModel):
@@ -33,19 +38,35 @@ class ResolvedPlanningInputs(BaseModel):
     lint_targets: tuple[ResolvedTarget, ...] = ()
     findings: tuple[str, ...] = ()
 
+    def select_build_target(self, *, project_name: str | None = None, target_name: str | None = None) -> ResolvedTarget:
+        candidates = list(self.build_targets)
+        if project_name is not None:
+            candidates = [item for item in candidates if item.project == project_name]
+        if target_name is not None:
+            candidates = [item for item in candidates if item.target == target_name]
+        if not candidates:
+            raise ProjectPlanningResolutionError("ANGULAR_PROJECT_INVALID")
+        application_candidates = [item for item in candidates if item.kind in {"application", "browser", "ssr"}]
+        if project_name is None and len(application_candidates) == 1:
+            return application_candidates[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ProjectPlanningResolutionError("AMBIGUOUS_ANGULAR_PROJECT_SELECTION")
+
 
 class ProjectPlanningResolver:
     """Read only resolver; it never writes or mutates the supplied workspace."""
 
     def resolve(self, workspace: Path) -> ResolvedPlanningInputs:
         workspace = Path(workspace)
+        reader = WorkspaceConfigurationReader()
         package_path = workspace / "package.json"
         if not package_path.is_file():
             raise ProjectPlanningResolutionError("PACKAGE_JSON_NOT_FOUND")
         try:
-            package = json.loads(package_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            raise ProjectPlanningResolutionError("PACKAGE_JSON_INVALID") from error
+            package = reader.read_json_object(package_path, logical_name="package.json").value
+        except WorkspaceConfigurationError as error:
+            raise ProjectPlanningResolutionError(f"PACKAGE_JSON_{error.code.removeprefix('WORKSPACE_JSON_')}", cause=error) from error
 
         lockfiles = {
             "package-lock.json": "npm",
@@ -58,26 +79,46 @@ class ProjectPlanningResolver:
             raise ProjectPlanningResolutionError("UNSUPPORTED_PACKAGE_MANAGER")
 
         angular_path = workspace / "angular.json"
-        if not angular_path.is_file():
-            raise ProjectPlanningResolutionError("ANGULAR_JSON_NOT_FOUND")
         try:
-            angular = json.loads(angular_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            raise ProjectPlanningResolutionError("ANGULAR_JSON_INVALID") from error
+            angular = reader.read_json_object(angular_path, logical_name="angular.json").value
+        except WorkspaceConfigurationError as error:
+            raise ProjectPlanningResolutionError(error.code, cause=error) from error
+
+        projects = angular.get("projects")
+        if not isinstance(projects, dict):
+            raise ProjectPlanningResolutionError("ANGULAR_PROJECTS_INVALID")
 
         builds: list[ResolvedTarget] = []
         tests: list[ResolvedTarget] = []
         lints: list[ResolvedTarget] = []
         findings: list[str] = []
-        for project, config in (angular.get("projects") or {}).items():
-            project_type = str(config.get("projectType") or "application")
-            targets = config.get("targets") or config.get("architect") or {}
+        for project, config in projects.items():
+            if not isinstance(config, dict):
+                raise ProjectPlanningResolutionError("ANGULAR_PROJECT_INVALID")
+            project_type = config.get("projectType") or "application"
+            if project_type not in {"application", "library"}:
+                raise ProjectPlanningResolutionError("ANGULAR_PROJECT_INVALID")
+            architect = config.get("architect")
+            targets_value = config.get("targets")
+            if architect is not None and not isinstance(architect, dict):
+                raise ProjectPlanningResolutionError("ANGULAR_TARGET_INVALID")
+            if targets_value is not None and not isinstance(targets_value, dict):
+                raise ProjectPlanningResolutionError("ANGULAR_TARGET_INVALID")
+            targets = targets_value if targets_value is not None else architect if architect is not None else {}
             for target_name, target in targets.items():
-                builder = str((target or {}).get("builder") or "")
-                if not builder:
-                    continue
+                if not isinstance(target, dict):
+                    raise ProjectPlanningResolutionError("ANGULAR_TARGET_INVALID")
+                builder = target.get("builder")
+                if not isinstance(builder, str) or not builder.strip():
+                    raise ProjectPlanningResolutionError("ANGULAR_TARGET_INVALID")
+                options = target.get("options")
+                configurations = target.get("configurations")
+                if options is not None and not isinstance(options, dict):
+                    raise ProjectPlanningResolutionError("ANGULAR_TARGET_INVALID")
+                if configurations is not None and not isinstance(configurations, dict):
+                    raise ProjectPlanningResolutionError("ANGULAR_TARGET_INVALID")
                 kind = self._kind(project_type, target_name, builder)
-                configuration = "production" if target_name == "build" and "production" in ((target or {}).get("configurations") or {}) else None
+                configuration = "production" if target_name == "build" and configurations and "production" in configurations else None
                 resolved = ResolvedTarget(kind=kind, project=str(project), target=str(target_name), builder=builder, configuration=configuration)
                 if target_name == "build":
                     builds.append(resolved)
