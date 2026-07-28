@@ -70,6 +70,12 @@ def _safe(value: object, limit: int = 500) -> str:
     return text[:limit]
 
 
+def _safe_question(value: object) -> str:
+    """Sanitize the complete question without semantic truncation."""
+    text = _SECRET.sub("[REDACTED]", str(value or ""))
+    return _PATH.sub("[REDACTED_PATH]", text)
+
+
 class AssistantContextService:
     """Rebuilds current state before every answer and persists only sanitized output."""
 
@@ -302,7 +308,7 @@ class AssistantContextService:
         session.add(AssistantMessageModel(
             id=uuid4().hex, message_id=uuid4().hex, conversation_id=conversation_id, run_id=request.run_id,
             message_order=message_order, role="user", input_manifest=manifest, input_manifest_checksum=checksum,
-            answer=_safe(request.message, 1000), state_version=int(projection["state_version"]), semantic_state_version=int(projection["state_version"]), operational_event_sequence=int(projection.get("operational_statistics", {}).get("event_sequence", 0) or 0),
+            answer=_safe_question(request.message), state_version=int(projection["state_version"]), semantic_state_version=int(projection["state_version"]), operational_event_sequence=int(projection.get("operational_statistics", {}).get("event_sequence", 0) or 0),
             projection=self._message_projection(projection), evidence=[], proof_label="user request",
             usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"),
             model_provenance={"role": "user"}, correlation_id=correlation_id,
@@ -395,7 +401,8 @@ class AssistantContextService:
         semantic_result = classify_semantic_intent(request.message)
         intent = semantic_result.intent
         capability = self._capabilities.dispatch(semantic_result)
-        manifest = {"question_sha256": hashlib.sha256(request.message.encode("utf-8")).hexdigest(), "projection_item_count": len(projection), "history_item_count": len(history), "intent": intent, "capability_key": capability.capability_key if capability else ""}
+        sanitized_question = _safe_question(request.message)
+        manifest = {"question_sha256": hashlib.sha256(sanitized_question.encode("utf-8")).hexdigest(), "question_character_count": len(sanitized_question), "projection_item_count": len(projection), "history_item_count": len(history), "intent": intent, "capability_key": capability.capability_key if capability else ""}
         checksum = self._request_checksum(request)
         with self._scope() as session:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_STARTED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="started", idempotency_key=request.idempotency_key, payload={"request_id": request.idempotency_key})
@@ -424,7 +431,7 @@ class AssistantContextService:
                 prepared = prepare_assistant_request(
                     policy=policy,
                     schema=schema,
-                    question=_safe(request.message, 1000),
+                    question=sanitized_question,
                     segments=[LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))],
                     answer_mode=request.answer_mode,
                 )
@@ -434,6 +441,7 @@ class AssistantContextService:
                 evidence_refs = [ref for ref in evidence_refs if ref["excerpt_id"] in supplied_ids]
                 manifest["evidence_selection"] = self._evidence_retrieval.last_manifest
                 manifest["evidence_selection"]["final_supplied_excerpt_ids"] = sorted(supplied_ids.intersection({ref["excerpt_id"] for ref in evidence_refs}))
+                manifest["question_token_count"] = prepared.manifest["context_budget"]["question_tokens"]
                 governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode), actor=actor)
                 if governed_response.status != "completed":
                     if governed_response.failure_code == "LLM_STRUCTURED_RESPONSE_INVALID":
