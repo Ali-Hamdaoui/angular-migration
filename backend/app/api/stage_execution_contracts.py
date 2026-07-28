@@ -24,3 +24,4 @@ class StageStartResponse(ContractModel):
     state_version: int
     event_sequence: int
     idempotent_replay: bool = False
+    workspace_fingerprint: str | None = None

@@ -173,6 +173,22 @@ class PlanningJobModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class StageWorkspaceBindingModel(Base):
+    """Authoritative contained workspace binding for one prepared stage."""
+
+    __tablename__ = "stage_workspace_bindings"
+    __table_args__ = (UniqueConstraint("run_id", "stage_id", "alias", name="uq_stage_workspace_binding"),)
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ApprovalEventModel(Base):
     __tablename__ = "approval_events"
 
