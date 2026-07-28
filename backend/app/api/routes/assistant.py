@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from app.api.errors import error_response
-from app.api.authentication import authenticated_actor
+from app.api.authentication import assistant_authenticated_actor
 from app.domain.contracts import AssistantHistoryDto, AssistantMessageRequestDto, AssistantMessageResultDto
 from app.services.assistant_context_service import AssistantContextService, AssistantRequestError
 from app.repositories.models import AssistantLifecycleEventModel
@@ -25,7 +25,7 @@ def _authorize(service: AssistantContextService, run_id: str, actor: str) -> Non
 
 
 @router.post("/messages", response_model=AssistantMessageResultDto, status_code=201)
-def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Request, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Request, actor: str = Depends(assistant_authenticated_actor), service: AssistantContextService = Depends(get_service)):
     try:
         _authorize(service, run_id, actor)
         return service.answer(payload.model_copy(update={"run_id": run_id}), actor=actor)
@@ -34,13 +34,13 @@ def send_message(run_id: str, payload: AssistantMessageRequestDto, request: Requ
 
 
 @router.get("/messages", response_model=AssistantHistoryDto)
-def get_messages(run_id: str, conversation_id: str | None = None, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+def get_messages(run_id: str, conversation_id: str | None = None, actor: str = Depends(assistant_authenticated_actor), service: AssistantContextService = Depends(get_service)):
     _authorize(service, run_id, actor)
-    return service.history(run_id, conversation_id)
+    return service.history(run_id, conversation_id, actor=actor)
 
 
 @router.get("/events")
-def stream_events(run_id: str, request: Request, actor: str = Depends(authenticated_actor), service: AssistantContextService = Depends(get_service)):
+def stream_events(run_id: str, request: Request, actor: str = Depends(assistant_authenticated_actor), service: AssistantContextService = Depends(get_service)):
     _authorize(service, run_id, actor)
     raw_last_event_id = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
     last_sequence = int(raw_last_event_id) if raw_last_event_id and raw_last_event_id.isdigit() else 0

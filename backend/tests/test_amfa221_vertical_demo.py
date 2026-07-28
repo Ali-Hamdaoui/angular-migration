@@ -1,11 +1,12 @@
 """Executable isolated AMFA-221 closure demonstration."""
 
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+import pytest
 
 from app.api.routes import assistant as assistant_routes
 from app.domain.contracts import AgentKind, AssistantMessageRequestDto, WorkflowEventType
@@ -15,6 +16,33 @@ from app.repositories.models import ArtifactMetadataModel, AssistantLifecycleEve
 from app.services.assistant_context_service import AssistantContextService
 from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
 from app.services.workflow_projection_service import WorkflowProjectionService
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_actor(monkeypatch):
+    original_answer = AssistantContextService.answer
+
+    def answer(service, request, correlation_id=None, actor=None):
+        return original_answer(service, request, correlation_id=correlation_id, actor=actor or "alice")
+
+    monkeypatch.setattr(AssistantContextService, "answer", answer)
+    original_history = AssistantContextService.history
+
+    def history(service, run_id, conversation_id=None, *, actor=None):
+        return original_history(service, run_id, conversation_id, actor=actor or "alice")
+
+    monkeypatch.setattr(AssistantContextService, "history", history)
+    app.dependency_overrides[assistant_routes.assistant_authenticated_actor] = lambda: "alice"
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def test_lifespan(_app):
+        yield
+
+    app.router.lifespan_context = test_lifespan
+    yield
+    app.dependency_overrides.pop(assistant_routes.assistant_authenticated_actor, None)
+    app.router.lifespan_context = original_lifespan
 
 
 class GovernedFakeProvider:

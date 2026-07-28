@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import func, select
-from fastapi import HTTPException
 
 from app.domain.contracts import (
     AssistantEvidenceDto,
@@ -31,6 +30,7 @@ from app.services.workflow_projection_service import WorkflowProjectionService
 from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService
 from app.services.assistant_capabilities import classify_intent, default_capability_registry
 from app.services.assistant_context_budget import build_bounded_context
+from app.api.authentication import authorize_run, require_authenticated_actor
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
 
 _SECRET = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[:=]\s*|password\s*[:=]\s*)[^\s,;]+")
@@ -65,14 +65,11 @@ class AssistantContextService:
         self._evidence_retrieval = AssistantEvidenceRetrievalService()
 
     def authorize(self, run_id: str, actor: str) -> None:
+        actor = require_authenticated_actor(actor)
         if run_id.startswith("mock-"):
             return
         with self._scope() as session:
-            run = session.get(MigrationRunModel, run_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail={"error_code": "RUN_NOT_FOUND", "message": "Migration run does not exist.", "details": {}})
-            if run.actor and run.actor != actor and actor != "local-operator":
-                raise HTTPException(status_code=403, detail={"error_code": "RUN_ACCESS_FORBIDDEN", "message": "Authenticated actor is not authorized for this run.", "details": {}})
+            authorize_run(session, run_id, actor, forbidden_code="assistant_run_forbidden")
 
     def _run(self, run_id: str):
         if run_id.startswith("mock-"):
@@ -370,9 +367,10 @@ class AssistantContextService:
     def _validate_citations(cls, session, run_id: str, citations: object) -> bool:
         return cls._validated_citations(session, run_id, citations) is not None
 
-    def answer(self, request: AssistantMessageRequestDto, correlation_id: str | None = None, actor: str = "local-operator") -> AssistantMessageResultDto:
+    def answer(self, request: AssistantMessageRequestDto, correlation_id: str | None = None, actor: str | None = None) -> AssistantMessageResultDto:
         if not request.run_id:
             raise AssistantRequestError("run_id_required", "A run-scoped assistant request is required.", 422)
+        self.authorize(request.run_id, actor or "")
         request_id = request.request_id or request.idempotency_key or uuid4().hex
         request = request.model_copy(update={"request_id": request_id, "idempotency_key": request.idempotency_key or request_id})
         correlation_id = correlation_id or uuid4().hex
@@ -478,7 +476,8 @@ class AssistantContextService:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_COMPLETED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status=row.status, idempotency_key=request.idempotency_key, payload={"message_id": message_id})
             return self._dto(row, stale=stale)
 
-    def history(self, run_id: str, conversation_id: str | None = None) -> AssistantHistoryDto:
+    def history(self, run_id: str, conversation_id: str | None = None, *, actor: str | None = None) -> AssistantHistoryDto:
+        self.authorize(run_id, actor or "")
         current_version = int(self._projection(self._run(run_id))["state_version"])
         with self._scope() as session:
             query = select(AssistantMessageModel).where(AssistantMessageModel.run_id == run_id).order_by(AssistantMessageModel.message_order)
