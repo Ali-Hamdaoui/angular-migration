@@ -2,7 +2,7 @@ from app.domain.contracts import AgentKind
 from app.llm_gateway import LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
 from app.services.analysis_application_service import AnalysisAgentService, AnalysisArtifact
 
-from backend.tests.test_analysis_evidence_persistence_api_s2_f04_i02 import setup
+from tests.test_analysis_evidence_persistence_api_s2_f04_i02 import setup
 
 
 class RecordingGateway:
