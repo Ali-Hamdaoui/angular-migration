@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
+
+from app.workspaces.baseline import baseline_tree_fingerprint
 
 
 @dataclass(frozen=True)
@@ -26,16 +27,7 @@ class WorkspaceIntegrityError(ValueError):
 class WorkspaceIntegrityService:
     @staticmethod
     def fingerprint(root: Path) -> str:
-        root = Path(root).resolve(strict=True)
-        digest = hashlib.sha256()
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            relative = path.relative_to(root).as_posix().encode("utf-8")
-            content = path.read_bytes()
-            digest.update(len(relative).to_bytes(8, "big"))
-            digest.update(relative)
-            digest.update(len(content).to_bytes(8, "big"))
-            digest.update(content)
-        return f"sha256:{digest.hexdigest()}"
+        return baseline_tree_fingerprint(root)
 
     def verify(self, workspace: Path, *, expected_fingerprint: str) -> WorkspaceIntegrityResult:
         workspace = Path(workspace).resolve(strict=True)
