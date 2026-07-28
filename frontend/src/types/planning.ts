@@ -2,32 +2,18 @@ export type PlanArtifactInput = { artifact_id: string; checksum: string };
 
 export type PlanCommand = {
   command_id: string;
+  template_id: string;
+  template_version: number;
+  parameter_bindings: Record<string, string>;
   executable: string;
   arguments: string[];
   shell: false;
   working_directory_alias: string;
   timeout_seconds: number;
   network_profile: string;
+  runtime_profile_checksum: string | null;
+  cancellation_policy: string;
   conditional: boolean;
-};
-
-export type PlanCreateRequest = {
-  expected_state_version: number;
-  idempotency_key: string;
-  source_exact: string;
-  source_family: string;
-  target_family: string;
-  catalogue_version: string;
-  input_fingerprint: string;
-  execution_profile_id: string;
-  stage_route: ([string, string, string, string] | [string, string, string, string, string])[];
-  target_cli_exact?: string | null;
-  builder: string;
-  prerequisite_artifacts: PlanArtifactInput[];
-  validation_policy_id?: string;
-  recovery_policy_id?: string;
-  repair_policy_id?: string;
-  correlation_id?: string | null;
 };
 
 export type PlanRouteStage = { stage_id: string; source_family: string; target_family: string; target_exact: string };
@@ -57,6 +43,8 @@ export type PlanResponse = {
     stage_id: string;
     plan_version: number;
     input_fingerprint: string;
+    evidence_set_checksum: string | null;
+    input_workspace_fingerprint: string | null;
     source_family: string;
     source_exact: string;
     target_family: string;
@@ -143,4 +131,18 @@ export type G06DecisionRequest = {
   comment?: string | null;
   correlation_id?: string | null;
 };
-export type G06DecisionResponse = PlanReviewResponse & { decision: G06Decision; accepted: boolean };
+export type G06DecisionResponse = {
+  run_id: string;
+  gate_id: "G06" | string;
+  gate_version: string;
+  decision: G06Decision;
+  status: string;
+  accepted: boolean;
+  package_checksum: string;
+  artifact_set_checksum: string;
+  plan_checksum: string;
+  stage_plan_checksum: string;
+  state_version: number;
+  event_sequence: number;
+  idempotent_replay: boolean;
+};

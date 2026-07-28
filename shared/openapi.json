@@ -305,6 +305,36 @@
             "title": "Artifact Links",
             "type": "object"
           },
+          "attempt_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Attempt History",
+            "type": "array"
+          },
+          "cause_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause Code"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
           "error_code": {
             "anyOf": [
               {
@@ -319,6 +349,50 @@
           "event_sequence": {
             "title": "Event Sequence",
             "type": "integer"
+          },
+          "failed_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Invocation Id"
+          },
+          "failure_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Origin"
+          },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
+          "failure_subtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Subtype"
           },
           "gate_decision": {
             "anyOf": [
@@ -373,6 +447,44 @@
             ],
             "title": "Package Checksum"
           },
+          "proposer_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposer Invocation Id"
+          },
+          "provider_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Request Id"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "reviewer_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Invocation Id"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -384,6 +496,28 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "technical_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technical Stage"
+          },
+          "transport_started": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transport Started"
           }
         },
         "required": [
@@ -395,6 +529,42 @@
           "event_sequence"
         ],
         "title": "AnalysisResponse",
+        "type": "object"
+      },
+      "AnalysisRetryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "failed_analysis_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Failed Analysis Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "failed_analysis_id",
+          "idempotency_key",
+          "reason"
+        ],
+        "title": "AnalysisRetryRequest",
         "type": "object"
       },
       "ApprovalDecision": {
@@ -744,13 +914,211 @@
         "title": "ArtifactType",
         "type": "string"
       },
+      "AssistantEvidenceDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "checksum",
+          "label"
+        ],
+        "title": "AssistantEvidenceDto",
+        "type": "object"
+      },
+      "AssistantEvidenceReferenceDto": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Status"
+          },
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "immutable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Immutable"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "lineage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "label",
+          "checksum",
+          "run_id"
+        ],
+        "title": "AssistantEvidenceReferenceDto",
+        "type": "object"
+      },
+      "AssistantHistoryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantMessageResultDto"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "conversation_id"
+        ],
+        "title": "AssistantHistoryDto",
+        "type": "object"
+      },
       "AssistantMessageRequestDto": {
         "additionalProperties": false,
         "properties": {
+          "answer_mode": {
+            "default": "concise",
+            "pattern": "^(concise|detailed|deep)$",
+            "title": "Answer Mode",
+            "type": "string"
+          },
+          "client_known_state_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Known State Version"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
           "message": {
             "minLength": 1,
             "title": "Message",
             "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "retry_of_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Of Message Id"
           },
           "run_id": {
             "anyOf": [
@@ -798,6 +1166,609 @@
           "status"
         ],
         "title": "AssistantMessageResponseDto",
+        "type": "object"
+      },
+      "AssistantMessageResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "capability_key": {
+            "default": "",
+            "title": "Capability Key",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "current_blocker": {
+            "title": "Current Blocker",
+            "type": "string"
+          },
+          "current_gate": {
+            "title": "Current Gate",
+            "type": "string"
+          },
+          "current_phase": {
+            "title": "Current Phase",
+            "type": "string"
+          },
+          "current_stage": {
+            "title": "Current Stage",
+            "type": "string"
+          },
+          "evidence_references": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantEvidenceDto"
+            },
+            "title": "Evidence References",
+            "type": "array"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "intent": {
+            "default": "unsupported",
+            "title": "Intent",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "message_order": {
+            "minimum": 1.0,
+            "title": "Message Order",
+            "type": "integer"
+          },
+          "missing_information": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Information",
+            "type": "array"
+          },
+          "model": {
+            "default": "deterministic_projection",
+            "title": "Model",
+            "type": "string"
+          },
+          "next_permitted_action": {
+            "title": "Next Permitted Action",
+            "type": "string"
+          },
+          "next_step_proposals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Next Step Proposals",
+            "type": "array"
+          },
+          "operational_statistics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistantOperationalStatisticsDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proof_label": {
+            "title": "Proof Label",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "response_status": {
+            "title": "Response Status",
+            "type": "string"
+          },
+          "retry_of_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Of Message Id"
+          },
+          "role": {
+            "default": "assistant",
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "suggested_follow_ups": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggested Follow Ups",
+            "type": "array"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AssistantUsageDto"
+          },
+          "workflow_state_version": {
+            "minimum": 1.0,
+            "title": "Workflow State Version",
+            "type": "integer"
+          },
+          "workflow_status": {
+            "title": "Workflow Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "message_order",
+          "conversation_id",
+          "run_id",
+          "answer",
+          "current_phase",
+          "current_stage",
+          "workflow_status",
+          "current_gate",
+          "current_blocker",
+          "next_permitted_action",
+          "workflow_state_version",
+          "proof_label",
+          "usage",
+          "response_status"
+        ],
+        "title": "AssistantMessageResultDto",
+        "type": "object"
+      },
+      "AssistantOperationalStatisticsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "command_totals_by_status": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command Totals By Status"
+          },
+          "current_active_run_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Active Run Age Seconds"
+          },
+          "failed_commands": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Commands"
+          },
+          "input_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Cost Usd"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "llm_calls_by_role": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Calls By Role"
+          },
+          "output_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Cost Usd"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "phase_durations_seconds": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Durations Seconds"
+          },
+          "recorded_workflow_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded Workflow Duration Seconds"
+          },
+          "relevant_command_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Relevant Command Ids",
+            "type": "array"
+          },
+          "run_start_timestamp": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Start Timestamp"
+          },
+          "stage_durations_seconds": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Durations Seconds"
+          },
+          "successful_commands": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successful Commands"
+          },
+          "total_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Cost Usd"
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
+          }
+        },
+        "title": "AssistantOperationalStatisticsDto",
+        "type": "object"
+      },
+      "AssistantUsageDto": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_input_cost": {
+            "minimum": 0.0,
+            "title": "Estimated Input Cost",
+            "type": "number"
+          },
+          "estimated_output_cost": {
+            "minimum": 0.0,
+            "title": "Estimated Output Cost",
+            "type": "number"
+          },
+          "estimated_total_cost": {
+            "minimum": 0.0,
+            "title": "Estimated Total Cost",
+            "type": "number"
+          },
+          "input_tokens": {
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "minimum": 0.0,
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "estimated_input_cost",
+          "estimated_output_cost",
+          "estimated_total_cost"
+        ],
+        "title": "AssistantUsageDto",
+        "type": "object"
+      },
+      "AssistantWorkflowProjectionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "application_name": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "blocker": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "completed_work": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Completed Work",
+            "type": "array"
+          },
+          "current_angular_version": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "evidence_references": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantEvidenceReferenceDto"
+            },
+            "title": "Evidence References",
+            "type": "array"
+          },
+          "failure_reason": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "gate": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "migration_route": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "next_permitted_action": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "node_execution_profile": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "operational_statistics": {
+            "$ref": "#/components/schemas/AssistantOperationalStatisticsDto",
+            "default": {
+              "relevant_command_ids": []
+            }
+          },
+          "package_manager": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "phase": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "remaining_work": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Remaining Work",
+            "type": "array"
+          },
+          "repair_state": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_fingerprint": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "stage": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "stage_fingerprint": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "stage_workspace_reference": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "step": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "target_angular_version": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "waiting_reason": {
+            "$ref": "#/components/schemas/ProjectionValue",
+            "default": {
+              "availability": "unavailable"
+            }
+          },
+          "workflow_state_version": {
+            "title": "Workflow State Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "workflow_state_version"
+        ],
+        "title": "AssistantWorkflowProjectionDto",
         "type": "object"
       },
       "AssuranceStatus": {
@@ -911,6 +1882,16 @@
             "title": "Artifacts",
             "type": "array"
           },
+          "assistant_projection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistantWorkflowProjectionDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "catalogue_version": {
             "anyOf": [
               {
@@ -975,6 +1956,16 @@
               }
             ],
             "title": "Plan Inputs"
+          },
+          "planning_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanningJobProjectionDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "preflight_id": {
             "anyOf": [
@@ -4101,6 +5092,18 @@
             "title": "Source Angular Exact",
             "type": "string"
           },
+          "source_execution_profile_checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Execution Profile Checksum"
+          },
           "workspace_fingerprint": {
             "anyOf": [
               {
@@ -4131,6 +5134,28 @@
           "prerequisite_artifacts"
         ],
         "title": "FeasibilityCreateRequest",
+        "type": "object"
+      },
+      "FeasibilityResolveActionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_state_version": {
+            "minimum": 1.0,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "idempotency_key"
+        ],
+        "title": "FeasibilityResolveActionRequest",
         "type": "object"
       },
       "FeasibilityResponse": {
@@ -5291,6 +6316,17 @@
             ],
             "title": "Failure Stage"
           },
+          "failure_subtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Subtype"
+          },
           "idempotent_replay": {
             "default": false,
             "title": "Idempotent Replay",
@@ -5413,10 +6449,70 @@
             ],
             "title": "Redacted Summary"
           },
+          "response_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Bytes"
+          },
+          "response_content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Content Type"
+          },
+          "response_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Kind"
+          },
+          "response_received": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Received"
+          },
+          "response_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Sha256"
+          },
           "retries": {
             "default": 0,
             "title": "Retries",
             "type": "integer"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
           },
           "role": {
             "title": "Role",
@@ -5473,6 +6569,11 @@
             "title": "Status",
             "type": "string"
           },
+          "structured_output": {
+            "additionalProperties": true,
+            "title": "Structured Output",
+            "type": "object"
+          },
           "task_type": {
             "title": "Task Type",
             "type": "string"
@@ -5486,6 +6587,17 @@
             "default": 0,
             "title": "Total Tokens",
             "type": "integer"
+          },
+          "transport_started": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transport Started"
           }
         },
         "required": [
@@ -6732,6 +7844,18 @@
             ],
             "title": "Correlation Id"
           },
+          "evidence_set_checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Set Checksum"
+          },
           "execution_profile_id": {
             "maxLength": 128,
             "minLength": 1,
@@ -6753,6 +7877,18 @@
             "pattern": "^sha256:[0-9a-f]{64}$",
             "title": "Input Fingerprint",
             "type": "string"
+          },
+          "input_workspace_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Workspace Fingerprint"
           },
           "prerequisite_artifacts": {
             "items": {
@@ -7283,6 +8419,41 @@
         "title": "PlanRevisionChanges",
         "type": "object"
       },
+      "PlanningCommandResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "current_step": {
+            "title": "Current Step",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "current_step"
+        ],
+        "title": "PlanningCommandResponse",
+        "type": "object"
+      },
       "PlanningExplanationApiRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7359,6 +8530,115 @@
           "plan_version"
         ],
         "title": "PlanningExplanationApiRequest",
+        "type": "object"
+      },
+      "PlanningJobProjectionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "minimum": 0.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Id"
+          },
+          "current_step": {
+            "title": "Current Step",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Message"
+          },
+          "last_error_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Stage"
+          },
+          "max_attempts": {
+            "minimum": 1.0,
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retryable"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "current_step",
+          "attempt",
+          "max_attempts",
+          "updated_at"
+        ],
+        "title": "PlanningJobProjectionDto",
         "type": "object"
       },
       "PreflightRequest": {
@@ -7716,6 +8996,27 @@
         "title": "PreflightSnapshot",
         "type": "object"
       },
+      "ProjectionValue": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "default": "unavailable",
+            "title": "Availability",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "title": "ProjectionValue",
+        "type": "object"
+      },
       "RefreshEnvironmentRequest": {
         "properties": {
           "actor": {
@@ -7894,6 +9195,8 @@
           "WAITING_ANALYSIS_APPROVAL",
           "PLANNING_RUNNING",
           "WAITING_PLAN_APPROVAL",
+          "WAITING_STAGE_PREPARATION",
+          "WAITING_G07_APPROVAL",
           "STAGE_CREATED",
           "TOOLCHAIN_PROFILE_SELECTED",
           "SANDBOX_READY",
@@ -8475,6 +9778,23 @@
           "source_angular_exact": {
             "title": "Source Angular Exact",
             "type": "string"
+          },
+          "source_execution_profile_checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Execution Profile Checksum"
+          },
+          "stage1_profile_checksum": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Stage1 Profile Checksum",
+            "type": "string"
           }
         },
         "required": [
@@ -8491,6 +9811,7 @@
           "architecture",
           "catalogue_version",
           "source_angular_exact",
+          "stage1_profile_checksum",
           "checksum"
         ],
         "title": "Stage1ExecutionProfile",
@@ -10516,6 +11837,220 @@
         ]
       }
     },
+    "/api/v1/runs/{run_id}/analysis/retries": {
+      "post": {
+        "operationId": "retry_analysis_api_v1_runs__run_id__analysis_retries_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisRetryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Analysis",
+        "tags": [
+          "analysis"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/approvals/G02": {
+      "get": {
+        "operationId": "inspect_g02_api_v1_runs__run_id__approvals_G02_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G02ReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect G02",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/approvals/G02/decisions": {
+      "post": {
+        "operationId": "decide_g02_api_v1_runs__run_id__approvals_G02_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G02DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G02ReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G02",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/approvals/G02/package": {
+      "post": {
+        "operationId": "initialize_g02_api_v1_runs__run_id__approvals_G02_package_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G02PackageInitializationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G02ReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Initialize G02",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/api/v1/runs/{run_id}/approvals/G03/decisions": {
       "post": {
         "operationId": "decide_api_v1_runs__run_id__approvals_G03_decisions_post",
@@ -10772,9 +12307,9 @@
         ]
       }
     },
-    "/api/v1/runs/{run_id}/approvals/{gate_id}": {
+    "/api/v1/runs/{run_id}/assistant/events": {
       "get": {
-        "operationId": "inspect_g02_api_v1_runs__run_id__approvals__gate_id__get",
+        "operationId": "stream_events_api_v1_runs__run_id__assistant_events_get",
         "parameters": [
           {
             "in": "path",
@@ -10786,12 +12321,91 @@
             }
           },
           {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Events",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/assistant/messages": {
+      "get": {
+        "operationId": "get_messages_api_v1_runs__run_id__assistant_messages_get",
+        "parameters": [
+          {
             "in": "path",
-            "name": "gate_id",
+            "name": "run_id",
             "required": true,
             "schema": {
-              "title": "Gate Id",
+              "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -10800,7 +12414,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/G02ReviewResponse"
+                  "$ref": "#/components/schemas/AssistantHistoryDto"
                 }
               }
             },
@@ -10817,15 +12431,13 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Inspect G02",
+        "summary": "Get Messages",
         "tags": [
-          "approvals"
+          "assistant"
         ]
-      }
-    },
-    "/api/v1/runs/{run_id}/approvals/{gate_id}/decisions": {
+      },
       "post": {
-        "operationId": "decide_g02_api_v1_runs__run_id__approvals__gate_id__decisions_post",
+        "operationId": "send_message_api_v1_runs__run_id__assistant_messages_post",
         "parameters": [
           {
             "in": "path",
@@ -10837,12 +12449,19 @@
             }
           },
           {
-            "in": "path",
-            "name": "gate_id",
-            "required": true,
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
             "schema": {
-              "title": "Gate Id",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -10850,7 +12469,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/G02DecisionRequest"
+                "$ref": "#/components/schemas/AssistantMessageRequestDto"
               }
             }
           },
@@ -10861,7 +12480,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/G02ReviewResponse"
+                  "$ref": "#/components/schemas/AssistantMessageResultDto"
                 }
               }
             },
@@ -10878,70 +12497,9 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Decide G02",
+        "summary": "Send Message",
         "tags": [
-          "approvals"
-        ]
-      }
-    },
-    "/api/v1/runs/{run_id}/approvals/{gate_id}/package": {
-      "post": {
-        "operationId": "initialize_g02_api_v1_runs__run_id__approvals__gate_id__package_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "gate_id",
-            "required": true,
-            "schema": {
-              "title": "Gate Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/G02PackageInitializationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/G02ReviewResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Initialize G02",
-        "tags": [
-          "approvals"
+          "assistant"
         ]
       }
     },
@@ -12973,6 +14531,74 @@
           }
         },
         "summary": "Resolve Feasibility",
+        "tags": [
+          "feasibility"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/feasibility/actions/resolve": {
+      "post": {
+        "operationId": "queue_feasibility_resolution_api_v1_runs__run_id__feasibility_actions_resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeasibilityResolveActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Feasibility Resolution",
         "tags": [
           "feasibility"
         ]
@@ -15494,6 +17120,220 @@
         ]
       }
     },
+    "/runs/{run_id}/analysis/retries": {
+      "post": {
+        "operationId": "retry_analysis_runs__run_id__analysis_retries_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisRetryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Analysis",
+        "tags": [
+          "analysis"
+        ]
+      }
+    },
+    "/runs/{run_id}/approvals/G02": {
+      "get": {
+        "operationId": "inspect_g02_runs__run_id__approvals_G02_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G02ReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect G02",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/runs/{run_id}/approvals/G02/decisions": {
+      "post": {
+        "operationId": "decide_g02_runs__run_id__approvals_G02_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G02DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G02ReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide G02",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/runs/{run_id}/approvals/G02/package": {
+      "post": {
+        "operationId": "initialize_g02_runs__run_id__approvals_G02_package_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/G02PackageInitializationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/G02ReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Initialize G02",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/runs/{run_id}/approvals/G03/decisions": {
       "post": {
         "operationId": "decide_runs__run_id__approvals_G03_decisions_post",
@@ -15750,9 +17590,9 @@
         ]
       }
     },
-    "/runs/{run_id}/approvals/{gate_id}": {
+    "/runs/{run_id}/assistant/events": {
       "get": {
-        "operationId": "inspect_g02_runs__run_id__approvals__gate_id__get",
+        "operationId": "stream_events_runs__run_id__assistant_events_get",
         "parameters": [
           {
             "in": "path",
@@ -15764,12 +17604,91 @@
             }
           },
           {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Events",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/runs/{run_id}/assistant/messages": {
+      "get": {
+        "operationId": "get_messages_runs__run_id__assistant_messages_get",
+        "parameters": [
+          {
             "in": "path",
-            "name": "gate_id",
+            "name": "run_id",
             "required": true,
             "schema": {
-              "title": "Gate Id",
+              "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -15778,7 +17697,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/G02ReviewResponse"
+                  "$ref": "#/components/schemas/AssistantHistoryDto"
                 }
               }
             },
@@ -15795,15 +17714,13 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Inspect G02",
+        "summary": "Get Messages",
         "tags": [
-          "approvals"
+          "assistant"
         ]
-      }
-    },
-    "/runs/{run_id}/approvals/{gate_id}/decisions": {
+      },
       "post": {
-        "operationId": "decide_g02_runs__run_id__approvals__gate_id__decisions_post",
+        "operationId": "send_message_runs__run_id__assistant_messages_post",
         "parameters": [
           {
             "in": "path",
@@ -15815,12 +17732,19 @@
             }
           },
           {
-            "in": "path",
-            "name": "gate_id",
-            "required": true,
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
             "schema": {
-              "title": "Gate Id",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
             }
           }
         ],
@@ -15828,7 +17752,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/G02DecisionRequest"
+                "$ref": "#/components/schemas/AssistantMessageRequestDto"
               }
             }
           },
@@ -15839,7 +17763,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/G02ReviewResponse"
+                  "$ref": "#/components/schemas/AssistantMessageResultDto"
                 }
               }
             },
@@ -15856,70 +17780,9 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Decide G02",
+        "summary": "Send Message",
         "tags": [
-          "approvals"
-        ]
-      }
-    },
-    "/runs/{run_id}/approvals/{gate_id}/package": {
-      "post": {
-        "operationId": "initialize_g02_runs__run_id__approvals__gate_id__package_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "gate_id",
-            "required": true,
-            "schema": {
-              "title": "Gate Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/G02PackageInitializationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/G02ReviewResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Initialize G02",
-        "tags": [
-          "approvals"
+          "assistant"
         ]
       }
     },
@@ -17951,6 +19814,74 @@
           }
         },
         "summary": "Resolve Feasibility",
+        "tags": [
+          "feasibility"
+        ]
+      }
+    },
+    "/runs/{run_id}/feasibility/actions/resolve": {
+      "post": {
+        "operationId": "queue_feasibility_resolution_runs__run_id__feasibility_actions_resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-authenticated-actor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Authenticated-Actor"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeasibilityResolveActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Feasibility Resolution",
         "tags": [
           "feasibility"
         ]

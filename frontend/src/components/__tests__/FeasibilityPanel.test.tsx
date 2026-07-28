@@ -15,7 +15,7 @@ const response: FeasibilityResponse = {
   run_id: "run-1", resolution_id: "resolution-1", status: "feasible_with_warnings", source_exact: "18.2.4", source_family: "angular-18.x", target_family: "angular-21.x", support_level: "historical_experimental",
   route: ["19", "20", "21"].map((major, index) => ({ stage_id: `angular-${18 + index}-to-${major}`, source_family: `angular-${18 + index}.x`, target_family: `angular-${major}.x`, support_level: "historical_experimental", target_angular_exact: `${major}.0.0`, target_cli_exact: `${major}.0.0`, blockers: [], warnings: ["historical_fixture_evidence_incomplete"] })),
   selected_profile: { profile_id: "node-20-approved", angular_exact: "19.0.0", angular_cli_exact: "19.0.0", node_exact: "20.11.1", npm_exact: "10.2.4", npx_exact: "10.2.4", node_executable: "C:/node/node.exe", npm_executable: "C:/node/npm.cmd", npx_executable: "C:/node/npx.cmd", operating_system: "windows", architecture: "amd64", catalogue_version: "catalog-v1", source_angular_exact: "18.2.4", checksum: checksum("b") },
-  blockers: [], warnings: ["historical_fixture_evidence_incomplete"], package: { artifact_set_checksum: checksum("c"), catalogue_version: "catalog-v1", workspace_fingerprint: null, plan_version: null }, package_checksum: checksum("d"), artifact_ids: ["catalogue-1", "route-1", "support-1", "registry-1", "profile-1", "package-1"], artifact_checksums: Object.fromEntries(["catalogue-1", "route-1", "support-1", "registry-1", "profile-1", "package-1"].map((id) => [id, checksum("e")])), artifact_links: Object.fromEntries(["catalogue-1", "route-1", "support-1", "registry-1", "profile-1", "package-1"].map((id) => [id, `/api/v1/artifacts/${id}`])), gate_id: "G05", gate_version: "g05-v1", gate_status: "pending", gate_decision: null, state_version: 5, event_sequence: 4, idempotent_replay: false,
+  blockers: [], warnings: ["historical_fixture_evidence_incomplete"], package: { artifact_set_checksum: checksum("c"), catalogue_version: "catalog-v1", workspace_fingerprint: checksum("f"), input_bundle_checksum: checksum("g"), plan_version: null }, package_checksum: checksum("d"), artifact_ids: ["catalogue-1", "route-1", "support-1", "registry-1", "profile-1", "package-1"], artifact_checksums: Object.fromEntries(["catalogue-1", "route-1", "support-1", "registry-1", "profile-1", "package-1"].map((id) => [id, checksum("e")])), artifact_links: Object.fromEntries(["catalogue-1", "route-1", "support-1", "registry-1", "profile-1", "package-1"].map((id) => [id, `/api/v1/artifacts/${id}`])), gate_id: "G05", gate_version: "g05-v1", gate_status: "pending", gate_decision: null, state_version: 3, event_sequence: 4, idempotent_replay: false,
 };
 const props = { runId: "run-1", initialState: state, connectionStatus: "open", artifacts: [artifact], workflowEvents: [], refreshAuthoritativeState: vi.fn().mockResolvedValue(undefined) };
 
@@ -54,14 +54,14 @@ describe("FeasibilityPanel", () => {
   });
 
   it("offers authoritative regeneration when legacy feasibility lacks a workspace fingerprint", async () => {
-    vi.mocked(getFeasibility).mockResolvedValue({ ...response, gate_status: "approved" });
+    vi.mocked(getFeasibility).mockResolvedValue({ ...response, gate_status: "approved", package: { ...response.package, workspace_fingerprint: null } });
     vi.mocked(queueFeasibilityResolution).mockResolvedValue({ job_id: "planning-run-2", status: "queued_after_g04", current_step: "resolving_feasibility", correlation_id: "planning:run-1" });
     render(<FeasibilityPanel {...props} initialState={{ ...state, planning_job: { id: "planning-old", status: "technical_failed", current_step: "generating_plan", attempt: 2, max_attempts: 3, retryable: false, last_error_code: "PLANNING_WORKSPACE_FINGERPRINT_MISSING" } } as unknown as AuthoritativeRunStateDto} />);
 
     const button = await screen.findByRole("button", { name: "Regenerate fingerprint-bound feasibility" });
     fireEvent.click(button);
 
-    await waitFor(() => expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.stringContaining("feasibility-rebind-run-1") }));
+    await waitFor(() => expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.stringContaining("fingerprint-rebind") }));
     expect(props.refreshAuthoritativeState).toHaveBeenCalled();
   });
 

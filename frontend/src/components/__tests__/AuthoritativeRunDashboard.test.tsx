@@ -14,6 +14,7 @@ vi.mock("@/components/AnalysisReviewPanel", () => ({ AnalysisReviewPanel: () => 
 vi.mock("@/components/FeasibilityPanel", () => ({ FeasibilityPanel: () => <h2>feasibility-panel</h2> }));
 vi.mock("@/components/MigrationPlanPanel", () => ({ MigrationPlanPanel: () => <h2>plan-panel</h2> }));
 vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => <h2>plan-review-panel</h2> }));
+vi.mock("@/components/PlanningJobStatusCard", () => ({ PlanningJobStatusCard: ({ job }: { job?: { status?: string } | null }) => job ? <h2>planning-job-{job.status}</h2> : null }));
 vi.mock("@/components/AssistantPanel", () => ({ AssistantDock: () => <button type="button">Open Assistant</button> }));
 
 const initialState: AuthoritativeRunStateDto = {
@@ -168,4 +169,13 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByRole("listitem", { name: "Source review & G02: action required" })).toBeInTheDocument();
     expect(screen.getByLabelText("G02 source integrity review")).toBeInTheDocument();
   });
+  it("projects durable planning state even before plan events arrive", () => {
+    const planningState = { ...initialState, planning_job: { id: "job-1", status: "resolving_feasibility", current_step: "resolving_feasibility", attempt: 1, max_attempts: 3, retryable: false, updated_at: "2026-07-28T16:00:00Z" } };
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={planningState} />);
+    expect(screen.getByText("planning-job-resolving_feasibility")).toBeInTheDocument();
+    expect(screen.getByText("feasibility-panel")).toBeInTheDocument();
+    expect(screen.getByText("plan-panel")).toBeInTheDocument();
+    expect(screen.getByText("plan-review-panel")).toBeInTheDocument();
+  });
+
 });
