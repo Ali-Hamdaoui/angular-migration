@@ -1,5 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { AssistantDock, AssistantPanel } from "@/components/AssistantPanel";
+import { sendAssistantMessage } from "@/api/assistant";
+import { ApiClientError } from "@/api/client";
 
 vi.mock("@/api/assistant", () => ({
   getAssistantMessages: vi.fn().mockResolvedValue({ run_id: "run-1", conversation_id: "conversation-1", messages: [{
@@ -33,6 +35,26 @@ describe("AssistantPanel authoritative rendering", () => {
     localStorage.setItem("amfa:assistant:run-1:open", "true");
     render(<AssistantDock runId="run-1" phase="PREFLIGHT_SNAPSHOT" stateVersion={8} workflowStatus="SOURCE_VALIDATED" />);
     expect(await screen.findByRole("dialog", { name: "Migration Follow-up Assistant" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hide Assistant" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByRole("heading", { name: "Migration Follow-up Assistant" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Open Assistant" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close Assistant" }));
+    expect(screen.getByRole("button", { name: "Open Assistant" })).toBeInTheDocument();
+  });
+
+  it("keeps the composer outside one scrollable conversation region", async () => {
+    render(<AssistantPanel runId="run-1" />);
+    const conversation = await screen.findByRole("region", { name: "Assistant conversation" });
+    expect(conversation).toContainElement(screen.getByLabelText("Suggested assistant questions"));
+    expect(conversation).not.toContainElement(screen.getByRole("textbox", { name: "Ask about this migration" }));
+    expect(screen.getAllByRole("region")).toHaveLength(2);
+  });
+
+  it("keeps a 503 visible and exposes the existing retry action", async () => {
+    vi.mocked(sendAssistantMessage).mockRejectedValueOnce(new ApiClientError("failed", 503, "POST", "/api/v1/runs/run-1/assistant/messages"));
+    render(<AssistantPanel runId="run-1" />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Assistant request failed POST /api/v1/runs/run-1/assistant/messages returned 503");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 });

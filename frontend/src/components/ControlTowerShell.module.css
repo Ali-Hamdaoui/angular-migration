@@ -124,39 +124,44 @@
 }
 
 /* Run-scoped Assistant dock: globally available without becoming workflow navigation. */
-.assistantDock { position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 80; display: grid; justify-items: end; gap: .75rem; }
+.assistantDock { position: fixed; right: 24px; bottom: 24px; z-index: 80; min-width: 0; }
 .assistantLauncher { display: inline-flex; align-items: center; gap: .55rem; min-height: 3rem; border: 1px solid #55a7ff; border-radius: 999px; background: #0d3153; color: #eff7ff; box-shadow: 0 14px 36px rgba(0, 0, 0, .35); padding: .75rem 1rem; font-weight: 800; }
-.assistantPopup { position: relative; width: min(560px, calc(100vw - 2rem)); max-height: min(760px, calc(100vh - 6rem)); overflow: hidden; border: 1px solid #3d73a6; border-radius: .75rem; background: #081827; box-shadow: 0 24px 70px rgba(0, 0, 0, .55); }
-.assistantClose { position: absolute; top: .75rem; right: .75rem; z-index: 2; width: 2rem; height: 2rem; border: 1px solid #3d73a6; border-radius: 999px; background: #102b48; color: #e0e8f4; font-size: 1.15rem; }
-.assistantPanel { display: grid; gap: .85rem; max-height: min(760px, calc(100vh - 6rem)); padding: 1.1rem; overflow: hidden; }
-.assistantHeader { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding-right: 2.4rem; }
+.assistantPopup { position: fixed; right: 24px; bottom: 24px; box-sizing: border-box; display: grid; width: min(480px, calc(100vw - 48px)); height: min(760px, calc(100dvh - 48px)); max-height: calc(100dvh - 48px); min-width: 0; min-height: 0; overflow: hidden; border: 1px solid #3d73a6; border-radius: .75rem; background: #081827; box-shadow: 0 24px 70px rgba(0, 0, 0, .55); }
+.assistantPanel { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: .85rem; box-sizing: border-box; min-width: 0; min-height: 0; padding: 1.1rem; overflow: hidden; }
+.assistantHeader { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; min-width: 0; }
+.assistantHeader > div:first-child { min-width: 0; }
 .assistantHeader h2 { margin: .15rem 0 0; font-size: 1rem; }
-.assistantBadges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
+.assistantBadges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; min-width: 0; }
 .assistantBadges span { border: 1px solid #2b4e73; border-radius: 999px; background: #0d2035; color: #a1c9ff; padding: .25rem .5rem; font-size: .65rem; overflow-wrap: anywhere; }
-.assistantConversation { min-height: 9rem; max-height: 360px; margin: 0; padding: 0 .25rem 0 0; overflow-y: auto; list-style: none; }
+.assistantClose { flex: 0 0 auto; width: 2rem; height: 2rem; border: 1px solid #3d73a6; border-radius: 999px; background: #102b48; color: #e0e8f4; font-size: 1.15rem; }
+.assistantInfo { min-width: 0; overflow-wrap: anywhere; }
+.assistantInfo p { margin-block: .2rem; }
+.assistantError { display: grid; gap: .15rem; margin: .35rem 0; padding: .45rem .6rem; border: 1px solid #9b4c58; border-radius: .4rem; background: #321c27; color: #ffd9de; font-size: .75rem; overflow-wrap: anywhere; }
+.assistantConversationRegion { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-wrap: anywhere; }
+.assistantConversation { margin: 0; padding: 0 .25rem 0 0; list-style: none; min-width: 0; }
 .assistantConversationItem { display: grid; gap: .5rem; padding: .8rem 0; border-top: 1px solid #244462; }
 .assistantConversationItem:first-child { border-top: 0; }
+.assistantConversationItem, .assistantConversationItem article, .assistantConversationItem details, .assistantConversationItem small { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .assistantConversationItem article { display: grid; gap: .35rem; }
 .assistantConversationItem article p { margin: 0; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .assistantConversationItem article[data-role="user"] { margin-left: 12%; border-radius: .55rem; background: #102b48; padding: .75rem; }
 .assistantConversationItem article[data-role="assistant"] { margin-right: 5%; }
 .assistantMessageMeta { display: flex; flex-wrap: wrap; gap: .35rem .9rem; color: #8fa5bf; font-size: .7rem; }
-.assistantSuggestions { display: flex; gap: .45rem; overflow-x: auto; padding-bottom: .2rem; }
-.assistantSuggestions button { flex: 0 0 auto; max-width: 260px; text-align: left; }
-.assistantComposer { display: grid; gap: .45rem; border-top: 1px solid #244462; padding-top: .8rem; }
-.assistantComposer textarea { width: 100%; resize: vertical; min-height: 4.5rem; }
-.assistantComposer > div { display: flex; align-items: center; gap: .5rem; }
+.assistantSuggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: .8rem .25rem .2rem 0; }
+.assistantSuggestions button { width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.assistantComposer { display: grid; gap: .45rem; min-width: 0; border-top: 1px solid #244462; padding-top: .8rem; }
+.assistantComposer textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 72px; max-height: 160px; resize: vertical; overflow-y: auto; overflow-wrap: anywhere; }
+.assistantComposer > div { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; min-width: 0; }
 .assistantComposer > div label { margin-left: auto; font-size: .72rem; color: #9db0c8; }
-.assistantComposer select { min-width: 7rem; }
+.assistantComposer select { min-width: 0; max-width: 100%; }
 
 @media (max-width: 680px) {
-  .assistantDock { right: .75rem; bottom: .75rem; left: .75rem; }
+  .assistantDock { right: 8px; bottom: 8px; left: 8px; }
   .assistantLauncher { justify-content: center; width: 100%; }
-  .assistantPopup { width: 100%; max-height: calc(100vh - 5.5rem); }
-  .assistantPanel { max-height: calc(100vh - 5.5rem); padding: 1rem; }
+  .assistantPopup { right: 8px; bottom: 8px; left: 8px; width: auto; height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); }
+  .assistantPanel { padding: 1rem; }
   .assistantHeader { flex-direction: column; }
   .assistantBadges { justify-content: flex-start; }
-  .assistantConversation { max-height: 42vh; }
-  .assistantComposer > div { flex-wrap: wrap; }
+  .assistantSuggestions { grid-template-columns: 1fr; }
   .assistantComposer > div label { margin-left: 0; }
 }

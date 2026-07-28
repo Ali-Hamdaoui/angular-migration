@@ -1,7 +1,8 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+import { ApiClientError } from "@/api/client";
 import type { AssistantMessage, AssistantAnswerMode } from "@/types/assistant";
 import { assistantReplayDecision, replaceAssistantHistory } from "./assistantReplay";
 import { AssistantMessage as AssistantMessageBubble } from "./AssistantMessage";
@@ -29,6 +30,8 @@ function storageKey(runId: string, name: string) {
 
 export function AssistantDock(props: { runId: string; phase?: string; stateVersion?: number; workflowStatus?: string }) {
   const [open, setOpen] = useState(false);
+  const launcherRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setOpen(globalThis.localStorage?.getItem(storageKey(props.runId, "open")) === "true");
@@ -39,18 +42,21 @@ export function AssistantDock(props: { runId: string; phase?: string; stateVersi
     globalThis.localStorage?.setItem(storageKey(props.runId, "open"), String(next));
   }
 
+  useEffect(() => {
+    (open ? closeRef : launcherRef).current?.focus();
+  }, [open]);
+
   return <div className={styles.assistantDock}>
     <div className={styles.assistantPopup} role="dialog" aria-modal="false" aria-label="Migration Follow-up Assistant" hidden={!open}>
-      <button className={styles.assistantClose} type="button" onClick={() => changeOpen(false)} aria-label="Close Assistant">×</button>
-      <AssistantPanel {...props} />
+      <AssistantPanel {...props} onClose={() => changeOpen(false)} closeRef={closeRef} />
     </div>
-    <button className={styles.assistantLauncher} type="button" onClick={() => changeOpen(!open)} aria-expanded={open} aria-label={open ? "Hide Assistant" : "Open Assistant"}>
-      <span aria-hidden="true">✦</span><span>{open ? "Hide Assistant" : "Ask Assistant"}</span>
-    </button>
+    {!open ? <button ref={launcherRef} className={styles.assistantLauncher} type="button" onClick={() => changeOpen(true)} aria-expanded={false} aria-label="Open Assistant">
+      <span aria-hidden="true">✦</span><span>Ask Assistant</span>
+    </button> : null}
   </div>;
 }
 
-export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, workflowStatus = "unknown" }: { runId: string; phase?: string; stateVersion?: number; workflowStatus?: string }) {
+export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, workflowStatus = "unknown", onClose, closeRef }: { runId: string; phase?: string; stateVersion?: number; workflowStatus?: string; onClose?: () => void; closeRef?: RefObject<HTMLButtonElement | null> }) {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [conversationId, setConversationId] = useState<string>();
   const [question, setQuestion] = useState("");
@@ -148,20 +154,22 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
       setState("ready");
     } catch (reason) {
       setMessages((current) => current.filter((item) => item.message_id !== optimistic.message_id));
-      setError(reason instanceof Error ? reason.message : "The Assistant could not answer. Retry while the read-only cockpit remains available.");
+      setError(reason instanceof ApiClientError ? `${reason.method} ${reason.path} returned ${reason.status}` : reason instanceof Error ? reason.message : "The Assistant could not answer. Retry while the read-only cockpit remains available.");
       setState("failed");
     }
   }
 
   return <section className={styles.assistantPanel} aria-labelledby="assistant-title">
-    <div className={styles.assistantHeader}><div><p className={styles.kicker}>AMFA-221 · read-only</p><h2 id="assistant-title">Migration Follow-up Assistant</h2></div><div className={styles.assistantBadges}><span>State {stateVersion}</span><span>{workflowStatus}</span><span>Model: {activeModel}</span></div></div>
-    <p className={styles.note}>Answers use the current backend projection, validated immutable evidence, and this run&apos;s persisted conversation. Mutations remain governed cockpit actions.</p>
+    <div className={styles.assistantHeader}><div><p className={styles.kicker}>AMFA-221 · read-only</p><h2 id="assistant-title">Migration Follow-up Assistant</h2></div><div className={styles.assistantBadges}><span>State {stateVersion}</span><span>{workflowStatus}</span><span>Model: {activeModel}</span>{onClose ? <button ref={closeRef} className={styles.assistantClose} type="button" onClick={onClose} aria-label="Close Assistant">×</button> : null}</div></div>
+    <div className={styles.assistantInfo}><p className={styles.note}>Answers use the current backend projection, validated immutable evidence, and this run&apos;s persisted conversation. Mutations remain governed cockpit actions.</p>
     {state === "loading" && !messages.length ? <p role="status" aria-live="polite">Loading conversation…</p> : null}
     {state === "reconnecting" ? <p role="alert">Reconnecting to persisted conversation…</p> : null}
-    {error ? <p role="alert">{error}</p> : null}
-    {!messages.length && state !== "loading" ? <p className={styles.note}>Ask any read-only question about this migration.</p> : null}
-    <ol aria-label="Assistant conversation" className={styles.assistantConversation}>{messages.map((message) => <li key={message.message_id} className={styles.assistantConversationItem}><AssistantMessageBubble message={message} /><div className={styles.assistantMessageMeta}><span>Blocker: {message.current_blocker}</span><span>Next: {message.next_permitted_action}</span></div><AssistantEvidenceDrawer evidence={message.evidence_references} /><small>{message.operational_statistics?.total_tokens == null ? "Operational statistics unavailable" : `${message.operational_statistics.total_tokens} tokens · ${message.operational_statistics.total_cost_usd == null ? "cost unavailable" : `$${message.operational_statistics.total_cost_usd.toFixed(6)}`}`}</small></li>)}</ol>
-    <div aria-label="Suggested assistant questions" className={styles.assistantSuggestions}>{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => updateQuestion(suggestion)}>{suggestion}</button>)}</div>
+    {error ? <div className={styles.assistantError} role="alert"><strong>Assistant request failed</strong><span> {error}</span></div> : null}
+    {!messages.length && state !== "loading" ? <p className={styles.note}>Ask any read-only question about this migration.</p> : null}</div>
+    <div className={styles.assistantConversationRegion} role="region" tabIndex={0} aria-label="Assistant conversation">
+      <ol className={styles.assistantConversation}>{messages.map((message) => <li key={message.message_id} className={styles.assistantConversationItem}><AssistantMessageBubble message={message} /><div className={styles.assistantMessageMeta}><span>Blocker: {message.current_blocker}</span><span>Next: {message.next_permitted_action}</span></div><AssistantEvidenceDrawer evidence={message.evidence_references} /><small>{message.operational_statistics?.total_tokens == null ? "Operational statistics unavailable" : `${message.operational_statistics.total_tokens} tokens · ${message.operational_statistics.total_cost_usd == null ? "cost unavailable" : `$${message.operational_statistics.total_cost_usd.toFixed(6)}`}`}</small></li>)}</ol>
+      <div aria-label="Suggested assistant questions" className={styles.assistantSuggestions}>{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => updateQuestion(suggestion)}>{suggestion}</button>)}</div>
+    </div>
     <form className={styles.assistantComposer} onSubmit={submit}><label htmlFor="assistant-question">Ask about this migration</label><textarea id="assistant-question" rows={3} value={question} onChange={(event) => updateQuestion(event.target.value)} disabled={state === "loading"} /><div><label htmlFor="assistant-answer-mode">Answer depth</label><select id="assistant-answer-mode" value={answerMode} onChange={(event) => updateAnswerMode(event.target.value as AssistantAnswerMode)}><option value="concise">Concise</option><option value="detailed">Detailed</option><option value="deep">Deep</option></select><button type="submit" disabled={!question.trim() || state === "loading"}>{state === "loading" ? "Answering…" : "Send"}</button>{state === "failed" ? <button type="button" onClick={() => void submit()}>Retry</button> : null}</div></form>
   </section>;
 }
