@@ -80,6 +80,7 @@ class AssistantCapability:
             "required_authoritative_projection_fields": sorted(self.required_projection_fields),
             "allowed_evidence_types": sorted(self.allowed_evidence_types),
             "citations_required": selected_intent == "evidence_question" and bool(selected_excerpt_ids),
+            "zero_evidence_citation_invariant": "If no approved evidence excerpts are selected, citations must be an empty list. Projection metadata is not evidence.",
             "allowed_proof_labels": (["approved_evidence_supported"] if selected_excerpt_ids else ["unknown_or_unavailable"])
             if selected_intent == "evidence_question" else [
                 "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",

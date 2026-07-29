@@ -104,7 +104,7 @@ class _AssistantResponse(BaseModel):
     confidence: str = Field(min_length=1)
 
 
-def build_assistant_response_contract(*, intent: str, capability_key: str, selected_excerpt_ids: list[str], selected_citations: list[Mapping[str, object]] | None = None, bind_excerpt_ids: bool = True, require_citations: bool | None = None) -> type[BaseModel]:
+def build_assistant_response_contract(*, intent: str, capability_key: str, selected_excerpt_ids: list[str], selected_citations: list[Mapping[str, object]] | None = None, bind_excerpt_ids: bool = True, require_citations: bool | None = None, enforce_zero_citations: bool = True) -> type[BaseModel]:
     """Build the exact strict response contract selected by the backend router."""
     intent_type = Literal[(intent,)]
     capability_type = Literal[(capability_key,)]
@@ -115,7 +115,8 @@ def build_assistant_response_contract(*, intent: str, capability_key: str, selec
         "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
     ))]
     selected_citations = selected_citations or [{"excerpt_id": item} for item in selected_excerpt_ids]
-    excerpt_type = Literal[tuple(selected_excerpt_ids or ["__no_selected_excerpt__"])] if bind_excerpt_ids else str
+    # Never manufacture a model-usable identifier for an empty allowlist.
+    excerpt_type = Literal[tuple(selected_excerpt_ids)] if bind_excerpt_ids and selected_excerpt_ids else str
     def bound_string(field: str):
         values = [str(item[field]) for item in selected_citations if field in item]
         return Literal[tuple(values)] if bind_excerpt_ids and values else str
@@ -133,7 +134,7 @@ def build_assistant_response_contract(*, intent: str, capability_key: str, selec
         stage_key=(bound_string("stage_key"), ...),
         locator=(locator_type, ...),
     )
-    citations_field = (list[citation_type], Field(min_length=1)) if require_citations else (list[citation_type], ...)
+    citations_field = (list[citation_type], Field(min_length=1)) if require_citations else (list[citation_type], Field(max_length=0) if enforce_zero_citations and not selected_excerpt_ids else ...)
     return create_model(
         "BoundAssistantResponse",
         __base__=_AssistantResponse,
@@ -244,7 +245,8 @@ class LlmEvidenceApplicationService:
             prepared = request.prepared_request
             request_manifest = prepared.manifest if prepared is not None else {}
             artifacts = [self._artifact(session, store, request.run_id, '04_workflow_state/llm_request_manifest.json', json.dumps(request_manifest, sort_keys=True))]
-            artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(validated, sort_keys=True)))
+            provider_validated_artifact = {**validated, "_validation": {"scope": "provider_schema_and_dispatch", "assistant_business_validation": "pending"}}
+            artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(provider_validated_artifact, sort_keys=True)))
             artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_usage_cost.json', json.dumps(response.usage.model_dump(mode='json'), sort_keys=True)))
             row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.artifact_ids = [a.ref.artifact_id for a in artifacts]; row.artifact_checksums = {a.ref.artifact_id: a.ref.checksum for a in artifacts}; row.redacted_summary = self._assistant_summary(request, response); row.state_version = run.state_version
             session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))
@@ -269,7 +271,8 @@ class LlmEvidenceApplicationService:
             if old is None:
                 raise LlmEvidenceError('LLM_PERSISTENCE_FAILURE', 'The validated Assistant response artifact is unavailable.', 500)
             store = LocalFilesystemArtifactStore(Path(run.artifact_root or self.settings.artifact_root), fixed_run_root=Path(run.artifact_root or self.settings.artifact_root))
-            final = self._artifact(session, store, run.id, old.relative_path, json.dumps(structured_output, sort_keys=True))
+            final_payload = {**structured_output, "_validation": {"scope": "assistant_business_validation", "assistant_business_validation": "passed"}}
+            final = self._artifact(session, store, run.id, old.relative_path, json.dumps(final_payload, sort_keys=True))
             row.artifact_ids = [final.ref.artifact_id, *row.artifact_ids[1:]]
             row.artifact_checksums = {**row.artifact_checksums, final.ref.artifact_id: final.ref.checksum}
             session.flush()

@@ -340,7 +340,7 @@ class AssistantContextService:
             status=status, failure_reason=None, created_at=now,
         ))
 
-    def _persist_failed_result(self, request, *, conversation_id, message_id, correlation_id, projection, manifest, checksum, reason, code):
+    def _persist_failed_result(self, request, *, conversation_id, message_id, correlation_id, projection, manifest, checksum, reason, code, intent="unsupported", capability_key="", model=None):
         with self._scope() as session:
             prior = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == request.run_id, AssistantMessageModel.idempotency_key == request.idempotency_key))
             if prior:
@@ -355,7 +355,7 @@ class AssistantContextService:
                 self._persist_user_message(session, request, conversation_id=conversation_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, message_order=int(count) + 1, now=now, status="completed")
             else:
                 user.status = "completed"
-            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 2, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer="The Assistant request failed before producing a completed answer.", state_version=int(projection["state_version"]), semantic_state_version=int(projection["state_version"]), operational_event_sequence=int(projection.get("operational_statistics", {}).get("event_sequence", 0) or 0), projection=self._message_projection(projection), evidence=[], proof_label="unknown_or_unavailable", usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"), model_provenance={"role": "assistant", "failure_code": code}, correlation_id=correlation_id, idempotency_key=request.idempotency_key, request_id=request.request_id, retry_of_message_id=request.retry_of_message_id, intent="unsupported", capability_key="", answer_mode=request.answer_mode, status="failed", failure_reason=reason, created_at=now)
+            row = AssistantMessageModel(id=uuid4().hex, message_id=message_id, conversation_id=conversation_id, run_id=request.run_id, message_order=int(count) + 2, role="assistant", input_manifest=manifest, input_manifest_checksum=checksum, answer="The Assistant request failed before producing a completed answer.", state_version=int(projection["state_version"]), semantic_state_version=int(projection["state_version"]), operational_event_sequence=int(projection.get("operational_statistics", {}).get("event_sequence", 0) or 0), projection=self._message_projection(projection), evidence=[], proof_label="unknown_or_unavailable", usage=AssistantUsageDto(input_tokens=0, output_tokens=0, total_tokens=0, estimated_input_cost=0, estimated_output_cost=0, estimated_total_cost=0).model_dump(mode="json"), model_provenance={"role": "assistant", "failure_code": code, "deployment": model, "assistant_v11": {"schema_version": "assistant-response-v1", "resolved": True}}, correlation_id=correlation_id, idempotency_key=request.idempotency_key, request_id=request.request_id, retry_of_message_id=request.retry_of_message_id, intent=intent, capability_key=capability_key, answer_mode=request.answer_mode, status="failed", failure_reason=reason, created_at=now)
             session.add(row)
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_FAILED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="failed", idempotency_key=request.idempotency_key, payload={"failure_code": code})
             return self._dto(row, session=session)
@@ -470,6 +470,8 @@ class AssistantContextService:
         governed_response = None
         validated_citations: list[dict[str, object]] = []
         evidence: list[AssistantEvidenceDto] = []
+        resolved_capability_key = capability.capability_key if capability is not None else ""
+        resolved_model = None
         if not mutation_request and capability is not None:
             try:
                 if intent == "evidence_question":
@@ -481,13 +483,13 @@ class AssistantContextService:
                 policy = capability.provider_policy(selected_intent=intent, selected_excerpt_ids=selected_excerpt_ids)
                 registry = getattr(self._invocations, "_registry", None)
                 provider_contract = build_assistant_response_contract(intent=intent, capability_key=capability.capability_key, selected_excerpt_ids=selected_excerpt_ids, selected_citations=evidence_refs)
-                response_contract = build_assistant_response_contract(intent=intent, capability_key=capability.capability_key, selected_excerpt_ids=selected_excerpt_ids, bind_excerpt_ids=False, require_citations=False)
+                response_contract = build_assistant_response_contract(intent=intent, capability_key=capability.capability_key, selected_excerpt_ids=selected_excerpt_ids, bind_excerpt_ids=False, require_citations=False, enforce_zero_citations=False)
                 schema = _azure_strict_schema(provider_contract.model_json_schema())
                 prepared = prepare_assistant_request(
                     policy=policy,
                     schema=schema,
                     question=sanitized_question,
-                    segments=[LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))],
+                    segments=[LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps({**projection, "evidence": []}, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps([_safe(item.answer, 300) for item in reversed(history)]))],
                     answer_mode=request.answer_mode,
                 )
                 manifest["context_budget"] = prepared.manifest["context_budget"]
@@ -525,6 +527,7 @@ class AssistantContextService:
                         },
                     )
                 governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode, response_contract=response_contract), actor=actor)
+                resolved_model = governed_response.deployment_alias
                 if governed_response.status != "completed":
                     if governed_response.failure_code == "LLM_STRUCTURED_RESPONSE_INVALID":
                         raise AssistantRequestError("assistant_invalid_structured_response", "The governed Assistant returned an invalid structured response.", 502)
@@ -533,7 +536,9 @@ class AssistantContextService:
                     raise AssistantRequestError("assistant_invalid_structured_response", "The governed Assistant returned a response for an unexpected capability.", 502)
                 citations = governed_response.structured_output.get("citations", [])
                 provider_proof = governed_response.structured_output.get("proof_label", "unknown_or_unavailable")
-                validated_citations = self._validated_citations(citations, evidence_refs, proof_label=provider_proof)
+                # Projection-only answers have no evidence allowlist. Clear any
+                # provider citations at the authoritative application boundary.
+                validated_citations = [] if not evidence_refs else self._validated_citations(citations, evidence_refs, proof_label=provider_proof)
                 if validated_citations is None:
                     raise AssistantRequestError("assistant_invalid_citation", "The governed Assistant returned an invalid evidence citation.", 502)
                 if isinstance(governed_response.structured_output.get("answer"), str):
@@ -541,15 +546,15 @@ class AssistantContextService:
                     proof = provider_proof
                 governed_response = governed_response.model_copy(update={"structured_output": {**governed_response.structured_output, "answer": answer, "proof_label": proof, "citations": validated_citations}})
             except ContextBudgetExceeded:
-                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest={**manifest, "context_budget_failure": "mandatory_content_exceeds_hard_limit"}, checksum=checksum, reason="The Assistant input could not be bounded safely.", code="assistant_context_budget_exceeded")
+                self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest={**manifest, "context_budget_failure": "mandatory_content_exceeds_hard_limit"}, checksum=checksum, reason="The Assistant input could not be bounded safely.", code="assistant_context_budget_exceeded", intent=intent, capability_key=resolved_capability_key, model=resolved_model)
                 raise AssistantRequestError("assistant_context_budget_exceeded", "The Assistant input could not be bounded safely.", 413)
             except AssistantRequestError as error:
-                failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code)
+                failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason=error.message, code=error.code, intent=intent, capability_key=resolved_capability_key, model=resolved_model)
                 error.correlation_id = correlation_id
                 error.details = {"message_id": failed.message_id, "conversation_id": failed.conversation_id, "request_id": failed.request_id, "retry_of_message_id": failed.retry_of_message_id}
                 raise
             except Exception as error:
-                failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed")
+                failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, reason="The governed Assistant provider failed; retry is safe.", code="assistant_provider_failed", intent=intent, capability_key=resolved_capability_key, model=resolved_model)
                 raise AssistantRequestError("assistant_provider_failed", "The governed Assistant provider failed; retry is safe.", 503, correlation_id=correlation_id, details={"message_id": failed.message_id, "conversation_id": failed.conversation_id, "request_id": failed.request_id, "retry_of_message_id": failed.retry_of_message_id}) from error
         structured = governed_response.structured_output if governed_response is not None else {
             "answer": answer,
@@ -649,4 +654,7 @@ class AssistantContextService:
         proof = structured.get("proof_label", row.proof_label)
         if proof == "authoritative persisted fact": proof = "authoritative_persisted_fact"
         if proof == "unknown or unavailable": proof = "unknown_or_unavailable"
-        return AssistantMessageResultDto(message_id=row.message_id, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=structured.get("answer", row.answer), current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=proof, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, error_code=(row.model_provenance or {}).get("failure_code"), operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None, request_id=row.request_id, retry_of_message_id=row.retry_of_message_id, intent=structured.get("intent", row.intent if row.intent in {"workflow_status", "blocker_or_failure", "completed_work", "remaining_work", "analysis_explanation", "planning_explanation", "transformation_explanation", "validation_explanation", "evidence_question", "usage_and_cost", "next_steps", "comparison", "unsupported"} else "unsupported"), capability_key=structured.get("capability_key", row.capability_key if not legacy else ""), summary=structured.get("summary", "unavailable" if legacy else row.answer[:240]), citations=structured.get("citations", []), missing_information=structured.get("missing_information", ["V1.1 metadata unavailable for this legacy message"] if legacy else []), suggested_follow_ups=structured.get("suggested_follow_ups", []), next_step_proposals=projection.get("next_step_proposals", structured.get("next_step_proposals", [])), confidence=structured.get("confidence", "unknown_or_unavailable"), correlation_id=row.correlation_id, semantic_state_version=row.semantic_state_version, operational_event_sequence=row.operational_event_sequence, answer_mode=row.answer_mode)
+        model = (row.model_provenance or {}).get("deployment") or "deterministic_projection"
+        v11_resolved = bool((row.model_provenance or {}).get("assistant_v11", {}).get("schema_version"))
+        citations = structured.get("citations", row.evidence if v11_resolved and row.proof_label == "approved_evidence_supported" else [])
+        return AssistantMessageResultDto(message_id=row.message_id, model=model, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=structured.get("answer", row.answer), current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=proof, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, error_code=(row.model_provenance or {}).get("failure_code"), operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None, request_id=row.request_id, retry_of_message_id=row.retry_of_message_id, intent=structured.get("intent", row.intent if row.intent in {"workflow_status", "blocker_or_failure", "completed_work", "remaining_work", "analysis_explanation", "planning_explanation", "transformation_explanation", "validation_explanation", "evidence_question", "usage_and_cost", "next_steps", "comparison", "unsupported"} else "unsupported"), capability_key=structured.get("capability_key", row.capability_key if not legacy or v11_resolved else ""), summary=structured.get("summary", "unavailable" if legacy else row.answer[:240]), citations=citations, missing_information=structured.get("missing_information", ["V1.1 metadata unavailable for this legacy message"] if legacy else []), suggested_follow_ups=structured.get("suggested_follow_ups", []), next_step_proposals=projection.get("next_step_proposals", structured.get("next_step_proposals", [])), confidence=structured.get("confidence", "unknown_or_unavailable"), correlation_id=row.correlation_id, semantic_state_version=row.semantic_state_version, operational_event_sequence=row.operational_event_sequence, answer_mode=row.answer_mode)

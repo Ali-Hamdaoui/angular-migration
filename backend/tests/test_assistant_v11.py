@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.llm_contracts import LlmInvocationResponse
@@ -21,7 +21,7 @@ from app.services.assistant_capabilities import (
     default_capability_registry,
 )
 from app.services.assistant_context_budget import build_bounded_context, count_tokens
-from app.services.assistant_context_service import AssistantContextService
+from app.services.assistant_context_service import AssistantContextService, AssistantRequestError
 from app.services.llm_evidence_application_service import _AssistantResponse
 from app.services.llm_evidence_application_service import build_assistant_response_contract
 
@@ -156,6 +156,52 @@ def test_proof_label_policy_is_fail_closed_without_selected_evidence():
         evidence_contract.model_validate({**response, "proof_label": "approved_evidence_supported"})
     status_policy = json.loads(default_capability_registry().get_for_intent("workflow_status").provider_policy(selected_intent="workflow_status", selected_excerpt_ids=[]))
     assert "approved_evidence_supported" not in status_policy["allowed_proof_labels"]
+
+
+def test_empty_selected_evidence_contract_forbids_citations_and_no_synthetic_excerpt_id():
+    contract = build_assistant_response_contract(intent="workflow_status", capability_key="workflow_status", selected_excerpt_ids=[])
+    schema = contract.model_json_schema()
+    assert schema["properties"]["citations"].get("maxItems") == 0
+    citation = schema["$defs"]["BoundAssistantCitation"]
+    assert "__no_selected_excerpt__" not in json.dumps(citation)
+
+
+def test_workflow_status_provider_citations_are_normalized_to_empty_and_succeeds(tmp_path):
+    _, scope = scope_for(tmp_path)
+    output = {"answer": "The migration is waiting for review.", "summary": "Waiting for review.", "intent": "workflow_status", "capability_key": "workflow_status", "proof_label": "authoritative_persisted_fact", "citations": [{"excerpt_id": "__no_selected_excerpt__", "artifact_id": "metadata-artifact", "checksum_sha256": "sha256:metadata", "stage_key": "run", "locator": {"kind": "json_pointer", "value": "/source_validation_result.json"}, "proof_label": "approved_evidence_supported"}], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
+
+    class Invocation:
+        def assistant(self, request, *, actor=None):
+            return LlmInvocationResponse(invocation_id="inv-empty", run_id=request.run_id, status="completed", role="assistant", task_type="assistant_response", provider="governed_gateway", deployment_alias="gpt-5-mini", structured_output=output, correlation_id=request.correlation_id, input_tokens=2, output_tokens=3, total_tokens=5, input_cost_usd=0, output_cost_usd=0, total_cost_usd=0, state_version=4, event_sequence=7)
+
+    result = AssistantContextService(session_scope_factory=scope, invocation_service=Invocation()).answer(AssistantMessageRequestDto(run_id="run-v11", message="Explain the current migration state and what is waiting now.", idempotency_key="empty-evidence"), actor="owner", correlation_id="corr-empty")
+    assert result.response_status == "completed"
+    assert result.intent == "workflow_status"
+    assert result.capability_key == "workflow_status"
+    assert result.citations == []
+    assert result.model == "gpt-5-mini"
+
+
+def test_failed_citation_path_preserves_resolved_v11_metadata(tmp_path):
+    _, scope = scope_for(tmp_path)
+    output = {"answer": "Evidence answer.", "summary": "Evidence answer.", "intent": "evidence_question", "capability_key": "analysis", "proof_label": "approved_evidence_supported", "citations": [{"excerpt_id": "not-selected", "artifact_id": "artifact", "checksum_sha256": "sha256:x", "stage_key": "run", "locator": {"kind": "line_range", "value": "1-1"}, "proof_label": "approved_evidence_supported"}], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
+
+    class Invocation:
+        def assistant(self, request, *, actor=None):
+            return LlmInvocationResponse(invocation_id="inv-failed", run_id=request.run_id, status="completed", role="assistant", task_type="assistant_response", provider="governed_gateway", deployment_alias="gpt-5-mini", structured_output=output, correlation_id=request.correlation_id, input_tokens=2, output_tokens=3, total_tokens=5, input_cost_usd=0, output_cost_usd=0, total_cost_usd=0, state_version=4, event_sequence=7)
+
+    service = AssistantContextService(session_scope_factory=scope, invocation_service=Invocation())
+    service._evidence_retrieval.retrieve = lambda session, run_id, question: ([LlmContextSegment(segment_id="excerpt-selected", label="approved evidence", content="approved", artifact_ref="excerpt-selected", untrusted=True)], [{"excerpt_id": "excerpt-selected", "artifact_id": "artifact", "checksum_sha256": "sha256:x", "stage_key": "run", "locator": {"kind": "line_range", "value": "1-1"}, "proof_label": "approved_evidence_supported", "text": "approved", "label": "evidence.json"}])
+    with pytest.raises(AssistantRequestError) as error:
+        service.answer(AssistantMessageRequestDto(run_id="run-v11", message="What evidence supports this?", idempotency_key="failed-metadata", request_id="request-failed"), actor="owner", correlation_id="corr-failed")
+    assert error.value.code == "assistant_invalid_citation"
+    with scope() as session:
+        row = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.idempotency_key == "failed-metadata"))
+        assert row.intent == "evidence_question"
+        assert row.capability_key == "analysis"
+        assert row.request_id == "request-failed"
+        assert row.correlation_id == "corr-failed"
+        assert row.model_provenance["deployment"] == "gpt-5-mini"
 
 
 def test_all_supported_intents_have_one_registry_capability_and_extension_is_pipeline_independent():
