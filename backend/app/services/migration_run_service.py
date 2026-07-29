@@ -400,7 +400,6 @@ class MigrationRunService:
                 "builder": builder,
             } if resolution else None)
             planning_job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id).order_by(PlanningJobModel.created_at.desc()))
-            return {
             state = {
                 "run_id": run.id, "status": run.status, "run_phase": run.run_phase, "phase_status": run.phase_status,
                 "approval_status": run.approval_status, "repair_status": run.repair_status, "state_version": run.state_version,

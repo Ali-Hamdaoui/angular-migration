@@ -21,11 +21,6 @@ $dataRoot = Join-Path $env:LOCALAPPDATA "AngularMigrationControlTower\$proofName
 $dbPath = Join-Path $dataRoot "control-tower.db"
 $proofTarget = Join-Path $TargetBaseRoot $proofName
 
-$expectedAlembicHeads = @(
-    "20260726_27",
-    "20260727_19"
-)
-
 $expectedAssistantRoutes = @{
     "/api/v1/runs/{run_id}/assistant/messages" = @("get", "post")
     "/api/v1/runs/{run_id}/assistant/events"   = @("get")
@@ -428,6 +423,55 @@ function Invoke-PythonCapture {
     }
 }
 
+function Get-AlembicHeadIds {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Lines
+    )
+
+    $headIds = @(
+        foreach ($line in $Lines) {
+            $text = [string]$line
+
+            # Supports:
+            #   20260727_31 (head)
+            #   abc123 (branch-name) (head)
+            if ($text -match '^\s*(?<revision>[^\s]+).*\(head\)\s*$') {
+                $Matches["revision"]
+            }
+        }
+    )
+
+    return @(
+        $headIds |
+            Sort-Object -Unique
+    )
+}
+
+function Assert-PythonSourcesCompile {
+    Write-Host ""
+    Write-Host "Validating backend Python syntax..." -ForegroundColor Cyan
+
+    $compileResult = Invoke-PythonCapture -Arguments @(
+        "-m",
+        "compileall",
+        "-q",
+        "app"
+    )
+
+    $compileResult.Lines |
+        ForEach-Object { Write-Host $_ }
+
+    if ($compileResult.ExitCode -ne 0) {
+        throw (
+            "Backend Python syntax validation failed. " +
+            "Fix the reported source file before creating or starting the backend."
+        )
+    }
+
+    Write-Host "Backend Python syntax validation passed." -ForegroundColor Green
+}
+
 function Wait-ForBackendOpenApi {
     param(
         [Parameter(Mandatory)]
@@ -574,18 +618,23 @@ Write-Host "Cleaning existing backend processes..." -ForegroundColor Cyan
 
 Stop-ExistingBackendProcesses
 
-# Create a completely fresh database and target folder.
-Remove-Item `
-    -LiteralPath $dataRoot `
-    -Recurse `
-    -Force `
-    -ErrorAction SilentlyContinue
+Set-Location $backendRoot
+Assert-PythonSourcesCompile
 
-Remove-Item `
-    -LiteralPath $proofTarget `
-    -Recurse `
-    -Force `
-    -ErrorAction SilentlyContinue
+# Create a completely fresh database and target folder.
+foreach ($pathToReset in @($dataRoot, $proofTarget)) {
+    if (Test-Path -LiteralPath $pathToReset) {
+        Remove-Item `
+            -LiteralPath $pathToReset `
+            -Recurse `
+            -Force `
+            -ErrorAction Stop
+    }
+
+    if (Test-Path -LiteralPath $pathToReset) {
+        throw "Unable to completely reset path: $pathToReset"
+    }
+}
 
 New-Item `
     -ItemType Directory `
@@ -599,6 +648,10 @@ New-Item `
     -Force |
     Out-Null
 
+if (Test-Path -LiteralPath $dbPath) {
+    throw "Fresh database path already exists before migrations: $dbPath"
+}
+
 # Backend runtime configuration.
 $env:APPLICATION_DATA_ROOT = $dataRoot
 $env:DATABASE_URL = "sqlite:///$($dbPath -replace '\\', '/')"
@@ -608,8 +661,6 @@ $env:BACKEND_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 $env:NPM_CONFIG_REGISTRY = "https://registry.npmjs.org/"
 $env:NPM_CONFIG_STRICT_SSL = "true"
 $env:LLM_ENABLED = "true"
-
-Set-Location $backendRoot
 
 Write-Host ""
 Write-Host "Fresh backend configuration" -ForegroundColor Cyan
@@ -638,11 +689,20 @@ if ($headsResult.ExitCode -ne 0) {
     throw "Unable to inspect Alembic heads. Exit code: $($headsResult.ExitCode)"
 }
 
-foreach ($expectedHead in $expectedAlembicHeads) {
-    if (-not ($headsResult.Lines -match [regex]::Escape($expectedHead))) {
-        throw "Expected Alembic head is missing: $expectedHead"
-    }
+$availableAlembicHeads = @(
+    Get-AlembicHeadIds -Lines $headsResult.Lines
+)
+
+if ($availableAlembicHeads.Count -eq 0) {
+    throw "Alembic reported no available migration heads."
 }
+
+Write-Host ""
+Write-Host (
+    "Detected {0} Alembic head(s): {1}" -f
+    $availableAlembicHeads.Count,
+    ($availableAlembicHeads -join ", ")
+) -ForegroundColor Green
 
 Write-Host ""
 Write-Host "Applying all Alembic heads..." -ForegroundColor Cyan
@@ -674,14 +734,52 @@ if ($currentResult.ExitCode -ne 0) {
     )
 }
 
-foreach ($expectedHead in $expectedAlembicHeads) {
-    if (-not ($currentResult.Lines -match [regex]::Escape($expectedHead))) {
-        throw "Fresh database did not reach expected Alembic head: $expectedHead"
-    }
+$appliedAlembicHeads = @(
+    Get-AlembicHeadIds -Lines $currentResult.Lines
+)
+
+$missingAppliedHeads = @(
+    $availableAlembicHeads |
+        Where-Object {
+            $_ -notin $appliedAlembicHeads
+        }
+)
+
+if ($missingAppliedHeads.Count -gt 0) {
+    throw (
+        "Fresh database did not reach all available Alembic heads. " +
+        "Missing: " +
+        ($missingAppliedHeads -join ", ")
+    )
 }
 
 Write-Host ""
-Write-Host "Fresh database reached all expected Alembic heads." -ForegroundColor Green
+Write-Host (
+    "Fresh database reached all {0} Alembic head(s): {1}" -f
+    $availableAlembicHeads.Count,
+    ($availableAlembicHeads -join ", ")
+) -ForegroundColor Green
+
+Write-Host ""
+Write-Host "Validating backend application import..." -ForegroundColor Cyan
+
+$importResult = Invoke-PythonCapture -Arguments @(
+    "-c",
+    "from app.main import app; print('Backend application import passed.')"
+)
+
+$importResult.Lines |
+    ForEach-Object { Write-Host $_ }
+
+if ($importResult.ExitCode -ne 0) {
+    throw (
+        "Backend application import failed after database migration. " +
+        "Uvicorn will not be started."
+    )
+}
+
+Write-Host "Backend application import validation passed." -ForegroundColor Green
+
 Write-Host ""
 Write-Host "Starting backend on http://127.0.0.1:$Port" -ForegroundColor Green
 Write-Host "Paste this target into New Migration: $proofTarget" -ForegroundColor Yellow
@@ -694,10 +792,7 @@ $uvicornArguments = @(
     "--host",
     "127.0.0.1",
     "--port",
-    $Port.ToString(),
-    "--reload",
-    "--reload-dir",
-    $backendRoot
+    $Port.ToString()
 )
 
 $uvicornProcess = $null
