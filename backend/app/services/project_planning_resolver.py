@@ -60,10 +60,11 @@ class ResolvedPlanningInputs(BaseModel):
             "test": self._same_project_target(self.test_targets, selected_build_target.project),
             "lint": self._same_project_target(self.lint_targets, selected_build_target.project),
         }
-        scripts = {
-            kind: self._script_name(target.target if target else kind, kind)
+        resolved_scripts = (
+            (kind, self._script_name(target.target if target else kind, kind))
             for kind, target in selected_targets.items()
-        }
+        )
+        scripts = {kind: script for kind, script in resolved_scripts if script is not None}
         targets = {
             kind: f"{target.project}:{target.target}"
             for kind, target in selected_targets.items()
@@ -71,13 +72,13 @@ class ResolvedPlanningInputs(BaseModel):
         }
         return {"scripts": scripts, "targets": targets}
 
-    def _script_name(self, target_name: str, fallback: str) -> str:
+    def _script_name(self, target_name: str, fallback: str) -> str | None:
         if target_name in self.scripts:
             return target_name
         if fallback in self.scripts:
             return fallback
         related = sorted(name for name in self.scripts if name.startswith(target_name + ":"))
-        return related[0] if len(related) == 1 else target_name
+        return related[0] if len(related) == 1 else None
 
     @staticmethod
     def _same_project_target(targets: tuple[ResolvedTarget, ...], project: str) -> ResolvedTarget | None:

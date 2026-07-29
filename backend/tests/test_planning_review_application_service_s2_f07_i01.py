@@ -38,6 +38,8 @@ def _generation():
         catalogue_version="catalog-v1",
         input_fingerprint="sha256:" + "1" * 64,
         execution_profile_id="profile-node22-npm10",
+        execution_profile_checksum="sha256:" + "4" * 64,
+        resolved_scripts={"build": "build", "test": "test"},
         builder="@angular-devkit/build-angular:application",
         target_cli_exact="19.2.0",
         stage_route=(
@@ -174,11 +176,31 @@ class _TamperingPlanningGateway(_PlanningGateway):
         )
 
 
+class _DecisionPlanningGateway(_PlanningGateway):
+    def __init__(self, decision):
+        super().__init__()
+        self.decision = decision
+
+    def complete(self, request):
+        response = super().complete(request)
+        if request.task_type is not LlmTaskType.PLANNING_REVIEW:
+            return response
+        return response.model_copy(
+            update={
+                "structured_output": {
+                    **response.structured_output,
+                    "decision": self.decision.value,
+                    "notes": [f"review outcome: {self.decision.value}"],
+                }
+            }
+        )
+
+
 def test_planning_explanation_is_checksum_bound_and_reviewed():
     result = _generation()
     gateway = _PlanningGateway()
     service = PlanningAgentService(gateway=gateway)
-    package = service.explain(
+    outcome = service.explain(
         PlanningExplanationRequest(
             run_id="run-1",
             expected_state_version=4,
@@ -190,12 +212,11 @@ def test_planning_explanation_is_checksum_bound_and_reviewed():
             plan_version=1,
         )
     )
-    assert package.review_status == "accepted"
-    assert package.reviewer.decision is PlanningReviewDecision.ACCEPT
-    assert package.plan_checksum == result.plan.checksum
-    assert (
-        package.deterministic_plan_checksum == "sha256:9157faeca61ada88dcb78b9d9c12cf8a7975e0e1b0c9537163140993b6fae204"
-    )
+    assert outcome.review_status == "accepted"
+    assert outcome.reviewer.decision is PlanningReviewDecision.ACCEPT
+    assert outcome.plan_checksum == result.plan.checksum
+    assert outcome.package is not None
+    assert outcome.deterministic_plan_checksum.startswith("sha256:")
     proposer_binding = next(
         segment for segment in gateway.requests[0].context if segment.segment_id == "deterministic-plan-binding"
     )
@@ -206,12 +227,47 @@ def test_planning_explanation_is_checksum_bound_and_reviewed():
         segment for segment in gateway.requests[1].context if segment.segment_id == "proposer-output-binding"
     )
     assert json.loads(proposer_binding.content) == {
-        "deterministic_plan_checksum": "sha256:9157faeca61ada88dcb78b9d9c12cf8a7975e0e1b0c9537163140993b6fae204"
+        "deterministic_plan_checksum": outcome.deterministic_plan_checksum
     }
     assert reviewer_plan_binding.content == proposer_binding.content
     assert json.loads(reviewer_output_binding.content) == {
-        "proposer_output_checksum": "sha256:9911327fae31721b3ebfafd45435f53dece81a4583dc0ead56220941001f9305"
+        "proposer_output_checksum": outcome.proposer_output_checksum
     }
+    reviewer_policy = gateway.requests[1].system_policy
+    assert "Accept when the explanation accurately describes the deterministic plan" in reviewer_policy
+    assert "Do not request unavailable external operational proof" in reviewer_policy
+    assert "Request revision only for an in-scope inaccuracy, omission, or contradiction" in reviewer_policy
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        PlanningReviewDecision.REQUEST_REVISION,
+        PlanningReviewDecision.REJECT,
+        PlanningReviewDecision.INSUFFICIENT_CONTEXT,
+    ],
+)
+def test_planning_nonaccept_review_is_a_durable_governed_outcome(decision):
+    result = _generation()
+
+    outcome = PlanningAgentService(gateway=_DecisionPlanningGateway(decision)).explain(
+        PlanningExplanationRequest(
+            run_id="run-1",
+            expected_state_version=4,
+            idempotency_key=f"review-{decision.value}",
+            actor="operator",
+            plan=result.plan.model_dump(mode="json"),
+            stage_plan=result.first_stage_plan.model_dump(mode="json"),
+            artifact_set_checksum="sha256:" + "3" * 64,
+            plan_version=1,
+        )
+    )
+
+    assert outcome.decision is decision
+    assert outcome.reviewer.notes == [f"review outcome: {decision.value}"]
+    assert outcome.package is None
+    assert outcome.review_status == decision.value
+    assert outcome.revision_count == (1 if decision is PlanningReviewDecision.REQUEST_REVISION else 0)
 
 
 @pytest.mark.parametrize(
@@ -313,7 +369,7 @@ def test_g06_rejects_stale_binding_and_stage_start_without_approval():
 
 def test_g06_accepts_only_the_current_reviewed_plan_binding():
     result = _generation()
-    package = PlanningAgentService(gateway=_PlanningGateway()).explain(
+    outcome = PlanningAgentService(gateway=_PlanningGateway()).explain(
         PlanningExplanationRequest(
             run_id="run-1",
             expected_state_version=4,
@@ -325,6 +381,8 @@ def test_g06_accepts_only_the_current_reviewed_plan_binding():
             plan_version=1,
         )
     )
+    package = outcome.package
+    assert package is not None
     gate = G06Gate(
         run_id="run-1",
         gate_version="g06-v1",

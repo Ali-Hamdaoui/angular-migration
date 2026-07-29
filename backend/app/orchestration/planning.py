@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.api.planning_contracts import PlanCreateRequest
 from app.api.planning_review_contracts import PlanningExplanationApiRequest
 from app.repositories.models import ActivePlanVersionModel, CompatibilityResolutionModel, G05ApprovalModel, MigrationPlanModel, MigrationRunModel, PlanningJobModel, StageExecutionPlanModel
-from app.domain.contracts import WorkflowEventType
+from app.domain.contracts import RunStatus, WorkflowEventType
 from app.repositories.session import session_scope
 from app.services.artifact_binding import canonical_artifact_references
 from app.services.compatibility_application_service import CompatibilityResolver
@@ -45,27 +45,44 @@ def _mark_retry(job_id: str, *, disposition: PlanningFailureDisposition, stage: 
             job.lease_expires_at = None
             job.worker_id = None
             job.updated_at = now
-            artifact_id, diagnostic_payload = PlanningEvidenceApplicationService(scope=scope).record_failure(session, run, job, disposition=disposition, stage=stage, diagnostic=diagnostic)
-            transition = StateTransitionService(session).apply_transition(TransitionRequest(
-                run_id=run.id,
-                expected_state_version=run.state_version,
-                idempotency_key=f"planning-failure:{job.id}:{job.attempt}",
-                event_type=WorkflowEventType.PLANNING_INPUT_RESOLUTION_FAILED,
-                actor=job.actor,
-                reason="planning input resolution failed",
-                occurred_at=now,
-                payload={"job_id": job.id, "planning_stage": stage, "attempt": job.attempt, "failure_code": disposition.code, "retryable": disposition.retryable and not disposition.terminal, "diagnostic_artifact_id": artifact_id, "correlation_id": job.correlation_id, "resulting_planning_job_state": job.status},
-            ))
+            effective_disposition = PlanningFailureDisposition(
+                disposition.code,
+                disposition.retryable and not terminal,
+                terminal,
+                disposition.public_message,
+            )
+            artifact_id, diagnostic_payload = PlanningEvidenceApplicationService(scope=scope).record_failure(session, run, job, disposition=effective_disposition, stage=stage, diagnostic=diagnostic)
+            expected_state_version = run.state_version
+            if stage == "resolving_feasibility":
+                input_transition = StateTransitionService(session).apply_transition(TransitionRequest(
+                    run_id=run.id,
+                    expected_state_version=expected_state_version,
+                    idempotency_key=f"planning-input-failure:{job.id}:{job.attempt}",
+                    event_type=WorkflowEventType.PLANNING_INPUT_RESOLUTION_FAILED,
+                    actor=job.actor,
+                    reason="planning input resolution failed",
+                    occurred_at=now,
+                    payload={"job_id": job.id, "planning_stage": stage, "attempt": job.attempt, "failure_code": disposition.code, "retryable": job.retryable, "diagnostic_artifact_id": artifact_id, "correlation_id": job.correlation_id, "resulting_planning_job_state": job.status},
+                ))
+                expected_state_version = input_transition.next_state_version
             final_event_type = WorkflowEventType.PLANNING_RETRY_SCHEDULED if not terminal else WorkflowEventType.PLANNING_FAILED
+            failure_reasons = {
+                "resolving_feasibility": "planning input resolution failed terminally",
+                "generating_plan": "planning plan generation failed technically",
+                "running_planning_review": "planning review failed technically",
+            }
             final_transition = StateTransitionService(session).apply_transition(TransitionRequest(
                 run_id=run.id,
-                expected_state_version=transition.next_state_version,
+                expected_state_version=expected_state_version,
                 idempotency_key=f"planning-outcome:{job.id}:{job.attempt}",
                 event_type=final_event_type,
                 actor=job.actor,
-                reason="planning retry scheduled" if not terminal else "planning failed before plan creation",
+                reason="planning retry scheduled" if not terminal else failure_reasons.get(stage, f"planning failed technically during {stage}"),
                 occurred_at=now,
                 payload={"job_id": job.id, "planning_stage": stage, "attempt": job.attempt, "failure_code": disposition.code, "retryable": disposition.retryable and not terminal, "diagnostic_artifact_id": artifact_id, "correlation_id": job.correlation_id, "resulting_planning_job_state": job.status},
+                next_run_status=RunStatus.FAILED if terminal else None,
+                next_run_phase=run.run_phase if terminal else None,
+                next_phase_status="failed" if terminal else None,
             ))
             job.state_version = final_transition.next_state_version
 

@@ -49,7 +49,8 @@ def test_generated_commands_match_their_registered_argument_patterns():
             run_id="run-command-contract", expected_state_version=1, idempotency_key="command-contract", actor="operator",
             source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
             catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
-            execution_profile_id="profile-1", builder="@angular-devkit/build-angular:application",
+            execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+            builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
             stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
         )
     )
@@ -69,7 +70,8 @@ def test_generated_commands_are_rendered_from_the_shared_transformation_catalogu
             run_id="run-shared-catalogue", expected_state_version=1, idempotency_key="shared-catalogue", actor="operator",
             source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
             catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
-            execution_profile_id="profile-1", builder="@angular-devkit/build-angular:application",
+            execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+            builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
             stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
         )
     )
@@ -88,7 +90,8 @@ def test_project_aware_script_and_target_bindings_reach_the_stage_plan():
             run_id="run-project-aware", expected_state_version=1, idempotency_key="project-aware", actor="operator",
             source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
             catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
-            execution_profile_id="profile-1", builder="@angular-devkit/build-angular:application",
+            execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+            builder="@angular-devkit/build-angular:application",
             resolved_scripts={"build": "build:portal", "test": "test:portal", "lint": "lint:portal"},
             project_targets={"build": "portal:build", "test": "portal:test", "lint": "portal:lint"},
             stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
@@ -125,7 +128,8 @@ def test_generated_plan_reaches_worker_policy_without_starting_a_process(tmp_pat
             run_id="run-dry-run", expected_state_version=1, idempotency_key="dry-run", actor="operator",
             source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
             catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
-            execution_profile_id="profile-1", builder="@angular-devkit/build-angular:application",
+            execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+            builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
             stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
         )
     )
@@ -133,7 +137,9 @@ def test_generated_plan_reaches_worker_policy_without_starting_a_process(tmp_pat
     workspace.mkdir()
     policy = CommandPolicy(
         sandbox_root=tmp_path,
-        working_directory_aliases={"STAGE_WORKSPACE_ANGULAR_18_TO_19": workspace},
+        working_directory_aliases={
+            "STAGE_WORKSPACE_ANGULAR_18_TO_19__7793C74A47FE5FF8": workspace
+        },
         runtime_profiles=frozenset({"profile-1"}),
         network_profiles=frozenset({"approved-registries-only"}),
     )

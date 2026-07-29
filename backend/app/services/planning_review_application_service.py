@@ -34,6 +34,7 @@ from app.domain.planning_review import (
     PlanningPackage,
     PlanningReview,
     PlanningReviewDecision,
+    PlanningReviewOutcome,
 )
 from app.llm_gateway import AzureGatewayError, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry
 
@@ -108,7 +109,7 @@ class PlanningAgentService:
         self.registry.register(self.schema_name, PlanningGatewayNarrative)
         self.registry.register(self.reviewer_schema_name, PlanningGatewayReview)
 
-    def explain(self, request: PlanningExplanationRequest) -> PlanningPackage:
+    def explain(self, request: PlanningExplanationRequest) -> PlanningReviewOutcome:
         self._validate_plan_pair(request.plan, request.stage_plan, request.run_id, request.plan_version)
         deterministic_checksum = _deterministic_plan_checksum(request.plan, request.stage_plan)
         context = [
@@ -148,13 +149,7 @@ class PlanningAgentService:
             reviewer_response, review = self._review(
                 request, context, deterministic_checksum, narrative, proposer_checksum, revision_count
             )
-        if review.decision is not PlanningReviewDecision.ACCEPT:
-            raise PlanningReviewApplicationError(
-                "PLANNING_REVIEW_NOT_ACCEPTED",
-                "The Planning reviewer did not accept the explanation; G06 remains unavailable.",
-                422,
-            )
-        return PlanningPackage(
+        values = dict(
             run_id=request.run_id,
             plan_version=request.plan_version,
             artifact_set_checksum=request.artifact_set_checksum,
@@ -169,6 +164,12 @@ class PlanningAgentService:
             reviewer_usage=reviewer_response.usage.model_dump(mode="json"),
             revision_count=revision_count,
             workspace_fingerprint=request.workspace_fingerprint,
+        )
+        package = PlanningPackage(**values) if review.decision is PlanningReviewDecision.ACCEPT else None
+        return PlanningReviewOutcome(
+            **values,
+            decision=review.decision,
+            package=package,
         )
 
     @staticmethod
@@ -252,7 +253,17 @@ class PlanningAgentService:
                     task_type=LlmTaskType.PLANNING_REVIEW,
                     role=LlmRole.PHASE_REVIEWER,
                     prompt_name=self.reviewer_prompt_name,
-                    system_policy="Review only the bounded Planning explanation. Copy deterministic_plan_checksum and proposer_output_checksum exactly from their trusted binding contexts. Never calculate or change checksum bindings, commands, versions, patches, or approvals.",
+                    system_policy=(
+                        "Review only the bounded Planning explanation. Accept when the explanation accurately "
+                        "describes the deterministic plan, makes no unsupported claim, and explicitly identifies "
+                        "its material risks or unknowns. Do not request unavailable external operational proof; "
+                        "treat registry availability, test coverage, human workflow, and recovery exercises as "
+                        "documented risks or later governed validation when the deterministic plan does not claim "
+                        "they are already proven. Request revision only for an in-scope inaccuracy, omission, or "
+                        "contradiction in the explanation. Copy deterministic_plan_checksum and "
+                        "proposer_output_checksum exactly from their trusted binding contexts. Never calculate or "
+                        "change checksum bindings, commands, versions, patches, or approvals."
+                    ),
                     context=review_context,
                     response_schema=self.reviewer_schema_name,
                     max_output_tokens=1024,

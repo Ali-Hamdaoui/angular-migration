@@ -22,9 +22,11 @@ from app.domain.planning_review import (
     PlanningPackage,
     PlanningReview,
     PlanningReviewDecision,
+    PlanningReviewOutcome,
 )
 from app.repositories.models import (
     ActivePlanVersionModel,
+    ArtifactMetadataModel,
     Base,
     BuildSystemDecisionModel,
     G06ApprovalModel,
@@ -65,6 +67,8 @@ def setup(tmp_path: Path):
             catalogue_version="catalog-v1",
             input_fingerprint="sha256:" + "1" * 64,
             execution_profile_id="profile-node22-npm10",
+            execution_profile_checksum="sha256:" + "4" * 64,
+            resolved_scripts={"build": "build", "test": "test"},
             builder="@angular-devkit/build-angular:application",
             target_cli_exact="19.2.0",
             stage_route=(
@@ -250,6 +254,80 @@ class FakePlanningAgent:
         )
 
 
+class FakeNonAcceptPlanningAgent(FakePlanningAgent):
+    def __init__(self, decision):
+        self.decision = decision
+
+    def explain(self, request):
+        accepted = super().explain(request)
+        review = accepted.reviewer.model_copy(
+            update={
+                "decision": self.decision,
+                "notes": [f"review outcome: {self.decision.value}"],
+            }
+        )
+        reviewer_output_checksum = "sha256:" + hashlib.sha256(
+            json.dumps(
+                review.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        values = accepted.model_dump(
+            exclude={"review_status", "reviewer", "reviewer_output_checksum"}
+        )
+        return PlanningReviewOutcome(
+            **values,
+            reviewer=review,
+            reviewer_output_checksum=reviewer_output_checksum,
+            decision=self.decision,
+            package=None,
+        )
+
+
+def test_nonaccept_review_persists_safe_outputs_without_creating_g06(tmp_path):
+    generated, sessions, store, service = setup(tmp_path)
+    service._planning_agent = FakeNonAcceptPlanningAgent(PlanningReviewDecision.REJECT)
+
+    explanation = service.explain(
+        "run-1",
+        PlanningExplanationApiRequest(
+            expected_state_version=1,
+            idempotency_key="explain-rejected",
+            plan=generated.plan.model_dump(mode="json"),
+            stage_plan=generated.first_stage_plan.model_dump(mode="json"),
+            artifact_set_checksum="sha256:" + "3" * 64,
+            plan_version=1,
+        ),
+        "operator",
+    )
+
+    assert explanation.status == "review_rejected"
+    assert explanation.gate_status == "not_created"
+    assert len(explanation.artifact_ids) == 5
+    with sessions() as session:
+        review = session.query(PlanningReviewModel).one()
+        assert review.outcome == PlanningReviewDecision.REJECT.value
+        assert review.proposer_output["summary"]
+        assert review.reviewer_output["notes"] == ["review outcome: reject"]
+        assert review.revision_count == 0
+        assert session.query(G06ApprovalModel).count() == 0
+        assert [event.event_type for event in session.query(WorkflowEventModel).all()] == [
+            "PLANNING_REVIEW_REJECTED"
+        ]
+    paths = {
+        store.read_artifact_by_id(item).ref.relative_path
+        for item in explanation.artifact_ids
+    }
+    assert paths == {
+        "03_planning/versions/v1/planning-input-manifest.json",
+        "03_planning/versions/v1/planning-proposer-output.json",
+        "03_planning/versions/v1/planning-reviewer-output.json",
+        "03_planning/versions/v1/planning-explanation.json",
+        "03_planning/versions/v1/planning-usage-cost.json",
+    }
+
+
 def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
     generated, sessions, store, service = setup(tmp_path)
     revision = service.revise(
@@ -282,6 +360,16 @@ def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
     with sessions() as session:
         assert session.query(PlanRevisionModel).count() == 1
         assert session.query(PlanningReviewModel).one().status == "completed"
+        phase_metadata = (
+            session.query(ArtifactMetadataModel)
+            .filter(
+                ArtifactMetadataModel.run_id == "run-1",
+                ArtifactMetadataModel.relative_path.like("03_planning/%"),
+            )
+            .all()
+        )
+        assert phase_metadata
+        assert all(item.stage_id is None for item in phase_metadata)
         gate = session.query(G06ApprovalModel).one()
         assert gate.status == "pending"
         assert {event.event_type for event in session.query(WorkflowEventModel).all()} == {

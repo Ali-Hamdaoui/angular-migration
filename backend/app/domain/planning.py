@@ -157,7 +157,7 @@ class StageExecutionPlan(ContractModel):
         required = {"bootstrap_install", "angular_update", "target_version_check", "final_install", "builds", "tests", "lint"}
         if set(self.commands) != required:
             raise ValueError("stage plan commands must contain the complete standard command set")
-        if any(not refs for refs in self.commands.values() if self.commands.get("lint") != refs):
+        if any(not refs for name, refs in self.commands.items() if name != "lint"):
             raise ValueError("required stage plan command groups cannot be empty")
         if self.build_system_decision.action == "blocked":
             raise ValueError("a blocked build-system decision cannot produce an executable stage plan")
@@ -178,6 +178,7 @@ class PlanGenerationRequest(ContractModel):
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    execution_profile_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     package_manager: str = Field(default="npm", min_length=1, max_length=32)
     resolved_scripts: dict[str, str] = Field(default_factory=dict)
     project_targets: dict[str, str] = Field(default_factory=dict)

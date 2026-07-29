@@ -26,7 +26,7 @@ def test_resolves_application_target_without_inventing_project_or_configuration(
     assert result.test_targets[0].project == "portal"
 
     bindings = result.command_bindings(result.build_targets[0])
-    assert bindings["scripts"] == {"build": "build", "test": "test", "lint": "lint"}
+    assert bindings["scripts"] == {"build": "build", "test": "test"}
     assert bindings["targets"] == {"build": "portal:build", "test": "portal:test"}
 
 

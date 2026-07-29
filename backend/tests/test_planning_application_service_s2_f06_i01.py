@@ -11,7 +11,9 @@ def request(**updates) -> PlanGenerationRequest:
         run_id="run-1", expected_state_version=4, idempotency_key="plan-1", actor="operator",
         source_exact="18.2.13", source_family="angular-18.x", target_family="angular-21.x",
         catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
-        execution_profile_id="profile-node22-npm10", builder="@angular-devkit/build-angular:application",
+        execution_profile_id="profile-node22-npm10", execution_profile_checksum="sha256:" + "4" * 64,
+        builder="@angular-devkit/build-angular:application",
+        resolved_scripts={"build": "build", "test": "test"},
         target_cli_exact="19.2.0",
         stage_route=(("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"), ("angular-19.x", "angular-20.x", "stage-19-to-20", "20.0.0"), ("angular-20.x", "angular-21.x", "stage-20-to-21", "21.0.0")),
     )
@@ -22,12 +24,55 @@ def request(**updates) -> PlanGenerationRequest:
 def test_generates_immutable_plan_and_exact_first_stage_contract():
     result = PlanningApplicationService().generate(request())
     assert result.status == "generated"
-    assert result.plan.route == ("stage-18-to-19", "stage-19-to-20", "stage-20-to-21")
+    assert result.plan.route == (
+        "stage-18-to-19--0754a3f73c516f2f",
+        "stage-19-to-20--09fa6cc3c16d9bd0",
+        "stage-20-to-21--f1e09ef760f5942b",
+    )
     assert result.first_stage_plan.target_exact == "19.2.0"
     assert result.first_stage_plan.commands["angular_update"][0].shell is False
     assert result.first_stage_plan.forbidden_change_policy.actions
     assert result.plan.checksum.startswith("sha256:")
     assert result.first_stage_plan.checksum.startswith("sha256:")
+    assert result.first_stage_plan.commands["lint"] == ()
+    assert {
+        command.runtime_profile_checksum
+        for commands in result.first_stage_plan.commands.values()
+        for command in commands
+    } == {"sha256:" + "4" * 64}
+
+
+def test_run_scopes_stage_instance_ids_for_repeated_catalogue_route():
+    first = PlanningApplicationService().generate(
+        request(run_id="run-alpha", idempotency_key="plan-alpha")
+    )
+    second = PlanningApplicationService().generate(
+        request(run_id="run-beta", idempotency_key="plan-beta")
+    )
+
+    assert first.plan.route[0] == "stage-18-to-19--6e0f97f2570683f4"
+    assert second.plan.route[0] == "stage-18-to-19--a1afaab0de755ac4"
+    assert first.plan.route[0] != second.plan.route[0]
+    assert first.first_stage_plan.stage_id == first.plan.route[0]
+    assert (
+        first.first_stage_plan.commands["angular_update"][0].working_directory_alias
+        == "STAGE_WORKSPACE_STAGE_18_TO_19__6E0F97F2570683F4"
+    )
+
+
+def test_generates_lint_only_when_a_lint_script_was_resolved():
+    result = PlanningApplicationService().generate(
+        request(resolved_scripts={"build": "build", "test": "test", "lint": "lint:app"})
+    )
+
+    assert result.first_stage_plan.commands["lint"][0].arguments == ("run", "lint:app")
+
+
+def test_rejects_missing_required_build_or_test_script():
+    with pytest.raises(PlanningApplicationError) as error:
+        PlanningApplicationService().generate(request(resolved_scripts={"build": "build"}))
+
+    assert error.value.code == "REQUIRED_SCRIPT_NOT_RESOLVED"
 
 
 def test_rejects_stale_state_and_does_not_generate():

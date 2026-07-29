@@ -18,6 +18,7 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     Base,
     BuildSystemDecisionModel,
+    MigrationStageModel,
     MigrationPlanModel,
     MigrationRunModel,
     StageExecutionPlanModel,
@@ -73,6 +74,7 @@ def setup(tmp_path: Path):
         catalogue_version="catalog-v1",
         input_fingerprint="sha256:" + "1" * 64,
         execution_profile_id="profile-node22-npm10",
+        resolved_scripts={"build": "build", "test": "test"},
         target_cli_exact="19.2.0",
         stage_route=[
             ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"),
@@ -149,16 +151,22 @@ def test_persists_plan_stage_decision_pointer_artifacts_and_events(tmp_path):
 
     assert len(result.artifact_ids) == 7
     assert result.plan["version"] == 1
-    assert result.stage_plan["stage_id"] == "stage-18-to-19"
+    assert result.stage_plan["stage_id"] == "stage-18-to-19--0754a3f73c516f2f"
     assert result.builder_decision["action"] == "preserve"
     with sessions() as session:
         assert session.query(MigrationPlanModel).count() == 1
         assert session.query(StageExecutionPlanModel).count() == 1
         assert session.query(BuildSystemDecisionModel).count() == 1
+        stage = session.get(MigrationStageModel, "stage-18-to-19--0754a3f73c516f2f")
+        assert stage is not None
+        assert stage.run_id == "run-1"
+        assert stage.stage_order == 1
+        assert stage.status == "planned"
         assert session.query(ActivePlanVersionModel).count() == 2
         assert session.query(ArtifactMetadataModel).count() == 8
         assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == ["MIGRATION_PLAN_CREATED", "STAGE_PLAN_CREATED"]
         assert session.query(MigrationRunModel).one().state_version == 3
+        assert session.connection().exec_driver_sql("PRAGMA foreign_key_check").all() == []
     assert all(store.read_artifact_by_id(item).ref.checksum == result.artifact_checksums[item] for item in result.artifact_ids)
 
 
@@ -172,7 +180,7 @@ def test_api_exposes_plan_reads_and_idempotent_replay(tmp_path):
         body = response.json()
         assert len(body["artifact_ids"]) == 7
         assert client.get("/api/v1/runs/run-1/plan", headers={"x-authenticated-actor": "operator"}).status_code == 200
-        assert client.get("/api/v1/runs/run-1/stages/stage-18-to-19/plan", headers={"x-authenticated-actor": "operator"}).status_code == 200
+        assert client.get("/api/v1/runs/run-1/stages/stage-18-to-19--0754a3f73c516f2f/plan", headers={"x-authenticated-actor": "operator"}).status_code == 200
         replay = client.post("/api/v1/runs/run-1/plans", headers={"x-authenticated-actor": "operator"}, json=payload.model_dump(mode="json"))
         assert replay.status_code == 200
         assert replay.json()["idempotent_replay"] is True

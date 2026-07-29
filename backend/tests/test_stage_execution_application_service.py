@@ -114,7 +114,21 @@ def test_start_prepares_and_persists_the_stage_before_returning(tmp_path: Path, 
             selected_checksum="sha256:" + "8" * 64, profiles=[], blockers=[], guidance=[], artifact_ids=[],
             state_version=4, event_sequence=1, created_at=now, updated_at=now,
         ))
+        session.add(MigrationStageModel(
+            id=stage_id,
+            run_id="run-1",
+            stage_order=1,
+            source_version_family="angular-18.x",
+            target_version_family="angular-19.x",
+            source_version_detected="18.2.0",
+            target_version_resolved="19.2.0",
+            source_angular_version="18.2.0",
+            target_angular_version="19.2.0",
+            status="planned",
+            created_at=now,
+        ))
         session.commit()
+        planned_created_at = session.get(MigrationStageModel, stage_id).created_at
 
     monkeypatch.setattr(
         "app.services.stage_execution_application_service.PlanRevisionService.require_approved_g06",
@@ -139,6 +153,8 @@ def test_start_prepares_and_persists_the_stage_before_returning(tmp_path: Path, 
         stage = session.get(MigrationStageModel, stage_id)
         assert stage is not None
         assert stage.status == "prepared"
+        assert stage.stage_order == 1
+        assert stage.created_at == planned_created_at
         assert session.query(StageStepModel).filter(StageStepModel.stage_id == stage_id).count() == 7
         run = session.get(MigrationRunModel, "run-1")
         assert run.workspace_aliases["STAGE_WORKSPACE_STAGE_18_TO_19"]

@@ -42,6 +42,9 @@ PLANNING_JOB_STATES = frozenset({
     "waiting_g05",
     "generating_plan",
     "running_planning_review",
+    "review_revision_required",
+    "review_rejected",
+    "review_insufficient_context",
     "waiting_g06",
     "waiting_retry",
     "completed",
@@ -49,7 +52,13 @@ PLANNING_JOB_STATES = frozenset({
     "technical_failed",
 })
 PLANNING_JOB_TERMINAL_STATES = frozenset({"completed", "completed_blocked", "technical_failed"})
-PLANNING_JOB_HUMAN_WAIT_STATES = frozenset({"waiting_g05", "waiting_g06"})
+PLANNING_JOB_HUMAN_WAIT_STATES = frozenset({
+    "waiting_g05",
+    "waiting_g06",
+    "review_revision_required",
+    "review_rejected",
+    "review_insufficient_context",
+})
 PLANNING_JOB_CLAIMABLE_STATES = frozenset({
     "queued_after_g04", "resolving_feasibility", "generating_plan", "running_planning_review", "waiting_retry"
 })

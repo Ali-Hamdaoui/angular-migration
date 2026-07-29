@@ -230,8 +230,9 @@ class StageExecutionApplicationService:
 
     def _persist_prepared_stage(self, session, run, stage_id, stage, preparation, preparation_artifacts):
         now = self._now()
-        if session.get(MigrationStageModel, stage_id) is None:
-            stage_value = stage.stage_plan or {}
+        stage_value = stage.stage_plan or {}
+        stage_record = session.get(MigrationStageModel, stage_id)
+        if stage_record is None:
             session.add(MigrationStageModel(
                 id=stage_id,
                 run_id=run.id,
@@ -245,6 +246,20 @@ class StageExecutionApplicationService:
                 status="prepared",
                 created_at=now,
             ))
+        else:
+            if stage_record.run_id != run.id:
+                raise StageExecutionError(
+                    "STAGE_ID_OWNERSHIP_CONFLICT",
+                    "The planned stage belongs to another migration run.",
+                    409,
+                )
+            stage_record.source_version_family = stage_value.get("source_family") or stage_record.source_version_family
+            stage_record.target_version_family = stage_value.get("target_family") or stage_record.target_version_family
+            stage_record.source_version_detected = stage_value.get("source_exact") or stage_record.source_version_detected
+            stage_record.target_version_resolved = stage_value.get("target_exact") or stage_record.target_version_resolved
+            stage_record.source_angular_version = stage_value.get("source_exact") or stage_record.source_angular_version
+            stage_record.target_angular_version = stage_value.get("target_exact") or stage_record.target_angular_version
+            stage_record.status = "prepared"
         existing_steps = session.query(StageStepModel).filter(StageStepModel.stage_id == stage_id).count()
         if existing_steps == 0:
             for group, references in (stage.stage_plan.get("commands") or {}).items():

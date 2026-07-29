@@ -25,6 +25,8 @@ from app.domain.planning_review import (
     PlanRevisionRequest,
     PlanningExplanationRequest,
     PlanningPackage,
+    PlanningReviewDecision,
+    PlanningReviewOutcome,
 )
 from app.repositories.models import (
     ActivePlanVersionModel,
@@ -243,6 +245,10 @@ class PlanningReviewEvidenceApplicationService:
                 artifact_set_checksum=request.artifact_set_checksum,
                 status="in_progress",
                 package=None,
+                proposer_output=None,
+                reviewer_output=None,
+                revision_count=None,
+                outcome=None,
                 artifact_ids=[],
                 artifact_checksums={},
                 proposer_invocation_id=proposer_invocation.id,
@@ -257,7 +263,7 @@ class PlanningReviewEvidenceApplicationService:
             session.flush()
 
         try:
-            package = self._agent(run_id).explain(request)
+            outcome = self._review_outcome(self._agent(run_id).explain(request))
         except PlanningReviewApplicationError as error:
             self._mark_planning_failed(run_id, request.idempotency_key, error.code)
             raise PlanningReviewEvidenceError(error.code, error.message, error.status_code) from error
@@ -266,7 +272,9 @@ class PlanningReviewEvidenceApplicationService:
             raise PlanningReviewEvidenceError(
                 "PLANNING_DEPENDENCY_FAILED", "The Planning dependency failed; G06 remains unavailable.", 503
             ) from error
-        return self._complete_explanation(run_id, request, request_checksum, package)
+        if outcome.package is None:
+            return self._complete_nonaccepted_review(run_id, request, request_checksum, outcome)
+        return self._complete_explanation(run_id, request, request_checksum, outcome.package, outcome)
 
     def decide_g06(self, run_id: str, payload: G06DecisionApiRequest, actor: str) -> G06DecisionResponse:
         request = G06DecisionRequest(**payload.model_dump(exclude={"correlation_id"}, mode="json"))
@@ -471,7 +479,7 @@ class PlanningReviewEvidenceApplicationService:
                 return self._bootstrap_response(plan, stage)
             return self._planning_response(session, review)
 
-    def _complete_explanation(self, run_id, request, request_checksum, package):
+    def _complete_explanation(self, run_id, request, request_checksum, package, outcome):
         now = self._now()
         with self._scope() as session:
             run = self._authorized_run(session, run_id, request.actor)
@@ -564,12 +572,120 @@ class PlanningReviewEvidenceApplicationService:
                 job.updated_at = now
             row.status = "completed"
             row.package = package_json
+            row.proposer_output = outcome.narrative.model_dump(mode="json")
+            row.reviewer_output = outcome.reviewer.model_dump(mode="json")
+            row.revision_count = outcome.revision_count
+            row.outcome = outcome.decision.value
             row.artifact_ids = artifacts[0]
             row.artifact_checksums = artifacts[1]
             row.reviewer_invocation_id = reviewer_invocation.id
             row.state_version = completed.next_state_version
             row.event_sequence = completed.event_sequence
             row.updated_at = now
+            session.flush()
+            return self._planning_response(session, row)
+
+    def _complete_nonaccepted_review(self, run_id, request, request_checksum, outcome):
+        now = self._now()
+        event_types = {
+            PlanningReviewDecision.REQUEST_REVISION: WorkflowEventType.PLANNING_REVIEW_REVISION_REQUIRED,
+            PlanningReviewDecision.REJECT: WorkflowEventType.PLANNING_REVIEW_REJECTED,
+            PlanningReviewDecision.INSUFFICIENT_CONTEXT: WorkflowEventType.PLANNING_REVIEW_INSUFFICIENT_CONTEXT,
+        }
+        review_statuses = {
+            PlanningReviewDecision.REQUEST_REVISION: "review_revision_required",
+            PlanningReviewDecision.REJECT: "review_rejected",
+            PlanningReviewDecision.INSUFFICIENT_CONTEXT: "review_insufficient_context",
+        }
+        with self._scope() as session:
+            run = self._authorized_run(session, run_id, request.actor)
+            row = session.scalar(
+                select(PlanningReviewModel).where(
+                    PlanningReviewModel.run_id == run_id,
+                    PlanningReviewModel.idempotency_key == request.idempotency_key,
+                )
+            )
+            if row is None:
+                raise PlanningReviewEvidenceError(
+                    "PLANNING_REVIEW_NOT_FOUND",
+                    "The Planning review request was not found.",
+                    404,
+                )
+            artifacts = self._write_review_outcome_artifacts(session, run, request, outcome, now)
+            status = review_statuses[outcome.decision]
+            completed = self._transition(
+                session,
+                run,
+                request.idempotency_key + ":completed",
+                run.state_version,
+                event_types[outcome.decision],
+                request.actor,
+                now,
+                {
+                    "artifact_ids": artifacts[0],
+                    "plan_version": request.plan_version,
+                    "review_outcome": outcome.decision.value,
+                },
+                next_run_status=RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="waiting_approval",
+                next_approval_status="pending",
+            )
+            reviewer_invocation = self._completed_invocation(
+                run,
+                request,
+                request_checksum,
+                outcome,
+                "phase_reviewer",
+                "planning_review",
+                completed,
+                now,
+            )
+            reviewer_invocation.artifact_ids = artifacts[0]
+            reviewer_invocation.artifact_checksums = artifacts[1]
+            session.add(reviewer_invocation)
+            self._record_usage(session, run_id, reviewer_invocation.id, outcome.reviewer_usage, now)
+            invocation = session.get(LlmInvocationModel, row.proposer_invocation_id)
+            if invocation:
+                invocation.status = "completed"
+                invocation.deployment_alias = outcome.usage.get("model_deployment_alias", "azure-openai")
+                invocation.prompt_version = "planning_agent_v1"
+                invocation.schema_version = "planning-schema-registry-v1"
+                invocation.pricing_version = outcome.usage.get("pricing_version", "unknown")
+                invocation.artifact_ids = artifacts[0]
+                invocation.artifact_checksums = artifacts[1]
+                invocation.completed_at = now
+                invocation.state_version = completed.next_state_version
+                invocation.event_sequence = completed.event_sequence
+                self._record_usage(session, run_id, invocation.id, outcome.usage, now)
+            row.status = status
+            row.package = outcome.model_dump(mode="json", exclude={"package"})
+            row.proposer_output = outcome.narrative.model_dump(mode="json")
+            row.reviewer_output = outcome.reviewer.model_dump(mode="json")
+            row.revision_count = outcome.revision_count
+            row.outcome = outcome.decision.value
+            row.artifact_ids = artifacts[0]
+            row.artifact_checksums = artifacts[1]
+            row.reviewer_invocation_id = reviewer_invocation.id
+            row.error_code = None
+            row.state_version = completed.next_state_version
+            row.event_sequence = completed.event_sequence
+            row.updated_at = now
+            job = session.scalar(
+                select(PlanningJobModel)
+                .where(
+                    PlanningJobModel.run_id == run_id,
+                    PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES),
+                )
+                .order_by(PlanningJobModel.created_at.desc())
+            )
+            if job is not None:
+                job.status = status
+                job.current_step = status
+                job.attempt = 0
+                job.state_version = completed.next_state_version
+                job.retryable = False
+                job.updated_at = now
             session.flush()
             return self._planning_response(session, row)
 
@@ -617,6 +733,50 @@ class PlanningReviewEvidenceApplicationService:
             session, run, values, package.plan_checksum, package.stage_plan_checksum, "s2-f07-i02", now
         )
 
+    def _write_review_outcome_artifacts(self, session, run, request, outcome, now):
+        final = {
+            "outcome": outcome.decision.value,
+            "narrative": outcome.narrative.model_dump(mode="json"),
+            "reviewer": outcome.reviewer.model_dump(mode="json"),
+            "plan_checksum": outcome.plan_checksum,
+            "stage_plan_checksum": outcome.stage_plan_checksum,
+        }
+        values = {
+            f"03_planning/versions/v{request.plan_version}/planning-input-manifest.json": {
+                "artifact_set_checksum": request.artifact_set_checksum,
+                "artifact_ids": [item.artifact_id for item in request.prerequisite_artifacts],
+                "checksums": {item.artifact_id: item.checksum for item in request.prerequisite_artifacts},
+            },
+            f"03_planning/versions/v{request.plan_version}/planning-proposer-output.json": outcome.narrative.model_dump(mode="json"),
+            f"03_planning/versions/v{request.plan_version}/planning-reviewer-output.json": outcome.reviewer.model_dump(mode="json"),
+            f"03_planning/versions/v{request.plan_version}/planning-explanation.json": final,
+            f"03_planning/versions/v{request.plan_version}/planning-usage-cost.json": {
+                "proposer": outcome.usage,
+                "reviewer": outcome.reviewer_usage,
+            },
+        }
+        return self._write_values(
+            session,
+            run,
+            values,
+            outcome.plan_checksum,
+            outcome.stage_plan_checksum,
+            "s2-f07-i02",
+            now,
+        )
+
+    @staticmethod
+    def _review_outcome(value):
+        if isinstance(value, PlanningReviewOutcome):
+            return value
+        if isinstance(value, PlanningPackage):
+            return PlanningReviewOutcome(
+                **value.model_dump(exclude={"review_status"}),
+                decision=PlanningReviewDecision.ACCEPT,
+                package=value,
+            )
+        raise TypeError("Planning agent returned an unsupported review result")
+
     def _write_values(self, session, run, values, plan_checksum, stage_checksum, policy_version, now):
         store = self._store_for_run(run)
         ids, checksums = [], {}
@@ -637,7 +797,15 @@ class PlanningReviewEvidenceApplicationService:
                 ArtifactMetadataModel(
                     id="metadata-" + stored.ref.artifact_id,
                     run_id=run.id,
-                    stage_id=stored.ref.stage_id,
+                    # Artifact-store layout segments such as ``03_planning``
+                    # are phase folders, not MigrationStage foreign keys.
+                    # Only the canonical ``stages/<stage-id>/...`` namespace
+                    # may populate relational stage ownership.
+                    stage_id=(
+                        stored.ref.stage_id
+                        if stored.ref.relative_path.startswith("stages/")
+                        else None
+                    ),
                     artifact_type=stored.ref.artifact_type.value,
                     relative_path=stored.ref.relative_path,
                     checksum=stored.ref.checksum,
@@ -1033,7 +1201,7 @@ class PlanningReviewEvidenceApplicationService:
             artifact_checksums=current_checksums,
             artifact_links={item: f"/api/v1/artifacts/{item}" for item in current_checksums},
             gate_version=gate.gate_version if gate else self.GATE_VERSION,
-            gate_status=gate.status if gate else "blocked",
+            gate_status=gate.status if gate else "not_created",
             gate_decision=gate.decision if gate else None,
             package_checksum=gate.package_checksum if gate else None,
             artifact_set_checksum=gate.artifact_set_checksum if gate else None,
