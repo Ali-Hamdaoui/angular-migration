@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 
 import pytest
@@ -103,15 +102,15 @@ def test_revision_is_idempotent_and_rejects_payload_reuse():
 
 
 class _PlanningGateway:
+    def __init__(self):
+        self.requests = []
+
     def complete(self, request):
-        plan = json.loads(request.context[0].content)
-        stage = json.loads(request.context[1].content)
-        checksum = (
-            "sha256:"
-            + hashlib.sha256(
-                json.dumps({"plan": plan, "stage_plan": stage}, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-        )
+        self.requests.append(request)
+        trusted_bindings = {}
+        for segment in request.context:
+            if segment.segment_id in {"deterministic-plan-binding", "proposer-output-binding"}:
+                trusted_bindings.update(json.loads(segment.content))
         usage = build_usage_record(
             run_id=request.run_id,
             stage_id=None,
@@ -129,18 +128,16 @@ class _PlanningGateway:
                 "rationale": ["Exact versions are retained."],
                 "risks": [],
                 "unresolved_questions": [],
-                "deterministic_plan_checksum": checksum,
+                "deterministic_plan_checksum": trusted_bindings["deterministic_plan_checksum"],
             }
         else:
-            proposer = json.loads(request.context[-1].content)
             output = {
                 "decision": PlanningReviewDecision.ACCEPT.value,
                 "notes": [],
                 "policy_concerns": [],
                 "confidence": "high",
-                "deterministic_plan_checksum": checksum,
-                "proposer_output_checksum": "sha256:"
-                + hashlib.sha256(json.dumps(proposer, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                "deterministic_plan_checksum": trusted_bindings["deterministic_plan_checksum"],
+                "proposer_output_checksum": trusted_bindings["proposer_output_checksum"],
             }
         return LlmResponse(
             response_id="response-1",
@@ -158,9 +155,29 @@ class _PlanningGateway:
         )
 
 
+class _TamperingPlanningGateway(_PlanningGateway):
+    def __init__(self, tampered_task):
+        super().__init__()
+        self.tampered_task = tampered_task
+
+    def complete(self, request):
+        response = super().complete(request)
+        if request.task_type is not self.tampered_task:
+            return response
+        field = (
+            "deterministic_plan_checksum"
+            if request.task_type is LlmTaskType.PLAN_RATIONALE
+            else "proposer_output_checksum"
+        )
+        return response.model_copy(
+            update={"structured_output": {**response.structured_output, field: "sha256:" + "f" * 64}}
+        )
+
+
 def test_planning_explanation_is_checksum_bound_and_reviewed():
     result = _generation()
-    service = PlanningAgentService(gateway=_PlanningGateway())
+    gateway = _PlanningGateway()
+    service = PlanningAgentService(gateway=gateway)
     package = service.explain(
         PlanningExplanationRequest(
             run_id="run-1",
@@ -176,6 +193,53 @@ def test_planning_explanation_is_checksum_bound_and_reviewed():
     assert package.review_status == "accepted"
     assert package.reviewer.decision is PlanningReviewDecision.ACCEPT
     assert package.plan_checksum == result.plan.checksum
+    assert (
+        package.deterministic_plan_checksum == "sha256:9157faeca61ada88dcb78b9d9c12cf8a7975e0e1b0c9537163140993b6fae204"
+    )
+    proposer_binding = next(
+        segment for segment in gateway.requests[0].context if segment.segment_id == "deterministic-plan-binding"
+    )
+    reviewer_plan_binding = next(
+        segment for segment in gateway.requests[1].context if segment.segment_id == "deterministic-plan-binding"
+    )
+    reviewer_output_binding = next(
+        segment for segment in gateway.requests[1].context if segment.segment_id == "proposer-output-binding"
+    )
+    assert json.loads(proposer_binding.content) == {
+        "deterministic_plan_checksum": "sha256:9157faeca61ada88dcb78b9d9c12cf8a7975e0e1b0c9537163140993b6fae204"
+    }
+    assert reviewer_plan_binding.content == proposer_binding.content
+    assert json.loads(reviewer_output_binding.content) == {
+        "proposer_output_checksum": "sha256:9911327fae31721b3ebfafd45435f53dece81a4583dc0ead56220941001f9305"
+    }
+
+
+@pytest.mark.parametrize(
+    ("tampered_task", "expected_code"),
+    (
+        (LlmTaskType.PLAN_RATIONALE, "PLANNING_INPUT_CHECKSUM_MISMATCH"),
+        (LlmTaskType.PLANNING_REVIEW, "PLANNING_REVIEW_CHECKSUM_MISMATCH"),
+    ),
+)
+def test_planning_rejects_changed_trusted_binding_tokens(tampered_task, expected_code):
+    result = _generation()
+    service = PlanningAgentService(gateway=_TamperingPlanningGateway(tampered_task))
+
+    with pytest.raises(PlanningReviewApplicationError) as error:
+        service.explain(
+            PlanningExplanationRequest(
+                run_id="run-1",
+                expected_state_version=4,
+                idempotency_key=f"tampered-{tampered_task.value}",
+                actor="operator",
+                plan=result.plan.model_dump(mode="json"),
+                stage_plan=result.first_stage_plan.model_dump(mode="json"),
+                artifact_set_checksum="sha256:" + "3" * 64,
+                plan_version=1,
+            )
+        )
+
+    assert error.value.code == expected_code
 
 
 def test_planning_proposer_failure_retains_safe_gateway_diagnostics():
