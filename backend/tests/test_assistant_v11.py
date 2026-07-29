@@ -22,6 +22,7 @@ from app.services.assistant_capabilities import (
 from app.services.assistant_context_budget import build_bounded_context, count_tokens
 from app.services.assistant_context_service import AssistantContextService
 from app.services.llm_evidence_application_service import _AssistantResponse
+from app.services.llm_evidence_application_service import build_assistant_response_contract
 
 
 def scope_for(tmp_path, actor="owner"):
@@ -57,6 +58,14 @@ def test_run_authorization_is_owner_bound(tmp_path):
 def test_natural_intent_and_extensible_registry():
     assert classify_intent("What is the current migration state?") == "workflow_status"
     assert classify_intent("Why did this stop?") == "blocker_or_failure"
+    for question in (
+        "Why did it stop, and what should happen next?",
+        "Why is the migration blocked?",
+        "What is preventing progress?",
+        "What is the next permitted action?",
+        "Explain the blocker and the next step.",
+    ):
+        assert classify_intent(question) == "blocker_or_failure"
     assert classify_intent("Explain the latest validation failure.") == "validation_explanation"
     registry = AssistantCapabilityRegistry()
     registry.register(AssistantCapability("test_capability", frozenset({"test_intent"})))
@@ -96,6 +105,44 @@ def test_complete_v11_provider_contract_is_strict_and_read_only():
         _AssistantResponse.model_validate({**valid, "answer": ""})
     with pytest.raises(ValidationError):
         _AssistantResponse.model_validate({**valid, "next_step_proposals": [{"action_key": "x", "label": "x", "reason": "x", "target_route": "/x", "requires_human_approval": True, "executable_by_assistant": True}]})
+
+
+def test_bound_provider_contract_contains_selected_intent_capability_and_excerpt_constraints():
+    contract = build_assistant_response_contract(
+        intent="evidence_question",
+        capability_key="analysis",
+        selected_excerpt_ids=["excerpt-selected"],
+    )
+    schema = contract.model_json_schema()
+    assert schema["properties"]["intent"]["const"] == "evidence_question" or schema["properties"]["intent"]["enum"] == ["evidence_question"]
+    assert schema["properties"]["capability_key"]["const"] == "analysis" or schema["properties"]["capability_key"]["enum"] == ["analysis"]
+    citation = schema["$defs"]["BoundAssistantCitation"]
+    assert citation["properties"]["excerpt_id"].get("const", citation["properties"]["excerpt_id"].get("enum")) == "excerpt-selected"
+
+
+def test_bound_provider_contract_rejects_other_valid_intent_capability_and_missing_evidence_citation():
+    contract = build_assistant_response_contract(
+        intent="evidence_question",
+        capability_key="analysis",
+        selected_excerpt_ids=["excerpt-selected"],
+    )
+    valid = {
+        "answer": "Evidence-backed answer.", "summary": "Evidence-backed answer.",
+        "intent": "evidence_question", "capability_key": "analysis",
+        "proof_label": "approved_evidence_supported", "citations": [{
+            "excerpt_id": "excerpt-selected", "artifact_id": "artifact", "checksum_sha256": "sha256:x",
+            "stage_key": "run", "locator": {"kind": "line_range", "value": "1-1"},
+            "proof_label": "approved_evidence_supported",
+        }], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high",
+    }
+    with pytest.raises(ValidationError):
+        contract.model_validate({**valid, "intent": "next_steps"})
+    with pytest.raises(ValidationError):
+        contract.model_validate({**valid, "capability_key": "next_steps"})
+    with pytest.raises(ValidationError):
+        contract.model_validate({**valid, "citations": []})
+    with pytest.raises(ValidationError):
+        contract.model_validate({**valid, "citations": [{**valid["citations"][0], "excerpt_id": "excerpt-other"}]})
 
 
 def test_all_supported_intents_have_one_registry_capability_and_extension_is_pipeline_independent():

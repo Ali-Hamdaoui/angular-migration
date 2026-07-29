@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 import pytest
+import json
 
 from app.api.routes import assistant as assistant_routes
 from app.domain.contracts import AgentKind, AssistantMessageRequestDto, WorkflowEventType
@@ -55,7 +56,10 @@ class GovernedFakeProvider:
         if self.fail:
             raise RuntimeError("provider unavailable")
         usage = build_usage_record(run_id=request.run_id, stage_id=None, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="isolated-fake", input_tokens=7, output_tokens=5, input_price_per_million=1.0, output_price_per_million=2.0)
-        return LlmResponse(response_id=f"fake-{self.calls}", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="isolated-fake", status="completed", summary="safe", structured_output={"answer": "The governed fake answer.", "citations": [{"artifact_id": "approved-evidence", "checksum": "sha256:approved", "stage_id": None}]}, usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="assistant", schema_version="schema", pricing_version="pricing")
+        policy = json.loads(request.system_policy)
+        intent = policy["selected_intent"]
+        capability = policy["selected_capability_key"]
+        return LlmResponse(response_id=f"fake-{self.calls}", request_id=request.request_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, model_deployment_alias="isolated-fake", status="completed", summary="safe", structured_output={"answer": "The governed fake answer.", "summary": "The governed fake answer.", "intent": intent, "capability_key": capability, "proof_label": "authoritative_persisted_fact", "citations": [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}, usage=usage, redaction=PromptRedactionResult(redacted_text="safe", redaction_count=0), role=LlmRole.ASSISTANT, prompt_version="assistant", schema_version="schema", pricing_version="pricing")
 
 
 def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
@@ -85,7 +89,7 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
         projection = WorkflowProjectionService().build(session, "demo-run")
         assert projection.run_id == "demo-run"
         assert projection.gate.availability == "unavailable"
-        assert projection.remaining_work == []
+        assert projection.remaining_work == ["Reach the next governed workflow owner"]
         assert projection.next_permitted_action.availability == "unavailable"
 
     provider = GovernedFakeProvider()
@@ -101,7 +105,9 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
             first_body = first.json()
             assert first_body["answer"] == "The governed fake answer."
             with sessions() as session:
-                assert [(item.role, item.message_order) for item in session.scalars(select(AssistantMessageModel).order_by(AssistantMessageModel.message_order))] == [("user", 1), ("assistant", 2)]
+                actual_messages = [(item.role, item.message_order, item.status, item.idempotency_key, item.conversation_id) for item in session.scalars(select(AssistantMessageModel).order_by(AssistantMessageModel.message_order, AssistantMessageModel.id))]
+                assert [(role, order) for role, order, _status, _key, _conversation in actual_messages] == [("user", 1), ("assistant", 3)], actual_messages
+                assert actual_messages[1][3] == "demo-1" and actual_messages[0][3] != "demo-1"
                 assert session.query(LlmInvocationModel).count() == 1
                 assert session.query(UsageCostRecordModel).count() == 1
                 assert [item.event_type for item in session.scalars(select(AssistantLifecycleEventModel).order_by(AssistantLifecycleEventModel.sequence))] == ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_CONTEXT_BUILT", "ASSISTANT_RESPONSE_COMPLETED"]
@@ -131,7 +137,7 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
 
     restarted = AssistantContextService(session_scope_factory=scope, invocation_service=LlmEvidenceApplicationService(session_scope_factory=scope, gateway=provider))
     restored = restarted.history("demo-run", first_body["conversation_id"])
-    assert [message.role for message in restored.messages] == ["user", "assistant", "user", "assistant"]
+    assert [message.role for message in restored.messages] == ["user", "assistant", "user", "assistant", "user", "assistant"]
     with sessions() as session:
         assert WorkflowProjectionService().build(session, "demo-run").run_id == "demo-run"
         assert session.query(AssistantMessageModel).count() == 6
@@ -146,5 +152,5 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
     with sessions() as session:
         failed = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.idempotency_key == "demo-failure"))
         assert failed is not None and failed.status == "failed"
-        assert session.query(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.idempotency_key == "demo-failure").count() == 2
+        assert session.query(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.idempotency_key == "demo-failure").count() == 3
     engine.dispose()

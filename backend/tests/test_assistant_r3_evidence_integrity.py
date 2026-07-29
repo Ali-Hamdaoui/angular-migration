@@ -156,29 +156,29 @@ def test_unselected_excerpt_is_invalid_citation_with_correlation(tmp_path):
     engine.dispose()
 
 
-def test_material_backend_reconstruction_discards_provider_proof(tmp_path):
+def test_provider_answer_and_validated_citation_are_preserved_without_normalization(tmp_path):
     engine, scope, sessions, root = _scope(tmp_path)
     a = _artifact(sessions, root, "a", "evidence for the current migration state", approved=True)
     _approve_snapshot(sessions, [a.ref.artifact_id])
     with scope() as session:
         retrieval = AssistantEvidenceRetrievalService()
-        _, refs = retrieval.retrieve(session, "run-r3", "What is the current migration state?")
+        _, refs = retrieval.retrieve(session, "run-r3", "What approved evidence supports this?")
     selected = refs[0]
 
     class Gateway:
         def complete(self, request):
-            output = {"answer": "unknown", "summary": "unknown", "intent": "workflow_status", "capability_key": "workflow_status", "proof_label": "approved_evidence_supported", "citations": [{"excerpt_id": selected["excerpt_id"], "artifact_id": selected["artifact_id"], "checksum_sha256": selected["checksum_sha256"], "stage_key": selected["stage_key"], "locator": selected["locator"], "proof_label": selected["proof_label"]}], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
+            output = {"answer": "unknown", "summary": "unknown", "intent": "evidence_question", "capability_key": "analysis", "proof_label": "approved_evidence_supported", "citations": [{"excerpt_id": selected["excerpt_id"], "artifact_id": selected["artifact_id"], "checksum_sha256": selected["checksum_sha256"], "stage_key": selected["stage_key"], "locator": selected["locator"], "proof_label": selected["proof_label"]}], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
             return _provider_response(request, output=output)
 
     service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
     projection = {"phase": "Validation", "stage": "runtime", "status": "FAILED", "gate": "G02", "gate_status": "approved", "blocker": "NO_COMPATIBLE_RUNTIME_PROFILE", "waiting_reason": "unknown", "failure_reason": "unknown", "next_action": "Install the approved runtime.", "completed_phases": ["Source snapshot"], "remaining_phases": ["Validation"], "state_version": 1, "events": [], "evidence": [], "usage": [], "duration_seconds": 1, "operational_statistics": {}}
     service._run = lambda _run_id: object()
     service._projection = lambda _run: projection
-    result = service.answer(AssistantMessageRequestDto(run_id="run-r3", message="What is the current migration state?", idempotency_key="reconstruct"), actor="alice")
-    assert result.proof_label == "authoritative_persisted_fact"
-    assert result.citations == []
-    assert "NO_COMPATIBLE_RUNTIME_PROFILE" in result.answer
+    result = service.answer(AssistantMessageRequestDto(run_id="run-r3", message="What approved evidence supports this?", idempotency_key="reconstruct"), actor="alice")
+    assert result.proof_label == "approved_evidence_supported"
+    assert [item["excerpt_id"] for item in result.citations] == [selected["excerpt_id"]]
+    assert result.answer == "unknown"
     with sessions() as session:
         row = session.query(AssistantMessageModel).filter_by(message_id=result.message_id).one()
-        assert row.evidence == []
+        assert [item["excerpt_id"] for item in row.evidence] == [selected["excerpt_id"]]
     engine.dispose()

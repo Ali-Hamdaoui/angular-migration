@@ -1,6 +1,7 @@
 """Bounded semantic intent classification and read-only capability dispatch."""
 
 import re
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
@@ -71,6 +72,23 @@ class AssistantCapability:
     response_policy: str = "read_only"
     next_step_proposal_builder: Callable[..., list[dict[str, object]]] | None = None
 
+    def provider_policy(self, *, selected_intent: str, selected_excerpt_ids: list[str]) -> str:
+        """Return the machine-readable response contract for this dispatch."""
+        return json.dumps({
+            "selected_intent": selected_intent,
+            "selected_capability_key": self.capability_key,
+            "required_authoritative_projection_fields": sorted(self.required_projection_fields),
+            "allowed_evidence_types": sorted(self.allowed_evidence_types),
+            "citations_required": selected_intent == "evidence_question" and bool(selected_excerpt_ids),
+            "allowed_proof_labels": ["approved_evidence_supported"] if selected_intent == "evidence_question" and selected_excerpt_ids else [
+                "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
+            ] if selected_excerpt_ids else [
+                "authoritative_persisted_fact", "approved_evidence_supported", "model_interpretation", "unknown_or_unavailable",
+            ],
+            "allowed_next_step_proposals": "read_only_navigation_only",
+            "unknown_information_behavior": "state_unknown_or_unavailable",
+        }, sort_keys=True)
+
 
 class AssistantCapabilityRegistry:
     def __init__(self) -> None:
@@ -114,17 +132,17 @@ def build_next_step_proposals(*, run_id: str, gate_id: str | None, gate_state: s
 
 def default_capability_registry() -> AssistantCapabilityRegistry:
     registry = AssistantCapabilityRegistry()
-    for key, intents in (
-        ("workflow_status", {"workflow_status", "completed_work", "remaining_work", "comparison"}),
-        ("failure_explanation", {"blocker_or_failure"}),
-        ("analysis", {"analysis_explanation", "evidence_question"}),
-        ("planning", {"planning_explanation"}),
-        ("transformation", {"transformation_explanation"}),
-        ("validation", {"validation_explanation"}),
-        ("usage", {"usage_and_cost"}),
-        ("next_steps", {"next_steps"}),
+    for key, intents, fields, evidence in (
+        ("workflow_status", {"workflow_status", "completed_work", "remaining_work", "comparison"}, {"status", "phase", "stage", "gate", "blocker", "next_action"}, set()),
+        ("failure_explanation", {"blocker_or_failure"}, {"status", "phase", "stage", "blocker", "failure_reason", "next_action"}, set()),
+        ("analysis", {"analysis_explanation", "evidence_question"}, {"events", "evidence", "status", "phase", "stage", "blocker", "next_action"}, {"report", "analysis", "snapshot", "source"}),
+        ("planning", {"planning_explanation"}, {"events", "phase", "stage", "gate"}, {"plan", "report"}),
+        ("transformation", {"transformation_explanation"}, {"events", "phase", "stage"}, {"report", "snapshot"}),
+        ("validation", {"validation_explanation"}, {"events", "phase", "stage", "failure_reason"}, {"report", "validation"}),
+        ("usage", {"usage_and_cost"}, {"usage", "duration_seconds"}, set()),
+        ("next_steps", {"next_steps"}, {"blocker", "gate", "next_action", "waiting_reason"}, set()),
     ):
-        registry.register(AssistantCapability(key, frozenset(intents), response_policy="read_only"))
+        registry.register(AssistantCapability(key, frozenset(intents), frozenset(fields), frozenset(evidence), response_policy="read_only"))
     return registry
 
 
@@ -137,6 +155,16 @@ def classify_semantic_intent(question: str) -> SemanticIntentResult:
     """
     if not isinstance(question, str) or not question.strip() or is_mutation_request(question):
         return SemanticIntentResult(intent="unsupported", rationale="mutation_or_invalid_request")
+    normalized = " ".join(question.casefold().split())
+    if re.search(r"\b(why|what)\b.*\b(stopped?|blocked?|preventing|blocker)\b", normalized) or "what is preventing progress" in normalized:
+        return SemanticIntentResult(intent="blocker_or_failure", rationale="blocker_question")
+    composite = (
+        (re.search(r"\bwhy\b.*\b(stop|stopped|blocked|blocker|prevent|failure|failed)\b", normalized) and re.search(r"\b(next|happen|action|step)\b", normalized))
+        or ("blocker" in normalized and re.search(r"\b(next|action|step)\b", normalized))
+        or normalized in {"what is the next permitted action?", "what is the next permitted action"}
+    )
+    if composite:
+        return SemanticIntentResult(intent="blocker_or_failure", rationale="composite_blocker_and_next_action")
     query_tokens = _semantic_tokens(question)
     scores = {
         intent: len(query_tokens & _semantic_tokens(profile[0]))

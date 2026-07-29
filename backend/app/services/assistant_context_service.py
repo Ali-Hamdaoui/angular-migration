@@ -46,7 +46,8 @@ from app.services.assistant_capabilities import (
 )
 from app.services.assistant_context_budget import ContextBudgetExceeded, prepare_assistant_request
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
-from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService
+from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService, build_assistant_response_contract
+from app.llm_gateway.azure_gateway import _azure_strict_schema
 from app.services.migration_run_service import MigrationRunService
 from app.services.mock_migration_api_service import get_mock_migration_api_service
 from app.services.workflow_projection_service import WorkflowProjectionService
@@ -471,11 +472,17 @@ class AssistantContextService:
         evidence: list[AssistantEvidenceDto] = []
         if not mutation_request and capability is not None:
             try:
-                with self._scope() as session:
-                    evidence_segments, evidence_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
-                policy = "Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations."
+                if intent == "evidence_question":
+                    with self._scope() as session:
+                        evidence_segments, evidence_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
+                else:
+                    evidence_segments, evidence_refs = [], []
+                selected_excerpt_ids = [str(ref["excerpt_id"]) for ref in evidence_refs]
+                policy = capability.provider_policy(selected_intent=intent, selected_excerpt_ids=selected_excerpt_ids)
                 registry = getattr(self._invocations, "_registry", None)
-                schema = registry().json_schema("assistant-response-v1") if callable(registry) else {"type": "object", "additionalProperties": False}
+                provider_contract = build_assistant_response_contract(intent=intent, capability_key=capability.capability_key, selected_excerpt_ids=selected_excerpt_ids, selected_citations=evidence_refs)
+                response_contract = build_assistant_response_contract(intent=intent, capability_key=capability.capability_key, selected_excerpt_ids=selected_excerpt_ids, bind_excerpt_ids=False, require_citations=False)
+                schema = _azure_strict_schema(provider_contract.model_json_schema())
                 prepared = prepare_assistant_request(
                     policy=policy,
                     schema=schema,
@@ -517,7 +524,7 @@ class AssistantContextService:
                             "request_manifest_reference": checksum,
                         },
                     )
-                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode), actor=actor)
+                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode, response_contract=response_contract), actor=actor)
                 if governed_response.status != "completed":
                     if governed_response.failure_code == "LLM_STRUCTURED_RESPONSE_INVALID":
                         raise AssistantRequestError("assistant_invalid_structured_response", "The governed Assistant returned an invalid structured response.", 502)
@@ -532,19 +539,6 @@ class AssistantContextService:
                 if isinstance(governed_response.structured_output.get("answer"), str):
                     answer = governed_response.structured_output["answer"]
                     proof = provider_proof
-                    answer_lower = answer.lower()
-                    if intent in {"workflow", "workflow_status"} and projection.get("blocker") == "NO_COMPATIBLE_RUNTIME_PROFILE" and (
-                        "unknown" in answer_lower
-                        or "stale answer" in answer_lower
-                        or "operational statistics unavailable" in answer_lower
-                        or "failed before producing a completed answer" in answer_lower
-                        or "no_compatible_runtime_profile" not in answer_lower and "no compatible runtime profile" not in answer_lower
-                        or "execution-profile resolution blocked" not in answer_lower
-                    ):
-                        answer = self._authoritative_workflow_answer(projection)
-                        proof = "authoritative_persisted_fact"
-                        # Provider citations were proven for the old text only.
-                        validated_citations = []
                 governed_response = governed_response.model_copy(update={"structured_output": {**governed_response.structured_output, "answer": answer, "proof_label": proof, "citations": validated_citations}})
             except ContextBudgetExceeded:
                 self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest={**manifest, "context_budget_failure": "mandatory_content_exceeds_hard_limit"}, checksum=checksum, reason="The Assistant input could not be bounded safely.", code="assistant_context_budget_exceeded")

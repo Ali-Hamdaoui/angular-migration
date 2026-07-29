@@ -109,7 +109,9 @@ class CitationGateway(ProjectionGateway):
     def complete(self, request):
         response = super().complete(request)
         current = response.structured_output
-        return response.model_copy(update={"structured_output": structured_response("Cited answer.", intent=current["intent"], capability_key=current["capability_key"], citations=self.citations, proof_label="approved_evidence_supported")})
+        question = json.loads(request.prepared_input["serialized_input"])["question"] if request.prepared_input else ""
+        intent, capability = ("evidence_question", "analysis") if "evidence" in question.casefold() or "approved" in question.casefold() else (current["intent"], current["capability_key"])
+        return response.model_copy(update={"structured_output": structured_response("Cited answer.", intent=intent, capability_key=capability, citations=self.citations, proof_label="approved_evidence_supported")})
 
 
 class FailingGateway(Gateway):
@@ -508,10 +510,10 @@ def test_citation_requires_approved_supported_lineage_and_immutable_artifact(tmp
         session.add(ArtifactMetadataModel(id="unapproved", run_id="run-1", stage_id=None, artifact_type="report", relative_path="evidence/unapproved.json", checksum="sha256:unapproved", immutable=True, safe_metadata={"approval_status": "pending", "lineage": "run-1"}, created_at=now))
         session.commit()
     with scope() as session:
-        _, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-1", "Where is the migration now?")
+        _, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-1", "What approved evidence supports this?")
     selected = refs[0]
     citation = {"excerpt_id": selected["excerpt_id"], "artifact_id": selected["artifact_id"], "checksum_sha256": selected["checksum_sha256"], "stage_key": selected["stage_key"], "locator": selected["locator"], "proof_label": selected["proof_label"]}
-    valid = AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([citation])).answer(AssistantMessageRequestDto(run_id="run-1", message="Where is the migration now?", idempotency_key="valid-citation"))
+    valid = AssistantContextService(session_scope_factory=scope, gateway=CitationGateway([citation])).answer(AssistantMessageRequestDto(run_id="run-1", message="What approved evidence supports this?", idempotency_key="valid-citation"))
     assert valid.answer == "Cited answer."
     for key, invalid in (("bad-checksum", {**citation, "checksum_sha256": "sha256:wrong"}), ("missing", {**citation, "excerpt_id": "missing"}), ("foreign-stage", {**citation, "stage_key": "foreign-stage"})):
         with pytest.raises(Exception, match="citation"):
