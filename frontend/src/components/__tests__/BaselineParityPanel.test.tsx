@@ -18,7 +18,7 @@ describe("BaselineParityPanel", () => {
 
   it("shows an empty state and captures evidence", async () => {
     render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" workflowEvents={[{ event_type: "BASELINE_BUILD_COMPLETED" }, { event_type: "BASELINE_TESTS_COMPLETED" }, { event_type: "BASELINE_LINT_COMPLETED" }]} />);
-    expect(await screen.findByText("No parity evidence has been captured.")).toBeInTheDocument();
+    expect(await screen.findByText("Baseline validation is complete; parity capture is ready.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Capture baseline parity" }));
     await waitFor(() => { expect(captureBaselineParity).toHaveBeenCalled(); });
   });

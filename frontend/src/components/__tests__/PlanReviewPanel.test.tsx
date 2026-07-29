@@ -10,7 +10,7 @@ const checksum = "sha256:" + "a".repeat(64);
 const state = { run_id: "run-1", state_version: 4, workflow_events: [] } as unknown as AuthoritativeRunStateDto;
 const review = {
   run_id: "run-1", status: "pending", plan: { version: 1 }, stage_plan: { stage_id: "stage-1" }, plan_checksum: checksum, stage_plan_checksum: checksum,
-  diff: { from_version: 1, to_version: 2, changed_fields: ["builder"], changes: { builder: "approved" }, checksum }, package: { artifact_set_checksum: checksum, package_checksum: checksum, narrative: { summary: "Advisory explanation", rationale: ["Exact versions are retained."], risks: [] } }, artifact_ids: ["artifact-1"], artifact_checksums: { "artifact-1": checksum }, artifact_links: {}, gate_id: "G06", gate_version: "g06-v1", gate_status: "pending", gate_decision: null, package_checksum: checksum, state_version: 4, event_sequence: 8, idempotent_replay: false,
+  diff: { from_version: 1, to_version: 2, changed_fields: ["builder"], changes: { builder: "approved" }, checksum }, package: { artifact_set_checksum: checksum, package_checksum: checksum, narrative: { summary: "Advisory explanation", rationale: ["Exact versions are retained."], risks: [] } }, artifact_set_checksum: checksum, artifact_ids: ["artifact-1"], artifact_checksums: { "artifact-1": checksum }, artifact_links: {}, gate_id: "G06", gate_version: "g06-v1", gate_status: "pending", gate_decision: null, package_checksum: checksum, state_version: 4, event_sequence: 8, idempotent_replay: false,
 };
 const baseResult = { review, status: "success" as const, error: null, lastAction: null, refresh: vi.fn(), revise: vi.fn(), explain: vi.fn(), decide: vi.fn() };
 

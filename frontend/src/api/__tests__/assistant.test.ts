@@ -1,5 +1,5 @@
 import { createApiClient } from "@/api/client";
-import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+import { getAssistantMessages, sendAssistantMessage, streamAssistantEvents } from "@/api/assistant";
 
 describe("assistant API client", () => {
   it("uses the run-scoped typed POST and GET contract", async () => {
@@ -9,5 +9,34 @@ describe("assistant API client", () => {
     await expect(getAssistantMessages("run/1", "c1", client)).resolves.toMatchObject({ conversation_id: "c1" });
     await expect(sendAssistantMessage("run/1", { message: "Where is the migration now?", idempotency_key: "k" }, client)).resolves.toMatchObject({ answer: "state" });
     expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([["http://backend.test/api/v1/runs/run%2F1/assistant/messages?conversation_id=c1", "GET"], ["http://backend.test/api/v1/runs/run%2F1/assistant/messages", "POST"]]);
+  });
+
+  it("parses split and multiple SSE frames, ignores heartbeats, and sends the durable cursor", async () => {
+    const encoder = new TextEncoder();
+    const chunks = [
+      ": heartbeat\n\n",
+      "id: 1\nevent: ASSISTANT_RESPONSE_STARTED\ndata: {\"sequence\":1,\"event_type\":\"ASSISTANT_RESPONSE_STARTED\",\n",
+      "data: \"payload\":{\"safe\":true}}\n\n",
+      "id: 2\nevent: ASSISTANT_CONTEXT_BUILT\ndata: {\"sequence\":2,\"event_type\":\"ASSISTANT_CONTEXT_BUILT\",\"payload\":{}}\n\n",
+    ];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { chunks.forEach((chunk) => controller.enqueue(encoder.encode(chunk))); controller.close(); },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    const events: unknown[] = [];
+    const heartbeats: number[] = [];
+    const pending = streamAssistantEvents("run/1", 7, controller.signal, (event) => events.push(event), () => heartbeats.push(1));
+    await expect(pending).rejects.toThrow("disconnected");
+    expect(events).toHaveLength(2);
+    expect(heartbeats).toHaveLength(1);
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ "Last-Event-ID": "7", Accept: "text/event-stream" });
+  });
+
+  it("turns malformed event data into a reconnectable rejection", async () => {
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("event: ASSISTANT_RESPONSE_COMPLETED\ndata: {bad}\n\n")); controller.close(); } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(stream, { status: 200 })));
+    await expect(streamAssistantEvents("run-1", 0, new AbortController().signal, () => undefined, () => undefined)).rejects.toThrow();
   });
 });
