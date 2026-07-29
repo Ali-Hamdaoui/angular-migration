@@ -124,6 +124,12 @@ class PlanningAgentService:
                 content=_json(request.stage_plan),
                 untrusted=False,
             ),
+            LlmContextSegment(
+                segment_id="deterministic-plan-binding",
+                label="deterministic plan checksum binding",
+                content=_json({"deterministic_plan_checksum": deterministic_checksum}),
+                untrusted=False,
+            ),
         ]
         if sum(len(item.content.encode()) for item in context) > self.max_context_bytes:
             raise PlanningReviewApplicationError(
@@ -201,7 +207,7 @@ class PlanningAgentService:
                     task_type=LlmTaskType.PLAN_RATIONALE,
                     role=LlmRole.PHASE_PROPOSER,
                     prompt_name=self.prompt_name,
-                    system_policy="Explain only the deterministic migration plan. Never create or change commands, versions, approvals, or executable truth.",
+                    system_policy="Explain only the deterministic migration plan. Copy deterministic_plan_checksum exactly from the trusted deterministic-plan-binding context. Never calculate or change checksum bindings, commands, versions, approvals, or executable truth.",
                     context=context,
                     response_schema=self.schema_name,
                     max_output_tokens=2048,
@@ -230,6 +236,12 @@ class PlanningAgentService:
                 content=_json(narrative.model_dump(mode="json")),
                 untrusted=True,
             ),
+            LlmContextSegment(
+                segment_id="proposer-output-binding",
+                label="planning proposer checksum binding",
+                content=_json({"proposer_output_checksum": proposer_checksum}),
+                untrusted=False,
+            ),
         ]
         try:
             response = self.gateway.complete(
@@ -240,7 +252,7 @@ class PlanningAgentService:
                     task_type=LlmTaskType.PLANNING_REVIEW,
                     role=LlmRole.PHASE_REVIEWER,
                     prompt_name=self.reviewer_prompt_name,
-                    system_policy="Review only the bounded Planning explanation. Do not author commands, versions, patches, or approvals.",
+                    system_policy="Review only the bounded Planning explanation. Copy deterministic_plan_checksum and proposer_output_checksum exactly from their trusted binding contexts. Never calculate or change checksum bindings, commands, versions, patches, or approvals.",
                     context=review_context,
                     response_schema=self.reviewer_schema_name,
                     max_output_tokens=1024,
