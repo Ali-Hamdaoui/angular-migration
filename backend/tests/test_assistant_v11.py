@@ -1,5 +1,6 @@
 """Focused V1.1 Assistant vertical-slice contracts."""
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -143,6 +144,18 @@ def test_bound_provider_contract_rejects_other_valid_intent_capability_and_missi
         contract.model_validate({**valid, "citations": []})
     with pytest.raises(ValidationError):
         contract.model_validate({**valid, "citations": [{**valid["citations"][0], "excerpt_id": "excerpt-other"}]})
+
+
+def test_proof_label_policy_is_fail_closed_without_selected_evidence():
+    evidence_policy = json.loads(default_capability_registry().get_for_intent("evidence_question").provider_policy(selected_intent="evidence_question", selected_excerpt_ids=[]))
+    assert evidence_policy["allowed_proof_labels"] == ["unknown_or_unavailable"]
+    evidence_contract = build_assistant_response_contract(intent="evidence_question", capability_key="analysis", selected_excerpt_ids=[])
+    response = {"answer": "No usable approved evidence is available.", "summary": "No usable approved evidence is available.", "intent": "evidence_question", "capability_key": "analysis", "proof_label": "unknown_or_unavailable", "citations": [], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "low"}
+    evidence_contract.model_validate(response)
+    with pytest.raises(ValidationError):
+        evidence_contract.model_validate({**response, "proof_label": "approved_evidence_supported"})
+    status_policy = json.loads(default_capability_registry().get_for_intent("workflow_status").provider_policy(selected_intent="workflow_status", selected_excerpt_ids=[]))
+    assert "approved_evidence_supported" not in status_policy["allowed_proof_labels"]
 
 
 def test_all_supported_intents_have_one_registry_capability_and_extension_is_pipeline_independent():

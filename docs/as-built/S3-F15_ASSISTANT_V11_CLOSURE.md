@@ -29,8 +29,7 @@ The real mounted FastAPI/Next UI passed status, same-conversation follow-up, har
 
 R1–R9 behavior remains covered by the controlled Assistant matrix: 97 tests passed. Frontend typecheck, lint, and production build passed. Ruff, compileall, Alembic current/heads, and static scans passed. The deterministic Playwright suite passed 12/12 in three consecutive runs with workers=1 and retries=0.
 
-The final sanitized evidence bundle is outside the repository and supersedes the prior partial bundle:
-`C:\Users\ilyas.abarbach\Documents\amfa-s3-f15-r10-final-20260729\R10_EVIDENCE_20260729_FINAL`
+The sanitized R10 evidence bundle is retained externally and is not committed.
 
 Evidence manifest SHA-256: `B008844BE9CD4835F3D68D3A84DF11094B7BF6920050ACA65B3F0D81398F17AE`.
 

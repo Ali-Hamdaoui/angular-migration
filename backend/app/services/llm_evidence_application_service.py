@@ -111,10 +111,8 @@ def build_assistant_response_contract(*, intent: str, capability_key: str, selec
     evidence_selected = intent == "evidence_question" and bool(selected_excerpt_ids)
     if require_citations is None:
         require_citations = evidence_selected
-    proof_type = Literal[("approved_evidence_supported",)] if evidence_selected else Literal[tuple((
+    proof_type = Literal[("approved_evidence_supported",)] if evidence_selected else Literal[("unknown_or_unavailable",)] if intent == "evidence_question" else Literal[tuple((
         "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
-    ) if selected_excerpt_ids else (
-        "authoritative_persisted_fact", "approved_evidence_supported", "model_interpretation", "unknown_or_unavailable",
     ))]
     selected_citations = selected_citations or [{"excerpt_id": item} for item in selected_excerpt_ids]
     excerpt_type = Literal[tuple(selected_excerpt_ids or ["__no_selected_excerpt__"])] if bind_excerpt_ids else str

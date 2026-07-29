@@ -80,10 +80,9 @@ class AssistantCapability:
             "required_authoritative_projection_fields": sorted(self.required_projection_fields),
             "allowed_evidence_types": sorted(self.allowed_evidence_types),
             "citations_required": selected_intent == "evidence_question" and bool(selected_excerpt_ids),
-            "allowed_proof_labels": ["approved_evidence_supported"] if selected_intent == "evidence_question" and selected_excerpt_ids else [
+            "allowed_proof_labels": (["approved_evidence_supported"] if selected_excerpt_ids else ["unknown_or_unavailable"])
+            if selected_intent == "evidence_question" else [
                 "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
-            ] if selected_excerpt_ids else [
-                "authoritative_persisted_fact", "approved_evidence_supported", "model_interpretation", "unknown_or_unavailable",
             ],
             "allowed_next_step_proposals": "read_only_navigation_only",
             "unknown_information_behavior": "state_unknown_or_unavailable",
