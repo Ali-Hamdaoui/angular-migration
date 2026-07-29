@@ -56,9 +56,10 @@ def test_amfa221_isolated_restart_replay_vertical_demo(tmp_path):
     with sessions() as session:
         projection = WorkflowProjectionService().build(session, "demo-run")
         assert projection.run_id == "demo-run"
-        assert projection.gate.availability == "unavailable"
-        assert projection.remaining_work == []
-        assert projection.next_permitted_action.availability == "unavailable"
+        assert projection.gate.availability == "known"
+        assert projection.gate.value == "G02 pending"
+        assert projection.remaining_work == ["Transformation", "Validation", "Completion"]
+        assert projection.next_permitted_action.availability == "known"
 
     provider = GovernedFakeProvider()
     invocation_service = LlmEvidenceApplicationService(session_scope_factory=scope, gateway=provider)

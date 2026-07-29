@@ -169,18 +169,7 @@ class DiscoveryService:
 
     def _angular_json(self, discovery_root: Path) -> tuple[dict | None, str | None]:
         path = Path(discovery_root) / "angular.json"
-        try:
-            document = WorkspaceConfigurationReader().read_json_object(path, logical_name="angular.json")
-            return document.value, None
-        except WorkspaceConfigurationError as error:
-            code = {
-                "WORKSPACE_JSON_NOT_FOUND": "ANGULAR_JSON_MISSING",
-                "WORKSPACE_JSON_UNREADABLE": "ANGULAR_JSON_UNREADABLE",
-                "WORKSPACE_JSON_ENCODING_INVALID": "ANGULAR_JSON_INVALID",
-                "WORKSPACE_JSON_SYNTAX_INVALID": "ANGULAR_JSON_INVALID",
-                "WORKSPACE_JSON_ROOT_INVALID": "ANGULAR_JSON_INVALID",
-            }.get(error.code, "ANGULAR_JSON_INVALID")
-            return None, code
+        return self._json(path, "ANGULAR_JSON")
 
     def _json(self, path: Path, name: str = "PACKAGE_JSON") -> tuple[dict | None, str | None]:
         missing = f"{name}_MISSING"
