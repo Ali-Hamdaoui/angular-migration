@@ -1085,6 +1085,233 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
     engine.dispose()
 
 
+def test_angular_update_checkpoint_restoration_success(tmp_path: Path):
+    """_classify_failure restores checkpoint and routes to angular_update for environment_transient."""
+    engine, factory = _database(tmp_path)
+    NOW = datetime(2026, 7, 30, tzinfo=UTC)
+    _exec_base = dict(
+        executable="npx", arguments=[], requested_at=NOW,
+        state_version=1, attempt_number=1, operation_kind="mutating",
+    )
+    session = factory()
+    run = MigrationRunModel(
+        id="run-cr", status="STAGE_CREATED", run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed", state_version=7,
+        run_root=str(tmp_path), artifact_root=str(tmp_path / "artifacts"),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW, updated_at=NOW,
+    )
+    # Create a checkpoint directory with a file (simulating pre-update workspace)
+    checkpoint_dir = tmp_path / ".checkpoints" / "snapshot-cr"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "package.json").write_text('{"name":"test"}', encoding="utf-8")
+    checkpoint_fp = StageSandboxCopier.fingerprint(checkpoint_dir)
+    checkpoint = StageCheckpointModel(
+        id="checkpoint-cr", run_id="run-cr", stage_id="stage-cr",
+        kind="pre_angular_update", sequence=1,
+        workspace_alias="STAGE_WORKSPACE_STAGE_CR",
+        workspace_path=str(checkpoint_dir),
+        workspace_fingerprint=checkpoint_fp,
+        safe_for_resume=True, sealed=False, state_version=1, created_at=NOW,
+    )
+    execution = CommandExecutionModel(
+        id="exec-cr", run_id="run-cr", stage_id="stage-cr",
+        command_id="angular-update-exact", status="failed",
+        failure_code="COMMAND_EXIT_NONZERO",
+        failure_message="ng update failed", **_exec_base,
+    )
+    step = StageStepModel(
+        id="step-cr", run_id="run-cr", stage_id="stage-cr",
+        name="angular_update-0", status="FAILED",
+        component_type="command", execution_id=execution.id,
+        state_version=1, updated_at=NOW,
+    )
+    workspace = tmp_path / "workspace-cr"
+    workspace.mkdir(parents=True, exist_ok=True)
+    binding = StageWorkspaceBindingModel(
+        id="binding-cr", run_id="run-cr", stage_id="stage-cr",
+        alias="STAGE_WORKSPACE_STAGE_CR",
+        workspace_path=str(workspace), workspace_fingerprint="old-fp",
+        active=True, created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-cr", run_id="run-cr", current_stage_id="stage-cr",
+        thread_id="thread-cr", status="running", current_node="classify_failure",
+        worker_id="worker-cr", g06_approval_id="g06-cr",
+        plan_id="plan-cr", plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-cr", stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-cr", request_checksum="sha256:continuation-cr",
+        state_version=3, attempt=1, max_attempts=3, created_at=NOW, updated_at=NOW,
+    )
+    session.add_all([run, checkpoint, execution, step, binding, continuation])
+    session.commit()
+    session.close()
+
+    mock_failures = MagicMock()
+    mock_route = MagicMock()
+    mock_route.value = "environment_transient"
+    mock_failures.collect.return_value = {
+        "workspace_path": str(workspace),
+        "stage_id": "stage-cr",
+        "failure_fingerprint": "fp-1",
+    }
+    mock_failures.classify.return_value = mock_route
+    mock_artifact = MagicMock()
+    mock_artifact.ref.checksum = "sha256:artifact"
+    mock_failures.write.return_value = (mock_artifact, mock_artifact)
+
+    orchestrator = TransformerOrchestrator(
+        scope=lambda: _test_scope(factory)(),
+        stage_service=MagicMock(spec=TransformerStageService),
+        gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=mock_failures,
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+    mock_stage = orchestrator._stage
+    mock_stage._binding.return_value = binding
+    mock_stage.reconstruct_workspace.return_value = checkpoint_fp
+    mock_stage.snapshot_workspace.return_value = MagicMock(fingerprint="fp")
+
+    orchestrator._classify_failure("cont-cr", "worker-cr")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-cr")
+    assert cont.current_node == "angular_update"
+    assert cont.status == "queued"
+    mock_stage.reconstruct_workspace.assert_called_once()
+    session.close()
+    engine.dispose()
+
+
+def test_angular_update_failure_routes_to_classify_vertical(tmp_path: Path):
+    """Full vertical: _handle_prompt failure routes through classify_failure to angular_update on transient."""
+    engine, factory = _database(tmp_path)
+    NOW = datetime(2026, 7, 30, tzinfo=UTC)
+    _exec_base = dict(
+        executable="npx", arguments=[], requested_at=NOW,
+        state_version=1, attempt_number=1, operation_kind="mutating",
+    )
+    session = factory()
+    run = MigrationRunModel(
+        id="run-vr", status="STAGE_CREATED", run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed", state_version=7,
+        run_root=str(tmp_path), artifact_root=str(tmp_path / "artifacts"),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW, updated_at=NOW,
+    )
+    checkpoint_dir = tmp_path / ".checkpoints" / "snapshot-vr"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "package.json").write_text('{"name":"test"}', encoding="utf-8")
+    checkpoint_fp = StageSandboxCopier.fingerprint(checkpoint_dir)
+    checkpoint = StageCheckpointModel(
+        id="checkpoint-vr", run_id="run-vr", stage_id="stage-vr",
+        kind="pre_angular_update", sequence=1,
+        workspace_alias="STAGE_WORKSPACE_STAGE_VR",
+        workspace_path=str(checkpoint_dir),
+        workspace_fingerprint=checkpoint_fp,
+        safe_for_resume=True, sealed=False, state_version=1, created_at=NOW,
+    )
+    execution = CommandExecutionModel(
+        id="exec-vr", run_id="run-vr", stage_id="stage-vr",
+        command_id="angular-update-exact", status="failed",
+        failure_code="COMMAND_EXIT_NONZERO",
+        failure_message="ng update failed", **_exec_base,
+    )
+    step = StageStepModel(
+        id="step-vr", run_id="run-vr", stage_id="stage-vr",
+        name="angular_update-0", status="RUNNING",
+        component_type="command", execution_id=execution.id,
+        state_version=1, updated_at=NOW,
+    )
+    workspace = tmp_path / "workspace-vr"
+    workspace.mkdir(parents=True, exist_ok=True)
+    binding = StageWorkspaceBindingModel(
+        id="binding-vr", run_id="run-vr", stage_id="stage-vr",
+        alias="STAGE_WORKSPACE_STAGE_VR",
+        workspace_path=str(workspace), workspace_fingerprint="fp-before",
+        active=True, created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-vr", run_id="run-vr", current_stage_id="stage-vr",
+        thread_id="thread-vr", status="running", current_node="handle_prompt",
+        worker_id="worker-vr", g06_approval_id="g06-vr",
+        plan_id="plan-vr", plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-vr", stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-vr", request_checksum="sha256:continuation-vr",
+        state_version=3, attempt=1, max_attempts=3, created_at=NOW, updated_at=NOW,
+    )
+    session.add_all([run, checkpoint, execution, step, binding, continuation])
+    session.commit()
+    session.close()
+
+    mock_failures = MagicMock()
+    mock_route = MagicMock()
+    mock_route.value = "environment_transient"
+    mock_failures.collect.return_value = {
+        "workspace_path": str(workspace),
+        "stage_id": "stage-vr",
+        "failure_fingerprint": "fp-1",
+    }
+    mock_failures.classify.return_value = mock_route
+    mock_artifact = MagicMock()
+    mock_artifact.ref.checksum = "sha256:artifact"
+    mock_failures.write.return_value = (mock_artifact, mock_artifact)
+
+    mock_stage = MagicMock(spec=TransformerStageService)
+    mock_stage._binding.return_value = binding
+    mock_stage.reconstruct_workspace.return_value = checkpoint_fp
+    mock_stage.snapshot_workspace.return_value = MagicMock(fingerprint="fp")
+
+    orchestrator = TransformerOrchestrator(
+        scope=lambda: _test_scope(factory)(),
+        stage_service=mock_stage,
+        gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=mock_failures,
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+    # Step 1: handle_prompt should terminalize and route to classify_failure
+    orchestrator._handle_prompt("cont-vr", "worker-vr")
+    session = factory()
+    step = session.get(StageStepModel, "step-vr")
+    cont = session.get(TransformationContinuationModel, "cont-vr")
+    assert step.status == "FAILED", f"Expected FAILED, got {step.status}"
+    assert cont.current_node == "classify_failure", f"Expected classify_failure, got {cont.current_node}"
+    assert cont.status == "queued"
+    session.close()
+
+    # Step 2: classify_failure should detect it, restore checkpoint, route to angular_update
+    # Reclaim continuation (worker claims it again)
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-vr")
+    cont.status = "running"
+    cont.worker_id = "worker-vr-v2"
+    cont.state_version += 1
+    session.commit()
+    session.close()
+
+    orchestrator._classify_failure("cont-vr", "worker-vr-v2")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-vr")
+    assert cont.current_node == "angular_update", f"Expected angular_update, got {cont.current_node}"
+    assert cont.status == "queued"
+    assert cont.attempt == 2
+    mock_stage.reconstruct_workspace.assert_called()
+    session.close()
+    engine.dispose()
+
+
 def test_cancellation_and_timeout_keep_distinct_terminal_states(
     tmp_path: Path,
     status: CommandStatus,

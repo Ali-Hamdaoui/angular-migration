@@ -375,6 +375,8 @@ class PlanRevisionService:
             commands = dict(stage_values["commands"])
             definition = ANGULAR_UPDATE_V2_RENDERER
             update = dict(commands["angular_update"][0])
+            update["template_version"] = 2
+            update["template_id"] = definition.template_id
             update["arguments"] = definition.render_arguments({
                 "target_cli_exact": changes.target_cli_exact,
                 "target_exact": stage.target_exact,

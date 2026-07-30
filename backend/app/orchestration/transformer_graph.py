@@ -362,10 +362,9 @@ class TransformerOrchestrator:
                 else:
                     step.status = "FAILED"
                     step.completed_at = datetime.now(UTC)
-                    continuation.status = "queued"
-                    continuation.current_node = "classify_failure"
                     continuation.last_error_code = execution.failure_code or "ANGULAR_UPDATE_FAILED"
                     continuation.last_error_message = execution.failure_message or "Angular update failed without a governed prompt"
+                    self._queue(continuation, "classify_failure")
                 return
             checkpoint = session.get(StageCheckpointModel, prompt.reconstruction_checkpoint_id)
             binding = self._stage._binding(session, continuation)
@@ -698,8 +697,11 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
 
             if self._is_angular_update_failure(session, continuation):
-                _checkpoint_id, _new_fingerprint = self._restore_angular_update_checkpoint(session, continuation)
+                for artifact in (failure, route_artifact, context):
+                    if artifact is not None:
+                        self._stage.register_artifact(session, artifact, continuation)
                 if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
+                    self._restore_angular_update_checkpoint(session, continuation)
                     continuation.attempt += 1
                     continuation.status = "queued"
                     continuation.current_node = "angular_update"
@@ -708,7 +710,7 @@ class TransformerOrchestrator:
                     continuation.state_version += 1
                     continuation.updated_at = datetime.now(UTC)
                     return
-                elif route.value != "repairable_source":
+                if route.value != "repairable_source":
                     self._block(
                         continuation,
                         f"ANGULAR_UPDATE_{route.value.upper()}",

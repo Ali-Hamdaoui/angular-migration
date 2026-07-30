@@ -11,6 +11,8 @@ from app.domain.contracts import CommandRequestDto
 from app.command_execution.worker import CommandPolicy, CommandRegistry
 from app.services.planning_application_service import StageExecutionPlanService
 from app.services.planning_review_evidence_application_service import G06_APPROVAL_NEXT_RUN_STATUS
+from app.services.planning_review_application_service import PlanRevisionService
+from app.domain.planning_review import PlanRevisionChanges
 from app.services.path_validation_service import is_portable_absolute_path
 
 
@@ -248,6 +250,46 @@ def test_planned_angular_update_matches_v2_template():
     update = plan.commands["angular_update"][0]
     assert command_arguments_match(ANGULAR_UPDATE_V2_RENDERER.argument_patterns, update.arguments)
     assert command_arguments_match(TRANSFORMATION_COMMAND_CATALOGUE["angular-update-exact"].argument_patterns, update.arguments) is False
+
+
+def test_rebuilt_plan_uses_catalogue_for_arguments():
+    """Revised angular_update commands are rendered via ANGULAR_UPDATE_V2_RENDERER, not hardcoded."""
+    from app.services.planning_application_service import PlanningApplicationService
+    from app.domain.planning_review import PlanRevisionRequest, G06Gate, PlanRevisionChanges
+
+    result = PlanningApplicationService().generate(PlanGenerationRequest(
+        run_id="run-rebuild", expected_state_version=1, idempotency_key="rebuild-plan", actor="operator",
+        source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
+        catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
+        execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+        builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
+        stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
+    ))
+    changes = PlanRevisionChanges(target_cli_exact="19.3.0")
+    request = PlanRevisionRequest(
+        run_id="run-rebuild", idempotency_key="rebuild-v2", expected_state_version=1,
+        actor="test-operator",
+        artifact_set_checksum="sha256:" + "a" * 64,
+        plan=result.plan.model_dump(mode="json"),
+        stage_plan=result.first_stage_plan.model_dump(mode="json"),
+        changes=changes,
+    )
+    service = PlanRevisionService()
+    revision = service.revise(request)
+    revised_commands = revision.stage_plan.get("commands", {})
+    angular_update = revised_commands.get("angular_update", [{}])[0]
+    expected_v2 = ANGULAR_UPDATE_V2_RENDERER.render_arguments({
+        "target_cli_exact": "19.3.0",
+        "target_exact": "19.2.0",
+    })
+    assert angular_update["arguments"] == list(expected_v2), (
+        f"Revised arguments {angular_update['arguments']} do not match "
+        f"ANGULAR_UPDATE_V2_RENDERER output {list(expected_v2)}"
+    )
+    assert angular_update.get("template_version") == 2, (
+        f"Expected template_version=2, got {angular_update.get('template_version')}"
+    )
+    assert angular_update.get("template_id") == ANGULAR_UPDATE_V2_RENDERER.template_id
 
 
 def test_v1_plan_remains_immutable():
