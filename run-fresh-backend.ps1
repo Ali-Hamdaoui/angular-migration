@@ -3,7 +3,8 @@ param(
     [string]$RepoRoot = "C:\Users\abdelilah.mortaki\Desktop\angular-migration",
     [string]$SourceRoot = "C:\Users\abdelilah.mortaki\Desktop\angular-crud-poc",
     [string]$TargetBaseRoot = "C:\Users\abdelilah.mortaki\Desktop\angularRus",
-    [int]$Port = 8000
+    [int]$Port = 8000,
+    [switch]$RequireLlm
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,9 +22,14 @@ $dataRoot = Join-Path $env:LOCALAPPDATA "AngularMigrationControlTower\$proofName
 $dbPath = Join-Path $dataRoot "control-tower.db"
 $proofTarget = Join-Path $TargetBaseRoot $proofName
 
-$expectedAssistantRoutes = @{
+$expectedRuntimeRoutes = @{
     "/api/v1/runs/{run_id}/assistant/messages" = @("get", "post")
     "/api/v1/runs/{run_id}/assistant/events"   = @("get")
+    "/api/v1/runs/{run_id}/transformation" = @("get")
+    "/api/v1/runs/{run_id}/transformation/prompts/{prompt_id}/decision" = @("post")
+    "/api/v1/runs/{run_id}/transformation/gates/{gate_id}/decisions" = @("post")
+    "/api/v1/runs/{run_id}/transformation/cancel" = @("post")
+    "/api/v1/runs/{run_id}/transformation/restart" = @("post")
 }
 
 function Get-ProcessSnapshot {
@@ -45,10 +51,17 @@ function Test-IsRepositoryUvicornProcess {
     }
 
     $normalizedCommandLine = $commandLine.ToLowerInvariant()
+    $processName = [string]$ProcessInfo.Name
     $normalizedRepoRoot = $RepoRoot.ToLowerInvariant()
     $normalizedBackendRoot = $backendRoot.ToLowerInvariant()
 
-    $isUvicorn = $normalizedCommandLine -match "(^|\s)(uvicorn|python(?:\.exe)?\s+-m\s+uvicorn)(\s|$)"
+    $isUvicorn = (
+        $processName -match "^uvicorn(?:\.exe)?$" -or
+        (
+            $processName -match "^python(?:\.exe)?$" -and
+            $normalizedCommandLine -match "\s-m\s+uvicorn(\s|$)"
+        )
+    )
     $isExpectedApplication = $normalizedCommandLine -match "app\.main:app"
     $belongsToRepository = (
         $normalizedCommandLine.Contains($normalizedRepoRoot) -or
@@ -59,6 +72,44 @@ function Test-IsRepositoryUvicornProcess {
         $isUvicorn -and
         $isExpectedApplication -and
         $belongsToRepository
+    )
+}
+
+function Test-IsRepositoryTransformerWorkerProcess {
+    param(
+        [Parameter(Mandatory)]
+        [object]$ProcessInfo
+    )
+
+    $commandLine = [string]$ProcessInfo.CommandLine
+
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+
+    $normalizedCommandLine = $commandLine.ToLowerInvariant()
+    $processName = [string]$ProcessInfo.Name
+    $belongsToRepository = (
+        $normalizedCommandLine.Contains($RepoRoot.ToLowerInvariant()) -or
+        $normalizedCommandLine.Contains($backendRoot.ToLowerInvariant())
+    )
+
+    return (
+        $processName -match "^python(?:\.exe)?$" -and
+        $normalizedCommandLine -match "\s-m\s+app\.orchestration\.transformer_worker(\s|$)" -and
+        $belongsToRepository
+    )
+}
+
+function Test-IsRepositoryRuntimeProcess {
+    param(
+        [Parameter(Mandatory)]
+        [object]$ProcessInfo
+    )
+
+    return (
+        (Test-IsRepositoryUvicornProcess -ProcessInfo $ProcessInfo) -or
+        (Test-IsRepositoryTransformerWorkerProcess -ProcessInfo $ProcessInfo)
     )
 }
 
@@ -99,7 +150,7 @@ function Get-CandidateProcessDepth {
     return $depth
 }
 
-function Stop-ExistingBackendProcesses {
+function Stop-ExistingRepositoryRuntimeProcesses {
     param(
         [switch]$Quiet
     )
@@ -136,13 +187,59 @@ function Stop-ExistingBackendProcesses {
             Select-Object -ExpandProperty OwningProcess -Unique
     )
 
+    $unrelatedPortOwners = @()
+
     foreach ($processId in $portOwnerIds) {
-        [void]$candidateIds.Add([int]$processId)
+        $ownerId = [int]$processId
+        $currentId = $ownerId
+        $visitedAncestors = [System.Collections.Generic.HashSet[int]]::new()
+        $belongsToRepository = $false
+
+        while ($processesById.ContainsKey($currentId)) {
+            if (-not $visitedAncestors.Add($currentId)) {
+                break
+            }
+
+            $processInfo = $processesById[$currentId]
+
+            if (Test-IsRepositoryRuntimeProcess -ProcessInfo $processInfo) {
+                $belongsToRepository = $true
+                break
+            }
+
+            $currentId = [int]$processInfo.ParentProcessId
+        }
+
+        if ($belongsToRepository) {
+            [void]$candidateIds.Add($ownerId)
+        }
+        else {
+            $unrelatedPortOwners += $ownerId
+        }
     }
 
-    # Repository-specific Uvicorn parent/reloader processes.
+    if ($unrelatedPortOwners.Count -gt 0) {
+        $ownerDescriptions = @(
+            foreach ($ownerId in $unrelatedPortOwners) {
+                if ($processesById.ContainsKey($ownerId)) {
+                    $owner = $processesById[$ownerId]
+                    "PID=$ownerId Name=$($owner.Name) CommandLine=$($owner.CommandLine)"
+                }
+                else {
+                    "PID=$ownerId"
+                }
+            }
+        )
+
+        throw (
+            "Port $Port is occupied by an unrelated process; it was not stopped. " +
+            ($ownerDescriptions -join " | ")
+        )
+    }
+
+    # Repository-specific Uvicorn and Transformer worker processes.
     foreach ($processInfo in $processSnapshot) {
-        if (Test-IsRepositoryUvicornProcess -ProcessInfo $processInfo) {
+        if (Test-IsRepositoryRuntimeProcess -ProcessInfo $processInfo) {
             $processId = [int]$processInfo.ProcessId
 
             if ($processId -gt 0 -and $processId -ne $PID) {
@@ -151,7 +248,7 @@ function Stop-ExistingBackendProcesses {
         }
     }
 
-    # Include matching Uvicorn ancestors of port owners.
+    # Include matching repository runtime ancestors of port owners.
     foreach ($seedId in @($candidateIds)) {
         $currentId = [int]$seedId
         $visitedAncestors = [System.Collections.Generic.HashSet[int]]::new()
@@ -173,7 +270,7 @@ function Stop-ExistingBackendProcesses {
 
             $parentProcess = $processesById[$parentId]
 
-            if (Test-IsRepositoryUvicornProcess -ProcessInfo $parentProcess) {
+            if (Test-IsRepositoryRuntimeProcess -ProcessInfo $parentProcess) {
                 [void]$candidateIds.Add($parentId)
             }
 
@@ -208,7 +305,7 @@ function Stop-ExistingBackendProcesses {
 
     if ($candidateIds.Count -eq 0) {
         if (-not $Quiet) {
-            Write-Host "No existing repository backend process found." -ForegroundColor DarkGray
+            Write-Host "No existing repository runtime process found." -ForegroundColor DarkGray
         }
     }
     else {
@@ -235,7 +332,7 @@ function Stop-ExistingBackendProcesses {
 
         if (-not $Quiet) {
             Write-Host ""
-            Write-Host "Existing backend process tree:" -ForegroundColor Yellow
+            Write-Host "Existing repository runtime process tree:" -ForegroundColor Yellow
 
             $candidateDetails |
                 Sort-Object `
@@ -312,7 +409,7 @@ function Stop-ExistingBackendProcesses {
 
         if ($remainingIds.Count -gt 0) {
             throw (
-                "Unable to stop backend process IDs: {0}" -f
+                "Unable to stop repository runtime process IDs: {0}" -f
                 ($remainingIds -join ", ")
             )
         }
@@ -362,31 +459,31 @@ function Stop-ExistingBackendProcesses {
         )
     }
 
-    # Verify that no matching Uvicorn reloader remains.
-    $remainingRepositoryUvicorn = @(
+    # Verify that no matching Uvicorn or Transformer worker remains.
+    $remainingRepositoryRuntime = @(
         Get-ProcessSnapshot |
             Where-Object {
                 $_.ProcessId -ne $PID -and
-                (Test-IsRepositoryUvicornProcess -ProcessInfo $_)
+                (Test-IsRepositoryRuntimeProcess -ProcessInfo $_)
             }
     )
 
-    if ($remainingRepositoryUvicorn.Count -gt 0) {
+    if ($remainingRepositoryRuntime.Count -gt 0) {
         $remainingDescriptions = @(
-            $remainingRepositoryUvicorn |
+            $remainingRepositoryRuntime |
                 ForEach-Object {
                     "PID=$($_.ProcessId) Parent=$($_.ParentProcessId) CommandLine=$($_.CommandLine)"
                 }
         )
 
         throw (
-            "Repository Uvicorn processes remain after cleanup: " +
+            "Repository runtime processes remain after cleanup: " +
             ($remainingDescriptions -join " | ")
         )
     }
 
     if (-not $Quiet) {
-        Write-Host "Backend process cleanup completed. Port $Port is free." -ForegroundColor Green
+        Write-Host "Repository runtime cleanup completed. Port $Port is free." -ForegroundColor Green
     }
 }
 
@@ -512,7 +609,7 @@ function Wait-ForBackendOpenApi {
     )
 }
 
-function Assert-AssistantRoutes {
+function Assert-RequiredRuntimeRoutes {
     param(
         [Parameter(Mandatory)]
         [object]$OpenApiSchema
@@ -523,17 +620,20 @@ function Assert-AssistantRoutes {
     )
 
     Write-Host ""
-    Write-Host "Live Assistant OpenAPI routes:" -ForegroundColor Cyan
+    Write-Host "Live required runtime OpenAPI routes:" -ForegroundColor Cyan
 
-    $assistantPathNames = @(
+    $runtimePathNames = @(
         $availablePathNames |
-            Where-Object { $_ -match "assistant" } |
+            Where-Object {
+                $_ -match "/assistant/" -or
+                $_ -match "/transformation(?:/|$)"
+            } |
             Sort-Object
     )
 
-    foreach ($assistantPath in $assistantPathNames) {
+    foreach ($runtimePath in $runtimePathNames) {
         $pathProperty = $OpenApiSchema.paths.PSObject.Properties |
-            Where-Object { $_.Name -eq $assistantPath } |
+            Where-Object { $_.Name -eq $runtimePath } |
             Select-Object -First 1
 
         $methods = @(
@@ -554,16 +654,16 @@ function Assert-AssistantRoutes {
         Write-Host (
             "{0,-12} {1}" -f
             (($methods | ForEach-Object { $_.ToUpperInvariant() }) -join ","),
-            $assistantPath
+            $runtimePath
         )
     }
 
-    foreach ($expectedRoute in $expectedAssistantRoutes.GetEnumerator()) {
+    foreach ($expectedRoute in $expectedRuntimeRoutes.GetEnumerator()) {
         $routePath = [string]$expectedRoute.Key
         $requiredMethods = @($expectedRoute.Value)
 
         if ($availablePathNames -notcontains $routePath) {
-            throw "Required Assistant route is absent from live OpenAPI: $routePath"
+            throw "Required runtime route is absent from live OpenAPI: $routePath"
         }
 
         $routeProperty = $OpenApiSchema.paths.PSObject.Properties |
@@ -578,7 +678,7 @@ function Assert-AssistantRoutes {
         foreach ($requiredMethod in $requiredMethods) {
             if ($registeredMethods -notcontains $requiredMethod.ToLowerInvariant()) {
                 throw (
-                    "Assistant route $routePath is missing required method " +
+                    "Runtime route $routePath is missing required method " +
                     "$($requiredMethod.ToUpperInvariant())."
                 )
             }
@@ -586,7 +686,7 @@ function Assert-AssistantRoutes {
     }
 
     Write-Host ""
-    Write-Host "All required Assistant routes are registered in the live backend." -ForegroundColor Green
+    Write-Host "All required runtime routes are registered in the live backend." -ForegroundColor Green
 }
 
 if (-not (Test-Path -LiteralPath $RepoRoot -PathType Container)) {
@@ -614,9 +714,9 @@ if (-not (Test-Path -LiteralPath $TargetBaseRoot -PathType Container)) {
 }
 
 Write-Host ""
-Write-Host "Cleaning existing backend processes..." -ForegroundColor Cyan
+Write-Host "Cleaning existing repository runtime processes..." -ForegroundColor Cyan
 
-Stop-ExistingBackendProcesses
+Stop-ExistingRepositoryRuntimeProcesses
 
 Set-Location $backendRoot
 Assert-PythonSourcesCompile
@@ -660,7 +760,7 @@ $env:ALLOWED_TARGET_ROOTS = $TargetBaseRoot
 $env:BACKEND_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 $env:NPM_CONFIG_REGISTRY = "https://registry.npmjs.org/"
 $env:NPM_CONFIG_STRICT_SSL = "true"
-$env:LLM_ENABLED = "true"
+$env:LLM_ENABLED = if ($RequireLlm) { "true" } else { "false" }
 
 Write-Host ""
 Write-Host "Fresh backend configuration" -ForegroundColor Cyan
@@ -671,6 +771,17 @@ Write-Host "Source root:   $SourceRoot"
 Write-Host "Target base:   $TargetBaseRoot"
 Write-Host "Target to use: $proofTarget" -ForegroundColor Green
 Write-Host ""
+
+$llmConfigResult = Invoke-PythonCapture -Arguments @(
+    "-c",
+    "from app.core.config import get_settings; s=get_settings(); missing=[name for name,value in {'AZURE_OPENAI_ENDPOINT':s.azure_openai_endpoint,'AZURE_OPENAI_DEPLOYMENT':s.azure_openai_deployment,'AZURE_OPENAI_API_VERSION':s.azure_openai_api_version,'AZURE_OPENAI_API_KEY':s.azure_openai_api_key}.items() if s.llm_enabled and not value]; print(('LLM configuration incomplete: '+', '.join(missing)) if missing else (f'LLM: Azure OpenAI ready; deployment {s.azure_openai_deployment}, API {s.azure_openai_api_version}, endpoint configured.' if s.llm_enabled else 'LLM: disabled; deterministic Transformer remains available.')); raise SystemExit(bool(missing))"
+)
+
+$llmConfigResult.Lines | ForEach-Object { Write-Host $_ }
+
+if ($llmConfigResult.ExitCode -ne 0) {
+    throw "Azure LLM configuration validation failed without exposing credentials."
+}
 
 Write-Host "Available Alembic heads:" -ForegroundColor Cyan
 
@@ -693,8 +804,12 @@ $availableAlembicHeads = @(
     Get-AlembicHeadIds -Lines $headsResult.Lines
 )
 
-if ($availableAlembicHeads.Count -eq 0) {
-    throw "Alembic reported no available migration heads."
+if ($availableAlembicHeads.Count -ne 1) {
+    throw (
+        "Expected exactly one Alembic head, found {0}: {1}" -f
+        $availableAlembicHeads.Count,
+        ($availableAlembicHeads -join ", ")
+    )
 }
 
 Write-Host ""
@@ -705,9 +820,9 @@ Write-Host (
 ) -ForegroundColor Green
 
 Write-Host ""
-Write-Host "Applying all Alembic heads..." -ForegroundColor Cyan
+Write-Host "Applying Alembic head..." -ForegroundColor Cyan
 
-& $python -m alembic -c alembic.ini upgrade heads
+& $python -m alembic -c alembic.ini upgrade head
 
 if ($LASTEXITCODE -ne 0) {
     throw "Alembic migration failed. Exit code: $LASTEXITCODE"
@@ -747,7 +862,7 @@ $missingAppliedHeads = @(
 
 if ($missingAppliedHeads.Count -gt 0) {
     throw (
-        "Fresh database did not reach all available Alembic heads. " +
+        "Fresh database did not reach the available Alembic head. " +
         "Missing: " +
         ($missingAppliedHeads -join ", ")
     )
@@ -755,8 +870,7 @@ if ($missingAppliedHeads.Count -gt 0) {
 
 Write-Host ""
 Write-Host (
-    "Fresh database reached all {0} Alembic head(s): {1}" -f
-    $availableAlembicHeads.Count,
+    "Fresh database reached Alembic head: {0}" -f
     ($availableAlembicHeads -join ", ")
 ) -ForegroundColor Green
 
@@ -781,6 +895,20 @@ if ($importResult.ExitCode -ne 0) {
 Write-Host "Backend application import validation passed." -ForegroundColor Green
 
 Write-Host ""
+Write-Host "Validating Transformer worker import..." -ForegroundColor Cyan
+
+$workerImportResult = Invoke-PythonCapture -Arguments @(
+    "-c",
+    "import app.orchestration.transformer_worker; print('Transformer worker import passed.')"
+)
+
+$workerImportResult.Lines | ForEach-Object { Write-Host $_ }
+
+if ($workerImportResult.ExitCode -ne 0) {
+    throw "Transformer worker import failed."
+}
+
+Write-Host ""
 Write-Host "Starting backend on http://127.0.0.1:$Port" -ForegroundColor Green
 Write-Host "Paste this target into New Migration: $proofTarget" -ForegroundColor Yellow
 Write-Host ""
@@ -795,7 +923,21 @@ $uvicornArguments = @(
     $Port.ToString()
 )
 
+$workerArguments = @(
+    "-m",
+    "app.orchestration.transformer_worker"
+)
+
+$runtimeLogRoot = Join-Path $dataRoot "runtime-logs"
+New-Item -ItemType Directory -Force -Path $runtimeLogRoot | Out-Null
+
+$apiStdout = Join-Path $runtimeLogRoot "api.stdout.log"
+$apiStderr = Join-Path $runtimeLogRoot "api.stderr.log"
+$workerStdout = Join-Path $runtimeLogRoot "worker.stdout.log"
+$workerStderr = Join-Path $runtimeLogRoot "worker.stderr.log"
+
 $uvicornProcess = $null
+$transformerWorker = $null
 
 try {
     $uvicornProcess = Start-Process `
@@ -803,33 +945,76 @@ try {
         -ArgumentList $uvicornArguments `
         -WorkingDirectory $backendRoot `
         -NoNewWindow `
+        -RedirectStandardOutput $apiStdout `
+        -RedirectStandardError $apiStderr `
         -PassThru
 
+    $null = $uvicornProcess.Handle
+
+    $transformerWorker = Start-Process `
+        -FilePath $python `
+        -ArgumentList $workerArguments `
+        -WorkingDirectory $backendRoot `
+        -NoNewWindow `
+        -RedirectStandardOutput $workerStdout `
+        -RedirectStandardError $workerStderr `
+        -PassThru
+
+    $null = $transformerWorker.Handle
+
     Write-Host "Uvicorn launcher PID: $($uvicornProcess.Id)"
+    Write-Host "Transformer worker PID: $($transformerWorker.Id)"
+    Write-Host "API stdout:    $apiStdout"
+    Write-Host "API stderr:    $apiStderr"
+    Write-Host "Worker stdout: $workerStdout"
+    Write-Host "Worker stderr: $workerStderr"
     Write-Host "Waiting for live OpenAPI..." -ForegroundColor Cyan
 
     $openApiSchema = Wait-ForBackendOpenApi `
         -UvicornProcess $uvicornProcess `
         -TimeoutSeconds 60
 
-    Assert-AssistantRoutes -OpenApiSchema $openApiSchema
+    Assert-RequiredRuntimeRoutes -OpenApiSchema $openApiSchema
+
+    Start-Sleep -Seconds 2
+    $transformerWorker.Refresh()
+
+    if ($transformerWorker.HasExited) {
+        $transformerWorker.WaitForExit()
+        throw "Transformer worker exited during startup with code $($transformerWorker.ExitCode)."
+    }
 
     Write-Host ""
     Write-Host "Fresh backend verification passed." -ForegroundColor Green
     Write-Host "OpenAPI: http://127.0.0.1:$Port/openapi.json"
-    Write-Host "Press Ctrl+C to stop the backend." -ForegroundColor Yellow
+    Write-Host "Press Ctrl+C to stop the backend and Transformer worker." -ForegroundColor Yellow
     Write-Host ""
 
-    Wait-Process -Id $uvicornProcess.Id
+    while ($true) {
+        $uvicornProcess.Refresh()
+        $transformerWorker.Refresh()
+
+        if ($uvicornProcess.HasExited) {
+            $uvicornProcess.WaitForExit()
+            throw "Uvicorn exited with code $($uvicornProcess.ExitCode)."
+        }
+
+        if ($transformerWorker.HasExited) {
+            $transformerWorker.WaitForExit()
+            throw "Transformer worker exited with code $($transformerWorker.ExitCode)."
+        }
+
+        Start-Sleep -Seconds 1
+    }
 }
 finally {
-    if ($null -ne $uvicornProcess) {
+    if ($null -ne $uvicornProcess -or $null -ne $transformerWorker) {
         Write-Host ""
-        Write-Host "Stopping backend process tree..." -ForegroundColor Yellow
+        Write-Host "Stopping repository runtime process trees..." -ForegroundColor Yellow
 
         try {
-            Stop-ExistingBackendProcesses -Quiet
-            Write-Host "Backend stopped." -ForegroundColor Green
+            Stop-ExistingRepositoryRuntimeProcesses -Quiet
+            Write-Host "Backend and Transformer worker stopped." -ForegroundColor Green
         }
         catch {
             Write-Warning "Backend cleanup warning: $($_.Exception.Message)"
