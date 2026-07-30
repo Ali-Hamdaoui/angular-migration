@@ -3,8 +3,10 @@
 from datetime import UTC, datetime
 import ctypes
 import os
+import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -140,6 +142,20 @@ def test_process_id_is_reported_before_normal_output(tmp_path: Path) -> None:
     assert observed
     assert observed[0][0] == "pid"
     assert isinstance(observed[0][1], int)
+
+
+def test_supervisor_writes_bounded_stdin_and_closes_pipe(tmp_path: Path) -> None:
+    worker, _, _ = _worker(tmp_path)
+    structured = replace(
+        worker._policy.validate(_request()),
+        command=(sys.executable, "-c", "print(input())"),
+        stdin_text="yes\n",
+    )
+
+    result = WorkerSupervisor().run(structured)
+
+    assert result.status == CommandStatus.SUCCEEDED
+    assert result.stdout.strip() == "yes"
 
 
 def test_worker_registers_output_artifact_truncation_metadata(tmp_path: Path) -> None:

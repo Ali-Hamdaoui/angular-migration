@@ -6,6 +6,7 @@ import { useTransformation } from "@/hooks/useTransformation";
 import {
   cancelTransformation,
   decideTransformationGate,
+  decideTransformationPrompt,
   restartTransformation,
 } from "@/api/transformation";
 import { LiveCommandLogViewer } from "@/components/LogViewer";
@@ -49,6 +50,29 @@ export function TransformationPanel({
           executionStatus={projection.active_command_status ?? undefined}
         />
       : null}
+    {projection.status === "waiting_prompt"
+      && projection.active_prompt_id
+      && projection.active_prompt_checksum ? <div>
+        <h4>Angular CLI prompt</h4>
+        <p>{projection.active_prompt_text}</p>
+        {projection.active_prompt_explanation ? <>
+          <p>{projection.active_prompt_explanation.summary}</p>
+          <p>{projection.active_prompt_explanation.risk_note}</p>
+          <small>Explanation: {projection.active_prompt_explanation.source}</small>
+        </> : null}
+        <div>
+          {projection.active_prompt_options.map((option) =>
+            <button
+              key={option.option_id}
+              type="button"
+              disabled={submitting}
+              onClick={() => void decidePrompt(option.option_id)}
+            >
+              {option.label}
+            </button>
+          )}
+        </div>
+      </div> : null}
     {projection.status === "waiting_gate"
       && projection.active_gate
       && projection.active_gate_package_checksum
@@ -106,6 +130,27 @@ export function TransformationPanel({
       await refresh();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Cancellation failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function decidePrompt(selectedOptionId: string) {
+    if (!projection?.active_prompt_id || !projection.active_prompt_checksum) return;
+    setSubmitting(true);
+    setActionError(null);
+    const key = crypto.randomUUID();
+    try {
+      await decideTransformationPrompt(runId, projection.active_prompt_id, {
+        expected_state_version: projection.state_version,
+        idempotency_key: key,
+        prompt_checksum: projection.active_prompt_checksum,
+        selected_option_id: selectedOptionId,
+        correlation_id: key,
+      });
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Prompt decision failed.");
     } finally {
       setSubmitting(false);
     }

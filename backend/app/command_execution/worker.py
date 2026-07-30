@@ -17,7 +17,7 @@ import threading
 import queue
 import codecs
 import ctypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -169,6 +169,7 @@ class StructuredCommandRequest:
     working_directory: Path
     environment_allowlist: tuple[str, ...] = ()
     environment_overrides: dict[str, str] = field(default_factory=dict)
+    stdin_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -471,12 +472,16 @@ class WorkerSupervisor:
             cwd=request.working_directory,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE if request.stdin_text is not None else subprocess.DEVNULL,
             text=False,
             shell=False,
             env=self._build_safe_environment(request.environment_allowlist, request.environment_overrides),
             creationflags=creationflags,
             **popen_kwargs,
         )
+        if request.stdin_text is not None and process.stdin is not None:
+            process.stdin.write(request.stdin_text.encode("utf-8"))
+            process.stdin.close()
         if os.name == "nt":
             try:
                 job = _WindowsJobObject(process)
@@ -623,6 +628,7 @@ class ExecutionWorker:
         cancel_event: threading.Event | None = None,
         output_callback=None,
         process_started_callback=None,
+        stdin_text: str | None = None,
     ) -> CommandExecutionResult:
         replay = self._find_idempotent_result(request)
         if replay is not None:
@@ -644,6 +650,8 @@ class ExecutionWorker:
 
         try:
             structured_request = self._policy.validate(normalized_request)
+            if stdin_text is not None:
+                structured_request = replace(structured_request, stdin_text=stdin_text)
         except CommandPolicyViolation as exc:
             execution = self._record(
                 normalized_request,

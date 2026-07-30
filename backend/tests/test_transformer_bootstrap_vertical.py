@@ -187,7 +187,7 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
         checkpoints = session.query(StageCheckpointModel).order_by(StageCheckpointModel.sequence).all()
         commands = session.query(CommandExecutionModel).all()
         assert [item.kind for item in checkpoints] == ["pre_bootstrap", "post_bootstrap"]
-        assert durable.status == "blocked"
+        assert durable.status == "queued"
         assert durable.current_node == "angular_update"
         assert [item.command_id for item in commands] == ["npm-ci-bootstrap"]
     engine.dispose()

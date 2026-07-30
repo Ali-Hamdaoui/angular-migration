@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from app.services.stage_execution_application_service import (
     _ValidatedStageStart,
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -244,6 +246,120 @@ class TransformerStageService:
             )
 
     def queue_bootstrap(self, session, continuation: TransformationContinuationModel):
+        return self._queue_group(
+            session,
+            continuation,
+            group="bootstrap_install",
+            next_node="verify_bootstrap",
+            attempt_key="initial",
+        )
+
+    def queue_angular_update(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        checkpoint_id: str,
+        prompt_id: str | None,
+    ):
+        return self._queue_group(
+            session,
+            continuation,
+            group="angular_update",
+            next_node="handle_prompt",
+            attempt_key=prompt_id or "initial",
+            checkpoint_id=checkpoint_id,
+            prompt_id=prompt_id,
+        )
+
+    def queue_version_check(self, session, continuation: TransformationContinuationModel):
+        return self._queue_group(
+            session,
+            continuation,
+            group="target_version_check",
+            next_node="version_verify",
+            attempt_key="target",
+        )
+
+    def snapshot_workspace(self, workspace_path: str, stage_root: str, stage_id: str) -> StagePreparationResult:
+        workspace = Path(workspace_path).resolve(strict=True)
+        root = Path(stage_root).resolve(strict=True)
+        workspace.relative_to(root)
+        checkpoint_root = root / ".checkpoints"
+        checkpoint_root.mkdir(parents=True, exist_ok=True)
+        target = checkpoint_root / f"{stage_id}-{uuid4().hex[:12]}"
+        temporary = checkpoint_root / f".{target.name}.preparing"
+        if any(item.is_symlink() for item in workspace.rglob("*")):
+            raise TransformerStageError("WORKSPACE_SYMLINK_UNSUPPORTED", "Checkpoint source contains a symlink")
+        try:
+            shutil.copytree(workspace, temporary)
+            temporary.replace(target)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return StagePreparationResult(
+            "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_"),
+            str(target),
+            StageSandboxCopier.fingerprint(target),
+            sum(1 for item in target.rglob("*") if item.is_file()),
+            True,
+        )
+
+    def persist_snapshot_checkpoint(
+        self,
+        session,
+        continuation,
+        snapshot: StagePreparationResult,
+        kind: str,
+    ) -> StageCheckpointModel:
+        return self._checkpoint(
+            session,
+            continuation,
+            snapshot,
+            kind,
+            f"snapshot:{continuation.current_stage_id}:{kind}",
+            snapshot.fingerprint,
+        )
+
+    @staticmethod
+    def reconstruct_workspace(
+        snapshot_path: str,
+        workspace_path: str,
+        stage_root: str,
+        expected_fingerprint: str,
+    ) -> str:
+        snapshot = Path(snapshot_path).resolve(strict=True)
+        workspace = Path(workspace_path).resolve(strict=True)
+        root = Path(stage_root).resolve(strict=True)
+        snapshot.relative_to(root)
+        workspace.relative_to(root)
+        if StageSandboxCopier.fingerprint(snapshot) != expected_fingerprint:
+            raise TransformerStageError("CHECKPOINT_INTEGRITY_FAILED", "Checkpoint fingerprint changed")
+        temporary = workspace.parent / f".{workspace.name}.reconstructing-{uuid4().hex[:12]}"
+        quarantine = workspace.parent / f".{workspace.name}.interrupted-{uuid4().hex[:12]}"
+        shutil.copytree(snapshot, temporary)
+        try:
+            workspace.replace(quarantine)
+            temporary.replace(workspace)
+        except Exception:
+            if not workspace.exists() and quarantine.exists():
+                quarantine.replace(workspace)
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        shutil.rmtree(quarantine)
+        return StageSandboxCopier.fingerprint(workspace)
+
+    def _queue_group(
+        self,
+        session,
+        continuation,
+        *,
+        group,
+        next_node,
+        attempt_key,
+        checkpoint_id=None,
+        prompt_id=None,
+    ):
         run = session.get(MigrationRunModel, continuation.run_id)
         plan = session.get(MigrationPlanModel, continuation.plan_id)
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
@@ -255,7 +371,7 @@ class TransformerStageService:
             0,
             False,
         )
-        request = SimpleNamespace(idempotency_key=f"{continuation.id}:command")
+        request = SimpleNamespace(idempotency_key=f"{continuation.id}:command:{attempt_key}")
         try:
             result = self._stage_execution._authorize_and_queue_first_command(
                 session,
@@ -265,22 +381,25 @@ class TransformerStageService:
                 preparation,
                 request,
                 run.actor or "transformer",
-                "bootstrap_install",
+                group,
             )
         except StageExecutionError as error:
             raise TransformerStageError(error.code, error.message) from error
         step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == "bootstrap_install-0",
+                StageStepModel.name == f"{group}-0",
             )
         )
+        execution = session.get(CommandExecutionModel, result.execution_id)
+        execution.checkpoint_id = checkpoint_id
+        execution.prompt_request_id = prompt_id
         if step is not None:
             step.execution_id = result.execution_id
             step.status = "RUNNING"
             step.updated_at = self._now()
         continuation.status = "waiting_command"
-        continuation.current_node = "verify_bootstrap"
+        continuation.current_node = next_node
         continuation.worker_id = None
         continuation.lease_expires_at = None
         continuation.state_version += 1
@@ -321,10 +440,10 @@ class TransformerStageService:
             execution.runtime_checksum,
             execution.id,
         )
-        continuation.status = "blocked"
+        continuation.status = "queued"
         continuation.current_node = "angular_update"
         continuation.last_error_code = None
-        continuation.last_error_message = "Bootstrap complete; Angular update has not started"
+        continuation.last_error_message = None
         continuation.worker_id = None
         continuation.lease_expires_at = None
         continuation.state_version += 1

@@ -54,6 +54,7 @@ from app.repositories.models.workflow import (
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
+    StagePromptRequestModel,
     WorkerLeaseModel,
     WorkflowEventModel,
 )
@@ -66,6 +67,10 @@ from app.services.command_registry_service import (
 from app.domain.command import command_arguments_match
 from app.services.job_supervisor_service import JobSupervisorService
 from app.services.command_log_service import CommandLogService
+from app.services.transformer_prompt_service import (
+    AngularPromptDetector,
+    TransformerPromptService,
+)
 
 
 class CommandExecutorError(ValueError):
@@ -612,6 +617,10 @@ class CommandExecutorService:
                     lease_id = existing_lease.id
                 if model.cancel_requested_at is not None:
                     cancel_event.set()
+                prompt_stdin = None
+                if model.prompt_request_id:
+                    prompt = session.get(StagePromptRequestModel, model.prompt_request_id)
+                    prompt_stdin = TransformerPromptService.selected_stdin(prompt) if prompt else None
                 artifact_root = Path(run.artifact_root)
                 policy = CommandPolicy(
                     sandbox_root=root,
@@ -665,7 +674,11 @@ class CommandExecutorService:
             heartbeat = threading.Thread(target=renew_lease, name=f"lease-heartbeat-{execution_id}", daemon=True)
             heartbeat.start()
 
+            prompt_buffer = ""
+            prompt_captured = False
+
             def persist_output(stream: str, text: str) -> None:
+                nonlocal prompt_buffer, prompt_captured
                 from app.repositories.session import session_scope
                 with session_scope() as log_session:
                     CommandLogService().append_chunk(
@@ -673,6 +686,14 @@ class CommandExecutorService:
                         correlation_id=correlation_id,
                         strict_ownership=True,
                     )
+                    if command_id == "angular-update-exact" and not prompt_captured:
+                        prompt_buffer = (prompt_buffer + text)[-8192:]
+                        detected = AngularPromptDetector().detect(prompt_buffer)
+                        if detected is not None:
+                            durable = log_session.get(CommandExecutionModel, execution_id)
+                            TransformerPromptService().capture(log_session, durable, detected)
+                            prompt_captured = True
+                            cancel_event.set()
 
             def persist_pid(process_id: int) -> None:
                 from app.repositories.session import session_scope
@@ -697,6 +718,7 @@ class CommandExecutorService:
                 cancel_event=cancel_event,
                 output_callback=persist_output,
                 process_started_callback=persist_pid,
+                stdin_text=prompt_stdin,
             )
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)

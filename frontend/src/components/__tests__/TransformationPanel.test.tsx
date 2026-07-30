@@ -1,10 +1,15 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TransformationPanel } from "@/components/TransformationPanel";
-import { decideTransformationGate, getTransformation } from "@/api/transformation";
+import {
+  decideTransformationGate,
+  decideTransformationPrompt,
+  getTransformation,
+} from "@/api/transformation";
 
 vi.mock("@/api/transformation", () => ({
   getTransformation: vi.fn(),
   decideTransformationGate: vi.fn(),
+  decideTransformationPrompt: vi.fn(),
   cancelTransformation: vi.fn(),
   restartTransformation: vi.fn(),
 }));
@@ -26,6 +31,10 @@ const projection = {
   active_command_id: null,
   active_command_status: null,
   active_prompt_id: null,
+  active_prompt_checksum: null,
+  active_prompt_text: null,
+  active_prompt_options: [],
+  active_prompt_explanation: null,
   last_error_code: null,
   cancel_requested_at: null,
 };
@@ -66,6 +75,39 @@ describe("TransformationPanel", () => {
         package_checksum: "sha256:g07",
         workspace_fingerprint: "sha256:workspace",
         decision: "approve",
+      }),
+    ));
+  });
+
+  it("submits only a bounded Angular prompt option", async () => {
+    vi.mocked(getTransformation).mockResolvedValue({
+      ...projection,
+      status: "waiting_prompt",
+      active_gate: null,
+      active_gate_package_checksum: null,
+      active_prompt_id: "prompt-1",
+      active_prompt_checksum: "sha256:prompt",
+      active_prompt_text: "Would you like to migrate?",
+      active_prompt_options: [{ option_id: "yes", label: "Yes" }],
+      active_prompt_explanation: {
+        summary: "Angular needs a decision.",
+        option_effects: ["Yes reruns the command."],
+        risk_note: "Review the migration.",
+        source: "azure_openai",
+      },
+    });
+    vi.mocked(decideTransformationPrompt).mockResolvedValue({});
+    render(<TransformationPanel runId="run-1" workflowEvents={[]} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Yes" }));
+
+    await waitFor(() => expect(decideTransformationPrompt).toHaveBeenCalledWith(
+      "run-1",
+      "prompt-1",
+      expect.objectContaining({
+        expected_state_version: 3,
+        prompt_checksum: "sha256:prompt",
+        selected_option_id: "yes",
       }),
     ));
   });

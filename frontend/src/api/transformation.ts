@@ -33,6 +33,23 @@ export function decideTransformationGate(
   );
 }
 
+export function decideTransformationPrompt(
+  runId: string,
+  promptId: string,
+  body: {
+    expected_state_version: number;
+    idempotency_key: string;
+    prompt_checksum: string;
+    selected_option_id: string;
+    correlation_id: string;
+  },
+) {
+  return apiClient.post(
+    `/api/v1/runs/${runId}/transformation/prompts/${promptId}/decision`,
+    body,
+  );
+}
+
 export function restartTransformation(
   runId: string,
   body: { expected_state_version: number; idempotency_key: string; correlation_id: string },

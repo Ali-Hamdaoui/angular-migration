@@ -15,6 +15,15 @@ export type TransformationProjection = {
   active_command_id: string | null;
   active_command_status: string | null;
   active_prompt_id: string | null;
+  active_prompt_checksum: string | null;
+  active_prompt_text: string | null;
+  active_prompt_options: Array<{ option_id: string; label: string }>;
+  active_prompt_explanation: {
+    summary: string;
+    option_effects: string[];
+    risk_note: string;
+    source: string;
+  } | null;
   last_error_code: string | null;
   cancel_requested_at: string | null;
 };

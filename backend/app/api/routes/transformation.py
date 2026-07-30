@@ -1,6 +1,7 @@
 """Read and cancel the authoritative Transformer workflow."""
 
 from pathlib import Path
+import json
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from app.domain.transformation import (
 from app.repositories.models import (
     CommandExecutionModel,
     MigrationStageModel,
+    LlmInvocationModel,
     StageCheckpointModel,
     StageGateDecisionModel,
     StageGatePackageModel,
@@ -31,6 +33,8 @@ from app.services.transformation_continuation_service import (
 from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.command_executor_service import CommandExecutorService
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformer_prompt_service import TransformerPromptError, TransformerPromptService
+from app.domain.transformation import PromptDecisionRequest
 
 router = APIRouter(prefix="/runs", tags=["transformation"])
 
@@ -67,6 +71,11 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         .order_by(StagePromptRequestModel.created_at.desc())
         .limit(1)
     )
+    explanation = (
+        session.get(LlmInvocationModel, prompt.explanation_invocation_id)
+        if prompt and prompt.explanation_invocation_id
+        else None
+    )
     return {
         "run_id": continuation.run_id,
         "continuation_id": continuation.id,
@@ -84,6 +93,17 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "active_command_id": command.id if command else None,
         "active_command_status": command.status if command else None,
         "active_prompt_id": prompt.id if prompt else None,
+        "active_prompt_checksum": prompt.prompt_checksum if prompt else None,
+        "active_prompt_text": prompt.normalized_prompt if prompt else None,
+        "active_prompt_options": [
+            {"option_id": item["option_id"], "label": item["label"]}
+            for item in (prompt.options_json if prompt else [])
+        ],
+        "active_prompt_explanation": (
+            json.loads(explanation.redacted_summary)
+            if explanation and explanation.redacted_summary
+            else None
+        ),
         "last_error_code": continuation.last_error_code,
         "cancel_requested_at": continuation.cancel_requested_at,
     }
@@ -110,6 +130,47 @@ def get_transformation(
                 message="Transformer continuation has not been created",
             )
         return _projection(session, continuation)
+
+
+@router.post("/{run_id}/transformation/prompts/{prompt_id}/decision")
+def decide_prompt(
+    run_id: str,
+    prompt_id: str,
+    body: PromptDecisionRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        continuation = session.scalar(
+            select(TransformationContinuationModel).where(
+                TransformationContinuationModel.run_id == run_id
+            )
+        )
+        if continuation is None:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="TRANSFORMATION_NOT_FOUND",
+                message="Transformer continuation has not been created",
+            )
+        try:
+            prompt = TransformerPromptService().decide(
+                session, continuation, prompt_id, body, actor=actor
+            )
+        except TransformerPromptError as error:
+            return error_response(
+                request,
+                status_code=409,
+                error_code=error.code,
+                message=error.message,
+            )
+        return {
+            "prompt_id": prompt.id,
+            "selected_option_id": prompt.selected_option_id,
+            "status": prompt.status,
+            "state_version": continuation.state_version,
+        }
 
 
 @router.post("/{run_id}/transformation/gates/{gate_id}/decisions")
