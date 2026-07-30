@@ -39,5 +39,20 @@ export type TransformationProjection = {
   }>;
   sealed_chain_hash: string | null;
   last_error_code: string | null;
+  last_error_message: string | null;
+  runtime_profile_binding: {
+    expected: {
+      statuses: string[];
+      profile_id: string | null;
+      checksums: string[];
+    };
+    actual: {
+      status: string | null;
+      profile_id: string | null;
+      checksum: string | null;
+      persisted_profile_checksum: string | null;
+    };
+    mismatches: string[];
+  } | null;
   cancel_requested_at: string | null;
 };

@@ -35,6 +35,7 @@ from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.command_executor_service import CommandExecutorService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_prompt_service import TransformerPromptError, TransformerPromptService
+from app.services.transformer_stage_service import TransformerStageService
 from app.domain.transformation import PromptDecisionRequest
 
 router = APIRouter(prefix="/runs", tags=["transformation"])
@@ -102,6 +103,11 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         .order_by(StageCheckpointModel.created_at.desc())
         .limit(1)
     )
+    runtime_profile_binding = (
+        TransformerStageService.runtime_binding_evidence(session, continuation)[0]
+        if continuation.last_error_code == "EXECUTION_PROFILE_STALE"
+        else None
+    )
     return {
         "run_id": continuation.run_id,
         "continuation_id": continuation.id,
@@ -148,6 +154,8 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         ],
         "sealed_chain_hash": latest_seal.manifest_checksum if latest_seal else None,
         "last_error_code": continuation.last_error_code,
+        "last_error_message": continuation.last_error_message,
+        "runtime_profile_binding": runtime_profile_binding,
         "cancel_requested_at": continuation.cancel_requested_at,
     }
 

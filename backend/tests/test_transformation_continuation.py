@@ -180,6 +180,9 @@ def test_wait_wake_and_cancel_are_durable(tmp_path: Path):
         now=NOW,
     )
     service.wake(session, claimed.id, now=NOW)
+    resumed_version = claimed.state_version
+    service.wake(session, claimed.id, now=NOW)
+    assert claimed.state_version == resumed_version
     service.request_cancel(
         session,
         claimed.id,

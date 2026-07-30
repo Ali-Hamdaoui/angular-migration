@@ -104,7 +104,13 @@ export function LogsAndDiagnostics({ projection, workflowEvents }: Omit<SharedPr
         ? <pre className={styles.diagnostics}>{JSON.stringify(diagnostic.payload, null, 2)}</pre>
         : null}
     </> : null}
-    {projection.last_error_code ? <p className={styles.alert} role="alert">Backend error: {projection.last_error_code}</p> : null}
+    {projection.last_error_code ? <div className={styles.alert} role="alert">
+      <p>Backend error: {projection.last_error_code}</p>
+      {projection.last_error_message ? <p>{projection.last_error_message}</p> : null}
+      {projection.runtime_profile_binding
+        ? <pre className={styles.diagnostics}>{JSON.stringify(projection.runtime_profile_binding, null, 2)}</pre>
+        : null}
+    </div> : null}
   </section>;
 }
 

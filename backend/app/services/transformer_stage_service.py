@@ -125,33 +125,67 @@ class TransformerStageService:
             return preparation.fingerprint
 
     def runtime_binding(self, session, continuation: TransformationContinuationModel) -> dict[str, object]:
+        evidence, selected = self.runtime_binding_evidence(session, continuation)
+        if evidence["mismatches"]:
+            raise TransformerStageError(
+                "EXECUTION_PROFILE_STALE",
+                "Selected execution profile no longer matches the approved stage plan: "
+                + json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+            )
+        return {
+            "profile_id": evidence["actual"]["profile_id"],
+            "checksum": evidence["actual"]["checksum"],
+            "node_executable": selected.get("node_executable"),
+            "package_manager_executable": selected.get("package_manager_executable", "npm"),
+        }
+
+    @staticmethod
+    def runtime_binding_evidence(session, continuation: TransformationContinuationModel):
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
         profile = session.scalar(
             select(ExecutionProfileModel)
             .where(ExecutionProfileModel.run_id == continuation.run_id)
             .order_by(ExecutionProfileModel.created_at.desc())
         )
-        expected_id = (stage_plan.stage_plan or {}).get("execution_profile_id") if stage_plan else None
+        planned = stage_plan.stage_plan or {} if stage_plan else {}
+        expected_id = planned.get("execution_profile_id")
+        expected_checksums = sorted(
+            {
+                command.get("runtime_profile_checksum")
+                for commands in (planned.get("commands") or {}).values()
+                for command in commands
+                if command.get("runtime_profile_checksum")
+            }
+        )
         selected = next(
             (
                 item
                 for item in (profile.profiles or [])
                 if item.get("profile_id") == profile.selected_profile_id
-                and item.get("checksum") == profile.selected_checksum
             ),
             None,
         ) if profile else None
-        if profile is None or profile.status != "selected" or expected_id != profile.selected_profile_id or not selected:
-            raise TransformerStageError(
-                "EXECUTION_PROFILE_STALE",
-                "Selected execution profile no longer matches the approved stage plan",
-            )
-        return {
-            "profile_id": profile.selected_profile_id,
-            "checksum": profile.selected_checksum,
-            "node_executable": selected.get("node_executable"),
-            "package_manager_executable": selected.get("package_manager_executable", "npm"),
+        actual = {
+            "status": profile.status if profile else None,
+            "profile_id": profile.selected_profile_id if profile else None,
+            "checksum": profile.selected_checksum if profile else None,
+            "persisted_profile_checksum": selected.get("checksum") if selected else None,
         }
+        expected = {
+            "statuses": ["resolved", "selected"],
+            "profile_id": expected_id,
+            "checksums": expected_checksums,
+        }
+        mismatches = []
+        if actual["status"] not in expected["statuses"]:
+            mismatches.append("status")
+        if actual["profile_id"] != expected_id:
+            mismatches.append("profile_id")
+        if expected_checksums != [actual["checksum"]]:
+            mismatches.append("checksum")
+        if actual["persisted_profile_checksum"] != actual["checksum"]:
+            mismatches.append("persisted_profile_checksum")
+        return {"expected": expected, "actual": actual, "mismatches": mismatches}, selected
 
     def preflight(self, session, continuation: TransformationContinuationModel) -> dict[str, object]:
         binding = self._binding(session, continuation)

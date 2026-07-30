@@ -49,6 +49,8 @@ const projection = {
   route_stages: [{ stage_id: "stage-1", source_version: "18.x", target_version: "19.x", status: "preparing" }],
   sealed_chain_hash: null,
   last_error_code: null,
+  last_error_message: null,
+  runtime_profile_binding: null,
   cancel_requested_at: null,
 };
 
@@ -243,5 +245,34 @@ describe("TransformationPanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("reloaded");
     expect(refreshAuthoritativeState).toHaveBeenCalled();
     expect(getTransformation).toHaveBeenCalledTimes(2);
+  });
+
+  it("projects exact expected and actual runtime-profile stale evidence", async () => {
+    vi.mocked(getTransformation).mockResolvedValue({
+      ...projection,
+      status: "blocked",
+      current_node: "resolve_runtime",
+      last_error_code: "EXECUTION_PROFILE_STALE",
+      last_error_message: "Selected execution profile no longer matches the approved stage plan",
+      runtime_profile_binding: {
+        expected: {
+          statuses: ["resolved", "selected"],
+          profile_id: "profile-1",
+          checksums: ["sha256:expected"],
+        },
+        actual: {
+          status: "resolved",
+          profile_id: "profile-1",
+          checksum: "sha256:actual",
+          persisted_profile_checksum: "sha256:actual",
+        },
+        mismatches: ["checksum"],
+      },
+    });
+    renderPanel();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("EXECUTION_PROFILE_STALE");
+    expect(screen.getByRole("alert")).toHaveTextContent("sha256:expected");
+    expect(screen.getByRole("alert")).toHaveTextContent("sha256:actual");
   });
 });

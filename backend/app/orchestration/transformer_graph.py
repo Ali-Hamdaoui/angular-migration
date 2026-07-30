@@ -200,6 +200,8 @@ class TransformerOrchestrator:
             except TransformerStageError as error:
                 self._block(continuation, error.code, error.message)
                 return
+            continuation.last_error_code = None
+            continuation.last_error_message = None
             self._queue(continuation, "dependency_preflight")
 
     def _preflight(self, continuation_id: str, worker_id: str) -> None:

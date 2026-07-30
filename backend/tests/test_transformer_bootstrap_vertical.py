@@ -1,7 +1,9 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.transformation import StageGateDecisionRequest
@@ -18,11 +20,64 @@ from app.repositories.models import (
 )
 from app.services.stage_gate_service import StageGateService
 from app.services.transformation_continuation_service import TransformationContinuationService
-from app.services.transformer_stage_service import TransformerStageService
+from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from tests.test_transformation_continuation import _create, _session
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
+
+
+def _runtime_session(*, expected_id="profile-1", expected_checksum="sha256:runtime",
+                     actual_id="profile-1", actual_checksum="sha256:runtime",
+                     status="resolved"):
+    stage_plan = SimpleNamespace(stage_plan={
+        "execution_profile_id": expected_id,
+        "commands": {"bootstrap_install": [{
+            "runtime_profile_checksum": expected_checksum,
+        }]},
+    })
+    profile = SimpleNamespace(
+        status=status,
+        selected_profile_id=actual_id,
+        selected_checksum=actual_checksum,
+        profiles=[{
+            "profile_id": actual_id,
+            "checksum": actual_checksum,
+            "node_executable": "node",
+            "package_manager_executable": "npm",
+        }],
+    )
+
+    class Session:
+        def get(self, _model, _identifier):
+            return stage_plan
+
+        def scalar(self, _query):
+            return profile
+
+    return Session(), SimpleNamespace(stage_plan_id="stage-plan-1", run_id="run-1")
+
+
+def test_runtime_binding_blocks_changed_profile_with_exact_evidence():
+    session, continuation = _runtime_session(actual_id="profile-2")
+
+    with pytest.raises(TransformerStageError) as raised:
+        TransformerStageService().runtime_binding(session, continuation)
+
+    assert raised.value.code == "EXECUTION_PROFILE_STALE"
+    assert '"profile_id":"profile-1"' in raised.value.message
+    assert '"profile_id":"profile-2"' in raised.value.message
+
+
+def test_runtime_binding_blocks_frozen_command_checksum_mismatch():
+    session, continuation = _runtime_session(expected_checksum="sha256:catalogue-bound")
+
+    with pytest.raises(TransformerStageError) as raised:
+        TransformerStageService().runtime_binding(session, continuation)
+
+    assert raised.value.code == "EXECUTION_PROFILE_STALE"
+    assert '"checksums":["sha256:catalogue-bound"]' in raised.value.message
+    assert '"checksum":"sha256:runtime"' in raised.value.message
 
 
 def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_update(tmp_path: Path):
@@ -62,7 +117,11 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
         "target_family": "angular-19.x",
         "target_exact": "19.2.0",
         "execution_profile_id": "profile-1",
-        "commands": {"bootstrap_install": [command]},
+        "commands": {
+            "bootstrap_install": [
+                {**command, "runtime_profile_checksum": "sha256:runtime"}
+            ]
+        },
         "build_system_decision": {"action": "preserve", "builder": "application"},
         "validation_policy": {"policy_id": "validation-v1"},
         "recovery_policy": {"policy_id": "recovery-v1"},
@@ -87,7 +146,7 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
                 idempotency_key="profile",
                 request_checksum="sha256:profile",
                 policy_version="profile-v1",
-                status="selected",
+                status="resolved",
                 source_angular_exact="18.2.0",
                 selected_profile_id="profile-1",
                 selected_checksum="sha256:runtime",
