@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getTransformation } from "@/api/transformation";
+import { ApiClientError } from "@/api/client";
 import type { TransformationProjection } from "@/types/transformation";
 
 export function useTransformation(runId: string, refreshKey = 0) {
@@ -14,7 +15,7 @@ export function useTransformation(runId: string, refreshKey = 0) {
       setStatus("ready");
     } catch (error) {
       setProjection(null);
-      setStatus(error instanceof Error && error.message.includes("(404)") ? "empty" : "failed");
+      setStatus(error instanceof ApiClientError && error.status === 404 ? "empty" : "failed");
     }
   }, [runId]);
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);

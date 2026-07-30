@@ -3,7 +3,7 @@ import { ApiClientError } from "@/api/client";
 import { getAuthoritativeRunState } from "@/api/runs";
 import HomePage from "@/app/page";
 
-const dashboard = vi.fn(({ runId }: { runId: string }) => <div data-testid="authoritative-dashboard">Run {runId}</div>);
+const dashboard = vi.fn(({ runId }: { runId: string }) => <div data-testid="authoritative-dashboard">Run {runId}<span>Transformation</span></div>);
 vi.mock("@/api/runs", () => ({ getAuthoritativeRunState: vi.fn() }));
 vi.mock("@/components/AuthoritativeRunDashboard", () => ({ AuthoritativeRunDashboard: (props: { runId: string }) => dashboard(props) }));
 vi.mock("@/components/EnvironmentDiagnosticsPanel", () => ({ EnvironmentDiagnosticsPanel: () => null }));
@@ -18,6 +18,7 @@ describe("HomePage authoritative run restoration", () => {
     setUrl("/?run_id=run-valid"); vi.mocked(getAuthoritativeRunState).mockResolvedValue(state as never);
     render(<HomePage />);
     expect(await screen.findByTestId("authoritative-dashboard")).toHaveTextContent("run-valid");
+    expect(screen.getByText("Transformation")).toBeInTheDocument();
     expect(getAuthoritativeRunState).toHaveBeenCalledWith("run-valid");
     expect(window.localStorage.getItem("amfa.activeRunId")).toBe("run-valid");
   });

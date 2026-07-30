@@ -1,0 +1,227 @@
+.screen {
+  display: grid;
+  gap: 1rem;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
+  border: 1px solid #2b4e73;
+  border-left: 4px solid #55a7ff;
+  border-radius: .5rem;
+  background: linear-gradient(120deg, #0d2035, #0a192a);
+  padding: 1.25rem;
+}
+
+.hero h3 {
+  margin: .2rem 0 .4rem;
+  font-size: clamp(1.25rem, 2vw, 1.8rem);
+}
+
+.hero p,
+.note {
+  margin: .25rem 0 0;
+  color: #9db0c8;
+}
+
+.status {
+  border: 1px solid #3d73a6;
+  border-radius: 999px;
+  color: #a1c9ff;
+  padding: .35rem .65rem;
+  font: 700 .7rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  min-width: 0;
+  border: 1px solid #2b4e73;
+  border-radius: .5rem;
+  background: #0d2035;
+  padding: 1.1rem;
+}
+
+.cardWide {
+  grid-column: 1 / -1;
+}
+
+.card h3,
+.card h4 {
+  margin: 0 0 .8rem;
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: .25rem;
+  color: #55a7ff;
+  font-size: .67rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: .65rem;
+  margin: 0;
+}
+
+.metadata div {
+  min-width: 0;
+  border-top: 1px solid #244462;
+  padding-top: .6rem;
+}
+
+.metadata dt {
+  color: #73869b;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.metadata dd {
+  margin: .2rem 0 0;
+  overflow-wrap: anywhere;
+  color: #d4e1ef;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .78rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem;
+}
+
+.actions button {
+  border: 1px solid #3d73a6;
+  border-radius: .3rem;
+  background: #102b48;
+  color: #d8e8fb;
+  padding: .6rem .75rem;
+  font-weight: 700;
+}
+
+.actions button:hover:not(:disabled) {
+  border-color: #55a7ff;
+  background: #173b61;
+}
+
+.actions button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.danger {
+  border-color: #b5546a !important;
+  background: #541f30 !important;
+}
+
+.alert {
+  border: 1px solid #9b4c58;
+  border-radius: .4rem;
+  background: #321c27;
+  color: #ffd9de;
+  padding: .7rem;
+}
+
+.event {
+  margin: .55rem 0 0;
+  color: #a1c9ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .75rem;
+  overflow-wrap: anywhere;
+}
+
+.diagnostics {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #244462;
+  border-radius: .35rem;
+  background: #07111f;
+  color: #d8e8ff;
+  padding: .7rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: .75rem;
+}
+
+.artifactList,
+.route {
+  display: grid;
+  gap: .5rem;
+  margin: .65rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.artifactList li,
+.route li {
+  display: grid;
+  gap: .2rem;
+  border-top: 1px solid #244462;
+  padding-top: .55rem;
+}
+
+.artifactList a {
+  color: #a1c9ff;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.artifactList code,
+.route code,
+.fingerprint {
+  color: #9db0c8;
+  overflow-wrap: anywhere;
+  font-size: .72rem;
+}
+
+.prompt {
+  border-color: #a8752c;
+  background: #261e12;
+}
+
+.promptText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.optionEffects {
+  color: #c8b58f;
+}
+
+.empty {
+  border: 1px dashed #3d5e80;
+  border-radius: .5rem;
+  padding: 1.25rem;
+  background: #0a192a;
+}
+
+@media (max-width: 760px) {
+  .hero,
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .status {
+    width: fit-content;
+  }
+}

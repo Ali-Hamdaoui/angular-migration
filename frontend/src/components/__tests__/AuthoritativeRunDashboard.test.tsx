@@ -14,6 +14,7 @@ vi.mock("@/components/AnalysisReviewPanel", () => ({ AnalysisReviewPanel: () => 
 vi.mock("@/components/FeasibilityPanel", () => ({ FeasibilityPanel: () => <h2>feasibility-panel</h2> }));
 vi.mock("@/components/MigrationPlanPanel", () => ({ MigrationPlanPanel: () => <h2>plan-panel</h2> }));
 vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => <h2>plan-review-panel</h2> }));
+vi.mock("@/components/TransformationPanel", () => ({ TransformationPanel: () => <div aria-label="mock-transformation-panel">transformation-panel</div> }));
 vi.mock("@/components/AssistantPanel", () => ({ AssistantDock: () => <button type="button">Open Assistant</button> }));
 
 const initialState: AuthoritativeRunStateDto = {
@@ -51,6 +52,16 @@ const initialState: AuthoritativeRunStateDto = {
 };
 
 describe("AuthoritativeRunDashboard", () => {
+  it("always exposes and mounts the dedicated Transformation destination", () => {
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+
+    expect(screen.getByRole("button", { name: "Transformation" })).toBeInTheDocument();
+    expect(screen.getByLabelText("mock-transformation-panel")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Transformation" }));
+    expect(screen.getByRole("heading", { name: "Transformation" })).toBeInTheDocument();
+    expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
+  });
+
   it("renders backend-owned state, event history, and evidence", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
 
