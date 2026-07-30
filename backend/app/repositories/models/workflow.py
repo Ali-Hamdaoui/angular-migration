@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.models.base import Base
@@ -84,6 +84,13 @@ class StageStepModel(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(128))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execution_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    input_checksum: Mapped[str | None] = mapped_column(String(128))
+    output_checksum: Mapped[str | None] = mapped_column(String(128))
+    workspace_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    artifact_ids: Mapped[list[str] | None] = mapped_column(JSON, default=list)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AgentExecutionModel(Base):
@@ -245,6 +252,142 @@ class PlanningJobModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class TransformationContinuationModel(Base):
+    __tablename__ = "transformation_continuations"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_transformation_continuation_run"),
+        UniqueConstraint("thread_id", name="uq_transformation_continuation_thread"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    current_stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    current_node: Mapped[str] = mapped_column(String(64), nullable=False)
+    g06_approval_id: Mapped[str] = mapped_column(ForeignKey("g06_approvals.id"), nullable=False)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("migration_plans.id"), nullable=False)
+    plan_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    stage_plan_id: Mapped[str] = mapped_column(ForeignKey("stage_execution_plans.id"), nullable=False)
+    stage_plan_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    wake_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(128))
+    cancel_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    cancel_request_checksum: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StageCheckpointModel(Base):
+    __tablename__ = "stage_checkpoints"
+    __table_args__ = (UniqueConstraint("stage_id", "sequence", name="uq_stage_checkpoint_sequence"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_checkpoint_id: Mapped[str | None] = mapped_column(ForeignKey("stage_checkpoints.id"))
+    workspace_alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    manifest_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    manifest_checksum: Mapped[str | None] = mapped_column(String(128))
+    created_from_execution_id: Mapped[str | None] = mapped_column(ForeignKey("command_executions.id"))
+    safe_for_resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sealed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StagePromptRequestModel(Base):
+    __tablename__ = "stage_prompt_requests"
+    __table_args__ = (UniqueConstraint("execution_id", "prompt_checksum", name="uq_stage_prompt_execution_checksum"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    execution_id: Mapped[str] = mapped_column(ForeignKey("command_executions.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    detector_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    options_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    context_artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    prompt_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    pre_command_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    observed_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    explanation_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"))
+    explanation_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    selected_option_id: Mapped[str | None] = mapped_column(String(128))
+    decision_actor: Mapped[str | None] = mapped_column(String(128))
+    decision_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    decision_request_checksum: Mapped[str | None] = mapped_column(String(128))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconstruction_checkpoint_id: Mapped[str | None] = mapped_column(ForeignKey("stage_checkpoints.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageGatePackageModel(Base):
+    __tablename__ = "stage_gate_packages"
+    __table_args__ = (
+        UniqueConstraint("run_id", "stage_id", "gate_id", "gate_version", name="uq_stage_gate_package"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    package_artifact_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    package_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_set_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("migration_plans.id"), nullable=False)
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage_plan_id: Mapped[str] = mapped_column(ForeignKey("stage_execution_plans.id"), nullable=False)
+    stage_plan_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    expected_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stale_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StageGateDecisionModel(Base):
+    __tablename__ = "stage_gate_decisions"
+    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_stage_gate_decision_idempotency"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    gate_package_id: Mapped[str] = mapped_column(ForeignKey("stage_gate_packages.id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    gate_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    expected_state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    package_checksum: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class StageWorkspaceBindingModel(Base):
     """Authoritative contained workspace binding for one prepared stage."""
 
@@ -258,6 +401,10 @@ class StageWorkspaceBindingModel(Base):
     workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
     workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source_checkpoint_id: Mapped[str | None] = mapped_column(ForeignKey("stage_checkpoints.id"))
+    input_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    last_verified_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -402,7 +549,15 @@ class CommandLogSummaryModel(Base):
 
 class CommandExecutionModel(Base):
     __tablename__ = "command_executions"
-    __table_args__ = (UniqueConstraint("run_id", "idempotency_key", name="uq_command_executions_run_idempotency"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "idempotency_key", name="uq_command_executions_run_idempotency"),
+        Index(
+            "uq_command_executions_active_run",
+            "run_id",
+            unique=True,
+            sqlite_where=text("status IN ('queued', 'pending', 'running')"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
@@ -442,6 +597,11 @@ class CommandExecutionModel(Base):
     cancel_idempotency_key: Mapped[str | None] = mapped_column(String(128))
     reconstruction_required: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     worker_id: Mapped[str | None] = mapped_column(String(128))
+    claim_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    prompt_request_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    operation_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="read_only")
+    checkpoint_id: Mapped[str | None] = mapped_column(String(64), index=True)
     process_id: Mapped[int | None] = mapped_column(Integer)
     failure_code: Mapped[str | None] = mapped_column(String(128))
     failure_message: Mapped[str | None] = mapped_column(Text)
@@ -501,6 +661,29 @@ class RepairAttemptModel(Base):
     risk_level: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     diagnosis: Mapped[str | None] = mapped_column(Text)
+    failure_evidence_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    failure_evidence_checksum: Mapped[str | None] = mapped_column(String(128))
+    failure_route_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    failure_route_checksum: Mapped[str | None] = mapped_column(String(128))
+    context_pack_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    context_pack_checksum: Mapped[str | None] = mapped_column(String(128))
+    proposal_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    proposal_checksum: Mapped[str | None] = mapped_column(String(128))
+    proposer_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"))
+    review_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    review_checksum: Mapped[str | None] = mapped_column(String(128))
+    reviewer_invocation_id: Mapped[str | None] = mapped_column(ForeignKey("llm_invocations.id"))
+    g10_gate_package_id: Mapped[str | None] = mapped_column(ForeignKey("stage_gate_packages.id"))
+    apply_ledger_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    apply_ledger_checksum: Mapped[str | None] = mapped_column(String(128))
+    pre_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    post_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    validation_summary_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    validation_summary_checksum: Mapped[str | None] = mapped_column(String(128))
+    failure_fingerprint: Mapped[str | None] = mapped_column(String(128), index=True)
+    parent_attempt_id: Mapped[str | None] = mapped_column(ForeignKey("repair_attempts.id"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class LlmUsageRecordModel(Base):

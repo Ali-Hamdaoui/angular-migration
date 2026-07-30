@@ -69,7 +69,6 @@ def queue_command(
             if error.code == "STALE_STATE_VERSION":
                 details["guidance"] = "Refresh the authoritative run snapshot and retry."
             return error_response(request, status_code=status_code, error_code=error.code, message=error.message, details=details)
-    executor.dispatch_execution(result.execution_id)
     return CommandExecutionResponseDto(
             execution_id=result.execution_id,
             run_id=result.run_id,

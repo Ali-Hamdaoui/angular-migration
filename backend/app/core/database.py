@@ -18,6 +18,13 @@ LLM_PROVIDER_FAILURE_COLUMNS = (
     "provider_request_id",
     "failure_stage",
 )
+TRANSFORMER_TABLES = (
+    "transformation_continuations",
+    "stage_checkpoints",
+    "stage_prompt_requests",
+    "stage_gate_packages",
+    "stage_gate_decisions",
+)
 
 
 def database_path(database_url: str) -> Path | None:
@@ -49,18 +56,27 @@ def assert_schema_compatible(engine: Engine, settings: Settings) -> tuple[tuple[
     heads = expected_heads(backend_root)
     path = database_path(settings.database_url or "")
     missing = set(LLM_PROVIDER_FAILURE_COLUMNS)
-    if path is not None:
-        with engine.connect() as connection:
-            columns = {row[1] for row in connection.execute(text("PRAGMA table_info(llm_invocations)"))}
-        missing = set(LLM_PROVIDER_FAILURE_COLUMNS) - columns
-    if current != heads or missing:
+    missing_tables = set(TRANSFORMER_TABLES)
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        columns = (
+            {column["name"] for column in inspector.get_columns("llm_invocations")}
+            if "llm_invocations" in table_names
+            else set()
+        )
+        missing_tables -= table_names
+    missing = set(LLM_PROVIDER_FAILURE_COLUMNS) - columns
+    if current != heads or missing or missing_tables:
         missing_text = ", ".join(sorted(missing)) or "none"
+        missing_table_text = ", ".join(sorted(missing_tables)) or "none"
         raise RuntimeError(
             "Database schema is incompatible with the backend. "
             f"active database path: {path or '<non-file database>'}; "
             f"current revision: {', '.join(current) or '<none>'}; "
             f"expected head(s): {', '.join(heads) or '<none>'}; "
             f"missing required columns: {missing_text}; "
+            f"missing required tables: {missing_table_text}; "
             "safe migration command: python -m alembic -c alembic.ini upgrade heads"
         )
     return current, heads

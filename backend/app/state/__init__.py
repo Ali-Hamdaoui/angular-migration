@@ -1,6 +1,7 @@
 """State transition service package."""
 
 from app.state.transition_service import (
+    IdempotencyPayloadMismatchError,
     LeaseRequiredError,
     ResumeRejectedError,
     StaleStateVersionError,
@@ -11,6 +12,7 @@ from app.state.transition_service import (
 )
 
 __all__ = [
+    "IdempotencyPayloadMismatchError",
     "LeaseRequiredError",
     "ResumeRejectedError",
     "StaleStateVersionError",

@@ -4,11 +4,12 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from app.domain.contracts import RunStatus, StepStatus, WorkflowEventType
-from app.repositories.models import Base, MigrationRunModel, StageStepModel, WorkflowEventModel
+from app.domain.contracts import RunStatus, StageStatus, StepStatus, WorkflowEventType
+from app.repositories.models import Base, MigrationRunModel, MigrationStageModel, StageStepModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.state import (
     LeaseRequiredError,
+    IdempotencyPayloadMismatchError,
     ResumeRejectedError,
     StaleStateVersionError,
     StateTransitionService,
@@ -99,16 +100,86 @@ def test_duplicate_idempotency_key_returns_existing_result(tmp_path: Path) -> No
     _create_run(session)
     service = StateTransitionService(session)
 
-    first = service.apply_transition(_transition_request())
-    second = service.apply_transition(
-        _transition_request(expected_state_version=1, next_run_status=RunStatus.FAILED)
-    )
+    request = _transition_request()
+    first = service.apply_transition(request)
+    second = service.apply_transition(request)
 
     assert second.idempotent_replay is True
     assert second.event_id == first.event_id
     assert session.query(WorkflowEventModel).count() == 1
     assert session.get(MigrationRunModel, "run-001").status == "RUNNING"
     session.close()
+    engine.dispose()
+
+
+def test_duplicate_idempotency_key_rejects_different_payload(tmp_path: Path) -> None:
+    engine, session = _session(tmp_path)
+    _create_run(session)
+    service = StateTransitionService(session)
+
+    service.apply_transition(_transition_request())
+
+    with pytest.raises(IdempotencyPayloadMismatchError):
+        service.apply_transition(_transition_request(next_run_status=RunStatus.FAILED))
+
+    assert session.query(WorkflowEventModel).count() == 1
+    assert session.get(MigrationRunModel, "run-001").status == "RUNNING"
+    session.close()
+    engine.dispose()
+
+
+def test_stage_status_transition_mutates_authoritative_stage(tmp_path: Path) -> None:
+    engine, session = _session(tmp_path)
+    _create_run(session)
+    now = datetime.now(UTC)
+    session.add(
+        MigrationStageModel(
+            id="stage-001",
+            run_id="run-001",
+            stage_order=1,
+            status="PENDING",
+            created_at=now,
+        )
+    )
+    session.flush()
+
+    StateTransitionService(session).apply_transition(
+        _transition_request(
+            next_run_status=None,
+            event_type=WorkflowEventType.STAGE_STATE_CHANGED,
+            stage_id="stage-001",
+            next_stage_status=StageStatus.PREPARING,
+        )
+    )
+
+    assert session.get(MigrationStageModel, "stage-001").status == "preparing"
+    session.close()
+    engine.dispose()
+
+
+def test_only_one_session_consumes_expected_state_version(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite:///{tmp_path / 'concurrent-state-transitions.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = factory()
+    _create_run(seed)
+    seed.commit()
+    seed.close()
+    first = factory()
+    second = factory()
+    first_run = first.get(MigrationRunModel, "run-001")
+    second_run = second.get(MigrationRunModel, "run-001")
+    assert first_run.state_version == second_run.state_version == 1
+
+    StateTransitionService(first).apply_transition(_transition_request(idempotency_key="first"))
+    first.commit()
+
+    with pytest.raises(StaleStateVersionError):
+        StateTransitionService(second).apply_transition(_transition_request(idempotency_key="second"))
+
+    assert second.query(WorkflowEventModel).count() == 1
+    first.close()
+    second.close()
     engine.dispose()
 
 

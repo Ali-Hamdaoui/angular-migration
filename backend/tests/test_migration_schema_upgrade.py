@@ -3,7 +3,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 
 from app.repositories.models import ArtifactMetadataModel, MigrationRunModel
 
@@ -81,3 +81,43 @@ def test_run_readiness_upgrade_backfills_stage_parents_for_historical_artifacts(
         assert connection.exec_driver_sql("PRAGMA integrity_check").scalar_one() == "ok"
         assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
     verified.dispose()
+
+
+def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'transformer-migration.db'}"
+    config = _alembic_config(database_url)
+    command.upgrade(config, "20260729_35")
+
+    command.upgrade(config, "heads")
+
+    engine = create_engine(database_url)
+    schema = inspect(engine)
+    assert {
+        "transformation_continuations",
+        "stage_checkpoints",
+        "stage_prompt_requests",
+        "stage_gate_packages",
+        "stage_gate_decisions",
+    }.issubset(schema.get_table_names())
+    assert {
+        "claim_attempt",
+        "claim_expires_at",
+        "prompt_request_id",
+        "operation_kind",
+        "checkpoint_id",
+    }.issubset({column["name"] for column in schema.get_columns("command_executions")})
+    assert {
+        "source_checkpoint_id",
+        "input_fingerprint",
+        "last_verified_fingerprint",
+        "last_verified_at",
+    }.issubset({column["name"] for column in schema.get_columns("stage_workspace_bindings")})
+    engine.dispose()
+
+    command.downgrade(config, "20260729_35")
+
+    downgraded = create_engine(database_url)
+    schema = inspect(downgraded)
+    assert "transformation_continuations" not in schema.get_table_names()
+    assert "claim_attempt" not in {column["name"] for column in schema.get_columns("command_executions")}
+    downgraded.dispose()

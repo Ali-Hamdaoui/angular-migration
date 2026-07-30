@@ -12,9 +12,11 @@ import os
 import signal
 import subprocess
 import shutil
+import sys
 import threading
 import queue
 import codecs
+import ctypes
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +52,77 @@ _MUTABLE_WORKSPACE_ALIASES: Final = frozenset(
         "DELIVERY_CANDIDATE",
     }
 )
+
+
+class _JobBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_longlong),
+        ("PerJobUserTimeLimit", ctypes.c_longlong),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _JobIoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _JobExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobBasicLimitInformation),
+        ("IoInfo", _JobIoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _WindowsJobObject:
+    """Own one Windows process tree with kill-on-close semantics."""
+
+    _KILL_ON_JOB_CLOSE = 0x00002000
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32 = kernel32
+        self._handle = kernel32.CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = _JobExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = self._KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            self._handle,
+            9,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            self.close()
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.AssignProcessToJobObject(self._handle, int(process._handle)):
+            self.close()
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def terminate(self) -> None:
+        if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        if getattr(self, "_handle", None):
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
 
 
 class CommandPolicyViolation(ValueError):
@@ -349,6 +422,10 @@ class WorkerSupervisor:
         "HERMES_", "API_KEY", "ACCESS_KEY", "PRIVATE_KEY",
     )
 
+    def __init__(self) -> None:
+        self._jobs: dict[int, _WindowsJobObject] = {}
+        self._jobs_lock = threading.Lock()
+
     @staticmethod
     def _build_safe_environment(allowlist: tuple[str, ...] = (), overrides: dict[str, str] | None = None) -> dict[str, str]:
         """Build a sanitized environment blocking secret and backend variables."""
@@ -367,7 +444,12 @@ class WorkerSupervisor:
         return clean
 
     def run(
-        self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None
+        self,
+        request: StructuredCommandRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+        output_callback=None,
+        process_started_callback=None,
     ) -> SupervisedProcessResult:
         creationflags = 0
         popen_kwargs: dict[str, object] = {}
@@ -377,7 +459,11 @@ class WorkerSupervisor:
             popen_kwargs["start_new_session"] = True
         command = list(request.command)
         if os.name == "nt":
-            resolved_executable = shutil.which(command[0])
+            resolved_executable = (
+                sys.executable
+                if command[0].lower() in {"python", "python.exe"}
+                else shutil.which(command[0])
+            )
             if resolved_executable:
                 command[0] = resolved_executable
         process = subprocess.Popen(
@@ -391,6 +477,21 @@ class WorkerSupervisor:
             creationflags=creationflags,
             **popen_kwargs,
         )
+        if os.name == "nt":
+            try:
+                job = _WindowsJobObject(process)
+            except Exception:
+                process.kill()
+                process.wait()
+                raise
+            with self._jobs_lock:
+                self._jobs[process.pid] = job
+        if process_started_callback is not None:
+            try:
+                process_started_callback(process.pid)
+            except Exception:
+                self.terminate_process_tree(process)
+                raise
         chunks: list[tuple[str, str]] = []
         output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
 
@@ -443,6 +544,11 @@ class WorkerSupervisor:
             thread.join(timeout=1)
         stdout = "".join(value for name, value in chunks if name == "stdout")
         stderr = "".join(value for name, value in chunks if name == "stderr")
+        if os.name == "nt":
+            with self._jobs_lock:
+                job = self._jobs.pop(process.pid, None)
+            if job is not None:
+                job.close()
         status = (
             CommandStatus.CANCELLED
             if cancelled
@@ -464,6 +570,12 @@ class WorkerSupervisor:
         if process.poll() is not None:
             return
         if os.name == "nt":
+            with self._jobs_lock:
+                job = self._jobs.get(process.pid)
+            if job is not None:
+                job.terminate()
+                process.wait(timeout=2)
+                return
             try:
                 process.send_signal(signal.CTRL_BREAK_EVENT)
                 process.wait(timeout=1)
@@ -505,7 +617,12 @@ class ExecutionWorker:
         self._idempotency_records: dict[tuple[str, str], CommandExecutionResult] = {}
 
     def run(
-        self, request: CommandRequestDto, *, cancel_event: threading.Event | None = None, output_callback=None
+        self,
+        request: CommandRequestDto,
+        *,
+        cancel_event: threading.Event | None = None,
+        output_callback=None,
+        process_started_callback=None,
     ) -> CommandExecutionResult:
         replay = self._find_idempotent_result(request)
         if replay is not None:
@@ -544,10 +661,15 @@ class ExecutionWorker:
             return execution
 
         try:
+            supervisor_kwargs = {
+                "cancel_event": cancel_event,
+                "output_callback": output_callback,
+            }
+            if process_started_callback is not None:
+                supervisor_kwargs["process_started_callback"] = process_started_callback
             supervised = self._supervisor.run(
                 structured_request,
-                cancel_event=cancel_event,
-                output_callback=output_callback,
+                **supervisor_kwargs,
             )
         except OSError as exc:
             execution = self._record(

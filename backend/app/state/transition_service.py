@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.domain.contracts import RunStatus, StageStatus, StepStatus, WorkflowEventType
-from app.repositories.models import MigrationRunModel, StageStepModel, WorkflowEventModel, WorkerLeaseModel
+from app.repositories.models import (
+    MigrationRunModel,
+    MigrationStageModel,
+    StageStepModel,
+    WorkflowEventModel,
+    WorkerLeaseModel,
+)
 
 
 class TransitionError(RuntimeError):
@@ -20,6 +28,10 @@ class TransitionError(RuntimeError):
 
 class StaleStateVersionError(TransitionError):
     """Raised when optimistic concurrency rejects a transition."""
+
+
+class IdempotencyPayloadMismatchError(TransitionError):
+    """Raised when an idempotency key is reused for a different request."""
 
 
 class LeaseRequiredError(TransitionError):
@@ -71,8 +83,13 @@ class StateTransitionService:
         self._lease_seconds = lease_seconds
 
     def apply_transition(self, request: TransitionRequest) -> TransitionResult:
+        request_checksum = self._request_checksum(request)
         existing = self._find_idempotent_event(request.run_id, request.idempotency_key)
         if existing is not None:
+            if existing.payload.get("request_checksum") != request_checksum:
+                raise IdempotencyPayloadMismatchError(
+                    f"idempotency key {request.idempotency_key} was already used for a different transition"
+                )
             return self._result_from_event(existing, idempotent_replay=True)
 
         run = self._session.get(MigrationRunModel, request.run_id)
@@ -82,6 +99,10 @@ class StateTransitionService:
             raise StaleStateVersionError(
                 f"run {request.run_id} is at state version {run.state_version}, expected {request.expected_state_version}"
             )
+        if request.next_stage_status is not None:
+            self._validate_stage_status(request)
+        if request.next_step_status is not None:
+            self._validate_step_status(request, request.occurred_at or datetime.now(UTC))
 
         previous_version = run.state_version
         occurred_at = request.occurred_at or datetime.now(UTC)
@@ -90,33 +111,52 @@ class StateTransitionService:
             "next_state_version": previous_version + 1,
             "actor": request.actor,
             "reason": request.reason,
+            "request_checksum": request_checksum,
         }
         if request.payload:
             payload.update(request.payload)
+        run_values: dict[str, Any] = {
+            "state_version": previous_version + 1,
+            "updated_at": occurred_at,
+        }
         if request.next_run_status is not None:
             payload["previous_run_status"] = run.status
             payload["next_run_status"] = request.next_run_status.value
-            run.status = request.next_run_status.value
+            run_values["status"] = request.next_run_status.value
         if request.next_run_phase is not None:
             payload["previous_run_phase"] = run.run_phase
             payload["next_run_phase"] = request.next_run_phase
-            run.run_phase = request.next_run_phase
+            run_values["run_phase"] = request.next_run_phase
         if request.next_phase_status is not None:
             payload["previous_phase_status"] = run.phase_status
             payload["next_phase_status"] = request.next_phase_status
-            run.phase_status = request.next_phase_status
+            run_values["phase_status"] = request.next_phase_status
         if request.next_approval_status is not None:
             payload["previous_approval_status"] = run.approval_status
             payload["next_approval_status"] = request.next_approval_status
-            run.approval_status = request.next_approval_status
+            run_values["approval_status"] = request.next_approval_status
+        consumed = self._session.execute(
+            update(MigrationRunModel)
+            .where(MigrationRunModel.id == request.run_id)
+            .where(MigrationRunModel.state_version == request.expected_state_version)
+            .values(**run_values)
+            .execution_options(synchronize_session=False)
+        )
+        if consumed.rowcount != 1:
+            raise StaleStateVersionError(
+                f"run {request.run_id} state version was concurrently consumed"
+            )
+        for field, value in run_values.items():
+            setattr(run, field, value)
         if request.next_stage_status is not None:
+            stage = self._apply_stage_status(request, occurred_at)
+            payload["previous_stage_status"] = stage[0]
             payload["next_stage_status"] = request.next_stage_status.value
+            payload["stage_id"] = request.stage_id
         if request.next_step_status is not None:
             self._apply_step_status(request, occurred_at)
             payload["next_step_status"] = request.next_step_status.value
             payload["step_id"] = request.step_id
-        run.state_version = previous_version + 1
-        run.updated_at = occurred_at
 
         event = self._append_event(request, occurred_at, payload)
         self._session.flush()
@@ -129,6 +169,31 @@ class StateTransitionService:
             next_state_version=run.state_version,
             status=run.status,
         )
+
+    def _apply_stage_status(self, request: TransitionRequest, now: datetime) -> tuple[str, str]:
+        stage = self._validate_stage_status(request)
+        previous = stage.status
+        stage.status = request.next_stage_status.value
+        if request.next_stage_status in {StageStatus.PREPARING, StageStatus.RUNNING} and stage.started_at is None:
+            stage.started_at = now
+        if request.next_stage_status in {
+            StageStatus.PASSED,
+            StageStatus.PASSED_WITH_KNOWN_BASELINE_FAILURES,
+            StageStatus.PASSED_WITH_MANUAL_ITEMS,
+            StageStatus.FAILED,
+            StageStatus.ROLLED_BACK,
+            StageStatus.CANCELLED,
+        }:
+            stage.completed_at = now
+        return previous, stage.status
+
+    def _validate_stage_status(self, request: TransitionRequest) -> MigrationStageModel:
+        if request.stage_id is None or request.next_stage_status is None:
+            raise TransitionError("stage status transition requires stage_id")
+        stage = self._session.get(MigrationStageModel, request.stage_id)
+        if stage is None or stage.run_id != request.run_id:
+            raise TransitionError(f"stage does not belong to run: {request.stage_id}")
+        return stage
 
     def append_audit_event(self, *, run_id: str, idempotency_key: str, event_type: WorkflowEventType, actor: str, reason: str, occurred_at: datetime, payload: dict[str, str | int | None] | None = None) -> TransitionResult:
         """Append an evidence/audit event without changing workflow state.
@@ -226,14 +291,21 @@ class StateTransitionService:
     def _apply_step_status(self, request: TransitionRequest, now: datetime) -> None:
         if request.step_id is None or request.next_step_status is None:
             return
+        step = self._validate_step_status(request, now)
+        if request.next_step_status in {StepStatus.PASSED, StepStatus.FAILED, StepStatus.CANCELLED}:
+            step.completed_at = now
+        step.status = request.next_step_status.value
+
+    def _validate_step_status(self, request: TransitionRequest, now: datetime) -> StageStepModel:
+        if request.step_id is None or request.next_step_status is None:
+            raise TransitionError("step status transition requires step_id")
         step = self._session.get(StageStepModel, request.step_id)
-        if step is None:
-            raise TransitionError(f"step does not exist: {request.step_id}")
+        if step is None or step.run_id != request.run_id:
+            raise TransitionError(f"step does not belong to run: {request.step_id}")
         if request.next_step_status in {StepStatus.PASSED, StepStatus.FAILED, StepStatus.CANCELLED}:
             if request.worker_id is None or not self._has_current_lease(request.run_id, request.worker_id, now):
                 raise LeaseRequiredError("worker cannot complete a step without a current lease")
-            step.completed_at = now
-        step.status = request.next_step_status.value
+        return step
 
     def _append_event(self, request: TransitionRequest, occurred_at: datetime, payload: dict[str, str | int | None]) -> WorkflowEventModel:
         latest_sequence = self._session.scalar(
@@ -260,6 +332,29 @@ class StateTransitionService:
             .where(WorkflowEventModel.run_id == run_id)
             .where(WorkflowEventModel.idempotency_key == idempotency_key)
         )
+
+    @staticmethod
+    def _request_checksum(request: TransitionRequest) -> str:
+        body = {
+            "run_id": request.run_id,
+            "idempotency_key": request.idempotency_key,
+            "expected_state_version": request.expected_state_version,
+            "event_type": request.event_type.value,
+            "next_run_status": request.next_run_status.value if request.next_run_status else None,
+            "next_run_phase": request.next_run_phase,
+            "next_phase_status": request.next_phase_status,
+            "next_approval_status": request.next_approval_status,
+            "next_stage_status": request.next_stage_status.value if request.next_stage_status else None,
+            "next_step_status": request.next_step_status.value if request.next_step_status else None,
+            "stage_id": request.stage_id,
+            "step_id": request.step_id,
+            "actor": request.actor,
+            "reason": request.reason,
+            "worker_id": request.worker_id,
+            "payload": request.payload,
+        }
+        encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
     def _result_from_event(self, event: WorkflowEventModel, *, idempotent_replay: bool) -> TransitionResult:
         payload = event.payload

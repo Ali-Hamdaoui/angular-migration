@@ -23,7 +23,7 @@ from uuid import uuid4
 from pathlib import Path
 from typing import Any, Mapping
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.command_execution.worker import (
@@ -54,6 +54,7 @@ from app.repositories.models.workflow import (
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
+    WorkerLeaseModel,
     WorkflowEventModel,
 )
 from app.repositories.models import ExecutionProfileModel
@@ -84,6 +85,9 @@ _WORKER_MUTABLE_WORKSPACE_ALIASES = frozenset({
     "FINAL_ASSURANCE_SANDBOX",
     "DELIVERY_CANDIDATE",
 })
+_MUTATING_COMMAND_IDS = frozenset(
+    {"npm-ci-bootstrap", "angular-update-exact", "npm-ci-final", "npm-lockfile-generate"}
+)
 
 
 def worker_workspace_aliases(aliases: Mapping[str, str | Path], authorized_alias: str | None) -> dict[str, Path]:
@@ -191,11 +195,17 @@ class CommandExecutorService:
 
     _LEGAL_EXECUTION_TRANSITIONS = {
         CommandStatus.PENDING.value: {CommandStatus.QUEUED.value, CommandStatus.FAILED.value},
-        CommandStatus.QUEUED.value: {CommandStatus.RUNNING.value, CommandStatus.FAILED.value},
+        CommandStatus.QUEUED.value: {
+            CommandStatus.RUNNING.value,
+            CommandStatus.FAILED.value,
+            CommandStatus.CANCELLED.value,
+        },
         CommandStatus.RUNNING.value: {
             CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value,
             CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value,
+            CommandStatus.INTERRUPTED.value,
         },
+        CommandStatus.INTERRUPTED.value: {CommandStatus.QUEUED.value, CommandStatus.FAILED.value},
         CommandStatus.SUCCEEDED.value: set(),
         CommandStatus.FAILED.value: set(),
         CommandStatus.TIMED_OUT.value: set(),
@@ -224,6 +234,130 @@ class CommandExecutorService:
         if next_status in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value}:
             model.finished_at = occurred_at
         session.flush()
+
+    def claim_next_execution(
+        self,
+        session: Session,
+        worker_id: str,
+        now: datetime | None = None,
+        *,
+        lease_seconds: int = 120,
+    ) -> str | None:
+        """Atomically claim the oldest durable queued command."""
+        claimed_at = now or datetime.now(UTC)
+        candidate = session.scalar(
+            select(CommandExecutionModel)
+            .where(CommandExecutionModel.status == CommandStatus.QUEUED.value)
+            .where(
+                or_(
+                    CommandExecutionModel.worker_id.is_(None),
+                    CommandExecutionModel.claim_expires_at <= claimed_at,
+                )
+            )
+            .order_by(CommandExecutionModel.requested_at, CommandExecutionModel.id)
+            .limit(1)
+        )
+        if candidate is None:
+            return None
+        expires_at = claimed_at + timedelta(seconds=lease_seconds)
+        claimed = session.execute(
+            update(CommandExecutionModel)
+            .where(CommandExecutionModel.id == candidate.id)
+            .where(CommandExecutionModel.status == CommandStatus.QUEUED.value)
+            .where(
+                or_(
+                    CommandExecutionModel.worker_id.is_(None),
+                    CommandExecutionModel.claim_expires_at <= claimed_at,
+                )
+            )
+            .values(
+                worker_id=worker_id,
+                claim_attempt=(candidate.claim_attempt or 0) + 1,
+                claim_expires_at=expires_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            session.expire_all()
+            return None
+        session.execute(
+            delete(WorkerLeaseModel).where(
+                WorkerLeaseModel.execution_id == candidate.id,
+                WorkerLeaseModel.expires_at <= claimed_at,
+            )
+        )
+        session.add(
+            WorkerLeaseModel(
+                id=f"lease-{uuid4().hex[:12]}",
+                run_id=candidate.run_id,
+                execution_id=candidate.id,
+                worker_id=worker_id,
+                lease_owner="transformer-worker",
+                backend_instance_id=worker_id,
+                acquired_at=claimed_at,
+                heartbeat_at=claimed_at,
+                expires_at=expires_at,
+            )
+        )
+        session.flush()
+        session.expire(candidate)
+        return candidate.id
+
+    def reconcile_expired_executions(
+        self,
+        session: Session,
+        now: datetime | None = None,
+    ) -> list[str]:
+        """Recover expired claims without rerunning uncertain mutations."""
+        checked_at = now or datetime.now(UTC)
+        rows = list(
+            session.scalars(
+                select(CommandExecutionModel)
+                .where(CommandExecutionModel.status.in_((CommandStatus.QUEUED.value, CommandStatus.RUNNING.value)))
+                .where(CommandExecutionModel.worker_id.is_not(None))
+                .where(CommandExecutionModel.claim_expires_at <= checked_at)
+                .order_by(CommandExecutionModel.requested_at)
+            )
+        )
+        recovered: list[str] = []
+        for model in rows:
+            prior_worker = model.worker_id
+            model.worker_id = None
+            model.claim_expires_at = None
+            if model.status == CommandStatus.QUEUED.value:
+                model.failure_code = None
+                model.failure_message = None
+            elif model.operation_kind == "mutating":
+                model.status = CommandStatus.INTERRUPTED.value
+                model.finished_at = checked_at
+                model.reconstruction_required = True
+                model.failure_code = "COMMAND_RECOVERY_REQUIRED"
+                model.failure_message = "Worker lease expired during a mutating command; reconstruct before retry."
+            else:
+                model.status = CommandStatus.QUEUED.value
+                model.started_at = None
+                model.failure_code = "COMMAND_WORKER_LOST_REQUEUED"
+                model.failure_message = "Read-only command lease expired before terminal evidence; command requeued."
+            session.execute(
+                delete(WorkerLeaseModel).where(
+                    WorkerLeaseModel.execution_id == model.id,
+                    WorkerLeaseModel.expires_at <= checked_at,
+                )
+            )
+            self._append_event(
+                session,
+                model.run_id,
+                model.stage_id,
+                f"{model.id}:reconcile:{model.claim_attempt or 0}",
+                WorkflowEventType.COMMAND_RECONSTRUCTION_REQUIRED
+                if model.reconstruction_required
+                else WorkflowEventType.COMMAND_INTERRUPTED,
+                model.failure_message or "expired command claim recovered",
+                {"execution_id": model.id, "worker_id": prior_worker, "status": model.status},
+            )
+            recovered.append(model.id)
+        session.flush()
+        return recovered
 
     def queue_authorized_command(
         self,
@@ -354,6 +488,7 @@ class CommandExecutorService:
             state_version=1,
             event_sequence=1,
             worker_id=None,
+            operation_kind="mutating" if authorization.command_id in _MUTATING_COMMAND_IDS else "read_only",
         )
         session.add(model)
         session.flush()
@@ -391,12 +526,20 @@ class CommandExecutorService:
                 ).values(worker_id=None))
             raise
 
-    def _run_execution(self, execution_id: str) -> None:
+    def execute_claimed_execution(self, execution_id: str, worker_id: str) -> None:
+        """Execute a command already claimed by this durable worker."""
+        self._run_execution(execution_id, worker_id)
+
+    def _run_execution(self, execution_id: str, claimed_worker_id: str | None = None) -> None:
         from app.repositories.session import session_scope
-        worker_id = threading.current_thread().name
+        worker_id = claimed_worker_id or threading.current_thread().name
         with session_scope() as session:
             model = session.get(CommandExecutionModel, execution_id)
-            if model is None or model.status != CommandStatus.QUEUED.value:
+            if (
+                model is None
+                or model.status != CommandStatus.QUEUED.value
+                or (claimed_worker_id is not None and model.worker_id != claimed_worker_id)
+            ):
                 return
             run = session.get(MigrationRunModel, model.run_id)
             authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id)
@@ -453,10 +596,20 @@ class CommandExecutorService:
                 )
                 if selected_profile is None:
                     raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
-                lease = self._job_supervisor.acquire_lease(
-                    session, run_id, execution_id, worker_id, worker_id,
+                existing_lease = session.scalar(
+                    select(WorkerLeaseModel).where(
+                        WorkerLeaseModel.execution_id == execution_id,
+                        WorkerLeaseModel.worker_id == worker_id,
+                        WorkerLeaseModel.expires_at > datetime.now(UTC),
+                    )
                 )
-                lease_id = lease.lease_id
+                if existing_lease is None:
+                    lease = self._job_supervisor.acquire_lease(
+                        session, run_id, execution_id, worker_id, worker_id,
+                    )
+                    lease_id = lease.lease_id
+                else:
+                    lease_id = existing_lease.id
                 if model.cancel_requested_at is not None:
                     cancel_event.set()
                 artifact_root = Path(run.artifact_root)
@@ -492,7 +645,16 @@ class CommandExecutorService:
                 while not heartbeat_stop.wait(interval):
                     try:
                         with session_scope() as lease_session:
-                            self._job_supervisor.renew_lease(lease_session, lease_id, worker_id)
+                            renewed = self._job_supervisor.renew_lease(lease_session, lease_id, worker_id)
+                            lease_session.execute(
+                                update(CommandExecutionModel)
+                                .where(
+                                    CommandExecutionModel.id == execution_id,
+                                    CommandExecutionModel.worker_id == worker_id,
+                                    CommandExecutionModel.status == CommandStatus.RUNNING.value,
+                                )
+                                .values(claim_expires_at=renewed.expires_at)
+                            )
                     except Exception:
                         cancel_event.set()
                         return
@@ -509,7 +671,30 @@ class CommandExecutorService:
                         strict_ownership=True,
                     )
 
-            result = worker.run(request, cancel_event=cancel_event, output_callback=persist_output)
+            def persist_pid(process_id: int) -> None:
+                from app.repositories.session import session_scope
+                with session_scope() as process_session:
+                    persisted = process_session.execute(
+                        update(CommandExecutionModel)
+                        .where(
+                            CommandExecutionModel.id == execution_id,
+                            CommandExecutionModel.status == CommandStatus.RUNNING.value,
+                            CommandExecutionModel.worker_id == worker_id,
+                        )
+                        .values(process_id=process_id)
+                    )
+                    if persisted.rowcount != 1:
+                        raise CommandExecutorError(
+                            "COMMAND_CLAIM_STALE",
+                            "Process started after its command claim became stale",
+                        )
+
+            result = worker.run(
+                request,
+                cancel_event=cancel_event,
+                output_callback=persist_output,
+                process_started_callback=persist_pid,
+            )
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
                 run = session.get(MigrationRunModel, run_id)
@@ -693,191 +878,6 @@ class CommandExecutorService:
             "LEGACY_EXECUTION_DISABLED",
             "Use queue_authorized_command with an accepted authorization decision",
         )
-        """
-        # Check idempotency — same key + identical payload returns cached result
-        existing = session.scalar(
-            select(CommandExecutionModel)
-            .where(CommandExecutionModel.run_id == run_id)
-            .where(CommandExecutionModel.idempotency_key == idempotency_key)
-        )
-        if existing is not None:
-            # Verify payload identity
-            if (existing.executable == executable
-                    and (existing.arguments or []) == (arguments or [])
-                    and existing.command_id == command_id):
-                return self._response_from_model(existing, idempotent_replay=True)
-            raise CommandExecutorError(
-                "IDEMPOTENCY_KEY_CONFLICT",
-                f"Idempotency key '{idempotency_key}' already used with different payload",
-            )
-
-        effective_timeout = timeout_seconds or self._default_timeout_seconds
-        now = datetime.now(UTC)
-
-        # 1. Validate against policy engine
-        policy_request = CommandPolicyValidateRequestDto(
-            run_id=run_id,
-            stage_id=stage_id,
-            command_id=command_id,
-            executable=executable,
-            arguments=arguments or [],
-            cwd_alias=working_directory_alias,
-            plan_id=None,
-            working_directory_alias=working_directory_alias,
-            working_directory=working_directory,
-            execution_profile_id=runtime_profile_id,
-            network_profile=network_profile,
-            cancellation_policy=cancellation_policy,
-            timeout_seconds=effective_timeout,
-            idempotency_key=idempotency_key,
-            requested_by=requested_by,
-            shell=False,
-        )
-        policy_result = self._policy_engine.validate(session, policy_request)
-        if policy_result.decision == "rejected":
-            raise CommandExecutorError(
-                "POLICY_REJECTED",
-                f"Command rejected by policy engine: {'; '.join(policy_result.reasons)}",
-            )
-
-        # 2. Create the execution record in QUEUED state
-        execution_id = f"exec-{uuid4().hex[:12]}"
-        exec_model = CommandExecutionModel(
-            id=execution_id,
-            run_id=run_id,
-            stage_id=stage_id,
-            authorization_id=policy_result.authorization_id,
-            idempotency_key=idempotency_key,
-            requested_by=requested_by,
-            requester=requester,
-            executable=executable,
-            arguments=arguments,
-            working_directory_alias=working_directory_alias,
-            runtime_profile_id=runtime_profile_id,
-            status=CommandStatus.PENDING.value,
-            command_id=command_id,
-            shell=False,
-            timeout_seconds=effective_timeout,
-            network_profile=network_profile,
-            cancellation_policy=cancellation_policy,
-            requested_at=now,
-            state_version=1,
-            event_sequence=1,
-        )
-        session.add(exec_model)
-        session.flush()
-
-        # 2. Emit COMMAND_QUEUED event
-        self._append_event(session, run_id, stage_id, idempotency_key,
-                           WorkflowEventType.COMMAND_QUEUED, "command queued for execution",
-                           {"execution_id": execution_id, "command_id": command_id, "executable": executable})
-
-        # 3. Update status to RUNNING
-        exec_model.status = CommandStatus.RUNNING.value
-        exec_model.state_version = (exec_model.state_version or 1) + 1
-        exec_model.started_at = datetime.now(UTC)
-        session.flush()
-
-        # 4. Emit COMMAND_STARTED event
-        self._append_event(session, run_id, stage_id, idempotency_key + ":started",
-                           WorkflowEventType.COMMAND_STARTED, "command execution started",
-                           {"execution_id": execution_id, "command_id": command_id})
-
-        # 5. Build and run the command using the Sprint 0 WorkerSupervisor
-        try:
-            # Build a CommandRequestDto for the Sprint 0 worker
-            request = CommandRequestDto(
-                command_id=command_id,
-                run_id=run_id,
-                stage_id=stage_id,
-                requested_by=requested_by,
-                requester=requester or requested_by,
-                executable=executable,
-                arguments=arguments,
-                shell=False,
-                working_directory_alias=working_directory_alias,
-                working_directory=working_directory,
-                runtime_profile_id=runtime_profile_id,
-                timeout_seconds=effective_timeout,
-                network_profile=network_profile,
-                cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
-                idempotency_key=idempotency_key,
-                requested_at=now,
-            )
-
-            # Find the command definition from registry
-            registry = CommandRegistry()
-            definition = registry.find(command_id)
-
-            # Build working directory path
-            sandbox_root = Path("/tmp/amfa-sandbox")
-            sandbox_root.mkdir(parents=True, exist_ok=True)
-            working_dir = sandbox_root
-            if working_directory_alias:
-                working_dir = sandbox_root / working_directory_alias.lower()
-                working_dir.mkdir(parents=True, exist_ok=True)
-
-            structured = StructuredCommandRequest(
-                dto=request,
-                definition=definition,
-                command=(executable, *arguments),
-                working_directory=working_dir,
-            )
-
-            # Create cancel event for this execution
-            cancel_event = threading.Event()
-            self._cancel_events[execution_id] = cancel_event
-
-            supervised = self._supervisor.run(
-                structured,
-                cancel_event=cancel_event,
-            )
-            finished_at = datetime.now(UTC)
-
-            # Clean up cancel event
-            self._cancel_events.pop(execution_id, None)
-
-            # 6. Update execution record
-            status = self._map_supervised_status(supervised)
-            exec_model.status = status.value
-            exec_model.exit_code = supervised.exit_code
-            exec_model.finished_at = finished_at
-            exec_model.duration_ms = int((finished_at - now).total_seconds() * 1000)
-            exec_model.timed_out = supervised.timed_out
-            exec_model.cancelled = supervised.cancelled
-            exec_model.state_version = (exec_model.state_version or 1) + 1
-
-            # Compute runtime checksum from stdout+stderr output
-            output_data = (supervised.stdout or "") + (supervised.stderr or "")
-            exec_model.runtime_checksum = f"sha256:{hashlib.sha256(output_data.encode('utf-8')).hexdigest()}"
-
-            # 7. Emit completion event
-            event_type = {
-                CommandStatus.SUCCEEDED: WorkflowEventType.COMMAND_SUCCEEDED,
-                CommandStatus.FAILED: WorkflowEventType.COMMAND_FAILED,
-                CommandStatus.CANCELLED: WorkflowEventType.COMMAND_INTERRUPTED,
-                CommandStatus.TIMED_OUT: WorkflowEventType.COMMAND_INTERRUPTED,
-            }.get(status, WorkflowEventType.COMMAND_FAILED)
-
-            self._append_event(session, run_id, stage_id, idempotency_key + ":completed",
-                               event_type, f"command {status.value}",
-                               {"execution_id": execution_id, "command_id": command_id,
-                                "exit_code": supervised.exit_code, "status": status.value})
-
-            session.flush()
-
-            return self._response_from_model(exec_model)
-
-        except (CommandPolicyViolation, OSError) as exc:
-            exec_model.status = CommandStatus.FAILED.value
-            exec_model.finished_at = datetime.now(UTC)
-            session.flush()
-            self._append_event(session, run_id, stage_id, idempotency_key + ":failed",
-                               WorkflowEventType.COMMAND_FAILED, str(exc),
-                               {"execution_id": execution_id, "command_id": command_id, "error": str(exc)})
-            return self._response_from_model(exec_model)
-
-        """
 
     def get_command_execution(
         self,

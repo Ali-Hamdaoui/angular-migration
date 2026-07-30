@@ -1,6 +1,8 @@
 """Tests for the Sprint 0 sandbox command execution worker."""
 
 from datetime import UTC, datetime
+import ctypes
+import os
 import threading
 import time
 from pathlib import Path
@@ -122,6 +124,22 @@ def test_worker_runs_safe_python_version_command_and_writes_command_artifacts(tm
     assert '"shell": false' in stored.content
     assert '"status": "succeeded"' in stored.content
     assert '"runtime_profile_id": "source-runtime-profile"' in stored.content
+
+
+def test_process_id_is_reported_before_normal_output(tmp_path: Path) -> None:
+    worker, _, _ = _worker(tmp_path)
+    structured = worker._policy.validate(_request())
+    observed: list[tuple[str, int | str]] = []
+
+    WorkerSupervisor().run(
+        structured,
+        process_started_callback=lambda pid: observed.append(("pid", pid)),
+        output_callback=lambda _stream, text: observed.append(("output", text)),
+    )
+
+    assert observed
+    assert observed[0][0] == "pid"
+    assert isinstance(observed[0][1], int)
 
 
 def test_worker_registers_output_artifact_truncation_metadata(tmp_path: Path) -> None:
@@ -332,6 +350,51 @@ def test_worker_cancellation_event_terminates_running_process_tree(tmp_path: Pat
     assert not thread.is_alive()
     assert result_holder["result"].cancelled is True
     assert result_holder["result"].result.status is CommandStatus.CANCELLED
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object proof")
+def test_job_object_terminates_descendant_process(tmp_path: Path) -> None:
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid));"
+        "time.sleep(30)"
+    )
+    registry = CommandRegistry(
+        definitions=(CommandDefinition("python-child", "python", ("-c", script)),)
+    )
+    worker, _, _ = _worker(tmp_path, registry=registry, timeout_seconds=30)
+    cancel_event = threading.Event()
+    thread = threading.Thread(
+        target=lambda: worker.run(
+            _request(
+                command_id="python-child",
+                executable="python",
+                arguments=["-c", script],
+                idempotency_key="cancel-descendant",
+                timeout_seconds=30,
+            ),
+            cancel_event=cancel_event,
+        )
+    )
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert pid_file.exists()
+    child_pid = int(pid_file.read_text())
+
+    cancel_event.set()
+    thread.join(timeout=5)
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, child_pid)
+    if handle:
+        exit_code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        assert exit_code.value != 259
+    assert not thread.is_alive()
 
 
 @pytest.mark.parametrize(
