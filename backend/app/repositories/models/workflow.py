@@ -602,6 +602,10 @@ class CommandExecutionModel(Base):
     prompt_request_id: Mapped[str | None] = mapped_column(String(64), index=True)
     operation_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="read_only")
     checkpoint_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    parent_execution_id: Mapped[str | None] = mapped_column(
+        ForeignKey("command_executions.id"), index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     process_id: Mapped[int | None] = mapped_column(Integer)
     failure_code: Mapped[str | None] = mapped_column(String(128))
     failure_message: Mapped[str | None] = mapped_column(Text)

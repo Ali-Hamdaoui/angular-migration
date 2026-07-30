@@ -432,6 +432,8 @@ class WorkerSupervisor:
         """Build a sanitized environment blocking secret and backend variables."""
         clean: dict[str, str] = {}
         allowed = set(allowlist)
+        if os.name == "nt":
+            allowed.add("SYSTEMROOT")
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)

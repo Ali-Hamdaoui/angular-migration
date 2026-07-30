@@ -35,6 +35,10 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.command_executor_service import (
+    CommandExecutorError,
+    CommandExecutorService,
+)
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -46,9 +50,17 @@ class TransformerStageError(ValueError):
 
 
 class TransformerStageService:
-    def __init__(self, *, scope=session_scope, stage_execution=None, now_provider=None) -> None:
+    def __init__(
+        self,
+        *,
+        scope=session_scope,
+        stage_execution=None,
+        command_executor=None,
+        now_provider=None,
+    ) -> None:
         self._scope = scope
         self._stage_execution = stage_execution or StageExecutionApplicationService(scope=scope)
+        self._command_executor = command_executor or CommandExecutorService()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
     def prepare(self, continuation_id: str, worker_id: str) -> str:
@@ -449,6 +461,41 @@ class TransformerStageService:
             )
         )
         execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
+        if execution is not None and execution.status in {"pending", "queued", "running"}:
+            self._wait_for_command(continuation)
+            return execution.id
+        if (
+            execution is not None
+            and execution.status == "failed"
+        ):
+            workspace_recovered = False
+            if execution.process_id is not None or execution.exit_code is not None:
+                binding = self._binding(session, continuation)
+                current_fingerprint = StageSandboxCopier.fingerprint(
+                    Path(binding.workspace_path)
+                )
+                if current_fingerprint != binding.workspace_fingerprint:
+                    raise TransformerStageError(
+                        "BOOTSTRAP_RETRY_REQUIRES_RECOVERY",
+                        "Failed bootstrap changed the workspace; reconstruct from the safe checkpoint before retry.",
+                    )
+                workspace_recovered = True
+            try:
+                retry = self._command_executor.queue_retry_execution(
+                    session,
+                    execution.id,
+                    idempotency_key=f"{execution.id}:retry:1",
+                    workspace_recovered=workspace_recovered,
+                )
+            except CommandExecutorError as error:
+                raise TransformerStageError(error.code, error.message) from error
+            successor = session.get(CommandExecutionModel, retry.execution_id)
+            step.execution_id = successor.id
+            step.attempt_id = successor.id
+            step.status = "RUNNING"
+            step.updated_at = self._now()
+            self._wait_for_command(continuation)
+            return successor.id
         if execution is None or execution.status != "succeeded":
             raise TransformerStageError(
                 "BOOTSTRAP_INSTALL_FAILED",
@@ -484,6 +531,13 @@ class TransformerStageService:
         continuation.updated_at = self._now()
         session.flush()
         return fingerprint
+
+    def _wait_for_command(self, continuation: TransformationContinuationModel) -> None:
+        continuation.status = "waiting_command"
+        continuation.worker_id = None
+        continuation.lease_expires_at = None
+        continuation.state_version += 1
+        continuation.updated_at = self._now()
 
     @staticmethod
     def _request(run, continuation, gate):
