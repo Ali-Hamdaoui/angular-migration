@@ -35,6 +35,13 @@ const projection = {
   active_prompt_text: null,
   active_prompt_options: [],
   active_prompt_explanation: null,
+  repair_attempt_id: null,
+  repair_status: null,
+  repair_risk_level: null,
+  repair_proposal_checksum: null,
+  repair_review_checksum: null,
+  repair_apply_checksum: null,
+  repair_validation_checksum: null,
   last_error_code: null,
   cancel_requested_at: null,
 };

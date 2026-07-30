@@ -73,6 +73,18 @@ export function TransformationPanel({
           )}
         </div>
       </div> : null}
+    {projection.repair_attempt_id ? <div>
+      <h4>Governed repair</h4>
+      <dl>
+        <div><dt>Attempt</dt><dd>{projection.repair_attempt_id}</dd></div>
+        <div><dt>Status</dt><dd>{projection.repair_status}</dd></div>
+        <div><dt>Risk</dt><dd>{projection.repair_risk_level}</dd></div>
+        <div><dt>Proposal</dt><dd>{projection.repair_proposal_checksum ?? "pending"}</dd></div>
+        <div><dt>Review</dt><dd>{projection.repair_review_checksum ?? "pending"}</dd></div>
+        <div><dt>Apply</dt><dd>{projection.repair_apply_checksum ?? "not applied"}</dd></div>
+        <div><dt>Revalidation</dt><dd>{projection.repair_validation_checksum ?? "pending"}</dd></div>
+      </dl>
+    </div> : null}
     {projection.status === "waiting_gate"
       && projection.active_gate
       && projection.active_gate_package_checksum

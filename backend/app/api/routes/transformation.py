@@ -16,6 +16,7 @@ from app.domain.transformation import (
 from app.repositories.models import (
     CommandExecutionModel,
     MigrationStageModel,
+    RepairAttemptModel,
     LlmInvocationModel,
     StageCheckpointModel,
     StageGateDecisionModel,
@@ -76,6 +77,15 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         if prompt and prompt.explanation_invocation_id
         else None
     )
+    repair = session.scalar(
+        select(RepairAttemptModel)
+        .where(
+            RepairAttemptModel.run_id == continuation.run_id,
+            RepairAttemptModel.stage_id == continuation.current_stage_id,
+        )
+        .order_by(RepairAttemptModel.attempt_number.desc())
+        .limit(1)
+    )
     return {
         "run_id": continuation.run_id,
         "continuation_id": continuation.id,
@@ -104,6 +114,13 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             if explanation and explanation.redacted_summary
             else None
         ),
+        "repair_attempt_id": repair.id if repair else None,
+        "repair_status": repair.status if repair else None,
+        "repair_risk_level": repair.risk_level if repair else None,
+        "repair_proposal_checksum": repair.proposal_checksum if repair else None,
+        "repair_review_checksum": repair.review_checksum if repair else None,
+        "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
+        "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
         "last_error_code": continuation.last_error_code,
         "cancel_requested_at": continuation.cancel_requested_at,
     }

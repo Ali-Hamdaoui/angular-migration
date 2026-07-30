@@ -1,8 +1,15 @@
-"""Pointer-only LangGraph for the durable Transformer state machine."""
+"""Pointer-only LangGraph for the durable Transformer state machine.
+
+File-size exception: the transition handlers stay together so restart routing,
+gate bindings, and transaction/IO boundaries can be audited as one state
+machine. Command execution, evidence, validation, repair, and sealing logic
+remain in dedicated services.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
 
@@ -11,10 +18,13 @@ from sqlalchemy import select
 
 from app.repositories.models import (
     ActivePlanVersionModel,
+    ArtifactMetadataModel,
     CommandLogChunkModel,
     CommandExecutionModel,
     G06ApprovalModel,
+    LlmInvocationModel,
     MigrationRunModel,
+    RepairAttemptModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StagePromptRequestModel,
@@ -27,10 +37,22 @@ from app.services.angular_transformation_evidence_service import (
     AngularTransformationEvidenceError,
     AngularTransformationEvidenceService,
 )
+from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.patch_apply_service import PatchApplyService
 from app.services.stage_gate_service import StageGateService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.prompt_explanation_service import PromptExplanationService
+from app.services.repair_application_service import (
+    RepairApplicationError,
+    RepairApplicationService,
+)
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+from app.services.validation_runner import (
+    BuildAgent,
+    TestAgent,
+    ValidationRunner,
+    ValidationRunnerError,
+)
 
 
 class TransformerPointer(TypedDict):
@@ -47,12 +69,22 @@ class TransformerOrchestrator:
         gate_service=None,
         transformation_evidence=None,
         prompt_explainer=None,
+        validation_runner=None,
+        failure_evidence=None,
+        repair_service=None,
+        patch_service=None,
     ) -> None:
         self._scope = scope
         self._stage = stage_service or TransformerStageService(scope=scope)
         self._gates = gate_service or StageGateService()
         self._evidence = transformation_evidence or AngularTransformationEvidenceService()
         self._prompt_explainer = prompt_explainer or PromptExplanationService(scope=scope)
+        self._validation = validation_runner or ValidationRunner()
+        self._build_agent = BuildAgent(self._validation)
+        self._test_agent = TestAgent(self._validation)
+        self._failures = failure_evidence or FailureEvidenceService()
+        self._repairs = repair_service or RepairApplicationService(scope=scope)
+        self._patches = patch_service or PatchApplyService()
 
     def advance(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -87,6 +119,30 @@ class TransformerOrchestrator:
                 )
         elif node == "version_verify":
             self._version_verify(continuation_id, worker_id)
+        elif node == "final_install":
+            self._final_install(continuation_id, worker_id)
+        elif node == "build":
+            self._build(continuation_id, worker_id)
+        elif node == "test":
+            self._test(continuation_id, worker_id)
+        elif node == "aggregate_validation":
+            self._aggregate_validation(continuation_id, worker_id)
+        elif node == "classify_failure":
+            self._classify_failure(continuation_id, worker_id)
+        elif node == "propose_repair":
+            self._propose_repair(continuation_id, worker_id)
+        elif node == "review_repair":
+            self._review_repair(continuation_id, worker_id)
+        elif node == "create_g10":
+            self._create_repair_gate(continuation_id, worker_id, "G10")
+        elif node == "apply_repair":
+            self._apply_repair(continuation_id, worker_id)
+        elif node == "repair_revalidate":
+            self._start_revalidation(continuation_id, worker_id)
+        elif node == "create_g11":
+            self._create_repair_gate(continuation_id, worker_id, "G11")
+        elif node == "create_g09":
+            self._create_g09_from_repair(continuation_id, worker_id)
         elif node == "cancel":
             self._cancel(continuation_id, worker_id)
         else:
@@ -441,6 +497,574 @@ class TransformerOrchestrator:
                 ),
                 workspace_fingerprint=context["workspace_fingerprint"],
             )
+
+    def _final_install(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            groups = self._validation_groups(session, continuation)
+            next_node = self._node_for_group(groups[0]) if groups else "aggregate_validation"
+            attempt_key = self._validation_attempt_key(session, continuation)
+            try:
+                self._validation.advance_group(
+                    session,
+                    continuation,
+                    "final_install",
+                    next_node=next_node,
+                    attempt_key=attempt_key,
+                )
+            except ValidationRunnerError as error:
+                self._validation_failure(continuation, error)
+
+    def _build(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            groups = self._validation_groups(session, continuation)
+            if not groups or groups[0] != "builds":
+                self._queue(continuation, self._node_for_group(groups[0]) if groups else "aggregate_validation")
+                return
+            next_node = self._node_for_group(groups[1]) if len(groups) > 1 else "aggregate_validation"
+            attempt_key = self._validation_attempt_key(session, continuation)
+            try:
+                self._build_agent.advance(
+                    session, continuation, next_node=next_node, attempt_key=attempt_key
+                )
+            except ValidationRunnerError as error:
+                self._validation_failure(continuation, error)
+
+    def _test(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            groups = [
+                group
+                for group in self._validation_groups(session, continuation)
+                if group != "builds"
+            ]
+            current = next(
+                (
+                    group
+                    for group in groups
+                    if session.scalar(
+                        select(StageStepModel).where(
+                            StageStepModel.stage_id == continuation.current_stage_id,
+                            StageStepModel.name == f"{group}-0",
+                            StageStepModel.status != "PASSED",
+                        )
+                    )
+                    is not None
+                ),
+                None,
+            )
+            if current is None:
+                self._queue(continuation, "aggregate_validation")
+                return
+            remaining = groups[groups.index(current) + 1 :]
+            next_node = "test" if remaining else "aggregate_validation"
+            attempt_key = self._validation_attempt_key(session, continuation)
+            try:
+                self._test_agent.advance(
+                    session,
+                    continuation,
+                    current,
+                    next_node=next_node,
+                    attempt_key=attempt_key,
+                )
+            except ValidationRunnerError as error:
+                self._validation_failure(continuation, error)
+
+    def _aggregate_validation(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            try:
+                payload, artifact_root = self._validation.aggregate(session, continuation)
+            except ValidationRunnerError as error:
+                self._validation_failure(continuation, error)
+                return
+            repair = session.query(RepairAttemptModel).filter_by(
+                run_id=continuation.run_id, stage_id=continuation.current_stage_id
+            ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+            gate_id = "G11" if repair and repair.status in {"applied", "revalidating"} else "G09"
+        summary = self._validation.write_summary(payload, artifact_root)
+        gate_payload = {
+            "gate_id": gate_id,
+            **payload,
+            "validation_summary_artifact_id": summary.ref.artifact_id,
+            "validation_summary_checksum": summary.ref.checksum,
+        }
+        gate = self._stage.write_gate_package(
+            run_id=str(payload["run_id"]),
+            stage_id=str(payload["stage_id"]),
+            artifact_root=artifact_root,
+            gate_id=gate_id,
+            payload=gate_payload,
+        )
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            self._validation.register_summary(session, continuation, summary)
+            self._stage.register_artifact(session, gate, continuation)
+            if gate_id == "G11":
+                repair = session.query(RepairAttemptModel).filter_by(
+                    run_id=continuation.run_id, stage_id=continuation.current_stage_id
+                ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                repair.validation_summary_artifact_id = summary.ref.artifact_id
+                repair.validation_summary_checksum = summary.ref.checksum
+                repair.status = "waiting_g11"
+                repair.updated_at = datetime.now(UTC)
+            self._gates.create(
+                session,
+                continuation,
+                gate_id=gate_id,
+                package_artifact_id=gate.ref.artifact_id,
+                package_checksum=gate.ref.checksum,
+                artifact_set_checksum=self._stage.checksum(
+                    {
+                        summary.ref.artifact_id: summary.ref.checksum,
+                        gate.ref.artifact_id: gate.ref.checksum,
+                    }
+                ),
+                workspace_fingerprint=str(payload["workspace_fingerprint"]),
+            )
+
+    def _classify_failure(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            prior = [
+                item.failure_fingerprint
+                for item in session.query(RepairAttemptModel)
+                .filter_by(
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                )
+                .all()
+                if item.failure_fingerprint
+            ]
+            evidence = self._failures.collect(
+                session, continuation, prior_fingerprints=prior
+            )
+        evidence["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
+            Path(str(evidence["workspace_path"]))
+        )
+        route = self._failures.classify(evidence)
+        failure, route_artifact = self._failures.write(evidence, route)
+        context = (
+            self._failures.write_context_pack(evidence, failure.ref.checksum)
+            if route.value == "repairable_source"
+            else None
+        )
+        snapshot = (
+            self._stage.snapshot_workspace(
+                str(evidence["workspace_path"]),
+                str(Path(str(evidence["workspace_path"])).parent),
+                str(evidence["stage_id"]),
+            )
+            if context is not None
+            else None
+        )
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            for artifact in (failure, route_artifact, context):
+                if artifact is not None:
+                    self._stage.register_artifact(session, artifact, continuation)
+            if route.value != "repairable_source":
+                if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
+                    continuation.attempt += 1
+                    continuation.status = "waiting_retry"
+                    continuation.current_node = "final_install"
+                    continuation.next_attempt_at = datetime.now(UTC) + timedelta(seconds=30)
+                    continuation.worker_id = None
+                    continuation.lease_expires_at = None
+                    continuation.state_version += 1
+                    continuation.updated_at = datetime.now(UTC)
+                else:
+                    self._block(
+                        continuation,
+                        f"FAILURE_ROUTE_{route.value.upper()}",
+                        f"Validation failure routed to {route.value}",
+                    )
+                return
+            attempts = session.query(RepairAttemptModel).filter_by(
+                run_id=continuation.run_id, stage_id=continuation.current_stage_id
+            ).count()
+            applied = session.query(RepairAttemptModel).filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+            ).count()
+            if attempts >= 3 or applied >= 2:
+                self._block(
+                    continuation,
+                    "REPAIR_ATTEMPT_LIMIT",
+                    "Governed repair attempt limit reached",
+                )
+                return
+            checkpoint = self._stage.persist_snapshot_checkpoint(
+                session, continuation, snapshot, "pre_repair"
+            )
+            attempt = RepairAttemptModel(
+                id=f"repair-{continuation.current_stage_id}-{attempts + 1}",
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                attempt_number=attempts + 1,
+                status="evidence_frozen",
+                risk_level="unknown",
+                diagnosis=f"{route.value}; checkpoint={checkpoint.id}",
+                failure_evidence_artifact_id=failure.ref.artifact_id,
+                failure_evidence_checksum=failure.ref.checksum,
+                failure_route_artifact_id=route_artifact.ref.artifact_id,
+                failure_route_checksum=route_artifact.ref.checksum,
+                context_pack_artifact_id=context.ref.artifact_id,
+                context_pack_checksum=context.ref.checksum,
+                pre_fingerprint=str(evidence["workspace_fingerprint"]),
+                failure_fingerprint=str(evidence["failure_fingerprint"]),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(attempt)
+            self._queue(continuation, "propose_repair")
+
+    def _propose_repair(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            attempt_id = attempt.id
+        try:
+            proposal = self._repairs.propose(attempt_id)
+        except (RepairApplicationError, ValueError) as error:
+            with self._scope() as session:
+                self._block(
+                    self._owned(session, continuation_id, worker_id),
+                    getattr(error, "code", "REPAIR_PROPOSAL_FAILED"),
+                    getattr(error, "message", str(error)),
+                )
+            return
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            attempt.risk_level = str(proposal["risk_level"])
+            self._queue(continuation, "review_repair")
+
+    def _review_repair(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt_id = self._latest_repair(session, continuation).id
+        try:
+            review = self._repairs.review(attempt_id)
+        except (RepairApplicationError, ValueError) as error:
+            with self._scope() as session:
+                self._block(
+                    self._owned(session, continuation_id, worker_id),
+                    getattr(error, "code", "REPAIR_REVIEW_FAILED"),
+                    getattr(error, "message", str(error)),
+                )
+            return
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            if review["decision"] == "accept":
+                self._queue(continuation, "create_g10")
+                return
+            if review["decision"] == "request_changes" and attempt.attempt_number < 3:
+                next_attempt = RepairAttemptModel(
+                    id=f"repair-{continuation.current_stage_id}-{attempt.attempt_number + 1}",
+                    run_id=attempt.run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    status="evidence_frozen",
+                    risk_level="unknown",
+                    diagnosis=attempt.diagnosis,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=attempt.context_pack_artifact_id,
+                    context_pack_checksum=attempt.context_pack_checksum,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+                session.add(next_attempt)
+                self._queue(continuation, "propose_repair")
+                return
+            self._block(
+                continuation,
+                "REPAIR_REVIEW_REJECTED",
+                "Repair reviewer rejected the candidate",
+            )
+
+    def _create_repair_gate(
+        self, continuation_id: str, worker_id: str, gate_id: str
+    ) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            binding = self._stage._binding(session, continuation)
+            run = session.get(MigrationRunModel, continuation.run_id)
+            payload = {
+                "gate_id": gate_id,
+                "run_id": continuation.run_id,
+                "stage_id": continuation.current_stage_id,
+                "stage_plan_checksum": continuation.stage_plan_checksum,
+                "workspace_fingerprint": binding.workspace_fingerprint,
+                "failure_evidence_checksum": attempt.failure_evidence_checksum,
+                "context_pack_checksum": attempt.context_pack_checksum,
+                "proposal_checksum": attempt.proposal_checksum,
+                "review_checksum": attempt.review_checksum,
+                "repair_attempt_id": attempt.id,
+            }
+            context = (
+                run.artifact_root,
+                binding.workspace_fingerprint,
+                continuation.run_id,
+                continuation.current_stage_id,
+            )
+        gate = self._stage.write_gate_package(
+            run_id=context[2],
+            stage_id=context[3],
+            artifact_root=context[0],
+            gate_id=gate_id,
+            payload=payload,
+        )
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            self._stage.register_artifact(session, gate, continuation)
+            package = self._gates.create(
+                session,
+                continuation,
+                gate_id=gate_id,
+                package_artifact_id=gate.ref.artifact_id,
+                package_checksum=gate.ref.checksum,
+                artifact_set_checksum=self._stage.checksum(
+                    {gate.ref.artifact_id: gate.ref.checksum}
+                ),
+                workspace_fingerprint=context[1],
+            )
+            if gate_id == "G10":
+                attempt.g10_gate_package_id = package.id
+                attempt.status = "waiting_g10"
+                attempt.updated_at = datetime.now(UTC)
+
+    def _apply_repair(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            binding = self._stage._binding(session, continuation)
+            run = session.get(MigrationRunModel, continuation.run_id)
+            metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
+            )
+            checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "pre_repair",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+            )
+            recovering = attempt.status == "applying"
+            context = {
+                "attempt_id": attempt.id,
+                "workspace_path": binding.workspace_path,
+                "fingerprint": binding.workspace_fingerprint,
+                "artifact_root": run.artifact_root,
+                "run_id": continuation.run_id,
+                "stage_id": continuation.current_stage_id,
+                "proposal_path": str(Path(run.artifact_root) / metadata.relative_path),
+                "checkpoint_path": checkpoint.workspace_path,
+                "checkpoint_fingerprint": checkpoint.workspace_fingerprint,
+                "stage_root": (run.workspace_aliases or {})["STAGE_SANDBOX"],
+            }
+            attempt.status = "applying"
+            attempt.updated_at = datetime.now(UTC)
+        if recovering:
+            context["fingerprint"] = self._stage.reconstruct_workspace(
+                context["checkpoint_path"],
+                context["workspace_path"],
+                context["stage_root"],
+                context["checkpoint_fingerprint"],
+            )
+        proposal = json.loads(Path(context["proposal_path"]).read_text(encoding="utf-8"))
+        try:
+            prepared, ledger, fingerprint = self._patches.apply(
+                proposal=proposal,
+                workspace_path=context["workspace_path"],
+                expected_fingerprint=context["fingerprint"],
+                run_id=context["run_id"],
+                stage_id=context["stage_id"],
+                artifact_root=context["artifact_root"],
+                attempt_id=context["attempt_id"],
+            )
+        except RepairApplicationError as error:
+            with self._scope() as session:
+                attempt = session.get(RepairAttemptModel, context["attempt_id"])
+                attempt.status = "apply_failed"
+                attempt.updated_at = datetime.now(UTC)
+                self._block(
+                    self._owned(session, continuation_id, worker_id),
+                    error.code,
+                    error.message,
+                )
+            return
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            binding = self._stage._binding(session, continuation)
+            for artifact in (prepared, ledger):
+                self._stage.register_artifact(session, artifact, continuation)
+            attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
+            attempt.apply_ledger_checksum = ledger.ref.checksum
+            attempt.post_fingerprint = fingerprint
+            attempt.status = "applied"
+            attempt.updated_at = datetime.now(UTC)
+            binding.workspace_fingerprint = fingerprint
+            binding.last_verified_fingerprint = fingerprint
+            binding.last_verified_at = datetime.now(UTC)
+            for step in session.query(StageStepModel).filter(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name.like("final_install-%")
+                | StageStepModel.name.like("builds-%")
+                | StageStepModel.name.like("tests-%")
+                | StageStepModel.name.like("lint-%"),
+            ):
+                step.status = "PENDING"
+                step.execution_id = None
+                step.completed_at = None
+            self._queue(continuation, "repair_revalidate")
+
+    def _start_revalidation(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            if attempt.status in {"applied", "revalidating_affected"}:
+                invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
+                proposal = json.loads(invocation.redacted_summary or "{}")
+                targets = list(proposal.get("validation_targets") or [])
+                mapping = {"build": "builds", "test": "tests", "lint": "lint"}
+                group = mapping.get(targets[0] if targets else "")
+                if group is None:
+                    self._block(
+                        continuation,
+                        "REPAIR_VALIDATION_TARGET_INVALID",
+                        "Repair proposal has no approved affected validation target",
+                    )
+                    return
+                if attempt.status == "applied":
+                    attempt.status = "revalidating_affected"
+                    attempt.updated_at = datetime.now(UTC)
+                try:
+                    outcome = self._validation.advance_group(
+                        session,
+                        continuation,
+                        group,
+                        next_node="repair_revalidate",
+                        attempt_key=f"{attempt.id}:affected",
+                    )
+                except ValidationRunnerError as error:
+                    self._validation_failure(continuation, error)
+                    return
+                if outcome != "passed":
+                    return
+            for step in session.query(StageStepModel).filter(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name.like("final_install-%")
+                | StageStepModel.name.like("builds-%")
+                | StageStepModel.name.like("tests-%")
+                | StageStepModel.name.like("lint-%"),
+            ):
+                step.status = "PENDING"
+                step.execution_id = None
+                step.completed_at = None
+            attempt.status = "revalidating"
+            attempt.updated_at = datetime.now(UTC)
+            self._queue(continuation, "final_install")
+
+    def _create_g09_from_repair(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            binding = self._stage._binding(session, continuation)
+            run = session.get(MigrationRunModel, continuation.run_id)
+            payload = {
+                "gate_id": "G09",
+                "run_id": continuation.run_id,
+                "stage_id": continuation.current_stage_id,
+                "stage_plan_checksum": continuation.stage_plan_checksum,
+                "workspace_fingerprint": binding.workspace_fingerprint,
+                "validation_summary_artifact_id": attempt.validation_summary_artifact_id,
+                "validation_summary_checksum": attempt.validation_summary_checksum,
+                "repair_attempt_id": attempt.id,
+                "g11_accepted": True,
+            }
+            context = (
+                run.artifact_root,
+                binding.workspace_fingerprint,
+                continuation.run_id,
+                continuation.current_stage_id,
+            )
+        gate = self._stage.write_gate_package(
+            run_id=context[2],
+            stage_id=context[3],
+            artifact_root=context[0],
+            gate_id="G09",
+            payload=payload,
+        )
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            self._stage.register_artifact(session, gate, continuation)
+            self._gates.create(
+                session,
+                continuation,
+                gate_id="G09",
+                package_artifact_id=gate.ref.artifact_id,
+                package_checksum=gate.ref.checksum,
+                artifact_set_checksum=self._stage.checksum(
+                    {gate.ref.artifact_id: gate.ref.checksum}
+                ),
+                workspace_fingerprint=context[1],
+            )
+
+    @staticmethod
+    def _latest_repair(session, continuation):
+        attempt = (
+            session.query(RepairAttemptModel)
+            .filter_by(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        if attempt is None:
+            raise TransformerStageError("REPAIR_ATTEMPT_MISSING", "Repair attempt is missing")
+        return attempt
+
+    @staticmethod
+    def _validation_failure(continuation, error: ValidationRunnerError) -> None:
+        continuation.status = "queued"
+        continuation.current_node = "classify_failure"
+        continuation.last_error_code = error.code
+        continuation.last_error_message = error.message
+        continuation.worker_id = None
+        continuation.lease_expires_at = None
+        continuation.state_version += 1
+        continuation.updated_at = datetime.now(UTC)
+
+    @staticmethod
+    def _node_for_group(group: str) -> str:
+        return "build" if group == "builds" else "test"
+
+    def _validation_groups(self, session, continuation) -> list[str]:
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        policy = (stage_plan.stage_plan or {}).get("validation_policy") or {}
+        return self._validation.required_groups(policy)
+
+    @staticmethod
+    def _validation_attempt_key(session, continuation) -> str:
+        attempt = session.query(RepairAttemptModel).filter_by(
+            run_id=continuation.run_id, stage_id=continuation.current_stage_id
+        ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+        return attempt.id if attempt and attempt.status in {"applied", "revalidating"} else "initial"
 
     def _cancel(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:

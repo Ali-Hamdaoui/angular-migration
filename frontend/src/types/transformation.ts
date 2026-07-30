@@ -24,6 +24,13 @@ export type TransformationProjection = {
     risk_note: string;
     source: string;
   } | null;
+  repair_attempt_id: string | null;
+  repair_status: string | null;
+  repair_risk_level: string | null;
+  repair_proposal_checksum: string | null;
+  repair_review_checksum: string | null;
+  repair_apply_checksum: string | null;
+  repair_validation_checksum: string | null;
   last_error_code: string | null;
   cancel_requested_at: string | null;
 };

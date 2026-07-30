@@ -1,0 +1,42 @@
+import hashlib
+from pathlib import Path
+
+from app.services.patch_apply_service import PatchApplyService
+from app.services.stage_preparation_primitives import StageSandboxCopier
+
+
+def test_operations_apply_atomically_with_preimage_and_ledger(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "app.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("const value = 'old';\n", encoding="utf-8")
+    preimage = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "src/app.ts",
+                "preimage_sha256": preimage,
+                "old_text": "'old'",
+                "new_text": "'new'",
+            }
+        ],
+        "unified_diff": None,
+    }
+
+    _prepared, ledger, fingerprint = PatchApplyService().apply(
+        proposal=proposal,
+        workspace_path=str(workspace),
+        expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        run_id="run-1",
+        stage_id="stage-1",
+        artifact_root=str(artifacts),
+        attempt_id="repair-1",
+    )
+
+    assert target.read_text(encoding="utf-8") == "const value = 'new';\n"
+    assert ledger.ref.checksum
+    assert fingerprint == StageSandboxCopier.fingerprint(workspace)

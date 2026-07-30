@@ -313,7 +313,16 @@ class StageExecutionApplicationService:
             )
 
     def _authorize_and_queue_first_command(
-        self, session, run, plan, stage, preparation, request, actor, group="bootstrap_install"
+        self,
+        session,
+        run,
+        plan,
+        stage,
+        preparation,
+        request,
+        actor,
+        group="bootstrap_install",
+        command_index=0,
     ):
         stage_plan = stage.stage_plan or {}
         references = (stage_plan.get("commands") or {}).get(group) or []
@@ -322,11 +331,15 @@ class StageExecutionApplicationService:
                 "STAGE_COMMAND_NOT_FOUND",
                 f"The approved stage plan contains no {group} command.",
             )
-        reference = references[0]
+        if command_index >= len(references):
+            raise StageExecutionError("STAGE_COMMAND_NOT_FOUND", f"{group} command index is invalid.")
+        reference = references[command_index]
         profile_id = stage_plan.get("execution_profile_id")
         if not isinstance(profile_id, str) or not profile_id:
             raise StageExecutionError("EXECUTION_PROFILE_NOT_APPROVED", "The approved stage plan has no execution profile.")
         continuation_key = f"{request.idempotency_key}:{group}"
+        if command_index:
+            continuation_key += f":{command_index}"
         CommandRegistryService().seed_defaults(session)
         authorization = self._policy_engine.validate(
             session,
