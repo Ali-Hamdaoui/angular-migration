@@ -116,9 +116,12 @@ class CommandRegistryService:
         from app.repositories.models.workflow import CommandTemplateModel
 
         now = datetime.now(UTC)
-        existing_ids = set(session.scalars(select(CommandTemplateModel.id)).all())
+        existing_pairs = set(
+            (row.id, row.version)
+            for row in session.query(CommandTemplateModel).all()
+        )
         for tpl in DEFAULT_COMMAND_TEMPLATES:
-            if tpl.template_id in existing_ids:
+            if (tpl.template_id, tpl.version) in existing_pairs:
                 continue
             row = CommandTemplateModel(
                 id=tpl.template_id,
@@ -277,12 +280,20 @@ class CommandPolicyEngineService:
             else:
                 checks.append(AuthorizationCheckResult(passed=True, rule_name="executable_matches_template"))
 
-            # 4. Arguments match template (exact match)
-            if not command_arguments_match(tuple(template.arguments), tuple(request.arguments)):
+            # 4. Arguments match template (version-bound when specified)
+            if request.template_id and request.template_version is not None:
+                version_template = self.registry.find_registered_template(
+                    session, template_id=request.template_id, command_id=request.command_id,
+                    version=request.template_version,
+                )
+                match_args = tuple(version_template.arguments) if version_template else tuple(template.arguments)
+            else:
+                match_args = tuple(template.arguments)
+            if not command_arguments_match(match_args, tuple(request.arguments)):
                 checks.append(AuthorizationCheckResult(
                     passed=False,
                     rule_name="arguments_match_template",
-                    reason=f"arguments {request.arguments} do not match template {template.arguments}",
+                    reason=f"arguments {request.arguments} do not match template {match_args}",
                 ))
                 reasons.append("argument mismatch")
             else:

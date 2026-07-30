@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER
 from app.domain.contracts import AgentKind
 from app.domain.planning import (
     APPROVED_BUILDERS,
@@ -372,17 +373,12 @@ class PlanRevisionService:
         if changes.target_cli_exact is not None:
             stage_values["target_cli_exact"] = changes.target_cli_exact
             commands = dict(stage_values["commands"])
+            definition = ANGULAR_UPDATE_V2_RENDERER
             update = dict(commands["angular_update"][0])
-            update["arguments"] = (
-                "--yes",
-                "-p",
-                "@angular/cli@" + changes.target_cli_exact,
-                "ng",
-                "update",
-                "@angular/core@" + stage.target_exact,
-                "@angular/cli@" + changes.target_cli_exact,
-                "--interactive=false",
-            )
+            update["arguments"] = definition.render_arguments({
+                "target_cli_exact": changes.target_cli_exact,
+                "target_exact": stage.target_exact,
+            })
             commands["angular_update"] = (update,)
             stage_values["commands"] = commands
         if changes.validation_policy_id is not None:

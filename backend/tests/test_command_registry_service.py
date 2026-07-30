@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
     AuthorizationDecision,
     CancellationPolicy,
     CommandTemplate,
@@ -198,6 +199,54 @@ class TestCommandRegistryService:
         assert "python" in allowed
         assert "python.exe" in allowed
         assert "py" in allowed
+
+    def test_seed_defaults_creates_v1_and_v2_templates(self, registry, db_session):
+        """Both v1 and v2 angular-update-exact templates are seeded."""
+        seeded = registry.seed_defaults(db_session)
+        angular = [t for t in seeded if t.command_id == "angular-update-exact"]
+        assert len(angular) == 2
+        versions = {t.version for t in angular}
+        assert versions == {1, 2}
+
+    def test_find_registered_template_returns_correct_version(self, registry, db_session):
+        """find_registered_template returns the right template by version."""
+        registry.seed_defaults(db_session)
+        v1 = registry.find_registered_template(
+            db_session, template_id="tpl-angular-update-exact",
+            command_id="angular-update-exact", version=1,
+        )
+        v2 = registry.find_registered_template(
+            db_session, template_id="tpl-angular-update-exact-v2",
+            command_id="angular-update-exact", version=2,
+        )
+        assert v1 is not None
+        assert v1.version == 1
+        assert v2 is not None
+        assert v2.version == 2
+        assert "--interactive=false" in " ".join(v1.arguments)
+        assert "--interactive=false" not in " ".join(v2.arguments)
+
+    def test_v2_template_omits_interactive_false(self, registry, db_session):
+        """The v2 argument patterns do NOT include --interactive=false."""
+        assert "--interactive=false" not in ANGULAR_UPDATE_V2_RENDERER.argument_patterns
+        registry.seed_defaults(db_session)
+        v2 = registry.find_registered_template(
+            db_session, template_id="tpl-angular-update-exact-v2",
+            command_id="angular-update-exact", version=2,
+        )
+        assert v2 is not None
+        for arg in v2.arguments:
+            assert "--interactive" not in arg
+
+    def test_seed_defaults_is_idempotent_with_versions(self, registry, db_session):
+        """Seeding twice with versioned templates does not create duplicates."""
+        registry.seed_defaults(db_session)
+        v2_tpl = [t for t in DEFAULT_COMMAND_TEMPLATES if t.command_id == "angular-update-exact" and t.version == 2]
+        assert len(v2_tpl) == 1
+        first_count = db_session.query(CommandTemplateModel).count()
+        registry.seed_defaults(db_session)
+        second_count = db_session.query(CommandTemplateModel).count()
+        assert second_count == first_count
 
 
 class TestCommandPolicyEngineService:

@@ -31,7 +31,7 @@ from app.domain.contracts import (
     CommandResultDto,
     CommandStatus,
 )
-from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
 from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
@@ -156,6 +156,13 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
             definition.executable_aliases,
         )
         for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
+    ) + (
+        CommandDefinition(
+            ANGULAR_UPDATE_V2_RENDERER.command_id,
+            ANGULAR_UPDATE_V2_RENDERER.executable,
+            ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
+            ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
+        ),
     )
 
 
@@ -215,10 +222,13 @@ class CommandRegistry:
     )
 
     def find(self, command_id: str) -> CommandDefinition:
+        latest = None
         for definition in self.definitions:
             if definition.command_id == command_id:
-                return definition
-        raise CommandPolicyViolation("Command ID is not registered for Sprint 0 execution")
+                latest = definition
+        if latest is None:
+            raise CommandPolicyViolation("Command ID is not registered for Sprint 0 execution")
+        return latest
 
 
 @dataclass(frozen=True)

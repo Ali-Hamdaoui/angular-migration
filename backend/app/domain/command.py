@@ -226,6 +226,28 @@ class AuthorizationResult:
     created_at: datetime | None = None
 
 
+# v2 renderer for angular-update-exact without --interactive=false
+# Used by new plans; v1 in the catalogue remains as immutable history.
+ANGULAR_UPDATE_V2_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v2",
+    executable="npx",
+    argument_patterns=(
+        "--yes",
+        "-p",
+        "@angular/cli@{target_cli_exact}",
+        "ng",
+        "update",
+        "@angular/core@{target_exact}",
+        "@angular/cli@{target_cli_exact}",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute an approved exact Angular update (v2)",
+)
+
 # Default command templates for Sprint 3 pipeline
 TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinition]] = {
     "npm-ci-bootstrap": TransformationCommandDefinition(
@@ -274,6 +296,18 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
 
 _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
     definition.to_template() for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
+) + (
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V2_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V2_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V2_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V2_RENDERER.description,
+        version=2,
+        allowed_env_vars=ANGULAR_UPDATE_V2_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V2_RENDERER.max_output_bytes,
+    ),
 )
 
 

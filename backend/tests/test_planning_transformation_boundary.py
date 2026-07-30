@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from pydantic import ValidationError
 
-from app.domain.command import DEFAULT_COMMAND_TEMPLATES, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, DEFAULT_COMMAND_TEMPLATES, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
 from app.domain.planning import CommandTemplateReference
 from app.domain.planning import PlanGenerationRequest, StageExecutionPlan
 from app.domain.contracts import CommandRequestDto
@@ -78,7 +78,10 @@ def test_generated_commands_are_rendered_from_the_shared_transformation_catalogu
 
     for references in plan.commands.values():
         for reference in references:
-            definition = TRANSFORMATION_COMMAND_CATALOGUE[reference.command_id]
+            if reference.command_id == "angular-update-exact":
+                definition = ANGULAR_UPDATE_V2_RENDERER
+            else:
+                definition = TRANSFORMATION_COMMAND_CATALOGUE[reference.command_id]
             assert reference.template_id == definition.template_id
             assert reference.executable == definition.executable
             assert reference.arguments == definition.render_arguments(reference.parameter_bindings)
@@ -109,7 +112,7 @@ def test_worker_registers_every_generated_command_shape():
     registry = CommandRegistry()
     planner_commands = {
         "npm-ci-bootstrap": ("ci",),
-        "angular-update-exact": ("--yes", "-p", "@angular/cli@19.2.0", "ng", "update", "@angular/core@19.2.0", "@angular/cli@19.2.0", "--interactive=false"),
+        "angular-update-exact": ("--yes", "-p", "@angular/cli@19.2.0", "ng", "update", "@angular/core@19.2.0", "@angular/cli@19.2.0"),
         "angular-version-verify": ("ng", "version"),
         "npm-ci-final": ("ci",),
         "npm-script-build-production": ("run", "build", "--", "--configuration", "production"),
@@ -206,3 +209,65 @@ def test_stage_plan_keeps_evidence_checksum_separate_from_workspace_fingerprint(
 @pytest.mark.parametrize("value", [r"C:\unauthorized\path", r"\\server\share\path", "/unauthorized/path"])
 def test_path_classification_is_host_independent(value):
     assert is_portable_absolute_path(value) is True
+
+
+def test_new_plan_uses_v2_template():
+    """Newly generated angular-update-exact command uses v2 template and version 2."""
+    plan = StageExecutionPlanService().create(
+        PlanGenerationRequest(
+            run_id="run-v2-test", expected_state_version=1, idempotency_key="v2-test", actor="operator",
+            source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
+            catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
+            execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+            builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
+            stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
+        )
+    )
+    update = plan.commands["angular_update"][0]
+    assert update.template_version == 2
+    assert update.template_id == ANGULAR_UPDATE_V2_RENDERER.template_id
+    assert "--interactive=false" not in " ".join(update.arguments)
+    assert ANGULAR_UPDATE_V2_RENDERER.render_arguments({
+        "target_cli_exact": plan.target_cli_exact,
+        "target_exact": plan.target_exact,
+    }) == update.arguments
+
+
+def test_planned_angular_update_matches_v2_template():
+    """The rendered arguments match the v2 template pattern."""
+    plan = StageExecutionPlanService().create(
+        PlanGenerationRequest(
+            run_id="run-match-v2", expected_state_version=1, idempotency_key="match-v2", actor="operator",
+            source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
+            catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
+            execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
+            builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
+            stage_route=(("angular-18.x", "angular-19.x", "angular-18-to-19", "19.2.0", "19.2.0"),),
+        )
+    )
+    update = plan.commands["angular_update"][0]
+    assert command_arguments_match(ANGULAR_UPDATE_V2_RENDERER.argument_patterns, update.arguments)
+    assert command_arguments_match(TRANSFORMATION_COMMAND_CATALOGUE["angular-update-exact"].argument_patterns, update.arguments) is False
+
+
+def test_v1_plan_remains_immutable():
+    """The catalogue v1 template still contains --interactive=false."""
+    v1 = TRANSFORMATION_COMMAND_CATALOGUE["angular-update-exact"]
+    assert "--interactive=false" in v1.argument_patterns
+    assert v1.template_id == "tpl-angular-update-exact"
+
+
+def test_old_g07_rejects_v2_argv():
+    """An old G07-approved v1 argument tuple does NOT match the v2 pattern."""
+    v1_args = (
+        "--yes", "-p", "@angular/cli@19.2.0", "ng", "update",
+        "@angular/core@19.2.0", "@angular/cli@19.2.0", "--interactive=false",
+    )
+    v2_args = (
+        "--yes", "-p", "@angular/cli@19.2.0", "ng", "update",
+        "@angular/core@19.2.0", "@angular/cli@19.2.0",
+    )
+    assert command_arguments_match(TRANSFORMATION_COMMAND_CATALOGUE["angular-update-exact"].argument_patterns, v1_args)
+    assert command_arguments_match(TRANSFORMATION_COMMAND_CATALOGUE["angular-update-exact"].argument_patterns, v2_args) is False
+    assert command_arguments_match(ANGULAR_UPDATE_V2_RENDERER.argument_patterns, v2_args)
+    assert command_arguments_match(ANGULAR_UPDATE_V2_RENDERER.argument_patterns, v1_args) is False

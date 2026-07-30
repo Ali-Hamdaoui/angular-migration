@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 
-from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -91,14 +91,19 @@ class StageExecutionPlanService:
 
     @staticmethod
     def _command(command_id, request, parameter_bindings=None):
-        definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
+        if command_id == "angular-update-exact":
+            definition = ANGULAR_UPDATE_V2_RENDERER
+            template_version = 2
+        else:
+            definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
+            template_version = 1
         stage_id = run_scoped_stage_id(request.run_id, request.stage_route[0][2])
         alias = "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_")
         bindings = dict(parameter_bindings or {})
         return CommandTemplateReference(
             command_id=definition.command_id,
             template_id=definition.template_id,
-            template_version=1,
+            template_version=template_version,
             parameter_bindings=bindings,
             executable=definition.executable,
             arguments=definition.render_arguments(bindings),
