@@ -3,6 +3,7 @@ import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
 
 let planReviewShouldThrow = false;
+let baselineInstallationShouldThrow = false;
 
 vi.mock("@/hooks/useAuthoritativeRun", () => ({
   useAuthoritativeRun: (_runId: string, initialState: AuthoritativeRunStateDto) => ({
@@ -18,6 +19,10 @@ vi.mock("@/components/MigrationPlanPanel", () => ({ MigrationPlanPanel: () => <h
 vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => {
   if (planReviewShouldThrow) throw new Error("malformed review");
   return <h2>plan-review-panel</h2>;
+} }));
+vi.mock("@/components/BaselineInstallationPanel", () => ({ BaselineInstallationPanel: () => {
+  if (baselineInstallationShouldThrow) throw new Error("incomplete baseline installation projection");
+  return <div>baseline-installation-panel</div>;
 } }));
 vi.mock("@/components/TransformationPanel", () => ({ TransformationPanel: ({ onActionRequiredChange }: { onActionRequiredChange?: (required: boolean) => void }) => <div aria-label="mock-transformation-panel">transformation-panel<button type="button" onClick={() => onActionRequiredChange?.(true)}>Require Transformer action</button></div> }));
 vi.mock("@/components/AssistantPanel", () => ({ AssistantDock: () => <button type="button">Open Assistant</button> }));
@@ -59,6 +64,7 @@ const initialState: AuthoritativeRunStateDto = {
 describe("AuthoritativeRunDashboard", () => {
   beforeEach(() => {
     planReviewShouldThrow = false;
+    baselineInstallationShouldThrow = false;
   });
 
   it("always exposes and mounts the dedicated Transformation destination", () => {
@@ -85,6 +91,16 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Planning & G06" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Planning review is temporarily unavailable");
+    consoleError.mockRestore();
+  });
+
+  it("keeps the dashboard mounted when baseline installation data is incomplete", () => {
+    baselineInstallationShouldThrow = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "BASELINE_WORKSPACE_READY" }] }} />);
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByText("Baseline installation is temporarily unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Transformation" })).toBeInTheDocument();
     consoleError.mockRestore();
   });
 
