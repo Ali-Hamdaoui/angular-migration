@@ -42,6 +42,15 @@ const projection = {
   repair_review_checksum: null,
   repair_apply_checksum: null,
   repair_validation_checksum: null,
+  route_stages: [
+    {
+      stage_id: "stage-1",
+      source_version: "18.x",
+      target_version: "19.x",
+      status: "preparing",
+    },
+  ],
+  sealed_chain_hash: null,
   last_error_code: null,
   cancel_requested_at: null,
 };
@@ -58,6 +67,7 @@ describe("TransformationPanel", () => {
     expect(screen.getByText("G07")).toBeInTheDocument();
     expect(screen.getByText("pre_bootstrap")).toBeInTheDocument();
     expect(screen.getByText("sha256:workspace")).toBeInTheDocument();
+    expect(screen.getByText("18.x to 19.x: preparing")).toBeInTheDocument();
   });
 
   it("directs operators when no continuation exists", async () => {

@@ -85,6 +85,19 @@ export function TransformationPanel({
         <div><dt>Revalidation</dt><dd>{projection.repair_validation_checksum ?? "pending"}</dd></div>
       </dl>
     </div> : null}
+    <div>
+      <h4>Approved route</h4>
+      <ol>
+        {projection.route_stages.map((stage) =>
+          <li key={stage.stage_id}>
+            {stage.source_version ?? "source"} to {stage.target_version ?? "target"}: {stage.status}
+          </li>
+        )}
+      </ol>
+      {projection.sealed_chain_hash
+        ? <p>Latest seal <code>{projection.sealed_chain_hash}</code></p>
+        : null}
+    </div>
     {projection.status === "waiting_gate"
       && projection.active_gate
       && projection.active_gate_package_checksum

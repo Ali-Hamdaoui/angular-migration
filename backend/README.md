@@ -223,13 +223,30 @@ opened through the artifact API like any other run artifact.
 
 ## Run locally
 
-From this directory, install the declared dependencies, then run:
+From this directory, install dependencies and migrate the configured SQLite
+database:
 
 ```powershell
-python -m uvicorn app.main:app --reload
+.\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-Initial AMF-S0-02 route shells:
+Run the API and the durable Transformer/command worker in separate terminals.
+The API only queues authorized commands; it never spawns migration processes:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m app.orchestration.transformer_worker
+```
+
+The Transformer worker owns continuation claims, command leases, restart
+reconciliation, cancellation polling, and Windows process-tree supervision.
+Run more than one worker only against the same single-host SQLite database and
+workspace roots.
+
+Core route shells:
 
 - `GET /health`
 - `GET /version`

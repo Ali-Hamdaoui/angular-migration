@@ -31,6 +31,13 @@ export type TransformationProjection = {
   repair_review_checksum: string | null;
   repair_apply_checksum: string | null;
   repair_validation_checksum: string | null;
+  route_stages: Array<{
+    stage_id: string;
+    source_version: string | null;
+    target_version: string | null;
+    status: string;
+  }>;
+  sealed_chain_hash: string | null;
   last_error_code: string | null;
   cancel_requested_at: string | null;
 };

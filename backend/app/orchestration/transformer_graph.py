@@ -27,6 +27,7 @@ from app.repositories.models import (
     RepairAttemptModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
+    StageGatePackageModel,
     StagePromptRequestModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -53,6 +54,7 @@ from app.services.validation_runner import (
     ValidationRunner,
     ValidationRunnerError,
 )
+from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 
 
 class TransformerPointer(TypedDict):
@@ -73,6 +75,7 @@ class TransformerOrchestrator:
         failure_evidence=None,
         repair_service=None,
         patch_service=None,
+        sealing_flow=None,
     ) -> None:
         self._scope = scope
         self._stage = stage_service or TransformerStageService(scope=scope)
@@ -85,6 +88,11 @@ class TransformerOrchestrator:
         self._failures = failure_evidence or FailureEvidenceService()
         self._repairs = repair_service or RepairApplicationService(scope=scope)
         self._patches = patch_service or PatchApplyService()
+        self._sealing_flow = sealing_flow or TransformerSealingFlow(
+            scope=scope,
+            stage_service=self._stage,
+            gate_service=self._gates,
+        )
 
     def advance(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -143,6 +151,14 @@ class TransformerOrchestrator:
             self._create_repair_gate(continuation_id, worker_id, "G11")
         elif node == "create_g09":
             self._create_g09_from_repair(continuation_id, worker_id)
+        elif node == "create_g12":
+            self._sealing_flow.create_g12(continuation_id, worker_id)
+        elif node == "seal_stage":
+            self._sealing_flow.seal(continuation_id, worker_id)
+        elif node == "materialize_next_stage":
+            self._sealing_flow.materialize(continuation_id, worker_id)
+        elif node == "complete_run":
+            self._sealing_flow.complete(continuation_id, worker_id)
         elif node == "cancel":
             self._cancel(continuation_id, worker_id)
         else:
@@ -1078,6 +1094,33 @@ class TransformerOrchestrator:
             if active is not None:
                 active.cancel_requested_at = datetime.now(UTC)
                 active.cancel_requested_by = continuation.cancel_requested_by
+            for gate in session.query(StageGatePackageModel).filter_by(
+                run_id=continuation.run_id, status="pending"
+            ):
+                gate.status = "cancelled"
+                gate.stale_at = datetime.now(UTC)
+            for prompt in session.query(StagePromptRequestModel).filter(
+                StagePromptRequestModel.run_id == continuation.run_id,
+                StagePromptRequestModel.status.not_in(("decided", "cancelled", "stale")),
+            ):
+                prompt.status = "cancelled"
+            for repair in session.query(RepairAttemptModel).filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.status.in_(
+                    (
+                        "evidence_frozen",
+                        "proposed",
+                        "review_accepted",
+                        "waiting_g10",
+                        "applying",
+                        "applied",
+                        "revalidating",
+                        "revalidating_affected",
+                    )
+                ),
+            ):
+                repair.status = "cancelled"
+                repair.updated_at = datetime.now(UTC)
             continuation.status = "cancelled"
             continuation.current_node = "terminal"
             continuation.worker_id = None

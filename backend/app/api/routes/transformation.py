@@ -42,6 +42,13 @@ router = APIRouter(prefix="/runs", tags=["transformation"])
 
 def _projection(session, continuation: TransformationContinuationModel) -> dict[str, object]:
     stage = session.get(MigrationStageModel, continuation.current_stage_id)
+    route_stages = list(
+        session.scalars(
+            select(MigrationStageModel)
+            .where(MigrationStageModel.run_id == continuation.run_id)
+            .order_by(MigrationStageModel.stage_order)
+        )
+    )
     checkpoint = session.scalar(
         select(StageCheckpointModel)
         .where(StageCheckpointModel.stage_id == continuation.current_stage_id)
@@ -86,6 +93,15 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         .order_by(RepairAttemptModel.attempt_number.desc())
         .limit(1)
     )
+    latest_seal = session.scalar(
+        select(StageCheckpointModel)
+        .where(
+            StageCheckpointModel.run_id == continuation.run_id,
+            StageCheckpointModel.sealed.is_(True),
+        )
+        .order_by(StageCheckpointModel.created_at.desc())
+        .limit(1)
+    )
     return {
         "run_id": continuation.run_id,
         "continuation_id": continuation.id,
@@ -121,6 +137,16 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "repair_review_checksum": repair.review_checksum if repair else None,
         "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
         "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
+        "route_stages": [
+            {
+                "stage_id": item.id,
+                "source_version": item.source_version_family,
+                "target_version": item.target_version_family,
+                "status": item.status,
+            }
+            for item in route_stages
+        ],
+        "sealed_chain_hash": latest_seal.manifest_checksum if latest_seal else None,
         "last_error_code": continuation.last_error_code,
         "cancel_requested_at": continuation.cancel_requested_at,
     }
