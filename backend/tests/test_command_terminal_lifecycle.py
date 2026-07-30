@@ -25,6 +25,7 @@ from app.domain.contracts import (
     CommandRequestDto,
     CommandStatus,
 )
+from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
@@ -32,6 +33,7 @@ from app.repositories.models import (
     CommandLogSummaryModel,
     MigrationRunModel,
     StageCheckpointModel,
+    StagePromptRequestModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
@@ -597,6 +599,492 @@ def test_transformer_restart_queues_one_retry_then_success_advances(
         (CommandStatus.CANCELLED, True, True, "timed_out"),
     ),
 )
+def _test_scope(factory):
+    """Return a context manager factory that yields sessions from the given factory, mirroring session_scope commit semantics."""
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def scope():
+        s = factory()
+        try:
+            yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    return scope
+
+
+def test_angular_update_handle_prompt_marks_step_failed(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    NOW = datetime(2026, 7, 30, tzinfo=UTC)
+
+    session = factory()
+    run = MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(tmp_path / "artifacts"),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    _exec_base = dict(
+        executable="npx",
+        arguments=[],
+        requested_at=NOW,
+        state_version=1,
+        attempt_number=1,
+        operation_kind="mutating",
+    )
+
+    execution = CommandExecutionModel(
+        id="exec-au",
+        run_id="run-1",
+        stage_id="stage-1",
+        command_id="angular-update-exact",
+        status="failed",
+        failure_code="NG_UPDATE_FAILED",
+        failure_message="ng update failed with exit code 1",
+        **_exec_base,
+    )
+    step = StageStepModel(
+        id="step-au",
+        run_id="run-1",
+        stage_id="stage-1",
+        name="angular_update-0",
+        status="RUNNING",
+        component_type="command",
+        execution_id=execution.id,
+        state_version=1,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-1",
+        run_id="run-1",
+        stage_id="stage-1",
+        alias="STAGE_WORKSPACE_STAGE_1",
+        workspace_path=str(tmp_path / "workspace"),
+        workspace_fingerprint="fingerprint-1",
+        active=True,
+        created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-1",
+        run_id="run-1",
+        current_stage_id="stage-1",
+        thread_id="thread-1",
+        status="running",
+        current_node="handle_prompt",
+        worker_id="worker-1",
+        g06_approval_id="g06-1",
+        plan_id="plan-1",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation",
+        request_checksum="sha256:continuation",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    session.add_all([run, execution, step, binding, continuation])
+    session.commit()
+    session.close()
+
+    orchestrator = TransformerOrchestrator(
+        scope=lambda: _test_scope(factory)(),
+        stage_service=MagicMock(),
+        gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=MagicMock(),
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+    orchestrator._handle_prompt("cont-1", "worker-1")
+
+    session = factory()
+    step = session.get(StageStepModel, "step-au")
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert step.status == "FAILED"
+    assert step.completed_at is not None
+    assert cont.current_node == "classify_failure"
+    assert cont.last_error_code == "NG_UPDATE_FAILED"
+    assert cont.last_error_message == "ng update failed with exit code 1"
+    session.close()
+    engine.dispose()
+
+
+def test_angular_update_handle_prompt_routes_to_classify_failure(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    NOW = datetime(2026, 7, 30, tzinfo=UTC)
+
+    _exec_base = dict(
+        executable="npx",
+        arguments=[],
+        requested_at=NOW,
+        state_version=1,
+        attempt_number=1,
+        operation_kind="mutating",
+    )
+
+    session = factory()
+    run = MigrationRunModel(
+        id="run-2",
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(tmp_path / "artifacts"),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    execution = CommandExecutionModel(
+        id="exec-au-2",
+        run_id="run-2",
+        stage_id="stage-2",
+        command_id="angular-update-exact",
+        status="failed",
+        failure_code="COMMAND_EXIT_NONZERO",
+        failure_message="Angular update failed",
+        **_exec_base,
+    )
+    step = StageStepModel(
+        id="step-au-2",
+        run_id="run-2",
+        stage_id="stage-2",
+        name="angular_update-0",
+        status="RUNNING",
+        component_type="command",
+        execution_id=execution.id,
+        state_version=1,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-2",
+        run_id="run-2",
+        stage_id="stage-2",
+        alias="STAGE_WORKSPACE_STAGE_2",
+        workspace_path=str(tmp_path / "workspace2"),
+        workspace_fingerprint="fingerprint-2",
+        active=True,
+        created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-2",
+        run_id="run-2",
+        current_stage_id="stage-2",
+        thread_id="thread-2",
+        status="running",
+        current_node="handle_prompt",
+        worker_id="worker-2",
+        g06_approval_id="g06-2",
+        plan_id="plan-2",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-2",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-2",
+        request_checksum="sha256:continuation-2",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+        last_error_code=None,
+        last_error_message=None,
+    )
+    session.add_all([run, execution, step, binding, continuation])
+    session.commit()
+    session.close()
+
+    orchestrator = TransformerOrchestrator(
+        scope=lambda: _test_scope(factory)(),
+        stage_service=MagicMock(),
+        gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=MagicMock(),
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+    orchestrator._handle_prompt("cont-2", "worker-2")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-2")
+    assert cont.current_node == "classify_failure"
+    assert cont.status == "queued"
+    assert cont.last_error_code == "COMMAND_EXIT_NONZERO"
+    assert cont.last_error_message == "Angular update failed"
+    session.close()
+    engine.dispose()
+
+
+def test_angular_update_handle_prompt_success_without_prompt_unchanged(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    NOW = datetime(2026, 7, 30, tzinfo=UTC)
+
+    _exec_base = dict(
+        executable="npx",
+        arguments=[],
+        requested_at=NOW,
+        state_version=1,
+        attempt_number=1,
+        operation_kind="mutating",
+    )
+
+    session = factory()
+    run = MigrationRunModel(
+        id="run-3",
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(tmp_path / "artifacts"),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    execution = CommandExecutionModel(
+        id="exec-au-3",
+        run_id="run-3",
+        stage_id="stage-3",
+        command_id="angular-update-exact",
+        status="succeeded",
+        **_exec_base,
+    )
+    step = StageStepModel(
+        id="step-au-3",
+        run_id="run-3",
+        stage_id="stage-3",
+        name="angular_update-0",
+        status="RUNNING",
+        component_type="command",
+        execution_id=execution.id,
+        state_version=1,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-3",
+        run_id="run-3",
+        stage_id="stage-3",
+        alias="STAGE_WORKSPACE_STAGE_3",
+        workspace_path=str(tmp_path / "workspace3"),
+        workspace_fingerprint="fingerprint-3",
+        active=True,
+        created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-3",
+        run_id="run-3",
+        current_stage_id="stage-3",
+        thread_id="thread-3",
+        status="running",
+        current_node="handle_prompt",
+        worker_id="worker-3",
+        g06_approval_id="g06-3",
+        plan_id="plan-3",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-3",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-3",
+        request_checksum="sha256:continuation-3",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    session.add_all([run, execution, step, binding, continuation])
+    session.commit()
+    session.close()
+
+    orchestrator = TransformerOrchestrator(
+        scope=lambda: _test_scope(factory)(),
+        stage_service=MagicMock(),
+        gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=MagicMock(),
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+    orchestrator._handle_prompt("cont-3", "worker-3")
+
+    session = factory()
+    step = session.get(StageStepModel, "step-au-3")
+    cont = session.get(TransformationContinuationModel, "cont-3")
+    assert step.status == "PASSED"
+    assert step.completed_at is not None
+    assert cont.current_node == "target_inspection"
+    assert cont.status == "queued"
+    session.close()
+    engine.dispose()
+
+
+def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    NOW = datetime(2026, 7, 30, tzinfo=UTC)
+
+    _exec_base = dict(
+        executable="npx",
+        arguments=[],
+        requested_at=NOW,
+        state_version=1,
+        attempt_number=1,
+        operation_kind="mutating",
+    )
+
+    session = factory()
+
+    run = MigrationRunModel(
+        id="run-4",
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(tmp_path / "artifacts"),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    execution = CommandExecutionModel(
+        id="exec-au-4",
+        run_id="run-4",
+        stage_id="stage-4",
+        command_id="angular-update-exact",
+        status="succeeded",
+        prompt_request_id="prompt-4",
+        checkpoint_id="checkpoint-4",
+        **_exec_base,
+    )
+    step = StageStepModel(
+        id="step-au-4",
+        run_id="run-4",
+        stage_id="stage-4",
+        name="angular_update-0",
+        status="RUNNING",
+        component_type="command",
+        execution_id=execution.id,
+        state_version=1,
+        updated_at=NOW,
+    )
+    snapshot = tmp_path / ".checkpoints" / "snapshot-4"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    (snapshot / "package.json").write_text("{}", encoding="utf-8")
+    checkpoint_fingerprint = StageSandboxCopier.fingerprint(snapshot)
+
+    checkpoint = StageCheckpointModel(
+        id="checkpoint-4",
+        run_id="run-4",
+        stage_id="stage-4",
+        kind="pre_angular_update",
+        sequence=1,
+        workspace_alias="STAGE_WORKSPACE_STAGE_4",
+        workspace_path=str(snapshot),
+        workspace_fingerprint=checkpoint_fingerprint,
+        safe_for_resume=True,
+        sealed=False,
+        state_version=1,
+        created_at=NOW,
+    )
+    prompt = StagePromptRequestModel(
+        id="prompt-4",
+        run_id="run-4",
+        stage_id="stage-4",
+        execution_id=execution.id,
+        kind="angular_update",
+        detector_version="v1",
+        normalized_prompt="some prompt",
+        context_artifact_ids=[],
+        pre_command_fingerprint="fp-before",
+        status="decided",
+        reconstruction_checkpoint_id=checkpoint.id,
+        prompt_checksum="sha256:prompt",
+        decided_at=NOW,
+        created_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-4",
+        run_id="run-4",
+        stage_id="stage-4",
+        alias="STAGE_WORKSPACE_STAGE_4",
+        workspace_path=str(tmp_path / "workspace4"),
+        workspace_fingerprint="fingerprint-4",
+        active=True,
+        created_at=NOW,
+    )
+    (tmp_path / "workspace4").mkdir(parents=True, exist_ok=True)
+    continuation = TransformationContinuationModel(
+        id="cont-4",
+        run_id="run-4",
+        current_stage_id="stage-4",
+        thread_id="thread-4",
+        status="running",
+        current_node="handle_prompt",
+        worker_id="worker-4",
+        g06_approval_id="g06-4",
+        plan_id="plan-4",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-4",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-4",
+        request_checksum="sha256:continuation-4",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    session.add_all([run, execution, step, checkpoint, prompt, binding, continuation])
+    session.commit()
+    session.close()
+
+    mock_stage = MagicMock(spec=TransformerStageService)
+    mock_stage._binding.return_value = binding
+    mock_stage.reconstruct_workspace.return_value = "observed-fingerprint-4"
+    mock_explainer = MagicMock()
+
+    orchestrator = TransformerOrchestrator(
+        scope=lambda: _test_scope(factory)(),
+        stage_service=mock_stage,
+        gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=mock_explainer,
+        validation_runner=MagicMock(),
+        failure_evidence=MagicMock(),
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+    orchestrator._handle_prompt("cont-4", "worker-4")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-4")
+    prompt = session.get(StagePromptRequestModel, "prompt-4")
+    assert cont.status == "waiting_prompt"
+    assert cont.current_node == "wait_prompt_decision"
+    assert prompt.status == "waiting_human"
+    assert prompt.observed_fingerprint == "observed-fingerprint-4"
+    session.close()
+    engine.dispose()
+
+
 def test_cancellation_and_timeout_keep_distinct_terminal_states(
     tmp_path: Path,
     status: CommandStatus,

@@ -112,7 +112,23 @@ class TransformerOrchestrator:
             self._create_g07(continuation_id, worker_id)
         elif node == "bootstrap_install":
             with self._scope() as session:
-                self._stage.queue_bootstrap(session, self._owned(session, continuation_id, worker_id))
+                cont = self._owned(session, continuation_id, worker_id)
+                step = session.scalar(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == cont.current_stage_id,
+                        StageStepModel.name == "bootstrap_install-0",
+                        StageStepModel.status == "PASSED",
+                    )
+                )
+                if step is not None:
+                    cont.current_node = "verify_bootstrap"
+                    cont.status = "queued"
+                    cont.worker_id = None
+                    cont.lease_expires_at = None
+                    cont.state_version += 1
+                    cont.updated_at = datetime.now(UTC)
+                    return
+                self._stage.queue_bootstrap(session, cont)
         elif node == "verify_bootstrap":
             with self._scope() as session:
                 self._stage.verify_bootstrap(session, self._owned(session, continuation_id, worker_id))
@@ -344,11 +360,12 @@ class TransformerOrchestrator:
                     step.completed_at = datetime.now(UTC)
                     self._queue(continuation, "target_inspection")
                 else:
-                    self._block(
-                        continuation,
-                        execution.failure_code or "ANGULAR_UPDATE_FAILED",
-                        execution.failure_message or "Angular update failed without a governed prompt",
-                    )
+                    step.status = "FAILED"
+                    step.completed_at = datetime.now(UTC)
+                    continuation.status = "queued"
+                    continuation.current_node = "classify_failure"
+                    continuation.last_error_code = execution.failure_code or "ANGULAR_UPDATE_FAILED"
+                    continuation.last_error_message = execution.failure_message or "Angular update failed without a governed prompt"
                 return
             checkpoint = session.get(StageCheckpointModel, prompt.reconstruction_checkpoint_id)
             binding = self._stage._binding(session, continuation)
@@ -679,6 +696,26 @@ class TransformerOrchestrator:
         )
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+
+            if self._is_angular_update_failure(session, continuation):
+                checkpoint_id, new_fingerprint = self._restore_angular_update_checkpoint(session, continuation)
+                if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
+                    continuation.attempt += 1
+                    continuation.status = "queued"
+                    continuation.current_node = "angular_update"
+                    continuation.worker_id = None
+                    continuation.lease_expires_at = None
+                    continuation.state_version += 1
+                    continuation.updated_at = datetime.now(UTC)
+                    return
+                elif route.value != "repairable_source":
+                    self._block(
+                        continuation,
+                        f"ANGULAR_UPDATE_{route.value.upper()}",
+                        f"Angular update failure routed to {route.value}",
+                    )
+                    return
+
             for artifact in (failure, route_artifact, context):
                 if artifact is not None:
                     self._stage.register_artifact(session, artifact, continuation)
@@ -1041,6 +1078,42 @@ class TransformerOrchestrator:
                 ),
                 workspace_fingerprint=context[1],
             )
+
+    @staticmethod
+    def _is_angular_update_failure(session, continuation) -> bool:
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+                StageStepModel.status == "FAILED",
+            )
+        )
+        return step is not None
+
+    def _restore_angular_update_checkpoint(self, session, continuation):
+        checkpoint = session.scalar(
+            select(StageCheckpointModel).where(
+                StageCheckpointModel.stage_id == continuation.current_stage_id,
+                StageCheckpointModel.kind == "pre_angular_update",
+            ).order_by(StageCheckpointModel.sequence.desc())
+        )
+        if checkpoint is None:
+            raise TransformerStageError(
+                "CHECKPOINT_MISSING",
+                "No pre_angular_update checkpoint available for recovery",
+            )
+        binding = self._stage._binding(session, continuation)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        new_fingerprint = self._stage.reconstruct_workspace(
+            checkpoint.workspace_path,
+            binding.workspace_path,
+            (run.workspace_aliases or {})["STAGE_SANDBOX"],
+            checkpoint.workspace_fingerprint,
+        )
+        binding.workspace_fingerprint = new_fingerprint
+        binding.last_verified_fingerprint = new_fingerprint
+        binding.last_verified_at = datetime.now(UTC)
+        return checkpoint.id, new_fingerprint
 
     @staticmethod
     def _latest_repair(session, continuation):
