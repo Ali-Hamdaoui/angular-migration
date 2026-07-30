@@ -6,7 +6,11 @@ from app.domain.compatibility import CompatibilityCatalogue, CompatibilityCatalo
 class CompatibilityCatalogueProvider:
     """Load the active versioned catalogue independently of HTTP mutations."""
 
-    def load(self) -> CompatibilityCatalogue:
+    CURRENT_VERSION = "catalog-v2"
+
+    def load(self, version: str = CURRENT_VERSION) -> CompatibilityCatalogue:
+        if version not in {"catalog-v1", self.CURRENT_VERSION}:
+            raise ValueError("unsupported compatibility catalogue version")
         entries = tuple(
             CompatibilityCatalogueEntry(
                 stage_id=f"angular-{major}-to-{major + 1}",
@@ -23,7 +27,10 @@ class CompatibilityCatalogueProvider:
                 fixture_status="incomplete",
                 validation_policy_id="angular-stage-standard-v2",
                 known_risks=("historical_fixture_evidence_incomplete",),
+                validated_runtime_profiles=()
+                if version == "catalog-v1"
+                else (("20.11.1" if major == 18 else "20.19.0", "10.2.4"), ("22.23.1", "10.9.8")),
             )
             for major in range(18, 21)
         )
-        return CompatibilityCatalogue.build("catalog-v1", entries)
+        return CompatibilityCatalogue.build(version, entries)

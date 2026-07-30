@@ -59,6 +59,7 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     validation_policy_id: str = Field(min_length=1)
     known_risks: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
+    validated_runtime_profiles: tuple[tuple[str, str], ...] = ()
 
     @model_validator(mode="after")
     def validate_adjacent_families(self) -> "CompatibilityCatalogueEntry":
@@ -80,7 +81,13 @@ class CompatibilityCatalogue(CompatibilityModel):
 
     @classmethod
     def build(cls, version: str, entries: tuple[CompatibilityCatalogueEntry, ...]) -> "CompatibilityCatalogue":
-        payload = {"version": version, "entries": [entry.model_dump(mode="json") for entry in entries]}
+        serialized_entries = []
+        for entry in entries:
+            serialized = entry.model_dump(mode="json")
+            if not entry.validated_runtime_profiles:
+                serialized.pop("validated_runtime_profiles", None)
+            serialized_entries.append(serialized)
+        payload = {"version": version, "entries": serialized_entries}
         checksum = "sha256:" + hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()

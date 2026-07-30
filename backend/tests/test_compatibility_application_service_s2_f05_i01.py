@@ -14,6 +14,7 @@ from app.services.compatibility_application_service import (
     CompatibilityApplicationService,
     CompatibilityResolver,
 )
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 
 
 CHECKSUM = "sha256:" + "a" * 64
@@ -90,6 +91,40 @@ def test_accepts_node_runtime_versions_with_the_standard_v_prefix():
     result = CompatibilityResolver(_catalogue()).resolve(_request(runtime_candidates=(_candidate(node_exact="v20.11.1"),)))
 
     assert result.selected_profile is not None
+
+
+def test_current_catalogue_accepts_validated_node_22_profile_without_blocking_route():
+    catalogue = CompatibilityCatalogueProvider().load()
+    candidate = _candidate(profile_id="node-22-approved", node_exact="22.23.1", npm_exact="10.9.8", npx_exact="10.9.8")
+    result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
+
+    assert result.status == "feasible_with_warnings"
+    assert result.package.blockers == ()
+    assert [stage.stage_id for stage in result.route] == ["angular-18-to-19", "angular-19-to-20", "angular-20-to-21"]
+    assert result.selected_profile is not None
+    assert result.selected_profile.node_exact == "22.23.1"
+    assert result.selected_profile.npm_exact == "10.9.8"
+    assert result.gate.status == "pending"
+
+
+def test_current_catalogue_preserves_validated_node_20_profile():
+    catalogue = CompatibilityCatalogueProvider().load()
+    result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version))
+
+    assert result.status == "feasible_with_warnings"
+    assert result.selected_profile is not None
+    assert result.selected_profile.node_exact == "20.11.1"
+    assert result.selected_profile.npm_exact == "10.2.4"
+
+
+def test_current_catalogue_rejects_nearby_unvalidated_node_22_profile():
+    catalogue = CompatibilityCatalogueProvider().load()
+    candidate = _candidate(node_exact="22.23.2", npm_exact="10.9.8", npx_exact="10.9.8")
+    result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
+
+    assert result.status == "blocked"
+    assert result.selected_profile is None
+    assert "NO_COMPATIBLE_STAGE1_PROFILE" in result.package.blockers
 
 
 def test_service_replays_identical_idempotent_request_and_rejects_payload_reuse():

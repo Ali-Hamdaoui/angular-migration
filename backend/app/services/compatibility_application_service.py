@@ -97,18 +97,30 @@ class CompatibilityResolver:
         node = Version.parse(candidate.node_exact)
         npm = Version.parse(candidate.npm_exact)
         npx = Version.parse(candidate.npx_exact)
+        if entry.validated_runtime_profiles:
+            version_allowed = bool(
+                node
+                and npm
+                and any(str(node) == node_exact and str(npm) == npm_exact for node_exact, npm_exact in entry.validated_runtime_profiles)
+            )
+        else:
+            version_allowed = bool(
+                node
+                and npm
+                and node.major == entry.node_major
+                and npm.major == entry.npm_major
+                and (entry.node_exact is None or str(node) == entry.node_exact)
+                and (entry.npm_exact is None or str(npm) == entry.npm_exact)
+            )
         return bool(
             candidate.available
             and candidate.operating_system.lower() == "windows"
             and candidate.architecture.lower() == "amd64"
             and node
-            and node.major == entry.node_major
             and npm
-            and npm.major == entry.npm_major
             and npx
+            and version_allowed
             and npx.major == entry.npm_major
-            and (entry.node_exact is None or str(node) == entry.node_exact)
-            and (entry.npm_exact is None or str(npm) == entry.npm_exact)
             and (candidate.angular_cli_exact is None or candidate.angular_cli_exact == (entry.cli_exact or entry.target_cli_exact))
             and candidate.registry_configured
             and candidate.certificate_valid
