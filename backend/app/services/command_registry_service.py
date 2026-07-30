@@ -116,10 +116,10 @@ class CommandRegistryService:
         from app.repositories.models.workflow import CommandTemplateModel
 
         now = datetime.now(UTC)
-        existing_pairs = set(
+        existing_pairs = {
             (row.id, row.version)
             for row in session.query(CommandTemplateModel).all()
-        )
+        }
         for tpl in DEFAULT_COMMAND_TEMPLATES:
             if (tpl.template_id, tpl.version) in existing_pairs:
                 continue

@@ -698,7 +698,7 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
 
             if self._is_angular_update_failure(session, continuation):
-                checkpoint_id, new_fingerprint = self._restore_angular_update_checkpoint(session, continuation)
+                _checkpoint_id, _new_fingerprint = self._restore_angular_update_checkpoint(session, continuation)
                 if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
                     continuation.attempt += 1
                     continuation.status = "queued"
