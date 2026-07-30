@@ -1,8 +1,13 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TransformationPanel } from "@/components/TransformationPanel";
-import { getTransformation } from "@/api/transformation";
+import { decideTransformationGate, getTransformation } from "@/api/transformation";
 
-vi.mock("@/api/transformation", () => ({ getTransformation: vi.fn() }));
+vi.mock("@/api/transformation", () => ({
+  getTransformation: vi.fn(),
+  decideTransformationGate: vi.fn(),
+  cancelTransformation: vi.fn(),
+  restartTransformation: vi.fn(),
+}));
 
 const projection = {
   run_id: "run-1",
@@ -17,6 +22,7 @@ const projection = {
   checkpoint_kind: "pre_bootstrap",
   workspace_fingerprint: "sha256:workspace",
   active_gate: "G07",
+  active_gate_package_checksum: "sha256:g07",
   active_command_id: null,
   active_command_status: null,
   active_prompt_id: null,
@@ -43,5 +49,24 @@ describe("TransformationPanel", () => {
     render(<TransformationPanel runId="run-1" workflowEvents={[]} />);
 
     expect(await screen.findByText("Transformer starts after accepted G06.")).toBeInTheDocument();
+  });
+
+  it("submits the current G07 package and fingerprint", async () => {
+    vi.mocked(getTransformation).mockResolvedValue(projection);
+    vi.mocked(decideTransformationGate).mockResolvedValue({});
+    render(<TransformationPanel runId="run-1" workflowEvents={[]} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve G07" }));
+
+    await waitFor(() => expect(decideTransformationGate).toHaveBeenCalledWith(
+      "run-1",
+      "G07",
+      expect.objectContaining({
+        expected_state_version: 3,
+        package_checksum: "sha256:g07",
+        workspace_fingerprint: "sha256:workspace",
+        decision: "approve",
+      }),
+    ));
   });
 });

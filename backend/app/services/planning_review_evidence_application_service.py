@@ -48,6 +48,7 @@ from app.repositories.models import (
 )
 from app.repositories.session import session_scope
 from app.services.planning_job_service import PLANNING_JOB_NONTERMINAL_STATES
+from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.planning_review_application_service import (
     PlanRevisionService,
     PlanningAgentService,
@@ -451,6 +452,19 @@ class PlanningReviewEvidenceApplicationService:
                 comment=gate.comment,
                 created_at=now,
             ))
+            if result.accepted:
+                TransformationContinuationService().ensure_created_in_session(
+                    session,
+                    run_id=run_id,
+                    stage_id=active_stage.stage_id,
+                    g06_approval_id=gate.id,
+                    plan_id=active_plan.id,
+                    plan_checksum=active_plan.checksum,
+                    stage_plan_id=active_stage.id,
+                    stage_plan_checksum=active_stage.checksum,
+                    idempotency_key=f"{request.idempotency_key}:transformer",
+                    now=now,
+                )
             session.flush()
             return self._decision_response(gate)
 

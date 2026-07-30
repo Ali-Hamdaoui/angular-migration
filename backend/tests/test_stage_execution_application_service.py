@@ -20,6 +20,7 @@ from app.repositories.models import (
     CommandExecutionModel,
     ExecutionProfileModel,
     WorkflowEventModel,
+    TransformationContinuationModel,
 )
 from app.services.stage_execution_application_service import StageExecutionApplicationService
 from app.services.stage_preparation_application_service import StagePreparationApplicationService
@@ -127,13 +128,29 @@ def test_start_prepares_and_persists_the_stage_before_returning(tmp_path: Path, 
             status="planned",
             created_at=now,
         ))
+        session.add(TransformationContinuationModel(
+            id="transform-run-1",
+            run_id="run-1",
+            current_stage_id=stage_id,
+            thread_id="transform:run-1",
+            status="waiting_gate",
+            current_node="wait_g07",
+            g06_approval_id="g06-run-1",
+            plan_id=plan_id,
+            plan_checksum=plan_checksum,
+            stage_plan_id=stage_plan_id,
+            stage_plan_checksum=stage_plan_checksum,
+            attempt=0,
+            max_attempts=3,
+            wake_sequence=0,
+            idempotency_key="transform-1",
+            request_checksum="sha256:transform",
+            state_version=1,
+            created_at=now,
+            updated_at=now,
+        ))
         session.commit()
         planned_created_at = session.get(MigrationStageModel, stage_id).created_at
-
-    monkeypatch.setattr(
-        "app.services.stage_execution_application_service.PlanRevisionService.require_approved_g06",
-        lambda *args, **kwargs: None,
-    )
     service = StageExecutionApplicationService(scope=scope, preparation=StagePreparationApplicationService())
 
     request = type("Request", (), {
@@ -152,32 +169,18 @@ def test_start_prepares_and_persists_the_stage_before_returning(tmp_path: Path, 
     with factory() as session:
         stage = session.get(MigrationStageModel, stage_id)
         assert stage is not None
-        assert stage.status == "prepared"
+        assert stage.status == "planned"
         assert stage.stage_order == 1
         assert stage.created_at == planned_created_at
-        assert session.query(StageStepModel).filter(StageStepModel.stage_id == stage_id).count() == 7
+        assert session.query(StageStepModel).filter(StageStepModel.stage_id == stage_id).count() == 0
         run = session.get(MigrationRunModel, "run-1")
-        assert run.workspace_aliases["STAGE_WORKSPACE_STAGE_18_TO_19"]
-        binding = session.query(StageWorkspaceBindingModel).filter_by(
-            run_id="run-1", stage_id=stage_id, alias="STAGE_WORKSPACE_STAGE_18_TO_19"
-        ).one()
-        assert binding.workspace_fingerprint == result["workspace_fingerprint"]
-        artifacts = session.query(ArtifactMetadataModel).filter_by(run_id="run-1", stage_id=stage_id).all()
-        assert {"stage-preparation.json", "stage-workspace-fingerprint.json"} <= {
-            Path(item.relative_path).name for item in artifacts
-        }
-        authorization = session.query(CommandAuthorizationAuditModel).filter_by(run_id="run-1").one()
-        execution = session.query(CommandExecutionModel).filter_by(run_id="run-1").one()
-        assert authorization.decision == "accepted"
-        assert execution.authorization_id == authorization.id
-        assert execution.status == "queued"
+        assert "STAGE_WORKSPACE_STAGE_18_TO_19" not in run.workspace_aliases
+        assert session.query(StageWorkspaceBindingModel).count() == 0
+        assert session.query(ArtifactMetadataModel).filter_by(stage_id=stage_id).count() == 0
+        assert session.query(CommandAuthorizationAuditModel).count() == 0
+        assert session.query(CommandExecutionModel).count() == 0
+        continuation = session.get(TransformationContinuationModel, "transform-run-1")
+        assert continuation.status == "queued"
+        assert continuation.wake_sequence == 1
         event_types = [event.event_type for event in session.query(WorkflowEventModel).filter_by(run_id="run-1").order_by(WorkflowEventModel.sequence)]
-        assert event_types[-7:] == [
-            "STAGE_CREATED",
-            "STAGE_PREPARATION_STARTED",
-            "STAGE_SANDBOX_COPIED",
-            "STAGE_WORKSPACE_BOUND",
-            "STAGE_PREPARATION_COMPLETED",
-            "COMMAND_AUTHORIZATION_ACCEPTED",
-            "COMMAND_QUEUED",
-        ]
+        assert event_types[-1:] == ["TRANSFORMATION_CONTINUATION_RESUMED"]

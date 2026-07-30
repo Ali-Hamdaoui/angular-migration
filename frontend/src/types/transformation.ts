@@ -11,6 +11,7 @@ export type TransformationProjection = {
   checkpoint_kind: string | null;
   workspace_fingerprint: string | null;
   active_gate: string | null;
+  active_gate_package_checksum: string | null;
   active_command_id: string | null;
   active_command_status: string | null;
   active_prompt_id: string | null;

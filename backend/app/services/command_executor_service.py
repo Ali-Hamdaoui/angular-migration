@@ -646,6 +646,9 @@ class CommandExecutorService:
                     try:
                         with session_scope() as lease_session:
                             renewed = self._job_supervisor.renew_lease(lease_session, lease_id, worker_id)
+                            durable_execution = lease_session.get(CommandExecutionModel, execution_id)
+                            if durable_execution is None or durable_execution.cancel_requested_at is not None:
+                                cancel_event.set()
                             lease_session.execute(
                                 update(CommandExecutionModel)
                                 .where(

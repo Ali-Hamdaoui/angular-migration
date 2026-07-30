@@ -32,9 +32,11 @@ from app.repositories.models import (
     G06ApprovalModel,
     MigrationPlanModel,
     MigrationRunModel,
+    MigrationStageModel,
     PlanRevisionModel,
     PlanningReviewModel,
     StageExecutionPlanModel,
+    TransformationContinuationModel,
     WorkflowEventModel,
 )
 from app.repositories.session import create_database_engine
@@ -395,7 +397,12 @@ def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
     with sessions() as session:
         active = session.query(ActivePlanVersionModel).filter_by(run_id="run-1", scope="migration").one()
         assert session.get(MigrationPlanModel, active.migration_plan_id).status == "approved_for_execution"
-        assert session.get(StageExecutionPlanModel, active.stage_plan_id).status == "approved_for_execution"
+        approved_stage_plan = session.get(StageExecutionPlanModel, active.stage_plan_id)
+        assert approved_stage_plan.status == "approved_for_execution"
+        continuation = session.query(TransformationContinuationModel).one()
+        assert continuation.current_stage_id == approved_stage_plan.stage_id
+        assert continuation.status == "queued"
+        assert session.get(MigrationStageModel, continuation.current_stage_id).status == "planned"
     replay = service.decide_g06(
         "run-1",
         G06DecisionApiRequest(

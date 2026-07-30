@@ -94,7 +94,24 @@ class TransformationContinuationService:
             or stage_plan.checksum != stage_plan_checksum
         ):
             raise TransformationContinuationError("STAGE_PLAN_STALE", "Stage plan binding is stale")
-        if stage is None or stage.run_id != run_id:
+        if stage is None:
+            planned = stage_plan.stage_plan or {}
+            stage = MigrationStageModel(
+                id=stage_id,
+                run_id=run_id,
+                stage_order=session.query(MigrationStageModel).filter_by(run_id=run_id).count() + 1,
+                source_version_family=planned.get("source_family"),
+                target_version_family=planned.get("target_family"),
+                source_version_detected=planned.get("source_exact"),
+                target_version_resolved=planned.get("target_exact"),
+                source_angular_version=planned.get("source_exact"),
+                target_angular_version=planned.get("target_exact"),
+                status="planned",
+                created_at=created_at,
+            )
+            session.add(stage)
+            session.flush()
+        if stage.run_id != run_id:
             raise TransformationContinuationError("STAGE_PLAN_STALE", "Stage does not belong to the run")
         model = TransformationContinuationModel(
             id=f"transform-{uuid4().hex[:12]}",
@@ -142,6 +159,7 @@ class TransformationContinuationService:
             .where(
                 or_(
                     TransformationContinuationModel.status == TransformationStatus.QUEUED.value,
+                    TransformationContinuationModel.status == TransformationStatus.CANCELLING.value,
                     (
                         (TransformationContinuationModel.status == TransformationStatus.RUNNING.value)
                         & (TransformationContinuationModel.lease_expires_at <= claimed_at)

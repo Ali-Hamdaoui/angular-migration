@@ -1,8 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { WorkflowEventDto } from "@/types/generated/api";
 import { useTransformation } from "@/hooks/useTransformation";
+import {
+  cancelTransformation,
+  decideTransformationGate,
+  restartTransformation,
+} from "@/api/transformation";
+import { LiveCommandLogViewer } from "@/components/LogViewer";
 
 export function TransformationPanel({
   runId,
@@ -19,7 +25,9 @@ export function TransformationPanel({
     ).at(-1)?.sequence ?? 0,
     [workflowEvents],
   );
-  const { projection, status } = useTransformation(runId, refreshKey);
+  const { projection, status, refresh } = useTransformation(runId, refreshKey);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   if (status === "loading") return <section aria-label="Transformer status"><p>Loading Transformer status...</p></section>;
   if (status === "empty") return <section aria-label="Transformer status"><p>Transformer starts after accepted G06.</p></section>;
   if (status === "failed" || !projection) return <section aria-label="Transformer status"><p role="alert">Transformer status is unavailable. Refresh authoritative state.</p></section>;
@@ -34,6 +42,91 @@ export function TransformationPanel({
       <div><dt>Checkpoint</dt><dd>{projection.checkpoint_kind ?? "not created"}</dd></div>
     </dl>
     {projection.workspace_fingerprint ? <p><code>{projection.workspace_fingerprint}</code></p> : null}
+    {projection.active_command_id
+      ? <LiveCommandLogViewer
+          runId={runId}
+          executionId={projection.active_command_id}
+          executionStatus={projection.active_command_status ?? undefined}
+        />
+      : null}
+    {projection.status === "waiting_gate"
+      && projection.active_gate
+      && projection.active_gate_package_checksum
+      && projection.workspace_fingerprint ? <div>
+        <button type="button" disabled={submitting} onClick={() => void decide("approve")}>
+          Approve {projection.active_gate}
+        </button>
+        <button type="button" disabled={submitting} onClick={() => void decide("reject")}>
+          Reject {projection.active_gate}
+        </button>
+      </div> : null}
+    {!["completed", "cancelled", "failed"].includes(projection.status)
+      ? <button type="button" disabled={submitting} onClick={() => void cancel()}>Cancel Transformer</button>
+      : null}
+    {projection.status === "blocked"
+      ? <button type="button" disabled={submitting} onClick={() => void restart()}>Restart from checkpoint</button>
+      : null}
+    {actionError ? <p role="alert">{actionError}</p> : null}
     {projection.last_error_code ? <p role="alert">{projection.last_error_code}</p> : null}
   </section>;
+
+  async function decide(decision: "approve" | "reject") {
+    if (!projection?.active_gate || !projection.active_gate_package_checksum || !projection.workspace_fingerprint) return;
+    setSubmitting(true);
+    setActionError(null);
+    const key = crypto.randomUUID();
+    try {
+      await decideTransformationGate(runId, projection.active_gate, {
+        expected_state_version: projection.state_version,
+        idempotency_key: key,
+        package_checksum: projection.active_gate_package_checksum,
+        workspace_fingerprint: projection.workspace_fingerprint,
+        decision,
+        correlation_id: key,
+      });
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Gate decision failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancel() {
+    if (!projection) return;
+    setSubmitting(true);
+    setActionError(null);
+    const key = crypto.randomUUID();
+    try {
+      await cancelTransformation(runId, {
+        expected_state_version: projection.state_version,
+        idempotency_key: key,
+        correlation_id: key,
+      });
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Cancellation failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function restart() {
+    if (!projection) return;
+    setSubmitting(true);
+    setActionError(null);
+    const key = crypto.randomUUID();
+    try {
+      await restartTransformation(runId, {
+        expected_state_version: projection.state_version,
+        idempotency_key: key,
+        correlation_id: key,
+      });
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Restart failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 }

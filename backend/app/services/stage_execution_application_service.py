@@ -74,67 +74,51 @@ class StageExecutionApplicationService:
             )
             if existing:
                 return self._result(run, stage_id, request, existing.sequence, True)
-            validated = self._validate(session, run_id, stage_id, request, actor)
-
-        preparation = self._prepare_workspace(validated)
-        preparation_artifacts = self._write_preparation_artifacts(validated, preparation)
-
-        with self._scope() as session:
-            run = session.get(MigrationRunModel, run_id)
-            if run is None:
-                raise StageExecutionError("RUN_NOT_FOUND", "Migration run does not exist.", 404)
-            if run.actor != actor:
-                raise StageExecutionError("RUN_NOT_AUTHORIZED", "The actor is not authorized for this run.", 403)
-            existing = session.scalar(
-                select(WorkflowEventModel).where(
-                    WorkflowEventModel.run_id == run_id,
-                    WorkflowEventModel.idempotency_key == request.idempotency_key,
-                )
-            )
-            if existing:
-                return self._result(run, stage_id, request, existing.sequence, True)
             if run.state_version != request.expected_state_version:
                 raise StageExecutionError("STALE_STATE_VERSION", "The run state version is stale.")
-
-            plan, stage, gate, aggregate = self._reload_and_validate(session, run, stage_id, request, actor)
-            self._persist_prepared_stage(session, run, stage_id, stage, preparation, preparation_artifacts)
-            transition = StateTransitionService(session).apply_transition(
-                TransitionRequest(
-                    run_id=run_id,
-                    expected_state_version=request.expected_state_version,
-                    idempotency_key=request.idempotency_key,
-                    event_type=WorkflowEventType.STAGE_CREATED,
-                    next_run_status=RunStatus.STAGE_CREATED,
-                    actor=actor,
-                    reason="current G06 approval accepted and stage workspace prepared",
-                    stage_id=stage_id,
-                    payload={
-                        "plan_checksum": plan.checksum,
-                        "stage_plan_checksum": stage.checksum,
-                        "artifact_set_checksum": aggregate,
-                        "workspace_alias": preparation.workspace_alias,
-                        "workspace_fingerprint": preparation.fingerprint,
-                    },
-                    occurred_at=self._now(),
+            from app.repositories.models import TransformationContinuationModel
+            from app.services.transformation_continuation_service import (
+                TransformationContinuationError,
+                TransformationContinuationService,
+            )
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id,
+                    TransformationContinuationModel.current_stage_id == stage_id,
                 )
             )
-            self._record_preparation_events(session, run, stage_id, request, actor, preparation)
-            continuation = self._authorize_and_queue_first_command(
-                session, run, plan, stage, preparation, request, actor
+            if continuation is None:
+                raise StageExecutionError(
+                    "TRANSFORMATION_NOT_READY",
+                    "Accepted G06 has not created the durable Transformer continuation.",
+                )
+            if (
+                continuation.plan_checksum != request.plan_checksum
+                or continuation.stage_plan_checksum != request.stage_plan_checksum
+            ):
+                raise StageExecutionError("STAGE_PLAN_STALE", "Legacy start bindings are stale.")
+            try:
+                TransformationContinuationService().wake(session, continuation.id, now=self._now())
+            except TransformationContinuationError as error:
+                raise StageExecutionError(error.code, error.message) from error
+            event = StateTransitionService(session).append_audit_event(
+                run_id=run_id,
+                idempotency_key=request.idempotency_key,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                actor=actor,
+                reason="legacy stage-start delegated to durable Transformer",
+                occurred_at=self._now(),
+                payload={"stage_id": stage_id, "continuation_id": continuation.id},
             )
             return self._result(
                 run,
                 stage_id,
                 request,
-                transition.event_sequence,
+                event.event_sequence,
                 False,
-                transition.next_state_version,
-                plan.checksum,
-                stage.checksum,
-                aggregate,
-                preparation.fingerprint,
-                continuation.authorization_id,
-                continuation.execution_id,
+                run.state_version,
+                continuation.plan_checksum,
+                continuation.stage_plan_checksum,
             )
 
     def _validate(self, session, run_id, stage_id, request, actor) -> _ValidatedStageStart:
@@ -328,20 +312,21 @@ class StageExecutionApplicationService:
                 payload={"stage_id": stage_id, **payload},
             )
 
-    def _authorize_and_queue_first_command(self, session, run, plan, stage, preparation, request, actor):
+    def _authorize_and_queue_first_command(
+        self, session, run, plan, stage, preparation, request, actor, group="bootstrap_install"
+    ):
         stage_plan = stage.stage_plan or {}
-        references = [
-            reference
-            for group in (stage_plan.get("commands") or {}).values()
-            for reference in group
-        ]
+        references = (stage_plan.get("commands") or {}).get(group) or []
         if not references:
-            raise StageExecutionError("STAGE_COMMAND_NOT_FOUND", "The approved stage plan contains no executable command.")
+            raise StageExecutionError(
+                "STAGE_COMMAND_NOT_FOUND",
+                f"The approved stage plan contains no {group} command.",
+            )
         reference = references[0]
         profile_id = stage_plan.get("execution_profile_id")
         if not isinstance(profile_id, str) or not profile_id:
             raise StageExecutionError("EXECUTION_PROFILE_NOT_APPROVED", "The approved stage plan has no execution profile.")
-        continuation_key = f"{request.idempotency_key}:first-command"
+        continuation_key = f"{request.idempotency_key}:{group}"
         CommandRegistryService().seed_defaults(session)
         authorization = self._policy_engine.validate(
             session,

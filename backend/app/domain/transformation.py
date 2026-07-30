@@ -110,6 +110,12 @@ class TransformationCancelRequest(ContractModel):
     correlation_id: str = Field(min_length=1, max_length=128)
 
 
+class TransformationRestartRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    correlation_id: str = Field(min_length=1, max_length=128)
+
+
 class StageGateDecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)
