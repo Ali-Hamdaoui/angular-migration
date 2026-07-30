@@ -2,6 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
 
+let planReviewShouldThrow = false;
+
 vi.mock("@/hooks/useAuthoritativeRun", () => ({
   useAuthoritativeRun: (_runId: string, initialState: AuthoritativeRunStateDto) => ({
     state: initialState,
@@ -13,8 +15,11 @@ vi.mock("@/hooks/useAuthoritativeRun", () => ({
 vi.mock("@/components/AnalysisReviewPanel", () => ({ AnalysisReviewPanel: () => <h2>analysis-panel</h2> }));
 vi.mock("@/components/FeasibilityPanel", () => ({ FeasibilityPanel: () => <h2>feasibility-panel</h2> }));
 vi.mock("@/components/MigrationPlanPanel", () => ({ MigrationPlanPanel: () => <h2>plan-panel</h2> }));
-vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => <h2>plan-review-panel</h2> }));
-vi.mock("@/components/TransformationPanel", () => ({ TransformationPanel: () => <div aria-label="mock-transformation-panel">transformation-panel</div> }));
+vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => {
+  if (planReviewShouldThrow) throw new Error("malformed review");
+  return <h2>plan-review-panel</h2>;
+} }));
+vi.mock("@/components/TransformationPanel", () => ({ TransformationPanel: ({ onActionRequiredChange }: { onActionRequiredChange?: (required: boolean) => void }) => <div aria-label="mock-transformation-panel">transformation-panel<button type="button" onClick={() => onActionRequiredChange?.(true)}>Require Transformer action</button></div> }));
 vi.mock("@/components/AssistantPanel", () => ({ AssistantDock: () => <button type="button">Open Assistant</button> }));
 
 const initialState: AuthoritativeRunStateDto = {
@@ -52,6 +57,10 @@ const initialState: AuthoritativeRunStateDto = {
 };
 
 describe("AuthoritativeRunDashboard", () => {
+  beforeEach(() => {
+    planReviewShouldThrow = false;
+  });
+
   it("always exposes and mounts the dedicated Transformation destination", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
 
@@ -60,6 +69,23 @@ describe("AuthoritativeRunDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Transformation" }));
     expect(screen.getByRole("heading", { name: "Transformation" })).toBeInTheDocument();
     expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
+  });
+
+  it("highlights and opens Transformation when its authoritative projection requires action", () => {
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+    fireEvent.click(screen.getByText("Require Transformer action"));
+    expect(screen.getByRole("button", { name: /Transformation/ })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
+  });
+
+  it("keeps the dashboard rendered when the planning review panel throws", () => {
+    planReviewShouldThrow = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "MIGRATION_PLAN_CREATED" }] }} />);
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Planning & G06" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Planning review is temporarily unavailable");
+    consoleError.mockRestore();
   });
 
   it("renders backend-owned state, event history, and evidence", () => {

@@ -86,6 +86,13 @@ describe("TransformationPanel", () => {
     expect(screen.getByText("12")).toBeInTheDocument();
   });
 
+  it("displays the authoritative Transformer continuation after accepted G06", async () => {
+    vi.mocked(getTransformation).mockResolvedValue(projection);
+    renderPanel({ workflowEvents: [event("G06_APPROVED", 1), event("TRANSFORMATION_CONTINUATION_CREATED", 2)] });
+    expect(await screen.findByText("transform-1")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "G07 approval" })).toBeInTheDocument();
+  });
+
   it("projects a running command, logs, workspace, preflight, and current step", async () => {
     vi.mocked(getTransformation).mockResolvedValue({
       ...projection,

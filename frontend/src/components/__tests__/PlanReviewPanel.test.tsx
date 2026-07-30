@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanReviewPanel } from "@/components/PlanReviewPanel";
 import { usePlanReview } from "@/hooks/usePlanReview";
@@ -25,6 +25,17 @@ describe("PlanReviewPanel", () => {
     expect(screen.getByText("Advisory explanation")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "artifact-1" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve G06" })).toBeEnabled();
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["null", null],
+    ["empty", []],
+  ])("renders the empty evidence state when artifact_ids is %s", (_label, artifactIds) => {
+    vi.mocked(usePlanReview).mockReturnValue({ ...baseResult, review: { ...review, artifact_ids: artifactIds } } as never);
+    render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} />);
+    expect(screen.getByText("No reviewer artifacts are available.")).toBeInTheDocument();
+    expect(within(screen.getByRole("heading", { name: "Registered evidence" }).parentElement!).queryByRole("list")).not.toBeInTheDocument();
   });
 
   it("keeps G06 actions disabled when the evidence package is unavailable", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { Component, useCallback, useState, type ReactNode } from "react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { retryAuthoritativeSourceIntake } from "@/api/runs";
@@ -30,6 +30,16 @@ import { PipelineSection } from "./control-tower/PipelineSection";
 import { WorkflowEventsSection } from "./control-tower/WorkflowEventsSection";
 import styles from "./ControlTowerShell.module.css";
 import "./control-tower/ControlTowerLayout.module.css";
+
+class PlanReviewBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    return this.state.failed
+      ? <section className={styles.panel} role="alert"><h3>Planning review is temporarily unavailable</h3><p className={styles.note}>The rest of the live dashboard remains available. Refresh to retry this panel.</p></section>
+      : this.props.children;
+  }
+}
 
 export function AuthoritativeRunDashboard({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
   const { state, status, error, refresh } = useAuthoritativeRun(runId, initialState);
@@ -73,7 +83,7 @@ export function AuthoritativeRunDashboard({ runId, initialState }: { runId: stri
         <section hidden={activeSection !== "transformation"} className="controlTowerSection" aria-labelledby="transformation-navigation-item">{heading("Transformation", "The complete backend-owned Transformer workflow, evidence, and human actions.")}<TransformationPanel runId={runId} workflowEvents={state.workflow_events} artifacts={state.artifacts} authoritativeStatus={state.status} authoritativePhase={state.run_phase} authoritativeStateVersion={state.state_version} refreshAuthoritativeState={refresh} onActionRequiredChange={handleTransformationAction} /></section>
         <section hidden={activeSection !== "analysis"} className="controlTowerSection" aria-labelledby="analysis-navigation-item">{heading("Analysis & G04", "Reviewer output and the next human decision.")}{has("DISCOVERY_COMPLETED", "ANALYSIS_AGENT_STARTED", "ANALYSIS_AGENT_COMPLETED", "ANALYSIS_AGENT_FAILED", "G04_CREATED") ? <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : available("Analysis")}</section>
         <section hidden={activeSection !== "feasibility"} className="controlTowerSection" aria-labelledby="feasibility-navigation-item">{heading("Feasibility & G05", "Compatibility evidence and feasibility approval.")}{has("G04_APPROVED", "COMPATIBILITY_RESOLUTION_STARTED", "COMPATIBILITY_RESOLUTION_COMPLETED", "COMPATIBILITY_RESOLUTION_BLOCKED", "G05_CREATED") ? <FeasibilityPanel {...shared} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /> : available("Feasibility")}</section>
-        <section hidden={activeSection !== "planning"} className="controlTowerSection" aria-labelledby="planning-navigation-item">{heading("Planning & G06", "Migration plan, review, and approval.")}{has("G05_APPROVED", "MIGRATION_PLAN_CREATED", "STAGE_PLAN_CREATED", "PLAN_REVISION_CREATED", "G06_CREATED") ? <><MigrationPlanPanel {...shared} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /><PlanReviewPanel {...shared} connectionStatus={status} refreshAuthoritativeState={refresh} /></> : available("Planning")}</section>
+        <section hidden={activeSection !== "planning"} className="controlTowerSection" aria-labelledby="planning-navigation-item">{heading("Planning & G06", "Migration plan, review, and approval.")}{has("G05_APPROVED", "MIGRATION_PLAN_CREATED", "STAGE_PLAN_CREATED", "PLAN_REVISION_CREATED", "G06_CREATED") ? <><MigrationPlanPanel {...shared} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /><PlanReviewBoundary><PlanReviewPanel {...shared} connectionStatus={status} refreshAuthoritativeState={refresh} /></PlanReviewBoundary></> : available("Planning")}</section>
         <section hidden={activeSection !== "discovery"} className="controlTowerSection" aria-labelledby="discovery-navigation-item">{heading("Discovery", "Findings captured from the authoritative discovery phase.")}{has("G03_APPROVED", "DISCOVERY_STARTED", "SCANNER_COMPLETED", "DISCOVERY_COMPLETED", "DISCOVERY_BLOCKED") ? <DiscoveryFindingsPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} /> : available("Discovery")}</section>
         <section hidden={activeSection !== "parity"} className="controlTowerSection" aria-labelledby="parity-navigation-item">{heading("Parity", "Baseline and parity evidence.")}{has("PARITY_BASELINE_STARTED", "PARITY_BASELINE_COMPLETED", "PARITY_BASELINE_BLOCKED") || baselineParityAvailable ? <>{has("PARITY_BASELINE_STARTED", "PARITY_BASELINE_COMPLETED", "PARITY_BASELINE_BLOCKED") ? <ParityBaselinePanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} /> : null}{baselineParityAvailable ? <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} /> : null}</> : available("Parity")}</section>
         <section hidden={activeSection !== "evidence"} className="controlTowerSection" aria-labelledby="evidence-navigation-item">{heading("Files & Artifacts", "Immutable evidence registered by the backend.")}<section className={styles.panel} aria-label="Run evidence">{state.artifacts.length === 0 ? <p className={styles.note}>No run artifacts are available.</p> : <ul className={styles.list}>{state.artifacts.map((artifact) => <li key={artifact.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`} target="_blank" rel="noreferrer"><code>{artifact.relative_path}</code></a><span>{artifact.checksum}</span></li>)}</ul>}</section></section>
