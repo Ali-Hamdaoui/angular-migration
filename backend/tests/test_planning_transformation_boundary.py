@@ -255,7 +255,7 @@ def test_planned_angular_update_matches_v2_template():
 def test_rebuilt_plan_uses_catalogue_for_arguments():
     """Revised angular_update commands are rendered via ANGULAR_UPDATE_V2_RENDERER, not hardcoded."""
     from app.services.planning_application_service import PlanningApplicationService
-    from app.domain.planning_review import PlanRevisionRequest, G06Gate, PlanRevisionChanges
+    from app.domain.planning_review import PlanRevisionRequest, G06Gate
 
     result = PlanningApplicationService().generate(PlanGenerationRequest(
         run_id="run-rebuild", expected_state_version=1, idempotency_key="rebuild-plan", actor="operator",
