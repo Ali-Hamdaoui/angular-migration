@@ -10,12 +10,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import (
+    ArtifactNotFoundError,
+    ArtifactStoreError,
+    LocalFilesystemArtifactStore,
+)
 from app.core.config import get_settings
 from app.domain.contracts import AgentKind, ArtifactType
 from app.llm_gateway import (
+    AzureGatewayError,
     AzureOpenAILLMGateway,
     LlmContextSegment,
+    LlmFailureCode,
     LlmRequest,
     LlmRole,
     LlmTaskType,
@@ -36,6 +42,92 @@ class RepairApplicationError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class RepairLlmError(RepairApplicationError):
+    """Translated gateway failure; safe, bounded, and durable for graph routing."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool,
+        provider_status: int | None,
+        provider_request_id: str | None,
+        failure_stage: str | None,
+        failure_subtype: str | None,
+    ) -> None:
+        super().__init__(code, message)
+        self.retryable = retryable
+        self.provider_status = provider_status
+        self.provider_request_id = provider_request_id
+        self.failure_stage = failure_stage
+        self.failure_subtype = failure_subtype
+
+
+_GATEWAY_FAILURE_CODES = {
+    LlmFailureCode.TRANSPORT: "LLM_TRANSPORT_FAILED",
+    LlmFailureCode.PROTOCOL: "LLM_PROTOCOL_FAILED",
+    LlmFailureCode.SCHEMA: "LLM_SCHEMA_VALIDATION_FAILED",
+    LlmFailureCode.SEMANTIC: "LLM_SCHEMA_VALIDATION_FAILED",
+    LlmFailureCode.DEPLOYMENT: "LLM_DEPLOYMENT_INVALID",
+    LlmFailureCode.CAPABILITY: "LLM_CAPABILITY_INVALID",
+    LlmFailureCode.QUOTA: "LLM_QUOTA_EXCEEDED",
+    LlmFailureCode.CONTENT_FILTER: "LLM_CONTENT_FILTERED",
+    LlmFailureCode.EMPTY_OUTPUT: "LLM_EMPTY_OUTPUT",
+    LlmFailureCode.BUDGET: "LLM_BUDGET_EXCEEDED",
+    LlmFailureCode.CANCELLATION: "LLM_CANCELLED",
+}
+
+_DETERMINISTIC_LOCAL_FAILURE_CODES = {
+    "LLM_PROMPT_POLICY_MISSING",
+    "LLM_SCHEMA_POLICY_MISSING",
+    "LLM_CONFIGURATION_INVALID",
+}
+
+
+def _repair_llm_error(code, message, exc: AzureGatewayError, *, retryable: bool) -> RepairLlmError:
+    error = RepairLlmError(
+        code,
+        message,
+        retryable=retryable,
+        provider_status=exc.provider_status,
+        provider_request_id=exc.provider_request_id,
+        failure_stage=exc.failure_stage,
+        failure_subtype=exc.failure_subtype,
+    )
+    error.__cause__ = exc
+    return error
+
+
+def _translate_gateway_failure(exc: AzureGatewayError) -> RepairLlmError:
+    message = str(exc)
+    if exc.code == LlmFailureCode.AUTHORIZATION and "Prompt policy is not registered" in message:
+        return _repair_llm_error("LLM_PROMPT_POLICY_MISSING", message, exc, retryable=False)
+    if exc.code == LlmFailureCode.SCHEMA and "Response schema is not registered" in message:
+        return _repair_llm_error("LLM_SCHEMA_POLICY_MISSING", message, exc, retryable=False)
+    if exc.code == LlmFailureCode.CONFIGURATION:
+        return _repair_llm_error("LLM_CONFIGURATION_INVALID", message, exc, retryable=False)
+    if exc.code == LlmFailureCode.INVALID_REQUEST or exc.provider_status == 400:
+        return _repair_llm_error("LLM_PROVIDER_BAD_REQUEST", message, exc, retryable=False)
+    if (
+        exc.code in {LlmFailureCode.AUTHENTICATION, LlmFailureCode.AUTHORIZATION}
+        or exc.provider_status in {401, 403}
+    ):
+        return _repair_llm_error("LLM_PROVIDER_AUTH", message, exc, retryable=False)
+    if exc.code == LlmFailureCode.TIMEOUT or exc.provider_status == 408:
+        return _repair_llm_error("LLM_PROVIDER_TIMEOUT", message, exc, retryable=True)
+    if exc.code == LlmFailureCode.RATE_LIMIT or exc.provider_status == 429:
+        return _repair_llm_error("LLM_PROVIDER_RATE_LIMIT", message, exc, retryable=True)
+    if exc.code == LlmFailureCode.SERVER or (exc.provider_status or 0) >= 500:
+        return _repair_llm_error("LLM_PROVIDER_UNAVAILABLE", message, exc, retryable=True)
+    return _repair_llm_error(
+        _GATEWAY_FAILURE_CODES.get(exc.code, "LLM_GATEWAY_FAILED"),
+        message,
+        exc,
+        retryable=exc.retryable,
+    )
 
 
 class RepairOperation(BaseModel):
@@ -99,6 +191,9 @@ class RepairApplicationService:
 
     def propose(self, attempt_id: str) -> dict[str, object]:
         context = self._attempt_context(attempt_id)
+        recovered = self._recover_completed(context, role="proposer")
+        if recovered is not None:
+            return recovered
         output, response = self._call(
             context,
             role=LlmRole.REPAIR_PROPOSER,
@@ -117,6 +212,9 @@ class RepairApplicationService:
 
     def review(self, attempt_id: str) -> dict[str, object]:
         context = self._attempt_context(attempt_id, include_proposal=True)
+        recovered = self._recover_completed(context, role="reviewer")
+        if recovered is not None:
+            return recovered
         output, response = self._call(
             context,
             role=LlmRole.REPAIR_REVIEWER,
@@ -260,30 +358,110 @@ class RepairApplicationService:
         registry = PromptSchemaRegistry(version=get_settings().llm_schema_registry_version)
         registry.register(schema_name, schema)
         gateway = self._gateway or AzureOpenAILLMGateway(settings=get_settings(), registry=registry)
-        response = gateway.complete(
-            LlmRequest(
-                request_id=f"{context['attempt_id']}:{role.value}",
-                run_id=str(context["run_id"]),
-                stage_id=str(context["stage_id"]),
-                agent_kind=AgentKind.REPAIR,
-                task_type=task,
-                role=role,
-                prompt_name=schema_name,
-                system_policy=policy,
-                context=[
-                    LlmContextSegment(
-                        segment_id=f"evidence-{index}",
-                        label="untrusted repair evidence",
-                        content=content,
-                        untrusted=True,
-                    )
-                    for index, content in enumerate(context["segments"])
-                ],
-                response_schema=schema_name,
-                max_output_tokens=4096,
+        try:
+            response = gateway.complete(
+                LlmRequest(
+                    request_id=f"{context['attempt_id']}:{role.value}",
+                    run_id=str(context["run_id"]),
+                    stage_id=str(context["stage_id"]),
+                    agent_kind=AgentKind.REPAIR,
+                    task_type=task,
+                    role=role,
+                    prompt_name=schema_name,
+                    system_policy=policy,
+                    context=[
+                        LlmContextSegment(
+                            segment_id=f"evidence-{index}",
+                            label="untrusted repair evidence",
+                            content=content,
+                            untrusted=True,
+                        )
+                        for index, content in enumerate(context["segments"])
+                    ],
+                    response_schema=schema_name,
+                    max_output_tokens=4096,
+                )
+            )
+            return registry.validate(schema_name, response.structured_output), response
+        except AzureGatewayError as exc:
+            translated = _translate_gateway_failure(exc)
+            if translated.code in _DETERMINISTIC_LOCAL_FAILURE_CODES:
+                self._persist_deterministic_failure(context, role, translated)
+            raise translated from exc
+
+    def _recover_completed(self, context, *, role: str):
+        invocation_key = f"{context['attempt_id']}:{role}"
+        artifact_field = "proposal_artifact_id" if role == "proposer" else "review_artifact_id"
+        with self._scope() as session:
+            invocation = (
+                session.query(LlmInvocationModel)
+                .filter_by(idempotency_key=invocation_key)
+                .one_or_none()
+            )
+            if invocation is None:
+                return None
+            if invocation.status != "completed":
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Completed repair LLM invocation is not finalized",
+                )
+            attempt = session.get(RepairAttemptModel, context["attempt_id"])
+            artifact_id = getattr(attempt, artifact_field)
+            if not artifact_id:
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Completed repair LLM invocation has no persisted artifact",
+                )
+            metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+            if metadata is None:
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Completed repair artifact is not registered",
+                )
+            relative_path = metadata.relative_path
+        root = Path(str(context["artifact_root"]))
+        store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
+        try:
+            content = store.read_artifact(str(context["run_id"]), relative_path).content
+            return json.loads(content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as exc:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Completed repair artifact cannot be loaded",
+            ) from exc
+
+    def _persist_deterministic_failure(self, context, role, error: RepairLlmError) -> None:
+        kind = "propose-error" if role == LlmRole.REPAIR_PROPOSER else "review-error"
+        stored = self._write(
+            context,
+            kind,
+            {
+                "code": error.code,
+                "message": error.message,
+                "retryable": error.retryable,
+                "failure_stage": error.failure_stage,
+                "provider_status": error.provider_status,
+                "provider_request_id": error.provider_request_id,
+                "failure_subtype": error.failure_subtype,
+            },
+        )
+        with self._scope() as session:
+            self._register_artifact_metadata(session, context, stored)
+
+    def _register_artifact_metadata(self, session, context, stored) -> None:
+        session.add(
+            ArtifactMetadataModel(
+                id="metadata-" + stored.ref.artifact_id,
+                run_id=context["run_id"],
+                stage_id=context["stage_id"],
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                created_at=stored.ref.created_at,
+                finalized_at=stored.ref.created_at,
+                immutable=True,
             )
         )
-        return registry.validate(schema_name, response.structured_output), response
 
     def _write(self, context, kind, value):
         root = Path(str(context["artifact_root"]))
@@ -359,19 +537,7 @@ class RepairApplicationService:
                     created_at=self._now(),
                 )
             )
-            session.add(
-                ArtifactMetadataModel(
-                    id="metadata-" + stored.ref.artifact_id,
-                    run_id=attempt.run_id,
-                    stage_id=attempt.stage_id,
-                    artifact_type=stored.ref.artifact_type.value,
-                    relative_path=stored.ref.relative_path,
-                    checksum=stored.ref.checksum,
-                    created_at=stored.ref.created_at,
-                    finalized_at=stored.ref.created_at,
-                    immutable=True,
-                )
-            )
+            self._register_artifact_metadata(session, context, stored)
             if role == "proposer":
                 attempt.proposal_artifact_id = stored.ref.artifact_id
                 attempt.proposal_checksum = stored.ref.checksum

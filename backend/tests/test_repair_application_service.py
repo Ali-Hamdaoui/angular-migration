@@ -4,10 +4,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app.llm_gateway import AzureGatewayError, LlmFailureCode
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
+    RepairLlmError,
     RepairReview,
+    _translate_gateway_failure,
 )
 
 
@@ -68,6 +71,133 @@ def test_reviewer_schema_cannot_author_candidate_content():
                 "operations": [{"operation": "replace_text"}],
             }
         )
+
+
+def test_reviewer_schema_rejects_unified_diff_field():
+    with pytest.raises(ValidationError):
+        RepairReview.model_validate(
+            {
+                "proposal_checksum": "sha256:proposal",
+                "decision": "accept",
+                "findings": [],
+                "policy_checks": ["paths"],
+                "risk_assessment": "low",
+                "required_validation_targets": ["build"],
+                "limitations": [],
+                "unified_diff": "--- a/src/app.ts\n+++ b/src/app.ts\n",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "failure, expected_code, expected_retryable",
+    [
+        (
+            AzureGatewayError(LlmFailureCode.AUTHORIZATION, "Prompt policy is not registered for this task."),
+            "LLM_PROMPT_POLICY_MISSING",
+            False,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.SCHEMA, "Response schema is not registered."),
+            "LLM_SCHEMA_POLICY_MISSING",
+            False,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.CONFIGURATION, "Azure OpenAI gateway is not fully configured."),
+            "LLM_CONFIGURATION_INVALID",
+            False,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.INVALID_REQUEST, "Azure OpenAI request failed.", provider_status=400),
+            "LLM_PROVIDER_BAD_REQUEST",
+            False,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.AUTHENTICATION, "Azure OpenAI request failed.", provider_status=401),
+            "LLM_PROVIDER_AUTH",
+            False,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.AUTHORIZATION, "Azure OpenAI request failed.", provider_status=403),
+            "LLM_PROVIDER_AUTH",
+            False,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.TIMEOUT, "Azure OpenAI request failed.", provider_status=408),
+            "LLM_PROVIDER_TIMEOUT",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.RATE_LIMIT, "Azure OpenAI request failed.", provider_status=429),
+            "LLM_PROVIDER_RATE_LIMIT",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.SERVER, "Azure OpenAI request failed.", provider_status=500),
+            "LLM_PROVIDER_UNAVAILABLE",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.SERVER, "Azure OpenAI request failed.", provider_status=502),
+            "LLM_PROVIDER_UNAVAILABLE",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.SERVER, "Azure OpenAI request failed.", provider_status=503),
+            "LLM_PROVIDER_UNAVAILABLE",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.SERVER, "Azure OpenAI request failed.", provider_status=504),
+            "LLM_PROVIDER_UNAVAILABLE",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.TIMEOUT, "Azure OpenAI request timed out."),
+            "LLM_PROVIDER_TIMEOUT",
+            True,
+        ),
+        (
+            AzureGatewayError(LlmFailureCode.TRANSPORT, "Azure OpenAI network request failed.", retryable=True),
+            "LLM_TRANSPORT_FAILED",
+            True,
+        ),
+    ],
+)
+def test_gateway_failure_translation_table(failure, expected_code, expected_retryable):
+    translated = _translate_gateway_failure(failure)
+
+    assert isinstance(translated, RepairLlmError)
+    assert isinstance(translated, RepairApplicationError)
+    assert translated.code == expected_code
+    assert translated.retryable is expected_retryable
+    assert translated.message == str(failure)
+    assert translated.__cause__ is failure
+    assert translated.provider_status == failure.provider_status
+    assert translated.provider_request_id == failure.provider_request_id
+    assert translated.failure_stage == failure.failure_stage
+    assert translated.failure_subtype == failure.failure_subtype
+
+
+def test_gateway_failure_translation_carries_provider_fields():
+    failure = AzureGatewayError(
+        LlmFailureCode.SERVER,
+        "Azure OpenAI request failed.",
+        retryable=True,
+        provider_status=503,
+        provider_request_id="azure-request-9",
+        failure_stage="http_response",
+        failure_subtype="HTTP_ERROR_ENVELOPE",
+    )
+
+    translated = _translate_gateway_failure(failure)
+
+    assert translated.code == "LLM_PROVIDER_UNAVAILABLE"
+    assert translated.retryable is True
+    assert translated.provider_status == 503
+    assert translated.provider_request_id == "azure-request-9"
+    assert translated.failure_stage == "http_response"
+    assert translated.failure_subtype == "HTTP_ERROR_ENVELOPE"
 
 
 def test_proposal_rejects_stale_preimage_duplicate_paths_and_mixed_formats(tmp_path: Path):

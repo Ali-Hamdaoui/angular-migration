@@ -53,6 +53,7 @@ from app.services.prompt_explanation_service import PromptExplanationService
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
+    RepairLlmError,
 )
 from app.services.stage_gate_service import StageGateService
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -938,7 +939,7 @@ class TransformerOrchestrator:
             attempt_id = attempt.id
         try:
             proposal = self._repairs.propose(attempt_id)
-        except (RepairApplicationError, ValueError) as error:
+        except (RepairLlmError, RepairApplicationError, ValueError) as error:
             with self._scope() as session:
                 self._block(
                     self._owned(session, continuation_id, worker_id),
@@ -958,7 +959,7 @@ class TransformerOrchestrator:
             attempt_id = self._latest_repair(session, continuation).id
         try:
             review = self._repairs.review(attempt_id)
-        except (RepairApplicationError, ValueError) as error:
+        except (RepairLlmError, RepairApplicationError, ValueError) as error:
             with self._scope() as session:
                 self._block(
                     self._owned(session, continuation_id, worker_id),
