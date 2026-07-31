@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -133,9 +134,7 @@ def _translate_gateway_failure(exc: AzureGatewayError) -> RepairLlmError:
 class RepairOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    operation: str = Field(
-        pattern="^(replace_text|create_text_file|delete_text_file|dependency_change)$"
-    )
+    operation: Literal["replace_text", "create_text_file", "delete_text_file", "dependency_change"]
     path: str = Field(min_length=1, max_length=500)
     preimage_sha256: str | None = None
     old_text: str | None = None
@@ -148,12 +147,12 @@ class RepairProposal(BaseModel):
 
     failure_evidence_checksum: str
     context_pack_checksum: str
-    proposal_format: str = Field(pattern="^(operations|unified_diff)$")
+    proposal_format: Literal["operations", "unified_diff"]
     operations: list[RepairOperation] = Field(max_length=32)
     unified_diff: str | None = Field(default=None, max_length=100_000)
     touched_files: list[str] = Field(min_length=1, max_length=32)
     rationale: list[str] = Field(min_length=1, max_length=16)
-    risk_level: str = Field(pattern="^(low|medium|high)$")
+    risk_level: Literal["low", "medium", "high"]
     validation_targets: list[str] = Field(min_length=1, max_length=16)
     limitations: list[str] = Field(max_length=16)
 
@@ -162,7 +161,7 @@ class RepairReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposal_checksum: str
-    decision: str = Field(pattern="^(accept|request_changes|reject)$")
+    decision: Literal["accept", "request_changes", "reject"]
     findings: list[str] = Field(max_length=32)
     policy_checks: list[str] = Field(min_length=1, max_length=32)
     risk_assessment: str = Field(min_length=1, max_length=2000)
