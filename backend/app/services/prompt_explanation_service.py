@@ -216,7 +216,7 @@ class PromptExplanationService:
                 stage_id=stage_id,
                 agent_kind=AgentKind.TRANSFORMATION,
                 task_type=LlmTaskType.TRANSFORMATION_EXPLANATION,
-                role=LlmRole.ASSISTANT,
+                role=LlmRole.PHASE_REVIEWER,
                 prompt_name=self.schema_name,
                 system_policy=(
                     "Explain only the supplied Angular CLI prompt and bounded options. "

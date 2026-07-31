@@ -15,7 +15,7 @@ from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, Ll
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings, get_settings
 from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
-from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry, StructuredOutputValidationError, decide_budget
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptRegistry, PromptSchemaRegistry, StructuredOutputValidationError, decide_budget, production_prompt_policy_gaps
 from app.repositories.models import ArtifactMetadataModel, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
@@ -180,7 +180,7 @@ class LlmEvidenceApplicationService:
                 session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=self.settings.llm_pricing_version, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, total_tokens=usage.total_tokens, input_price_per_million=usage.input_price_per_million, output_price_per_million=usage.output_price_per_million, input_cost_usd=usage.input_cost_usd, output_cost_usd=usage.output_cost_usd, total_cost_usd=usage.total_cost_usd, created_at=self.now()))
             return self._dto(session, row)
 
-    def readiness(self) -> LlmReadinessResponse:
+    def readiness(self, *, registry: PromptRegistry | None = None) -> LlmReadinessResponse:
         endpoint = bool(self.settings.azure_openai_endpoint)
         deployment = bool(self.settings.azure_openai_deployment)
         auth = bool(self.settings.azure_openai_api_key)
@@ -189,6 +189,8 @@ class LlmEvidenceApplicationService:
             status, error = 'disabled', None
         elif not configured:
             status, error = 'configuration_incomplete', 'LLM_CONFIGURATION_INCOMPLETE'
+        elif production_prompt_policy_gaps(registry):
+            status, error = 'configuration_incomplete', 'LLM_PROMPT_POLICY_MISSING'
         else:
             status, error = 'configured_unverified', 'LLM_SMOKE_NOT_VERIFIED'
         return LlmReadinessResponse(status=status, deployment_configured=deployment, model_capability='responses_json_schema' if configured else 'unknown', error_code=error, llm_enabled=self.settings.llm_enabled, endpoint_configured=endpoint, authentication_configured=auth, schema_capability_configured=configured)

@@ -782,6 +782,7 @@ Write-Host ""
 
 $llmValidationScript = @'
 from app.core.config import get_settings
+from app.llm_gateway import production_prompt_policy_gaps
 
 settings = get_settings()
 
@@ -806,6 +807,15 @@ if missing:
     print(
         "LLM configuration incomplete: "
         + ", ".join(missing)
+    )
+    raise SystemExit(2)
+
+gaps = production_prompt_policy_gaps()
+
+if gaps:
+    print(
+        "LLM: Azure OpenAI policy coverage incomplete: "
+        + ", ".join(gaps)
     )
     raise SystemExit(2)
 
