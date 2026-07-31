@@ -24,7 +24,7 @@ from app.repositories.models import (
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.transformation_continuation_service import TransformationContinuationService
-from app.services.transformer_stage_service import TransformerStageService
+from app.services.transformer_stage_service import TransformerStageService, artifact_metadata_id
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
@@ -188,9 +188,38 @@ def _file_inventory(artifacts: Path) -> list[str]:
 
 
 class _DuplicatingStageService(TransformerStageService):
+    """Simulates a legacy/foreign writer inserting the same metadata id twice.
+
+    The pending-aware dedup in register_artifact already absorbs repeated calls
+    through the service, so the duplicate is injected as two raw rows with the
+    same deterministic id -- the exact historical defect shape that reaches the
+    UNIQUE constraint in one executemany.
+    """
+
     def register_artifact(self, session, stored, continuation):
-        super().register_artifact(session, stored, continuation)
-        super().register_artifact(session, stored, continuation)
+        metadata_id = artifact_metadata_id(
+            continuation.run_id,
+            continuation.current_stage_id,
+            stored.ref.artifact_type,
+            stored.ref.relative_path,
+            stored.ref.checksum,
+        )
+        for _ in range(2):
+            session.add(
+                ArtifactMetadataModel(
+                    id=metadata_id,
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                    artifact_type=stored.ref.artifact_type.value,
+                    relative_path=stored.ref.relative_path,
+                    checksum=stored.ref.checksum,
+                    schema_version=stored.envelope.schema_version,
+                    created_at=stored.ref.created_at,
+                    finalized_at=stored.ref.created_at,
+                    immutable=True,
+                    size_bytes=len(stored.content.encode("utf-8")),
+                )
+            )
 
 
 class _FlakyStageService(TransformerStageService):
