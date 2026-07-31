@@ -19,6 +19,7 @@ from app.llm_gateway import (
     PromptRegistry,
     PromptSchemaRegistry,
 )
+from app.llm_gateway.azure_gateway import ProviderTransportResult
 from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
@@ -456,7 +457,20 @@ def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path
         "validation_targets": ["build"],
         "limitations": [],
     }
-    transport = _RecordingTransport([_responses_body(json.dumps(out_of_vocabulary))])
+    body = _responses_body(json.dumps(out_of_vocabulary))
+    transport = _RecordingTransport(
+        [
+            ProviderTransportResult(
+                body=body,
+                provider_request_id="azure-request-schema-1",
+                provider_status=200,
+                response_content_type="application/json",
+                response_bytes=len(json.dumps(body)),
+                response_sha256=hashlib.sha256(json.dumps(body).encode()).hexdigest(),
+                response_kind="json",
+            )
+        ]
+    )
     service = RepairApplicationService(
         scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
     )
@@ -474,9 +488,11 @@ def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path
     assert invocation.status == "failed"
     assert invocation.failure_code == "LLM_SCHEMA_VALIDATION_FAILED"
     assert invocation.failure_stage == "schema_validation"
-    assert invocation.transport_started is False
-    assert invocation.provider_request_id is None
-    assert invocation.provider_http_status is None
+    assert invocation.transport_started is True
+    assert invocation.response_received is True
+    assert invocation.provider_request_id == "azure-request-schema-1"
+    assert invocation.provider_http_status == 200
+    assert invocation.response_sha256 is not None
     session.close()
     engine.dispose()
 
