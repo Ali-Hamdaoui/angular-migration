@@ -549,7 +549,8 @@ def test_semantic_failure_persists_repair_semantics_stage_without_proposal_artif
     assert invocation.status == "failed"
     assert invocation.failure_code == "REPAIR_PREIMAGE_STALE"
     assert invocation.failure_stage == "repair_semantics"
-    assert invocation.transport_started is False
+    assert invocation.transport_started is True
+    assert invocation.response_received is True
     assert invocation.provider_request_id is None
     assert invocation.provider_http_status is None
     session.close()

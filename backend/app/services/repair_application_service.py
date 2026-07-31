@@ -238,7 +238,11 @@ class RepairApplicationService:
             proposal = self.validate_proposal(output, context)
         except RepairApplicationError as error:
             self._persist_failure(
-                context, LlmRole.REPAIR_PROPOSER, error, failure_stage_override="repair_semantics"
+                context,
+                LlmRole.REPAIR_PROPOSER,
+                error,
+                failure_stage_override="repair_semantics",
+                response=response,
             )
             raise
         stored = self._write(context, "proposal", proposal)
@@ -284,12 +288,17 @@ class RepairApplicationService:
                 LlmRole.REPAIR_REVIEWER,
                 RepairApplicationError("REPAIR_REVIEW_INVALID", _review_validation_message(error)),
                 failure_stage_override="repair_semantics",
+                response=response,
             )
             raise
         if review["proposal_checksum"] != context["proposal_checksum"]:
             error = RepairApplicationError("REPAIR_REVIEW_STALE", "Reviewer bound a different proposal")
             self._persist_failure(
-                context, LlmRole.REPAIR_REVIEWER, error, failure_stage_override="repair_semantics"
+                context,
+                LlmRole.REPAIR_REVIEWER,
+                error,
+                failure_stage_override="repair_semantics",
+                response=response,
             )
             raise error
         stored = self._write(context, "review", review)
@@ -422,6 +431,7 @@ class RepairApplicationService:
         registry.register(schema_name, schema)
         try:
             gateway = self._gateway or AzureOpenAILLMGateway(settings=get_settings(), registry=registry)
+            self._mark_transport_started(context, role)
             response = gateway.complete(
                 LlmRequest(
                     request_id=f"{context['attempt_id']}:{role.value}",
@@ -556,13 +566,44 @@ class RepairApplicationService:
                     )
                 )
         except IntegrityError:
-            pass
+            with self._scope() as session:
+                existing = (
+                    session.query(LlmInvocationModel)
+                    .filter_by(idempotency_key=invocation_id)
+                    .one_or_none()
+                )
+            if existing is None:
+                raise
+
+    def _mark_transport_started(self, context, role: LlmRole) -> None:
+        with self._scope() as session:
+            invocation = (
+                session.query(LlmInvocationModel)
+                .filter_by(idempotency_key=_invocation_key(str(context["attempt_id"]), role))
+                .one_or_none()
+            )
+            if invocation is not None and invocation.status == "in_progress":
+                invocation.transport_started = True
 
     def _persist_failure(
-        self, context, role, error: RepairApplicationError, *, failure_stage_override=None
+        self,
+        context,
+        role,
+        error: RepairApplicationError,
+        *,
+        failure_stage_override=None,
+        response=None,
     ) -> None:
         kind = "propose-error" if role == LlmRole.REPAIR_PROPOSER else "review-error"
         cause = error.__cause__ if isinstance(error.__cause__, AzureGatewayError) else None
+        request_id = getattr(error, "provider_request_id", None)
+        if not request_id and response is not None:
+            request_id = response.provider_request_id
+        transport_started = bool(getattr(cause, "transport_started", False) or response is not None)
+        response_received = bool(getattr(cause, "response_received", False) or response is not None)
+        retries = (getattr(cause, "retry_count", None) or 0) + (
+            response.usage.retry_count if response is not None else 0
+        )
         stored = self._write(
             context,
             kind,
@@ -574,17 +615,18 @@ class RepairApplicationService:
                 or getattr(error, "failure_stage", None)
                 or "local",
                 "provider_status": getattr(error, "provider_status", None),
-                "provider_request_id": getattr(error, "provider_request_id", None),
+                "provider_request_id": request_id,
                 "failure_subtype": getattr(error, "failure_subtype", None),
                 "provider_http_status": getattr(cause, "provider_status", None),
                 "provider_error_code": getattr(cause, "provider_code", None),
                 "sanitized_provider_message": _bounded_text(getattr(cause, "provider_message", None)),
-                "response_received": getattr(cause, "response_received", False),
-                "transport_started": getattr(cause, "transport_started", False),
+                "response_received": response_received,
+                "transport_started": transport_started,
                 "response_sha256": getattr(cause, "response_sha256", None),
                 "response_bytes": getattr(cause, "response_bytes", None),
-                "response_kind": getattr(cause, "response_kind", None),
-                "retries": getattr(cause, "retry_count", None) or 0,
+                "response_kind": getattr(cause, "response_kind", None)
+                or ("json" if response is not None else None),
+                "retries": retries,
             },
         )
         now = self._now()
@@ -608,16 +650,18 @@ class RepairApplicationService:
             invocation.sanitized_provider_message = _bounded_text(
                 getattr(cause, "provider_message", None)
             )
-            if getattr(error, "provider_request_id", None) and not invocation.provider_request_id:
-                invocation.provider_request_id = error.provider_request_id
-            invocation.response_received = getattr(cause, "response_received", False)
+            if request_id and not invocation.provider_request_id:
+                invocation.provider_request_id = request_id
+            invocation.response_received = response_received
             invocation.response_content_type = getattr(cause, "response_content_type", None)
             invocation.response_bytes = getattr(cause, "response_bytes", None)
             invocation.response_sha256 = getattr(cause, "response_sha256", None)
-            invocation.response_kind = getattr(cause, "response_kind", None)
-            invocation.transport_started = getattr(cause, "transport_started", False) or False
+            invocation.response_kind = getattr(cause, "response_kind", None) or (
+                "json" if response is not None else None
+            )
+            invocation.transport_started = transport_started
             invocation.retryable = getattr(error, "retryable", None)
-            invocation.retries = getattr(cause, "retry_count", None) or invocation.retries
+            invocation.retries = (invocation.retries or 0) + retries
             invocation.transport_exception_type = (
                 type(error.__cause__).__name__ if error.__cause__ else None
             )
@@ -717,8 +761,8 @@ class RepairApplicationService:
                 invocation.redacted_summary = json.dumps(summary, sort_keys=True)
                 invocation.artifact_ids = [stored.ref.artifact_id]
                 invocation.artifact_checksums = {stored.ref.artifact_id: stored.ref.checksum}
-                invocation.retries = response.usage.retry_count
-                if response.provider_request_id:
+                invocation.retries = (invocation.retries or 0) + (response.usage.retry_count or 0)
+                if response.provider_request_id and not invocation.provider_request_id:
                     invocation.provider_request_id = response.provider_request_id
                 invocation.transport_started = True
                 invocation.response_received = True

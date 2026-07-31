@@ -874,6 +874,9 @@ def test_schema_validation_failure_persists_failed_invocation_row(tmp_path: Path
     assert invocation.failure_stage == "schema_validation"
     assert invocation.failure_subtype == "ASSISTANT_SCHEMA_VALIDATION"
     assert invocation.role == "repair_proposer"
+    assert invocation.transport_started is True
+    assert invocation.response_received is True
+    assert invocation.provider_request_id is None
     assert session.query(UsageCostRecordModel).count() == 0
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
@@ -966,7 +969,8 @@ def test_failed_reviewer_persists_failed_invocation_row(tmp_path: Path):
     assert reviewers[0].status == "failed"
     assert reviewers[0].failure_code == "REPAIR_REVIEW_STALE"
     assert reviewers[0].failure_stage == "repair_semantics"
-    assert reviewers[0].transport_started is False
+    assert reviewers[0].transport_started is True
+    assert reviewers[0].response_received is True
     assert reviewers[0].provider_request_id is None
     assert session.query(UsageCostRecordModel).count() == 0
     session.close()
