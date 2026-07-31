@@ -1,12 +1,13 @@
 """Focused persistence tests for idempotent transformer failure classification.
 
-Covers pending-aware artifact metadata dedup, deterministic metadata identity,
-committed-evidence replay, and replay no-op behavior (plan sections A1-A4).
+Covers pending-aware artifact metadata dedup, the ``metadata-<artifact_id>``
+row identity contract, committed-evidence replay (including versioned sibling
+paths written after a crash before commit), and replay no-op behavior
+(plan sections A1, A3, A4).
 """
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -144,8 +145,8 @@ def _register(Session, artifacts) -> None:
         session.commit()
 
 
-def _expected_id(*, relative_path: str, checksum: str) -> str:
-    return artifact_metadata_id(RUN_ID, STAGE_ID, ArtifactType.JSON, relative_path, checksum)
+def _expected_id(artifact_id: str) -> str:
+    return "metadata-" + artifact_id
 
 
 def test_register_artifact_duplicate_in_one_session_commits_exactly_one_row(db, store, artifact_root):
@@ -169,9 +170,7 @@ def test_register_artifact_duplicate_in_one_session_commits_exactly_one_row(db, 
     with db() as session:
         rows = session.query(ArtifactMetadataModel).all()
         assert len(rows) == 1
-        assert rows[0].id == _expected_id(
-            relative_path=stored.ref.relative_path, checksum=stored.ref.checksum
-        )
+        assert rows[0].id == _expected_id(stored.ref.artifact_id)
 
 
 def test_register_artifact_duplicate_different_artifact_adds_separate_row(db, store, artifact_root):
@@ -202,7 +201,7 @@ def test_register_artifact_duplicate_different_artifact_adds_separate_row(db, st
         }
 
 
-def test_register_artifact_deterministic_id_stable_across_sessions(db, store, artifact_root):
+def test_register_artifact_row_id_contract_stable_across_sessions(db, store, artifact_root):
     _seed(db, artifact_root)
     stored = store.write_text_artifact(
         RUN_ID, EVIDENCE_PATH, '{"ok": true}', ArtifactType.JSON, stage_id=STAGE_ID, created_at=NOW
@@ -215,15 +214,12 @@ def test_register_artifact_deterministic_id_stable_across_sessions(db, store, ar
         rows = session.query(ArtifactMetadataModel).all()
         assert len(rows) == 1
         assert rows[0].id == first_id
-    canonical = "metadata-" + hashlib.sha256(
-        f"{RUN_ID}|{STAGE_ID}|{ArtifactType.JSON.value}|{stored.ref.relative_path}|{stored.ref.checksum}".encode()
-    ).hexdigest()[:54]
-    assert first_id == canonical
+    assert first_id == "metadata-" + stored.ref.artifact_id
     assert len(first_id) <= 64
     assert first_id.startswith("metadata-")
 
 
-def test_register_artifact_same_deterministic_id_different_payload_raises(db, store, artifact_root):
+def test_register_artifact_same_artifact_id_different_payload_raises(db, store, artifact_root):
     _seed(db, artifact_root)
     stored = store.write_text_artifact(
         RUN_ID, EVIDENCE_PATH, '{"ok": true}', ArtifactType.JSON, stage_id=STAGE_ID, created_at=NOW
@@ -276,10 +272,12 @@ def test_committed_evidence_returns_validated_triple(db, store, artifact_root, w
     with db() as session:
         rows = session.query(ArtifactMetadataModel).all()
         assert len(rows) == 3
-        for row in rows:
-            assert row.id == artifact_metadata_id(
-                row.run_id, row.stage_id, ArtifactType(row.artifact_type), row.relative_path, row.checksum
-            )
+        assert all(row.id.startswith("metadata-") for row in rows)
+        assert {row.relative_path for row in rows} == {
+            failure.ref.relative_path,
+            route_artifact.ref.relative_path,
+            context.ref.relative_path,
+        }
 
 
 def test_committed_evidence_none_when_run_mismatch(db, store, artifact_root, workspace):
@@ -372,3 +370,65 @@ def test_replay_after_commit_creates_no_rows_and_no_new_files(db, store, artifac
     )
     assert files_after == files_before
     assert not any("__v" in name for name in files_after)
+
+
+def test_committed_evidence_replays_versioned_rows_after_crash_before_commit(
+    db, store, artifact_root, workspace
+):
+    """Crash after filesystem write before commit leaves base files without rows.
+
+    The retry then writes __vN versioned siblings and commits those rows; replay
+    must locate the committed triple through its versioned relative paths.
+    """
+    _seed(db, artifact_root)
+    _write_evidence(store, workspace, artifact_root)
+    versioned_failure, versioned_route, versioned_context = _write_evidence(
+        store, workspace, artifact_root
+    )
+    assert all("__v" in ref.relative_path for ref in (
+        versioned_failure.ref,
+        versioned_route.ref,
+        versioned_context.ref,
+    ))
+    _register(db, [versioned_failure, versioned_route, versioned_context])
+    with db() as session:
+        triple = FailureEvidenceService().committed_evidence(session, _continuation(session), FINGERPRINT)
+    assert triple is not None
+    replayed_failure, replayed_route, replayed_context = triple
+    assert replayed_failure.ref.artifact_id == versioned_failure.ref.artifact_id
+    assert replayed_failure.ref.relative_path == versioned_failure.ref.relative_path
+    assert replayed_route.ref.relative_path == versioned_route.ref.relative_path
+    assert replayed_context.ref.relative_path == versioned_context.ref.relative_path
+    files_before = sorted(
+        str(path.relative_to(Path(artifact_root))) for path in Path(artifact_root).rglob("*") if path.is_file()
+    )
+    _register(db, list(triple))
+    with db() as session:
+        assert session.query(ArtifactMetadataModel).count() == 3
+    files_after = sorted(
+        str(path.relative_to(Path(artifact_root))) for path in Path(artifact_root).rglob("*") if path.is_file()
+    )
+    assert files_after == files_before
+    assert sum("__v" in name for name in files_after) == 6
+
+
+def test_registered_rows_resolvable_by_artifact_id_contract(db, store, artifact_root, workspace):
+    """Rows must be addressable as ``metadata-<artifact_id>``.
+
+    RepairApplicationService._attempt_context, artifact API routes, sealing
+    manifests, and assistant citation authorization all resolve committed rows
+    by stripping the ``metadata-`` prefix from the uuid artifact id. The
+    registration scheme must preserve that contract.
+    """
+    _seed(db, artifact_root)
+    failure, route_artifact, context = _write_evidence(store, workspace, artifact_root)
+    _register(db, [failure, route_artifact, context])
+    artifact_ids = [failure.ref.artifact_id, route_artifact.ref.artifact_id, context.ref.artifact_id]
+    assert all(artifact_id.startswith("artifact-") for artifact_id in artifact_ids)
+    with db() as session:
+        rows = session.query(ArtifactMetadataModel).filter(
+            ArtifactMetadataModel.id.in_([f"metadata-{item}" for item in artifact_ids])
+        ).all()
+        assert len(rows) == 3
+        resolved = {row.id.removeprefix("metadata-"): row.relative_path for row in rows}
+        assert set(resolved) == set(artifact_ids)

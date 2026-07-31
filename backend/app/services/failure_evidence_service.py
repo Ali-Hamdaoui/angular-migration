@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
@@ -129,13 +130,13 @@ class FailureEvidenceService:
 
         Returns the (failure, route, context) triple reconstructed from committed
         ``artifact_metadata`` rows and the run-root-bound artifact store only when
-        run id, stage id, artifact types, relative paths, and checksums all match
-        the deterministic expectations for this failure fingerprint. Any anomaly -
-        missing row, duplicate row, row id mismatch, missing file, or checksum
-        drift on disk - yields None so callers write fresh evidence instead.
+        run id, stage id, artifact types, expected paths (including ``__vN``
+        versioned siblings written after a crash before commit), and checksums
+        all match this failure fingerprint. Any anomaly - missing row, duplicate
+        row, missing file, or checksum drift on disk - yields None so callers
+        write fresh evidence instead.
         """
         from app.repositories.models import ArtifactMetadataModel, MigrationRunModel
-        from app.services.transformer_stage_service import artifact_metadata_id
 
         run = session.get(MigrationRunModel, continuation.run_id)
         if run is None or not run.artifact_root:
@@ -145,36 +146,40 @@ class FailureEvidenceService:
         paths = self._expected_evidence_paths(continuation.current_stage_id, failure_fingerprint)
         replayed: list[StoredArtifact] = []
         for kind in ("failure", "route_artifact", "context"):
-            relative_path = paths[kind]
+            expected = paths[kind]
             rows = session.query(ArtifactMetadataModel).filter_by(
                 run_id=continuation.run_id,
                 stage_id=continuation.current_stage_id,
                 artifact_type=ArtifactType.JSON.value,
-                relative_path=relative_path,
             ).all()
-            if len(rows) != 1:
+            candidates = [row for row in rows if self._is_evidence_sibling(row.relative_path, expected)]
+            if len(candidates) != 1:
                 return None
-            row = rows[0]
-            if row.id != artifact_metadata_id(
-                continuation.run_id,
-                continuation.current_stage_id,
-                ArtifactType.JSON,
-                relative_path,
-                row.checksum,
-            ):
-                return None
+            row = candidates[0]
             try:
-                stored = store.read_artifact(continuation.run_id, relative_path)
+                stored = store.read_artifact(continuation.run_id, row.relative_path)
             except (ArtifactNotFoundError, ArtifactStoreError, OSError):
                 return None
             if (
                 stored.ref.artifact_type != ArtifactType.JSON
-                or stored.ref.relative_path != relative_path
+                or stored.ref.relative_path != row.relative_path
                 or stored.ref.checksum != row.checksum
             ):
                 return None
             replayed.append(stored)
         return replayed[0], replayed[1], replayed[2]
+
+    @staticmethod
+    def _is_evidence_sibling(relative_path: str, expected: str) -> bool:
+        """Match the canonical path or a ``__vN`` versioned sibling of it."""
+        if relative_path == expected:
+            return True
+        stem, separator, suffix = relative_path.rpartition(".")
+        if not separator:
+            return False
+        for marker in re.findall(r"__v\d+$", stem):
+            return f"{stem[: -len(marker)]}.{suffix}" == expected
+        return False
 
     @staticmethod
     def _expected_evidence_paths(stage_id: str, failure_fingerprint: str) -> dict[str, str]:

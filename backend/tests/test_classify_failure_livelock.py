@@ -16,6 +16,7 @@ from app.repositories.models import (
     CommandExecutionModel,
     MigrationRunModel,
     RepairAttemptModel,
+    StageCheckpointModel,
     StageExecutionPlanModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -24,7 +25,7 @@ from app.repositories.models import (
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.transformation_continuation_service import TransformationContinuationService
-from app.services.transformer_stage_service import TransformerStageService, artifact_metadata_id
+from app.services.transformer_stage_service import TransformerStageService
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
@@ -58,6 +59,7 @@ def _seed(
     stage_id: str = "stage-1",
     run_id: str = "run-1",
     angular: bool = True,
+    failure_code: str | None = None,
 ):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
@@ -65,7 +67,7 @@ def _seed(
     (workspace / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
     (workspace / "package-lock.json").write_text("{}", encoding="utf-8")
     step_name = "angular_update-0" if angular else "bootstrap_install-0"
-    error_code = "COMMAND_EXIT_NONZERO" if angular else "COMMAND_TIMEOUT"
+    error_code = failure_code or ("COMMAND_EXIT_NONZERO" if angular else "COMMAND_TIMEOUT")
     session = factory()
     run = MigrationRunModel(
         id=run_id,
@@ -197,13 +199,7 @@ class _DuplicatingStageService(TransformerStageService):
     """
 
     def register_artifact(self, session, stored, continuation):
-        metadata_id = artifact_metadata_id(
-            continuation.run_id,
-            continuation.current_stage_id,
-            stored.ref.artifact_type,
-            stored.ref.relative_path,
-            stored.ref.checksum,
-        )
+        metadata_id = "metadata-" + stored.ref.artifact_id
         for _ in range(2):
             session.add(
                 ArtifactMetadataModel(
@@ -441,4 +437,196 @@ def test_blocked_cleanup_removes_only_this_attempts_uncommitted_files(
     assert cont.status == "blocked"
     assert cont.last_error_code == "ARTIFACT_METADATA_DUPLICATE"
     session.close()
+    engine.dispose()
+
+
+def test_classify_failure_angular_transient_restores_checkpoint_and_requeues(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path, failure_code="COMMAND_TIMEOUT")
+    session = factory()
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-pre",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_angular_update",
+            sequence=1,
+            workspace_alias="STAGE_SANDBOX",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="fingerprint-1",
+            safe_for_resume=True,
+            sealed=True,
+            state_version=1,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    stage_service = MagicMock(spec=TransformerStageService)
+    stage_service.register_artifact.return_value = None
+    stage_service._binding.return_value = MagicMock(workspace_path=str(tmp_path / "workspace"))
+    stage_service.reconstruct_workspace.return_value = "fingerprint-2"
+    _orchestrator(factory, stage_service=stage_service)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "queued"
+    assert cont.current_node == "angular_update"
+    assert cont.attempt == 2
+    assert cont.worker_id is None
+    assert cont.lease_expires_at is None
+    session.close()
+    engine.dispose()
+
+
+def test_classify_failure_failure_route_blocks_durably(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path, angular=False, failure_code="EXECUTION_PROFILE_NOT_FOUND")
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "blocked"
+    assert cont.last_error_code == "FAILURE_ROUTE_ENVIRONMENT_PERMANENT"
+    assert cont.worker_id is None
+    assert cont.lease_expires_at is None
+    rows = session.query(ArtifactMetadataModel).filter_by(run_id="run-1").all()
+    assert len(rows) == 2
+    session.close()
+    engine.dispose()
+
+
+def test_classify_failure_repair_attempt_limit_blocks(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path)
+    session = factory()
+    for number in (1, 2, 3):
+        session.add(
+            RepairAttemptModel(
+                id=f"repair-stage-1-{number}",
+                run_id="run-1",
+                stage_id="stage-1",
+                attempt_number=number,
+                status="evidence_frozen",
+                risk_level="unknown",
+                diagnosis="prior attempt",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    session.commit()
+    session.close()
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "blocked"
+    assert cont.last_error_code == "REPAIR_ATTEMPT_LIMIT"
+    assert session.query(RepairAttemptModel).count() == 3
+    session.close()
+    engine.dispose()
+
+
+def test_original_angular_execution_remains_immutable(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path)
+    session = factory()
+    execution = session.get(CommandExecutionModel, "exec-1")
+    before = {
+        "status": execution.status,
+        "failure_code": execution.failure_code,
+        "failure_message": execution.failure_message,
+        "arguments": list(execution.arguments or []),
+        "state_version": execution.state_version,
+    }
+    session.close()
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    execution = session.get(CommandExecutionModel, "exec-1")
+    assert {
+        "status": execution.status,
+        "failure_code": execution.failure_code,
+        "failure_message": execution.failure_message,
+        "arguments": list(execution.arguments or []),
+        "state_version": execution.state_version,
+    } == before
+    session.close()
+    engine.dispose()
+
+
+def test_second_worker_replay_registers_no_duplicate_rows(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path)
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    rows_after_first = session.query(ArtifactMetadataModel).count()
+    assert rows_after_first == 3
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    cont.status = "running"
+    cont.worker_id = "worker-2"
+    cont.current_node = "classify_failure"
+    cont.lease_expires_at = NOW + timedelta(seconds=120)
+    cont.state_version += 1
+    session.commit()
+    session.close()
+    inventory_before = _file_inventory(tmp_path / "artifacts")
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-2")
+
+    session = factory()
+    assert session.query(ArtifactMetadataModel).count() == rows_after_first
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "blocked"
+    assert cont.last_error_code == "ANGULAR_UPDATE_NO_PROGRESS"
+    session.close()
+    assert _file_inventory(tmp_path / "artifacts") == inventory_before
+    engine.dispose()
+
+
+def test_crash_before_commit_retry_commits_versioned_evidence_and_replays(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path)
+
+    with pytest.raises(RuntimeError, match="transient persistence hiccup"):
+        _orchestrator(
+            factory, stage_service=_FlakyStageService(scope=_scope(factory))
+        )._classify_failure("cont-1", "worker-1")
+    session = factory()
+    assert session.query(ArtifactMetadataModel).count() == 0
+    session.close()
+    assert not any("__v" in name for name in _file_inventory(tmp_path / "artifacts"))
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    rows = session.query(ArtifactMetadataModel).filter_by(run_id="run-1").all()
+    assert len(rows) == 3
+    assert all("__v2" in row.relative_path for row in rows)
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "queued"
+    assert cont.current_node == "propose_repair"
+    cont.status = "running"
+    cont.current_node = "classify_failure"
+    cont.worker_id = "worker-1"
+    cont.lease_expires_at = NOW + timedelta(seconds=120)
+    cont.state_version += 1
+    session.commit()
+    session.close()
+    inventory_before = _file_inventory(tmp_path / "artifacts")
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    assert session.query(ArtifactMetadataModel).count() == 3
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "blocked"
+    assert cont.last_error_code == "ANGULAR_UPDATE_NO_PROGRESS"
+    session.close()
+    assert _file_inventory(tmp_path / "artifacts") == inventory_before
     engine.dispose()

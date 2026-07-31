@@ -49,25 +49,15 @@ class TransformerStageError(ValueError):
         self.message = message
 
 
-def artifact_metadata_id(
-    run_id: str,
-    stage_id: str,
-    artifact_type: ArtifactType,
-    relative_path: str,
-    checksum: str,
-) -> str:
-    """Deterministic artifact metadata identity for (run, stage, type, path, checksum).
+def artifact_metadata_id(artifact_id: str) -> str:
+    """Artifact metadata primary key binding for an immutable artifact id.
 
-    The canonical key is the pipe-delimited binding of the five stored columns;
-    run ids, stage ids, artifact type values, relative paths, and checksums can
-    never contain a pipe, so the join is unambiguous. Identical classification
-    replays derive the same id, making the committed-row guard effective across
-    sessions. The sha256 digest is truncated to 54 hex characters so the id fits
-    the declared ``String(64)`` primary key of ``artifact_metadata`` while
-    retaining 216 bits of entropy.
+    The row primary key keeps the codebase-wide ``"metadata-" + artifact_id``
+    contract (consumers strip the prefix and look rows up by artifact id), while
+    exactly-once semantics are enforced by the pending-aware registration guard
+    and by committed-evidence replay keyed on the failure fingerprint.
     """
-    key = f"{run_id}|{stage_id}|{artifact_type.value}|{relative_path}|{checksum}"
-    return "metadata-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:54]
+    return "metadata-" + artifact_id
 
 
 class TransformerStageService:
@@ -295,13 +285,7 @@ class TransformerStageService:
 
     @staticmethod
     def register_artifact(session, stored, continuation: TransformationContinuationModel) -> None:
-        metadata_id = artifact_metadata_id(
-            continuation.run_id,
-            continuation.current_stage_id,
-            stored.ref.artifact_type,
-            stored.ref.relative_path,
-            stored.ref.checksum,
-        )
+        metadata_id = artifact_metadata_id(stored.ref.artifact_id)
         committed = session.get(ArtifactMetadataModel, metadata_id)
         if committed is not None:
             TransformerStageService._validate_committed_metadata(committed, continuation, stored)
@@ -347,7 +331,7 @@ class TransformerStageService:
         if mismatches:
             raise TransformerStageError(
                 "ARTIFACT_METADATA_IDENTITY_CONFLICT",
-                "Committed artifact metadata with the same deterministic id carries a different payload: "
+                "Committed artifact metadata for the same artifact id carries a different payload: "
                 + "; ".join(mismatches),
             )
 

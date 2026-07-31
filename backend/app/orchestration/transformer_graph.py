@@ -783,6 +783,13 @@ class TransformerOrchestrator:
                         "Governed repair attempt limit reached",
                     )
                     return
+                if reuse_checkpoint is None and snapshot is None:
+                    self._block(
+                        continuation,
+                        "REPAIR_SNAPSHOT_MISSING",
+                        "No pre-repair workspace checkpoint is available",
+                    )
+                    return
                 checkpoint = (
                     reuse_checkpoint
                     if reuse_checkpoint is not None
@@ -811,9 +818,12 @@ class TransformerOrchestrator:
                 )
                 session.add(attempt)
                 self._queue(continuation, "propose_repair")
-        except IntegrityError as error:
+        except (IntegrityError, TransformerStageError) as error:
+            if isinstance(error, TransformerStageError) and error.code != "ARTIFACT_METADATA_IDENTITY_CONFLICT":
+                raise
+            code = self._deterministic_failure_code(error)
             self._block_metadata_duplicate(
-                continuation_id, worker_id, error, attempt_artifacts
+                continuation_id, worker_id, code, error, attempt_artifacts
             )
             try:
                 self._cleanup_failed_attempt_artifacts(
@@ -827,6 +837,15 @@ class TransformerOrchestrator:
                     continuation_id,
                     cleanup_error,
                 )
+
+    @staticmethod
+    def _deterministic_failure_code(error: Exception) -> str:
+        if isinstance(error, TransformerStageError):
+            return "ARTIFACT_METADATA_DUPLICATE"
+        detail = str(getattr(error, "orig", "") or error).lower()
+        if "artifact_metadata" in detail:
+            return "ARTIFACT_METADATA_DUPLICATE"
+        return "CLASSIFICATION_COMMIT_FAILED"
 
     def _committed_evidence(self, session, continuation, fingerprint):
         lookup = getattr(self._failures, "committed_evidence", None)
@@ -849,7 +868,8 @@ class TransformerOrchestrator:
         self,
         continuation_id: str,
         worker_id: str,
-        error: IntegrityError,
+        code: str,
+        error: Exception,
         attempt_artifacts: list[StoredArtifact],
     ) -> None:
         with self._scope() as session:
@@ -861,9 +881,9 @@ class TransformerOrchestrator:
                 stored.ref.relative_path for stored in attempt_artifacts
             )
             continuation.status = "blocked"
-            continuation.last_error_code = "ARTIFACT_METADATA_DUPLICATE"
+            continuation.last_error_code = code
             continuation.last_error_message = (
-                f"ARTIFACT_METADATA_DUPLICATE; artifact_ids=[{artifact_ids}]; "
+                f"{code}; artifact_ids=[{artifact_ids}]; "
                 f"paths=[{relative_paths}]; error={error}"
             )
             continuation.worker_id = None

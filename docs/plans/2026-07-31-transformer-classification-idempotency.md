@@ -79,17 +79,25 @@ integrated on `fix/transformer-classification-idempotency`.
   keep the `session.get` fast path, then also scan `session.new` (and `session.dirty`) for an
   `ArtifactMetadataModel` with the same id and skip the `add` when present. Idempotent within a
   session regardless of caller duplication. No rollback in the helper; no broad except.
-- **A2. Deterministic metadata identity.** Compute the metadata id deterministically from
-  `(run_id, stage_id, artifact_type, relative_path, checksum)` via sha256
-  (`"metadata-" + hex`). Replay of the identical classification then yields the same id, making
-  the guard effective across sessions. If a committed row with the same id exists, validate
-  run/stage/artifact type/relative path/checksum bindings; mismatch must fail loudly
-  (AGENTS.md §7: same key, different payload fails). No new IDs per retry; no uuid4 churn.
+- **A2. Row identity keeps the `metadata-<artifact_id>` contract.** The primary key remains
+  `"metadata-" + artifact_id` (uuid) — the codebase-wide contract consumed by
+  `RepairApplicationService._attempt_context`, artifact API routes, sealing manifests, and
+  assistant citation authorization (they strip the prefix or look rows up by artifact id).
+  Exactly-once is enforced by the pending-aware registration guard (A1) and by committed-evidence
+  replay (A3), not by a digest-based key. If a committed row with the same artifact id carries a
+  different payload, `register_artifact` raises `ARTIFACT_METADATA_IDENTITY_CONFLICT`
+  (AGENTS.md §7: same key, different payload fails) and the orchestrator maps it to the same
+  durable blocked state as an IntegrityError. No new IDs per retry; no uuid churn.
+  *Amendment after review:* an earlier digest-based id (`metadata-<sha256(binding)>`) broke the
+  `metadata-<artifact_id>` lookup contract (repair propose/review crashed with KeyError) and was
+  reverted; replay now locates committed rows through the failure fingerprint bindings instead.
 - **A3. Committed-evidence replay.** New `FailureEvidenceService` lookup: given
   `session`, `continuation`, `failure_fingerprint`, return the committed evidence triple
   (`failure`, `route_artifact`, `context` StoredArtifacts reconstructed from
   `artifact_metadata` + files) **only when** run id, stage id, command/source binding,
-  artifact types, relative paths, and checksums all match. Deterministic lookup in a short
+  artifact types, relative paths, and checksums all match. Rows committed under a `__vN`
+  versioned sibling path (crash after filesystem write, before commit) are matched through
+  their unversioned stem. Deterministic lookup in a short
   read-only transaction; external writes still happen outside DB transactions (AGENTS.md §7).
 - **A4. Tests** (new focused tests, existing style): pending-duplicate registration is a no-op;
   deterministic id stability; replay returns same committed artifacts and checksums; replay
