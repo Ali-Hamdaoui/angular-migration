@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import (
     ArtifactNotFoundError,
@@ -80,11 +81,25 @@ _GATEWAY_FAILURE_CODES = {
     LlmFailureCode.CANCELLATION: "LLM_CANCELLED",
 }
 
-_DETERMINISTIC_LOCAL_FAILURE_CODES = {
-    "LLM_PROMPT_POLICY_MISSING",
-    "LLM_SCHEMA_POLICY_MISSING",
-    "LLM_CONFIGURATION_INVALID",
-}
+def _bounded_text(value: object, limit: int = 240) -> str | None:
+    if value is None:
+        return None
+    return str(value).replace("\r", " ").replace("\n", " ")[:limit]
+
+
+def _invocation_key(attempt_id: str, role) -> str:
+    if isinstance(role, LlmRole):
+        role = role.value.removeprefix("repair_")
+    return f"{attempt_id}:{role}"
+
+
+def _review_validation_message(error: ValidationError) -> str:
+    first = error.errors()[0] if error.errors() else {}
+    loc = ".".join(str(part) for part in first.get("loc", ()))
+    return (
+        _bounded_text(f"{loc} {first.get('type', '')}".strip())
+        or "Repair review failed schema validation"
+    )
 
 
 def _repair_llm_error(code, message, exc: AzureGatewayError, *, retryable: bool) -> RepairLlmError:
@@ -194,18 +209,39 @@ class RepairApplicationService:
         recovered = self._recover_completed(context, role="proposer")
         if recovered is not None:
             return recovered
-        output, response = self._call(
+        self._start_invocation(
             context,
             role=LlmRole.REPAIR_PROPOSER,
-            task=LlmTaskType.REPAIR_DIAGNOSIS,
+            task_type=LlmTaskType.REPAIR_DIAGNOSIS,
             schema_name=self.proposer_schema,
             schema=RepairProposal,
-            policy=(
-                "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
-                "lockfile edits, path escapes, secrets, or policy bypasses."
-            ),
         )
-        proposal = self.validate_proposal(output, context)
+        try:
+            output, response = self._call(
+                context,
+                role=LlmRole.REPAIR_PROPOSER,
+                task=LlmTaskType.REPAIR_DIAGNOSIS,
+                schema_name=self.proposer_schema,
+                schema=RepairProposal,
+                policy=(
+                    "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
+                    "lockfile edits, path escapes, secrets, or policy bypasses."
+                ),
+            )
+        except RepairLlmError:
+            raise
+        except RepairApplicationError as error:
+            self._persist_failure(
+                context, LlmRole.REPAIR_PROPOSER, error, failure_stage_override="local"
+            )
+            raise
+        try:
+            proposal = self.validate_proposal(output, context)
+        except RepairApplicationError as error:
+            self._persist_failure(
+                context, LlmRole.REPAIR_PROPOSER, error, failure_stage_override="repair_semantics"
+            )
+            raise
         stored = self._write(context, "proposal", proposal)
         self._persist_call(context, response, stored, role="proposer", summary=proposal)
         return proposal
@@ -215,20 +251,48 @@ class RepairApplicationService:
         recovered = self._recover_completed(context, role="reviewer")
         if recovered is not None:
             return recovered
-        output, response = self._call(
+        self._start_invocation(
             context,
             role=LlmRole.REPAIR_REVIEWER,
-            task=LlmTaskType.REPAIR_REVIEW,
+            task_type=LlmTaskType.REPAIR_REVIEW,
             schema_name=self.reviewer_schema,
             schema=RepairReview,
-            policy=(
-                "Review the supplied proposal against policy. Never author operations, a diff, "
-                "replacement code, commands, or a different proposal."
-            ),
         )
-        review = RepairReview.model_validate(output).model_dump(mode="json")
+        try:
+            output, response = self._call(
+                context,
+                role=LlmRole.REPAIR_REVIEWER,
+                task=LlmTaskType.REPAIR_REVIEW,
+                schema_name=self.reviewer_schema,
+                schema=RepairReview,
+                policy=(
+                    "Review the supplied proposal against policy. Never author operations, a diff, "
+                    "replacement code, commands, or a different proposal."
+                ),
+            )
+        except RepairLlmError:
+            raise
+        except RepairApplicationError as error:
+            self._persist_failure(
+                context, LlmRole.REPAIR_REVIEWER, error, failure_stage_override="local"
+            )
+            raise
+        try:
+            review = RepairReview.model_validate(output).model_dump(mode="json")
+        except ValidationError as error:
+            self._persist_failure(
+                context,
+                LlmRole.REPAIR_REVIEWER,
+                RepairApplicationError("REPAIR_REVIEW_INVALID", _review_validation_message(error)),
+                failure_stage_override="repair_semantics",
+            )
+            raise
         if review["proposal_checksum"] != context["proposal_checksum"]:
-            raise RepairApplicationError("REPAIR_REVIEW_STALE", "Reviewer bound a different proposal")
+            error = RepairApplicationError("REPAIR_REVIEW_STALE", "Reviewer bound a different proposal")
+            self._persist_failure(
+                context, LlmRole.REPAIR_REVIEWER, error, failure_stage_override="repair_semantics"
+            )
+            raise error
         stored = self._write(context, "review", review)
         self._persist_call(context, response, stored, role="reviewer", summary=review)
         return review
@@ -385,8 +449,7 @@ class RepairApplicationService:
             return registry.validate(schema_name, response.structured_output), response
         except AzureGatewayError as exc:
             translated = _translate_gateway_failure(exc)
-            if translated.code in _DETERMINISTIC_LOCAL_FAILURE_CODES:
-                self._persist_deterministic_failure(context, role, translated)
+            self._persist_failure(context, role, translated)
             raise translated from exc
 
     def _recover_completed(self, context, *, role: str):
@@ -400,6 +463,15 @@ class RepairApplicationService:
             )
             if invocation is None:
                 return None
+            if invocation.status == "failed":
+                return None
+            if invocation.status == "in_progress" and not invocation.transport_started:
+                return None
+            if invocation.status == "in_progress":
+                raise RepairApplicationError(
+                    "REPAIR_INVOCATION_UNCERTAIN",
+                    "Repair LLM invocation outcome is uncertain",
+                )
             if invocation.status != "completed":
                 raise RepairApplicationError(
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
@@ -435,23 +507,122 @@ class RepairApplicationService:
                 "Completed repair artifact cannot be loaded",
             ) from exc
 
-    def _persist_deterministic_failure(self, context, role, error: RepairLlmError) -> None:
+    def _start_invocation(
+        self, context, *, role: LlmRole, task_type: LlmTaskType, schema_name: str, schema
+    ) -> None:
+        invocation_id = _invocation_key(str(context["attempt_id"]), role)
+        now = self._now()
+        try:
+            with self._scope() as session:
+                session.add(
+                    LlmInvocationModel(
+                        id=invocation_id,
+                        run_id=context["run_id"],
+                        stage_id=context["stage_id"],
+                        idempotency_key=invocation_id,
+                        request_checksum="sha256:"
+                        + hashlib.sha256(
+                            json.dumps(context["segments"], sort_keys=True).encode()
+                        ).hexdigest(),
+                        input_hashes=[
+                            str(context["failure_evidence_checksum"]),
+                            str(context["context_pack_checksum"]),
+                            "schema:"
+                            + hashlib.sha256(
+                                json.dumps(schema.model_json_schema(), sort_keys=True).encode()
+                            ).hexdigest(),
+                        ],
+                        correlation_id=invocation_id,
+                        actor="transformer",
+                        role=role.value,
+                        task_type=task_type.value,
+                        provider="azure_openai",
+                        deployment_alias="azure-openai",
+                        prompt_version=f"repair-{role.value.removeprefix('repair_')}-v1",
+                        schema_version=get_settings().llm_schema_registry_version,
+                        pricing_version=get_settings().llm_pricing_version,
+                        stage="repair",
+                        redacted_summary=None,
+                        status="in_progress",
+                        failure_code=None,
+                        artifact_ids=[],
+                        artifact_checksums={},
+                        state_version=1,
+                        event_sequence=0,
+                        retries=0,
+                        transport_started=False,
+                        started_at=now,
+                        completed_at=None,
+                        created_at=now,
+                    )
+                )
+        except IntegrityError:
+            pass
+
+    def _persist_failure(
+        self, context, role, error: RepairApplicationError, *, failure_stage_override=None
+    ) -> None:
         kind = "propose-error" if role == LlmRole.REPAIR_PROPOSER else "review-error"
+        cause = error.__cause__ if isinstance(error.__cause__, AzureGatewayError) else None
         stored = self._write(
             context,
             kind,
             {
                 "code": error.code,
                 "message": error.message,
-                "retryable": error.retryable,
-                "failure_stage": error.failure_stage,
-                "provider_status": error.provider_status,
-                "provider_request_id": error.provider_request_id,
-                "failure_subtype": error.failure_subtype,
+                "retryable": getattr(error, "retryable", False),
+                "failure_stage": failure_stage_override
+                or getattr(error, "failure_stage", None)
+                or "local",
+                "provider_status": getattr(error, "provider_status", None),
+                "provider_request_id": getattr(error, "provider_request_id", None),
+                "failure_subtype": getattr(error, "failure_subtype", None),
+                "provider_http_status": getattr(cause, "provider_status", None),
+                "provider_error_code": getattr(cause, "provider_code", None),
+                "sanitized_provider_message": _bounded_text(getattr(cause, "provider_message", None)),
+                "response_received": getattr(cause, "response_received", False),
+                "transport_started": getattr(cause, "transport_started", False),
+                "response_sha256": getattr(cause, "response_sha256", None),
+                "response_bytes": getattr(cause, "response_bytes", None),
+                "response_kind": getattr(cause, "response_kind", None),
+                "retries": getattr(cause, "retry_count", None) or 0,
             },
         )
+        now = self._now()
         with self._scope() as session:
             self._register_artifact_metadata(session, context, stored)
+            invocation = (
+                session.query(LlmInvocationModel)
+                .filter_by(idempotency_key=_invocation_key(str(context["attempt_id"]), role))
+                .one_or_none()
+            )
+            if invocation is None:
+                return
+            invocation.status = "failed"
+            invocation.failure_code = error.code
+            invocation.failure_stage = (
+                failure_stage_override or getattr(error, "failure_stage", None) or "local"
+            )
+            invocation.failure_subtype = getattr(error, "failure_subtype", None)
+            invocation.provider_http_status = getattr(cause, "provider_status", None)
+            invocation.provider_error_code = getattr(cause, "provider_code", None)
+            invocation.sanitized_provider_message = _bounded_text(
+                getattr(cause, "provider_message", None)
+            )
+            if getattr(error, "provider_request_id", None) and not invocation.provider_request_id:
+                invocation.provider_request_id = error.provider_request_id
+            invocation.response_received = getattr(cause, "response_received", False)
+            invocation.response_content_type = getattr(cause, "response_content_type", None)
+            invocation.response_bytes = getattr(cause, "response_bytes", None)
+            invocation.response_sha256 = getattr(cause, "response_sha256", None)
+            invocation.response_kind = getattr(cause, "response_kind", None)
+            invocation.transport_started = getattr(cause, "transport_started", False) or False
+            invocation.retryable = getattr(error, "retryable", None)
+            invocation.retries = getattr(cause, "retry_count", None) or invocation.retries
+            invocation.transport_exception_type = (
+                type(error.__cause__).__name__ if error.__cause__ else None
+            )
+            invocation.completed_at = now
 
     def _register_artifact_metadata(self, session, context, stored) -> None:
         session.add(
@@ -488,42 +659,76 @@ class RepairApplicationService:
     def _persist_call(self, context, response, stored, *, role, summary):
         with self._scope() as session:
             attempt = session.get(RepairAttemptModel, context["attempt_id"])
-            invocation_id = f"{attempt.id}:{role}"
-            invocation = LlmInvocationModel(
-                id=invocation_id,
-                run_id=attempt.run_id,
-                stage_id=attempt.stage_id,
-                idempotency_key=invocation_id,
-                request_checksum="sha256:" + hashlib.sha256(
-                    json.dumps(context["segments"], sort_keys=True).encode()
-                ).hexdigest(),
-                input_hashes=[
-                    str(attempt.failure_evidence_checksum),
-                    str(attempt.context_pack_checksum),
-                ],
-                correlation_id=invocation_id,
-                actor="transformer",
-                role=response.role.value,
-                task_type=response.task_type.value,
-                provider="azure_openai",
-                deployment_alias=response.model_deployment_alias,
-                prompt_version=response.prompt_version or f"repair-{role}-v1",
-                schema_version=response.schema_version or get_settings().llm_schema_registry_version,
-                pricing_version=response.pricing_version or get_settings().llm_pricing_version,
-                stage="repair",
-                redacted_summary=json.dumps(summary, sort_keys=True),
-                status="completed",
-                artifact_ids=[stored.ref.artifact_id],
-                artifact_checksums={stored.ref.artifact_id: stored.ref.checksum},
-                state_version=1,
-                event_sequence=0,
-                retries=response.usage.retry_count,
-                provider_request_id=response.provider_request_id,
-                started_at=self._now(),
-                completed_at=self._now(),
-                created_at=self._now(),
+            invocation_id = _invocation_key(attempt.id, role)
+            now = self._now()
+            invocation = (
+                session.query(LlmInvocationModel)
+                .filter_by(idempotency_key=invocation_id)
+                .one_or_none()
             )
-            session.add(invocation)
+            if invocation is None:
+                invocation = LlmInvocationModel(
+                    id=invocation_id,
+                    run_id=attempt.run_id,
+                    stage_id=attempt.stage_id,
+                    idempotency_key=invocation_id,
+                    request_checksum="sha256:" + hashlib.sha256(
+                        json.dumps(context["segments"], sort_keys=True).encode()
+                    ).hexdigest(),
+                    input_hashes=[
+                        str(attempt.failure_evidence_checksum),
+                        str(attempt.context_pack_checksum),
+                    ],
+                    correlation_id=invocation_id,
+                    actor="transformer",
+                    role=response.role.value,
+                    task_type=response.task_type.value,
+                    provider="azure_openai",
+                    deployment_alias=response.model_deployment_alias,
+                    prompt_version=response.prompt_version or f"repair-{role}-v1",
+                    schema_version=response.schema_version or get_settings().llm_schema_registry_version,
+                    pricing_version=response.pricing_version or get_settings().llm_pricing_version,
+                    stage="repair",
+                    redacted_summary=json.dumps(summary, sort_keys=True),
+                    status="completed",
+                    artifact_ids=[stored.ref.artifact_id],
+                    artifact_checksums={stored.ref.artifact_id: stored.ref.checksum},
+                    state_version=1,
+                    event_sequence=0,
+                    retries=response.usage.retry_count,
+                    provider_request_id=response.provider_request_id,
+                    started_at=now,
+                    completed_at=now,
+                    created_at=now,
+                )
+                session.add(invocation)
+            else:
+                invocation.status = "completed"
+                invocation.failure_code = None
+                invocation.role = response.role.value
+                invocation.task_type = response.task_type.value
+                invocation.deployment_alias = response.model_deployment_alias
+                invocation.prompt_version = response.prompt_version or f"repair-{role}-v1"
+                invocation.schema_version = (
+                    response.schema_version or get_settings().llm_schema_registry_version
+                )
+                invocation.pricing_version = (
+                    response.pricing_version or get_settings().llm_pricing_version
+                )
+                invocation.redacted_summary = json.dumps(summary, sort_keys=True)
+                invocation.artifact_ids = [stored.ref.artifact_id]
+                invocation.artifact_checksums = {stored.ref.artifact_id: stored.ref.checksum}
+                invocation.retries = response.usage.retry_count
+                if response.provider_request_id:
+                    invocation.provider_request_id = response.provider_request_id
+                invocation.transport_started = True
+                invocation.response_received = True
+                invocation.completed_at = now
+                started_at = invocation.started_at
+                if started_at is not None and started_at.tzinfo is not None:
+                    invocation.latency_ms = max(
+                        0, int((now - started_at).total_seconds() * 1000)
+                    )
             session.add(
                 UsageCostRecordModel(
                     id="usage-cost-" + uuid4().hex[:12],
@@ -539,7 +744,7 @@ class RepairApplicationService:
                     input_cost_usd=response.usage.input_cost_usd,
                     output_cost_usd=response.usage.output_cost_usd,
                     total_cost_usd=response.usage.total_cost_usd,
-                    created_at=self._now(),
+                    created_at=now,
                 )
             )
             self._register_artifact_metadata(session, context, stored)
@@ -555,7 +760,7 @@ class RepairApplicationService:
                 attempt.status = (
                     "review_accepted" if summary["decision"] == "accept" else summary["decision"]
                 )
-            attempt.updated_at = self._now()
+            attempt.updated_at = now
 
     def _safe_path(self, value: str, workspace: Path) -> str:
         if "\\" in value:

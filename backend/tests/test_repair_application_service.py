@@ -1,17 +1,42 @@
 import hashlib
+import json
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from app.llm_gateway import AzureGatewayError, LlmFailureCode
+from app.artifact_store import LocalFilesystemArtifactStore
+from app.core.config import Settings
+from app.domain.contracts import ArtifactType
+from app.llm_gateway import (
+    AzureGatewayError,
+    AzureOpenAILLMGateway,
+    LlmFailureCode,
+    PromptRegistry,
+    PromptSchemaRegistry,
+)
+from app.repositories.models import (
+    ArtifactMetadataModel,
+    LlmInvocationModel,
+    MigrationRunModel,
+    RepairAttemptModel,
+    StageWorkspaceBindingModel,
+)
+from app.repositories.models.base import Base
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
     RepairLlmError,
+    RepairProposal,
     RepairReview,
     _translate_gateway_failure,
 )
+
+NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
 
 def _proposal(path: Path):
@@ -254,3 +279,329 @@ def test_proposal_rejects_lockfiles_and_binary_targets(tmp_path: Path):
     binary_proposal["touched_files"] = ["src/image.bin"]
     with pytest.raises(RepairApplicationError, match="UTF-8"):
         service.validate_proposal(binary_proposal, context)
+
+
+def _database(tmp_path: Path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'service.db'}")
+    Base.metadata.create_all(engine)
+    return engine, sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+def _scope(factory):
+    @contextmanager
+    def scope():
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    return scope
+
+
+def _azure_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        _env_file=None,
+        artifact_root=tmp_path / "runs",
+        workspace_root=tmp_path / "workspaces",
+        snapshot_root=tmp_path / "snapshots",
+        delivery_root=tmp_path / "delivery",
+        sandbox_root=tmp_path / "sandboxes",
+        llm_enabled=True,
+        azure_openai_endpoint="https://example.openai.azure.com",
+        azure_openai_deployment="gpt-5-mini-private",
+        azure_openai_api_version="2025-04-01-preview",
+        azure_openai_api_key=SecretStr("super-secret-api-key"),
+        llm_input_price_per_million_tokens=0.25,
+        llm_output_price_per_million_tokens=2.0,
+    )
+
+
+class _RecordingTransport:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, object]] = []
+
+    def request(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _responses_body(text: str) -> dict[str, object]:
+    message = {
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text}],
+    }
+    reasoning = {"type": "reasoning", "content": [], "summary": []}
+    return {
+        "status": "completed",
+        "output": [reasoning, message],
+        "usage": {"input_tokens": 11, "output_tokens": 71, "total_tokens": 82},
+    }
+
+
+def _gateway(transport, settings: Settings):
+    schema_registry = PromptSchemaRegistry()
+    schema_registry.register("repair_proposer_v1", RepairProposal)
+    schema_registry.register("repair_reviewer_v1", RepairReview)
+    return AzureOpenAILLMGateway(
+        settings=settings,
+        transport=transport,
+        registry=schema_registry,
+        prompt_registry=PromptRegistry.defaults(),
+    )
+
+
+def _seed_service(factory, tmp_path: Path):
+    artifacts = tmp_path / "artifacts"
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True, exist_ok=True)
+    app_ts = workspace / "src" / "app.ts"
+    app_ts.write_text("old", encoding="utf-8")
+    store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
+    attempt_id = "repair-1"
+    context = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/context-pack.json",
+        json.dumps({"evidence": "bounded context"}),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        created_by="repair-context",
+        created_at=NOW,
+    )
+    session = factory()
+    run = MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(artifacts),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-1",
+        run_id="run-1",
+        stage_id="stage-1",
+        alias="STAGE_WORKSPACE_1",
+        workspace_path=str(workspace),
+        workspace_fingerprint="fingerprint-1",
+        active=True,
+        created_at=NOW,
+    )
+    attempt = RepairAttemptModel(
+        id=attempt_id,
+        run_id="run-1",
+        stage_id="stage-1",
+        attempt_number=1,
+        status="evidence_frozen",
+        risk_level="unknown",
+        diagnosis="repairable_source; checkpoint=ckpt-pre",
+        failure_evidence_artifact_id="artifact-evidence",
+        failure_evidence_checksum="sha256:failure",
+        failure_route_artifact_id="artifact-route",
+        failure_route_checksum="sha256:route",
+        context_pack_artifact_id=context.ref.artifact_id,
+        context_pack_checksum="sha256:context",
+        proposal_artifact_id=None,
+        proposal_checksum=None,
+        proposer_invocation_id=None,
+        pre_fingerprint="fingerprint-1",
+        failure_fingerprint="fingerprint-failure",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    session.add_all([run, binding, attempt])
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + context.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=context.ref.artifact_type.value,
+            relative_path=context.ref.relative_path,
+            checksum=context.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.commit()
+    session.close()
+    return store, attempt_id, app_ts, artifacts
+
+
+def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    out_of_vocabulary = {
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+        "proposal_format": "operations",
+        "operations": [{"operation": "modify_file", "path": "src/app.ts"}],
+        "touched_files": ["src/app.ts"],
+        "rationale": ["x"],
+        "risk_level": "low",
+        "validation_targets": ["build"],
+        "limitations": [],
+    }
+    transport = _RecordingTransport([_responses_body(json.dumps(out_of_vocabulary))])
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairLlmError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "LLM_SCHEMA_VALIDATION_FAILED"
+    assert len(transport.calls) == 1
+    session = factory()
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.idempotency_key == f"{attempt_id}:proposer"
+    assert invocation.status == "failed"
+    assert invocation.failure_code == "LLM_SCHEMA_VALIDATION_FAILED"
+    assert invocation.failure_stage == "schema_validation"
+    assert invocation.transport_started is False
+    assert invocation.provider_request_id is None
+    assert invocation.provider_http_status is None
+    session.close()
+    engine.dispose()
+
+
+def test_pre_transport_disabled_failure_persists_without_transport(tmp_path: Path, monkeypatch):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    disabled = _azure_settings(tmp_path).model_copy(update={"llm_enabled": False})
+    monkeypatch.setattr(
+        "app.services.repair_application_service.get_settings", lambda: disabled
+    )
+    service = RepairApplicationService(scope=_scope(factory), gateway=None)
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "REPAIR_LLM_DISABLED"
+    session = factory()
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.status == "failed"
+    assert invocation.failure_code == "REPAIR_LLM_DISABLED"
+    assert invocation.failure_stage == "local"
+    assert invocation.transport_started is False
+    assert invocation.response_received is False
+    assert invocation.provider_request_id is None
+    assert invocation.provider_http_status is None
+    assert invocation.response_sha256 is None
+    session.close()
+    engine.dispose()
+
+
+def test_semantic_failure_persists_repair_semantics_stage_without_proposal_artifact(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, app_ts, artifacts = _seed_service(factory, tmp_path)
+    stale = _proposal(app_ts)
+    stale["operations"][0]["preimage_sha256"] = "sha256:stale"
+    transport = _RecordingTransport([_responses_body(json.dumps(stale))])
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "REPAIR_PREIMAGE_STALE"
+    session = factory()
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.status == "failed"
+    assert invocation.failure_code == "REPAIR_PREIMAGE_STALE"
+    assert invocation.failure_stage == "repair_semantics"
+    assert invocation.transport_started is False
+    assert invocation.provider_request_id is None
+    assert invocation.provider_http_status is None
+    session.close()
+    inventory = sorted(
+        str(path.relative_to(artifacts)).replace("\\", "/")
+        for path in artifacts.rglob("*")
+        if path.is_file()
+    )
+    assert f"05_repairs/attempt-{attempt_id}/proposal.json" not in inventory
+    assert f"05_repairs/attempt-{attempt_id}/propose-error.json" in inventory
+    engine.dispose()
+
+
+def test_recover_completed_failed_returns_none_and_uncertain_transport_raises(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)
+    context = {
+        "attempt_id": attempt_id,
+        "run_id": "run-1",
+        "stage_id": "stage-1",
+        "artifact_root": str(artifacts),
+    }
+    session = factory()
+    session.add(
+        LlmInvocationModel(
+            id=f"{attempt_id}:proposer",
+            run_id="run-1",
+            stage_id="stage-1",
+            idempotency_key=f"{attempt_id}:proposer",
+            request_checksum="sha256:request",
+            input_hashes=["sha256:failure", "sha256:context"],
+            correlation_id=f"{attempt_id}:proposer",
+            actor="transformer",
+            role="repair_proposer",
+            task_type="repair_diagnosis",
+            provider="azure_openai",
+            deployment_alias="azure-openai",
+            prompt_version="repair-proposer-v1",
+            schema_version="schema-registry-v1",
+            pricing_version="mvp-pricing-2026-01",
+            stage="repair",
+            redacted_summary=None,
+            status="failed",
+            failure_code="LLM_PROVIDER_BAD_REQUEST",
+            artifact_ids=[],
+            artifact_checksums={},
+            state_version=1,
+            event_sequence=0,
+            retries=0,
+            started_at=NOW,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+    service = RepairApplicationService(scope=_scope(factory))
+
+    assert service._recover_completed(context, role="proposer") is None
+
+    session = factory()
+    invocation = session.query(LlmInvocationModel).one()
+    invocation.status = "in_progress"
+    invocation.transport_started = True
+    session.commit()
+    session.close()
+    with pytest.raises(RepairApplicationError) as raised:
+        service._recover_completed(context, role="proposer")
+    assert raised.value.code == "REPAIR_INVOCATION_UNCERTAIN"
+    engine.dispose()

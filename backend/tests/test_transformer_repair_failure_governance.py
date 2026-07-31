@@ -492,7 +492,18 @@ def test_missing_prompt_policy_blocks_without_transport_or_artifact(tmp_path: Pa
     assert continuation.worker_id is None
     assert continuation.lease_expires_at is None
     assert continuation.current_node == "propose_repair"
-    assert session.query(LlmInvocationModel).count() == 0
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.idempotency_key == f"{attempt_id}:proposer"
+    assert invocation.status == "failed"
+    assert invocation.failure_code == "LLM_PROMPT_POLICY_MISSING"
+    assert invocation.failure_stage == "local"
+    assert invocation.transport_started is False
+    assert invocation.response_received is False
+    assert invocation.provider_request_id is None
+    assert invocation.retryable is False
+    assert invocation.retries == 0
     assert session.query(UsageCostRecordModel).count() == 0
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
@@ -510,6 +521,9 @@ def test_missing_prompt_policy_blocks_without_transport_or_artifact(tmp_path: Pa
     assert diagnostic["retryable"] is False
     assert diagnostic["provider_request_id"] is None
     assert diagnostic["provider_status"] is None
+    assert diagnostic["transport_started"] is False
+    assert diagnostic["response_received"] is False
+    assert diagnostic["retries"] == 0
     assert set(diagnostic) == {
         "code",
         "message",
@@ -518,6 +532,15 @@ def test_missing_prompt_policy_blocks_without_transport_or_artifact(tmp_path: Pa
         "provider_status",
         "provider_request_id",
         "failure_subtype",
+        "provider_http_status",
+        "provider_error_code",
+        "sanitized_provider_message",
+        "response_received",
+        "transport_started",
+        "response_sha256",
+        "response_bytes",
+        "response_kind",
+        "retries",
     }
     engine.dispose()
 
@@ -580,7 +603,15 @@ def test_provider_timeout_429_5xx_bounded_then_blocked(
     assert continuation.worker_id is None
     assert continuation.lease_expires_at is None
     assert continuation.current_node == "propose_repair"
-    assert session.query(LlmInvocationModel).count() == 0
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.status == "failed"
+    assert invocation.failure_code == expected_code
+    assert invocation.transport_started is False
+    assert invocation.response_received is False
+    assert invocation.provider_request_id is None
+    assert invocation.retries == retries
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
     assert attempt.proposal_artifact_id is None
@@ -588,7 +619,7 @@ def test_provider_timeout_429_5xx_bounded_then_blocked(
     _assert_not_reclaimable(factory)
     inventory = _file_inventory(artifacts)
     assert f"05_repairs/attempt-{attempt_id}/proposal.json" not in inventory
-    assert not any(name.endswith("-error.json") for name in inventory)
+    assert any(name.endswith("/propose-error.json") for name in inventory)
     engine.dispose()
 
 
@@ -636,7 +667,15 @@ def test_provider_400_and_auth_block_without_repeated_claims(tmp_path: Path, fai
     assert continuation.worker_id is None
     assert continuation.lease_expires_at is None
     assert continuation.current_node == "propose_repair"
-    assert session.query(LlmInvocationModel).count() == 0
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.status == "failed"
+    assert invocation.failure_code == expected_code
+    assert invocation.transport_started is False
+    assert invocation.response_received is False
+    assert invocation.provider_request_id is None
+    assert invocation.retries == 0
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
     session.close()
@@ -745,7 +784,15 @@ def test_llm_configuration_invalid_blocks_durably(tmp_path: Path, monkeypatch):
     assert continuation.worker_id is None
     assert continuation.lease_expires_at is None
     assert continuation.current_node == "propose_repair"
-    assert session.query(LlmInvocationModel).count() == 0
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.status == "failed"
+    assert invocation.failure_code == "LLM_CONFIGURATION_INVALID"
+    assert invocation.failure_stage == "local"
+    assert invocation.transport_started is False
+    assert invocation.provider_request_id is None
+    assert invocation.retryable is False
     assert session.query(UsageCostRecordModel).count() == 0
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
@@ -782,9 +829,149 @@ def test_evidence_missing_blocks_durably(tmp_path: Path):
     assert continuation.worker_id is None
     assert continuation.lease_expires_at is None
     assert continuation.current_node == "propose_repair"
+    # REPAIR_EVIDENCE_MISSING fails inside _attempt_context, before any invocation is created.
     assert session.query(LlmInvocationModel).count() == 0
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
     session.close()
     _assert_not_reclaimable(factory)
+    engine.dispose()
+
+
+def test_schema_validation_failure_persists_failed_invocation_row(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path)
+    out_of_vocabulary = {
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+        "proposal_format": "operations",
+        "operations": [{"operation": "modify_file", "path": "src/app.ts"}],
+        "touched_files": ["src/app.ts"],
+        "rationale": ["x"],
+        "risk_level": "low",
+        "validation_targets": ["build"],
+        "limitations": [],
+    }
+    transport = _FakeAzureTransport([_responses_body(json.dumps(out_of_vocabulary))])
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(transport, _azure_settings(tmp_path)),
+    )
+
+    _orchestrator(factory, repair_service).advance("cont-1", "worker-1")
+
+    session = factory()
+    assert len(transport.calls) == 1
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "LLM_SCHEMA_VALIDATION_FAILED"
+    assert continuation.current_node == "propose_repair"
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.status == "failed"
+    assert invocation.failure_code == "LLM_SCHEMA_VALIDATION_FAILED"
+    assert invocation.failure_stage == "schema_validation"
+    assert invocation.failure_subtype == "ASSISTANT_SCHEMA_VALIDATION"
+    assert invocation.role == "repair_proposer"
+    assert session.query(UsageCostRecordModel).count() == 0
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.status == "evidence_frozen"
+    assert attempt.proposal_artifact_id is None
+    session.close()
+    _assert_not_reclaimable(factory)
+    inventory = _file_inventory(artifacts)
+    assert f"05_repairs/attempt-{attempt_id}/proposal.json" not in inventory
+    assert any(name.endswith("/propose-error.json") for name in inventory)
+    engine.dispose()
+
+
+def test_failed_invocation_replay_updates_same_row_after_requeue(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, app_ts, _artifacts = _seed(factory, tmp_path)
+    failure = AzureGatewayError(
+        LlmFailureCode.INVALID_REQUEST,
+        "Azure OpenAI request failed.",
+        retryable=False,
+        provider_status=400,
+    )
+    transport = _FakeAzureTransport([failure, _responses_body(json.dumps(_proposal_payload(app_ts)))])
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(transport, _azure_settings(tmp_path)),
+    )
+    orchestrator = _orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    assert len(transport.calls) == 1
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "LLM_PROVIDER_BAD_REQUEST"
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    assert invocations[0].status == "failed"
+    session.close()
+
+    _requeue(factory, node="propose_repair", worker="worker-2")
+    orchestrator.advance("cont-1", "worker-2")
+
+    session = factory()
+    assert len(transport.calls) == 2
+    invocations = session.query(LlmInvocationModel).all()
+    assert len(invocations) == 1
+    assert invocations[0].id == f"{attempt_id}:proposer"
+    assert invocations[0].status == "completed"
+    assert invocations[0].failure_code is None
+    assert session.query(UsageCostRecordModel).count() == 1
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "queued"
+    assert continuation.current_node == "review_repair"
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.status == "proposed"
+    session.close()
+    engine.dispose()
+
+
+def test_failed_reviewer_persists_failed_invocation_row(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    proposal_checksum = attempt.proposal_checksum
+    session.close()
+    assert proposal_checksum != "sha256:different"
+    stale_review = _review_payload("sha256:different")
+    transport = _FakeAzureTransport([_responses_body(json.dumps(stale_review))])
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(transport, _azure_settings(tmp_path)),
+    )
+
+    _orchestrator(factory, repair_service).advance("cont-1", "worker-1")
+
+    session = factory()
+    assert len(transport.calls) == 1
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "REPAIR_REVIEW_STALE"
+    assert continuation.current_node == "review_repair"
+    reviewers = (
+        session.query(LlmInvocationModel)
+        .filter_by(idempotency_key=f"{attempt_id}:reviewer")
+        .all()
+    )
+    assert len(reviewers) == 1
+    assert reviewers[0].status == "failed"
+    assert reviewers[0].failure_code == "REPAIR_REVIEW_STALE"
+    assert reviewers[0].failure_stage == "repair_semantics"
+    assert reviewers[0].transport_started is False
+    assert reviewers[0].provider_request_id is None
+    assert session.query(UsageCostRecordModel).count() == 0
+    session.close()
+    _assert_not_reclaimable(factory)
+    inventory = _file_inventory(artifacts)
+    assert f"05_repairs/attempt-{attempt_id}/review.json" not in inventory
+    assert any(name.endswith("/review-error.json") for name in inventory)
     engine.dispose()
