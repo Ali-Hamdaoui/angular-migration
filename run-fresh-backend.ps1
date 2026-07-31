@@ -4,7 +4,7 @@ param(
     [string]$SourceRoot = "C:\Users\abdelilah.mortaki\Desktop\angular-crud-poc",
     [string]$TargetBaseRoot = "C:\Users\abdelilah.mortaki\Desktop\angularRus",
     [int]$Port = 8000,
-    [switch]$RequireLlm
+    [switch]$DisableLlm
 )
 
 $ErrorActionPreference = "Stop"
@@ -760,7 +760,14 @@ $env:ALLOWED_TARGET_ROOTS = $TargetBaseRoot
 $env:BACKEND_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 $env:NPM_CONFIG_REGISTRY = "https://registry.npmjs.org/"
 $env:NPM_CONFIG_STRICT_SSL = "true"
-$env:LLM_ENABLED = if ($RequireLlm) { "true" } else { "false" }
+$env:LLM_ENABLED = if ($DisableLlm) { "false" } else { "true" }
+
+$llmModeDescription = if ($DisableLlm) {
+    "disabled explicitly with -DisableLlm"
+}
+else {
+    "enabled and required by default"
+}
 
 Write-Host ""
 Write-Host "Fresh backend configuration" -ForegroundColor Cyan
@@ -770,17 +777,71 @@ Write-Host "Database:      $env:DATABASE_URL"
 Write-Host "Source root:   $SourceRoot"
 Write-Host "Target base:   $TargetBaseRoot"
 Write-Host "Target to use: $proofTarget" -ForegroundColor Green
+Write-Host "LLM mode:      $llmModeDescription"
 Write-Host ""
 
-$llmConfigResult = Invoke-PythonCapture -Arguments @(
-    "-c",
-    "from app.core.config import get_settings; s=get_settings(); missing=[name for name,value in {'AZURE_OPENAI_ENDPOINT':s.azure_openai_endpoint,'AZURE_OPENAI_DEPLOYMENT':s.azure_openai_deployment,'AZURE_OPENAI_API_VERSION':s.azure_openai_api_version,'AZURE_OPENAI_API_KEY':s.azure_openai_api_key}.items() if s.llm_enabled and not value]; print(('LLM configuration incomplete: '+', '.join(missing)) if missing else (f'LLM: Azure OpenAI ready; deployment {s.azure_openai_deployment}, API {s.azure_openai_api_version}, endpoint configured.' if s.llm_enabled else 'LLM: disabled; deterministic Transformer remains available.')); raise SystemExit(bool(missing))"
+$llmValidationScript = @'
+from app.core.config import get_settings
+
+settings = get_settings()
+
+if not settings.llm_enabled:
+    print("LLM: explicitly disabled; deterministic Transformer only.")
+    raise SystemExit(0)
+
+required = {
+    "AZURE_OPENAI_ENDPOINT": settings.azure_openai_endpoint,
+    "AZURE_OPENAI_DEPLOYMENT": settings.azure_openai_deployment,
+    "AZURE_OPENAI_API_VERSION": settings.azure_openai_api_version,
+    "AZURE_OPENAI_API_KEY": settings.azure_openai_api_key,
+}
+
+missing = [
+    name
+    for name, value in required.items()
+    if not value
+]
+
+if missing:
+    print(
+        "LLM configuration incomplete: "
+        + ", ".join(missing)
+    )
+    raise SystemExit(2)
+
+print(
+    "LLM: Azure OpenAI ready; "
+    f"deployment {settings.azure_openai_deployment}, "
+    f"API {settings.azure_openai_api_version}, "
+    "endpoint configured."
 )
+'@
 
-$llmConfigResult.Lines | ForEach-Object { Write-Host $_ }
+$previousErrorActionPreference = $ErrorActionPreference
 
-if ($llmConfigResult.ExitCode -ne 0) {
-    throw "Azure LLM configuration validation failed without exposing credentials."
+try {
+    $ErrorActionPreference = "Continue"
+
+    $llmConfigLines = @(
+        $llmValidationScript |
+            & $python - 2>&1 |
+            ForEach-Object { $_.ToString() }
+    )
+
+    $llmConfigExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+
+$llmConfigLines |
+    ForEach-Object { Write-Host $_ }
+
+if ($llmConfigExitCode -ne 0) {
+    throw (
+        "Azure LLM configuration validation failed. " +
+        "The backend was not started."
+    )
 }
 
 Write-Host "Available Alembic heads:" -ForegroundColor Cyan
