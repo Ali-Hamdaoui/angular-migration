@@ -9,18 +9,27 @@ remain in dedicated services.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
+from app.artifact_store import (
+    ArtifactNotFoundError,
+    ArtifactStoreError,
+    LocalFilesystemArtifactStore,
+    StoredArtifact,
+)
+from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
     ArtifactMetadataModel,
-    CommandLogChunkModel,
     CommandExecutionModel,
+    CommandLogChunkModel,
     G06ApprovalModel,
     LlmInvocationModel,
     MigrationRunModel,
@@ -40,13 +49,13 @@ from app.services.angular_transformation_evidence_service import (
 )
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.patch_apply_service import PatchApplyService
-from app.services.stage_gate_service import StageGateService
-from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.prompt_explanation_service import PromptExplanationService
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
 )
+from app.services.stage_gate_service import StageGateService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.validation_runner import (
     BuildAgent,
@@ -54,7 +63,8 @@ from app.services.validation_runner import (
     ValidationRunner,
     ValidationRunnerError,
 )
-from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
+
+logger = logging.getLogger(__name__)
 
 
 class TransformerPointer(TypedDict):
@@ -674,109 +684,232 @@ class TransformerOrchestrator:
             evidence = self._failures.collect(
                 session, continuation, prior_fingerprints=prior
             )
+            fingerprint = str(evidence["failure_fingerprint"])
+            replayed = self._committed_evidence(session, continuation, fingerprint)
+            reuse_checkpoint = None
+            if replayed is not None:
+                reuse_checkpoint = session.scalar(
+                    select(StageCheckpointModel)
+                    .where(
+                        StageCheckpointModel.stage_id == continuation.current_stage_id,
+                        StageCheckpointModel.kind == "pre_repair",
+                    )
+                    .order_by(StageCheckpointModel.sequence.desc())
+                    .limit(1)
+                )
         evidence["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
             Path(str(evidence["workspace_path"]))
         )
         route = self._failures.classify(evidence)
-        failure, route_artifact = self._failures.write(evidence, route)
-        context = (
-            self._failures.write_context_pack(evidence, failure.ref.checksum)
-            if route.value == "repairable_source"
-            else None
-        )
-        snapshot = (
-            self._stage.snapshot_workspace(
+        attempt_artifacts: list[StoredArtifact] = []
+        if replayed is None:
+            failure, route_artifact = self._failures.write(evidence, route)
+            attempt_artifacts.extend((failure, route_artifact))
+            context = (
+                self._failures.write_context_pack(evidence, failure.ref.checksum)
+                if route.value == "repairable_source"
+                else None
+            )
+            if context is not None:
+                attempt_artifacts.append(context)
+        else:
+            failure, route_artifact, context = replayed
+        snapshot = None
+        if (
+            route.value == "repairable_source"
+            and context is not None
+            and (replayed is None or reuse_checkpoint is None)
+        ):
+            snapshot = self._stage.snapshot_workspace(
                 str(evidence["workspace_path"]),
                 str(Path(str(evidence["workspace_path"])).parent),
                 str(evidence["stage_id"]),
             )
-            if context is not None
-            else None
-        )
-        with self._scope() as session:
-            continuation = self._owned(session, continuation_id, worker_id)
+        try:
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
 
-            if self._is_angular_update_failure(session, continuation):
                 for artifact in (failure, route_artifact, context):
                     if artifact is not None:
                         self._stage.register_artifact(session, artifact, continuation)
-                if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
-                    self._restore_angular_update_checkpoint(session, continuation)
-                    continuation.attempt += 1
-                    continuation.status = "queued"
-                    continuation.current_node = "angular_update"
-                    continuation.worker_id = None
-                    continuation.lease_expires_at = None
-                    continuation.state_version += 1
-                    continuation.updated_at = datetime.now(UTC)
-                    return
-                if route.value != "repairable_source":
-                    self._block(
-                        continuation,
-                        f"ANGULAR_UPDATE_{route.value.upper()}",
-                        f"Angular update failure routed to {route.value}",
-                    )
-                    return
+                if self._is_angular_update_failure(session, continuation):
+                    if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
+                        self._restore_angular_update_checkpoint(session, continuation)
+                        continuation.attempt += 1
+                        continuation.status = "queued"
+                        continuation.current_node = "angular_update"
+                        continuation.worker_id = None
+                        continuation.lease_expires_at = None
+                        continuation.state_version += 1
+                        continuation.updated_at = datetime.now(UTC)
+                        return
+                    if route.value != "repairable_source":
+                        self._block(
+                            continuation,
+                            f"ANGULAR_UPDATE_{route.value.upper()}",
+                            f"Angular update failure routed to {route.value}",
+                        )
+                        return
 
-            for artifact in (failure, route_artifact, context):
-                if artifact is not None:
-                    self._stage.register_artifact(session, artifact, continuation)
-            if route.value != "repairable_source":
-                if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
-                    continuation.attempt += 1
-                    continuation.status = "waiting_retry"
-                    continuation.current_node = "final_install"
-                    continuation.next_attempt_at = datetime.now(UTC) + timedelta(seconds=30)
-                    continuation.worker_id = None
-                    continuation.lease_expires_at = None
-                    continuation.state_version += 1
-                    continuation.updated_at = datetime.now(UTC)
-                else:
+                if route.value != "repairable_source":
+                    if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
+                        continuation.attempt += 1
+                        continuation.status = "waiting_retry"
+                        continuation.current_node = "final_install"
+                        continuation.next_attempt_at = datetime.now(UTC) + timedelta(seconds=30)
+                        continuation.worker_id = None
+                        continuation.lease_expires_at = None
+                        continuation.state_version += 1
+                        continuation.updated_at = datetime.now(UTC)
+                    else:
+                        self._block(
+                            continuation,
+                            f"FAILURE_ROUTE_{route.value.upper()}",
+                            f"Validation failure routed to {route.value}",
+                        )
+                    return
+                attempts = session.query(RepairAttemptModel).filter_by(
+                    run_id=continuation.run_id, stage_id=continuation.current_stage_id
+                ).count()
+                applied = session.query(RepairAttemptModel).filter(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
+                ).count()
+                if attempts >= 3 or applied >= 2:
                     self._block(
                         continuation,
-                        f"FAILURE_ROUTE_{route.value.upper()}",
-                        f"Validation failure routed to {route.value}",
+                        "REPAIR_ATTEMPT_LIMIT",
+                        "Governed repair attempt limit reached",
                     )
-                return
-            attempts = session.query(RepairAttemptModel).filter_by(
-                run_id=continuation.run_id, stage_id=continuation.current_stage_id
-            ).count()
-            applied = session.query(RepairAttemptModel).filter(
-                RepairAttemptModel.run_id == continuation.run_id,
-                RepairAttemptModel.stage_id == continuation.current_stage_id,
-                RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
-            ).count()
-            if attempts >= 3 or applied >= 2:
-                self._block(
-                    continuation,
-                    "REPAIR_ATTEMPT_LIMIT",
-                    "Governed repair attempt limit reached",
+                    return
+                checkpoint = (
+                    reuse_checkpoint
+                    if reuse_checkpoint is not None
+                    else self._stage.persist_snapshot_checkpoint(
+                        session, continuation, snapshot, "pre_repair"
+                    )
                 )
-                return
-            checkpoint = self._stage.persist_snapshot_checkpoint(
-                session, continuation, snapshot, "pre_repair"
+                attempt = RepairAttemptModel(
+                    id=f"repair-{continuation.current_stage_id}-{attempts + 1}",
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                    attempt_number=attempts + 1,
+                    status="evidence_frozen",
+                    risk_level="unknown",
+                    diagnosis=f"{route.value}; checkpoint={checkpoint.id}",
+                    failure_evidence_artifact_id=failure.ref.artifact_id,
+                    failure_evidence_checksum=failure.ref.checksum,
+                    failure_route_artifact_id=route_artifact.ref.artifact_id,
+                    failure_route_checksum=route_artifact.ref.checksum,
+                    context_pack_artifact_id=context.ref.artifact_id,
+                    context_pack_checksum=context.ref.checksum,
+                    pre_fingerprint=str(evidence["workspace_fingerprint"]),
+                    failure_fingerprint=str(evidence["failure_fingerprint"]),
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+                session.add(attempt)
+                self._queue(continuation, "propose_repair")
+        except IntegrityError as error:
+            self._block_metadata_duplicate(
+                continuation_id, worker_id, error, attempt_artifacts
             )
-            attempt = RepairAttemptModel(
-                id=f"repair-{continuation.current_stage_id}-{attempts + 1}",
-                run_id=continuation.run_id,
-                stage_id=continuation.current_stage_id,
-                attempt_number=attempts + 1,
-                status="evidence_frozen",
-                risk_level="unknown",
-                diagnosis=f"{route.value}; checkpoint={checkpoint.id}",
-                failure_evidence_artifact_id=failure.ref.artifact_id,
-                failure_evidence_checksum=failure.ref.checksum,
-                failure_route_artifact_id=route_artifact.ref.artifact_id,
-                failure_route_checksum=route_artifact.ref.checksum,
-                context_pack_artifact_id=context.ref.artifact_id,
-                context_pack_checksum=context.ref.checksum,
-                pre_fingerprint=str(evidence["workspace_fingerprint"]),
-                failure_fingerprint=str(evidence["failure_fingerprint"]),
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
+            try:
+                self._cleanup_failed_attempt_artifacts(
+                    str(evidence["run_id"]),
+                    str(evidence["artifact_root"]),
+                    attempt_artifacts,
+                )
+            except Exception as cleanup_error:  # noqa: BLE001
+                logger.warning(
+                    "Failed to clean up orphaned classification artifacts for continuation %s: %s",
+                    continuation_id,
+                    cleanup_error,
+                )
+
+    def _committed_evidence(self, session, continuation, fingerprint):
+        lookup = getattr(self._failures, "committed_evidence", None)
+        if not callable(lookup):
+            return None
+        try:
+            triple = lookup(session, continuation, fingerprint)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(triple, tuple) or len(triple) != 3:
+            return None
+        failure, route_artifact, context = triple
+        if failure is None or route_artifact is None:
+            return None
+        if getattr(failure, "ref", None) is None or getattr(route_artifact, "ref", None) is None:
+            return None
+        return failure, route_artifact, context
+
+    def _block_metadata_duplicate(
+        self,
+        continuation_id: str,
+        worker_id: str,
+        error: IntegrityError,
+        attempt_artifacts: list[StoredArtifact],
+    ) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            artifact_ids = ", ".join(
+                stored.ref.artifact_id for stored in attempt_artifacts
             )
-            session.add(attempt)
-            self._queue(continuation, "propose_repair")
+            relative_paths = ", ".join(
+                stored.ref.relative_path for stored in attempt_artifacts
+            )
+            continuation.status = "blocked"
+            continuation.last_error_code = "ARTIFACT_METADATA_DUPLICATE"
+            continuation.last_error_message = (
+                f"ARTIFACT_METADATA_DUPLICATE; artifact_ids=[{artifact_ids}]; "
+                f"paths=[{relative_paths}]; error={error}"
+            )
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.state_version += 1
+            continuation.updated_at = datetime.now(UTC)
+
+    def _cleanup_failed_attempt_artifacts(
+        self, run_id: str, artifact_root: str, attempt_artifacts: list[StoredArtifact]
+    ) -> None:
+        root = Path(artifact_root).resolve()
+        store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
+        with self._scope() as session:
+            committed_paths = {
+                row.relative_path
+                for row in session.query(ArtifactMetadataModel)
+                .filter_by(run_id=run_id)
+                .all()
+            }
+        for stored in attempt_artifacts:
+            relative = stored.ref.relative_path
+            if relative in committed_paths:
+                continue
+            try:
+                target = store._resolve_existing_artifact_path(run_id, relative)
+            except ArtifactNotFoundError:
+                continue
+            except ArtifactStoreError as error:
+                logger.warning(
+                    "Refusing to clean up unresolved artifact %s for run %s: %s",
+                    relative,
+                    run_id,
+                    error,
+                )
+                continue
+            sidecar = target.with_name(f"{target.name}.meta.json")
+            for path in (target, sidecar):
+                try:
+                    if path.is_file():
+                        path.unlink()
+                except OSError as error:
+                    logger.warning(
+                        "Failed to remove orphaned classification artifact %s: %s",
+                        path,
+                        error,
+                    )
 
     def _propose_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
