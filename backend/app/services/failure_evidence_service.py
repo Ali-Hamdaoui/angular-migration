@@ -6,32 +6,38 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import (
+    ArtifactNotFoundError,
+    ArtifactStoreError,
+    LocalFilesystemArtifactStore,
+    StoredArtifact,
+)
 from app.domain.contracts import ArtifactType
 from app.domain.transformation import FailureRoute
 
 
 class FailureEvidenceService:
-    transient_codes = {
+    transient_codes: ClassVar[set[str]] = {
         "COMMAND_WORKER_LOST_REQUEUED",
         "COMMAND_TIMEOUT",
         "REGISTRY_TIMEOUT",
         "NETWORK_ERROR",
     }
-    permanent_codes = {"EXECUTION_PROFILE_NOT_FOUND", "STAGE_WORKSPACE_MISSING"}
-    dependency_codes = {
+    permanent_codes: ClassVar[set[str]] = {"EXECUTION_PROFILE_NOT_FOUND", "STAGE_WORKSPACE_MISSING"}
+    dependency_codes: ClassVar[set[str]] = {
         "DEPENDENCY_PREFLIGHT_BLOCKED",
         "VERSION_VERIFICATION_FAILED",
         "VALIDATION_TARGET_MISSING",
     }
-    policy_codes = {
+    policy_codes: ClassVar[set[str]] = {
         "VALIDATION_WORKSPACE_MUTATED",
         "VALIDATION_BINDING_STALE",
         "COMMAND_POLICY_REJECTED",
         "STALE_GATE_BINDING",
     }
-    non_repairable_codes = {"VALIDATION_EVIDENCE_MISSING", "VALIDATION_INCOMPLETE"}
+    non_repairable_codes: ClassVar[set[str]] = {"VALIDATION_EVIDENCE_MISSING", "VALIDATION_INCOMPLETE"}
 
     def __init__(self, *, now_provider=None) -> None:
         self._now = now_provider or (lambda: datetime.now(UTC))
@@ -113,6 +119,72 @@ class FailureEvidenceService:
             return FailureRoute.NON_REPAIRABLE_VALIDATION
         return FailureRoute.REPAIRABLE_SOURCE
 
+    def committed_evidence(
+        self,
+        session,
+        continuation,
+        failure_fingerprint: str,
+    ) -> tuple[StoredArtifact, StoredArtifact, StoredArtifact] | None:
+        """Replay committed failure evidence for an identical classification, else None.
+
+        Returns the (failure, route, context) triple reconstructed from committed
+        ``artifact_metadata`` rows and the run-root-bound artifact store only when
+        run id, stage id, artifact types, relative paths, and checksums all match
+        the deterministic expectations for this failure fingerprint. Any anomaly -
+        missing row, duplicate row, row id mismatch, missing file, or checksum
+        drift on disk - yields None so callers write fresh evidence instead.
+        """
+        from app.repositories.models import ArtifactMetadataModel, MigrationRunModel
+        from app.services.transformer_stage_service import artifact_metadata_id
+
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None or not run.artifact_root:
+            return None
+        root = Path(str(run.artifact_root))
+        store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
+        paths = self._expected_evidence_paths(continuation.current_stage_id, failure_fingerprint)
+        replayed: list[StoredArtifact] = []
+        for kind in ("failure", "route_artifact", "context"):
+            relative_path = paths[kind]
+            rows = session.query(ArtifactMetadataModel).filter_by(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                artifact_type=ArtifactType.JSON.value,
+                relative_path=relative_path,
+            ).all()
+            if len(rows) != 1:
+                return None
+            row = rows[0]
+            if row.id != artifact_metadata_id(
+                continuation.run_id,
+                continuation.current_stage_id,
+                ArtifactType.JSON,
+                relative_path,
+                row.checksum,
+            ):
+                return None
+            try:
+                stored = store.read_artifact(continuation.run_id, relative_path)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError):
+                return None
+            if (
+                stored.ref.artifact_type != ArtifactType.JSON
+                or stored.ref.relative_path != relative_path
+                or stored.ref.checksum != row.checksum
+            ):
+                return None
+            replayed.append(stored)
+        return replayed[0], replayed[1], replayed[2]
+
+    @staticmethod
+    def _expected_evidence_paths(stage_id: str, failure_fingerprint: str) -> dict[str, str]:
+        suffix = str(failure_fingerprint)[7:]
+        return {
+            "failure": f"04_workflow_state/stages/{stage_id}/failures/{suffix}.json",
+            "route_artifact": f"04_workflow_state/stages/{stage_id}/failures/{suffix}-route.json",
+            "context": f"05_repairs/{stage_id}/{suffix}-context.json",
+        }
+
     def write(self, evidence: dict[str, object], route: FailureRoute):
         root = Path(str(evidence["artifact_root"]))
         store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
@@ -125,16 +197,17 @@ class FailureEvidenceService:
             "policy_version": "transformer-failure-evidence-v1",
         }
         serializable = {key: value for key, value in evidence.items() if key not in {"workspace_path", "artifact_root"}}
+        paths = self._expected_evidence_paths(common["stage_id"], evidence["failure_fingerprint"])
         failure = store.write_text_artifact(
             common["run_id"],
-            f"04_workflow_state/stages/{common['stage_id']}/failures/{evidence['failure_fingerprint'][7:]}.json",
+            paths["failure"],
             json.dumps(serializable, sort_keys=True, indent=2),
             ArtifactType.JSON,
             **{key: value for key, value in common.items() if key != "run_id"},
         )
         route_artifact = store.write_text_artifact(
             common["run_id"],
-            f"04_workflow_state/stages/{common['stage_id']}/failures/{evidence['failure_fingerprint'][7:]}-route.json",
+            paths["route_artifact"],
             json.dumps(
                 {
                     "failure_fingerprint": evidence["failure_fingerprint"],
@@ -169,7 +242,7 @@ class FailureEvidenceService:
         root = Path(str(evidence["artifact_root"]))
         return LocalFilesystemArtifactStore(root.parent, fixed_run_root=root).write_text_artifact(
             str(evidence["run_id"]),
-            f"05_repairs/{evidence['stage_id']}/{evidence['failure_fingerprint'][7:]}-context.json",
+            self._expected_evidence_paths(str(evidence["stage_id"]), evidence["failure_fingerprint"])["context"],
             json.dumps(payload, sort_keys=True, indent=2),
             ArtifactType.JSON,
             stage_id=str(evidence["stage_id"]),

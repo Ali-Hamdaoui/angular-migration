@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-import shutil
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -28,6 +28,10 @@ from app.repositories.models import (
     TransformationContinuationModel,
 )
 from app.repositories.session import session_scope
+from app.services.command_executor_service import (
+    CommandExecutorError,
+    CommandExecutorService,
+)
 from app.services.stage_execution_application_service import (
     StageExecutionApplicationService,
     StageExecutionError,
@@ -35,10 +39,6 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.command_executor_service import (
-    CommandExecutorError,
-    CommandExecutorService,
-)
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -47,6 +47,27 @@ class TransformerStageError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def artifact_metadata_id(
+    run_id: str,
+    stage_id: str,
+    artifact_type: ArtifactType,
+    relative_path: str,
+    checksum: str,
+) -> str:
+    """Deterministic artifact metadata identity for (run, stage, type, path, checksum).
+
+    The canonical key is the pipe-delimited binding of the five stored columns;
+    run ids, stage ids, artifact type values, relative paths, and checksums can
+    never contain a pipe, so the join is unambiguous. Identical classification
+    replays derive the same id, making the committed-row guard effective across
+    sessions. The sha256 digest is truncated to 54 hex characters so the id fits
+    the declared ``String(64)`` primary key of ``artifact_metadata`` while
+    retaining 216 bits of entropy.
+    """
+    key = f"{run_id}|{stage_id}|{artifact_type.value}|{relative_path}|{checksum}"
+    return "metadata-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:54]
 
 
 class TransformerStageService:
@@ -274,21 +295,60 @@ class TransformerStageService:
 
     @staticmethod
     def register_artifact(session, stored, continuation: TransformationContinuationModel) -> None:
-        if session.get(ArtifactMetadataModel, "metadata-" + stored.ref.artifact_id) is None:
-            session.add(
-                ArtifactMetadataModel(
-                    id="metadata-" + stored.ref.artifact_id,
-                    run_id=continuation.run_id,
-                    stage_id=continuation.current_stage_id,
-                    artifact_type=stored.ref.artifact_type.value,
-                    relative_path=stored.ref.relative_path,
-                    checksum=stored.ref.checksum,
-                    schema_version=stored.envelope.schema_version,
-                    created_at=stored.ref.created_at,
-                    finalized_at=stored.ref.created_at,
-                    immutable=True,
-                    size_bytes=len(stored.content.encode("utf-8")),
-                )
+        metadata_id = artifact_metadata_id(
+            continuation.run_id,
+            continuation.current_stage_id,
+            stored.ref.artifact_type,
+            stored.ref.relative_path,
+            stored.ref.checksum,
+        )
+        committed = session.get(ArtifactMetadataModel, metadata_id)
+        if committed is not None:
+            TransformerStageService._validate_committed_metadata(committed, continuation, stored)
+            return
+        for pending in (*session.new, *session.dirty):
+            if isinstance(pending, ArtifactMetadataModel) and pending.id == metadata_id:
+                return
+        session.add(
+            ArtifactMetadataModel(
+                id=metadata_id,
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                schema_version=stored.envelope.schema_version,
+                created_at=stored.ref.created_at,
+                finalized_at=stored.ref.created_at,
+                immutable=True,
+                size_bytes=len(stored.content.encode("utf-8")),
+            )
+        )
+
+    @staticmethod
+    def _validate_committed_metadata(committed, continuation, stored) -> None:
+        mismatches = []
+        if committed.run_id != continuation.run_id:
+            mismatches.append(f"run_id (expected {continuation.run_id}, stored {committed.run_id})")
+        if committed.stage_id != continuation.current_stage_id:
+            mismatches.append(
+                f"stage_id (expected {continuation.current_stage_id}, stored {committed.stage_id})"
+            )
+        if committed.artifact_type != stored.ref.artifact_type.value:
+            mismatches.append(
+                f"artifact_type (expected {stored.ref.artifact_type.value}, stored {committed.artifact_type})"
+            )
+        if committed.relative_path != stored.ref.relative_path:
+            mismatches.append(
+                f"relative_path (expected {stored.ref.relative_path}, stored {committed.relative_path})"
+            )
+        if committed.checksum != stored.ref.checksum:
+            mismatches.append(f"checksum (expected {stored.ref.checksum}, stored {committed.checksum})")
+        if mismatches:
+            raise TransformerStageError(
+                "ARTIFACT_METADATA_IDENTITY_CONFLICT",
+                "Committed artifact metadata with the same deterministic id carries a different payload: "
+                + "; ".join(mismatches),
             )
 
     def queue_bootstrap(self, session, continuation: TransformationContinuationModel):
