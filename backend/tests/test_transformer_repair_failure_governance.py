@@ -725,3 +725,66 @@ def test_successful_review_replay(tmp_path: Path):
     assert inventory == inventory_before
     assert sum(name.endswith("/review.json") for name in inventory) == 1
     engine.dispose()
+
+
+def test_llm_configuration_invalid_blocks_durably(tmp_path: Path, monkeypatch):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path)
+    bad_settings = _azure_settings(tmp_path).model_copy(update={"azure_openai_api_key": None})
+    monkeypatch.setattr(
+        "app.services.repair_application_service.get_settings", lambda: bad_settings
+    )
+    repair_service = RepairApplicationService(scope=_scope(factory), gateway=None)
+
+    _orchestrator(factory, repair_service).advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "LLM_CONFIGURATION_INVALID"
+    assert continuation.worker_id is None
+    assert continuation.lease_expires_at is None
+    assert continuation.current_node == "propose_repair"
+    assert session.query(LlmInvocationModel).count() == 0
+    assert session.query(UsageCostRecordModel).count() == 0
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.status == "evidence_frozen"
+    assert attempt.proposal_artifact_id is None
+    session.close()
+    _assert_not_reclaimable(factory)
+    error_path = artifacts / f"05_repairs/attempt-{attempt_id}" / "propose-error.json"
+    assert error_path.is_file()
+    diagnostic = json.loads(error_path.read_text(encoding="utf-8"))
+    assert diagnostic["code"] == "LLM_CONFIGURATION_INVALID"
+    assert diagnostic["retryable"] is False
+    assert diagnostic["provider_request_id"] is None
+    assert f"05_repairs/attempt-{attempt_id}/proposal.json" not in _file_inventory(artifacts)
+    engine.dispose()
+
+
+def test_evidence_missing_blocks_durably(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path)
+    context_pack = artifacts / "05_repairs" / f"attempt-{attempt_id}" / "context-pack.json"
+    assert context_pack.is_file()
+    context_pack.unlink()
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(_FakeAzureTransport([]), _azure_settings(tmp_path)),
+    )
+
+    _orchestrator(factory, repair_service).advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "REPAIR_EVIDENCE_MISSING"
+    assert continuation.worker_id is None
+    assert continuation.lease_expires_at is None
+    assert continuation.current_node == "propose_repair"
+    assert session.query(LlmInvocationModel).count() == 0
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.status == "evidence_frozen"
+    session.close()
+    _assert_not_reclaimable(factory)
+    engine.dispose()

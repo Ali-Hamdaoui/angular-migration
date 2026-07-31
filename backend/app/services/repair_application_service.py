@@ -357,8 +357,8 @@ class RepairApplicationService:
             )
         registry = PromptSchemaRegistry(version=get_settings().llm_schema_registry_version)
         registry.register(schema_name, schema)
-        gateway = self._gateway or AzureOpenAILLMGateway(settings=get_settings(), registry=registry)
         try:
+            gateway = self._gateway or AzureOpenAILLMGateway(settings=get_settings(), registry=registry)
             response = gateway.complete(
                 LlmRequest(
                     request_id=f"{context['attempt_id']}:{role.value}",
@@ -406,6 +406,11 @@ class RepairApplicationService:
                     "Completed repair LLM invocation is not finalized",
                 )
             attempt = session.get(RepairAttemptModel, context["attempt_id"])
+            if attempt is None:
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair attempt is missing",
+                )
             artifact_id = getattr(attempt, artifact_field)
             if not artifact_id:
                 raise RepairApplicationError(

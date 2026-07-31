@@ -939,6 +939,14 @@ class TransformerOrchestrator:
             attempt_id = attempt.id
         try:
             proposal = self._repairs.propose(attempt_id)
+        except (ArtifactNotFoundError, ArtifactStoreError) as error:
+            with self._scope() as session:
+                self._block(
+                    self._owned(session, continuation_id, worker_id),
+                    "REPAIR_EVIDENCE_MISSING",
+                    str(error),
+                )
+            return
         except (RepairLlmError, RepairApplicationError, ValueError) as error:
             with self._scope() as session:
                 self._block(
@@ -959,6 +967,14 @@ class TransformerOrchestrator:
             attempt_id = self._latest_repair(session, continuation).id
         try:
             review = self._repairs.review(attempt_id)
+        except (ArtifactNotFoundError, ArtifactStoreError) as error:
+            with self._scope() as session:
+                self._block(
+                    self._owned(session, continuation_id, worker_id),
+                    "REPAIR_EVIDENCE_MISSING",
+                    str(error),
+                )
+            return
         except (RepairLlmError, RepairApplicationError, ValueError) as error:
             with self._scope() as session:
                 self._block(
