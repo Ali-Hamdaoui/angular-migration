@@ -1,3 +1,4 @@
+import hashlib
 import json
 from io import BytesIO
 import urllib.error
@@ -29,6 +30,8 @@ from app.llm_gateway import (
     redact_prompt_text,
     summarize_usage,
 )
+from app.llm_gateway.azure_gateway import ProviderTransportResult, StructuredOutputValidationError
+from app.services.repair_application_service import RepairProposal
 
 
 def _settings(tmp_path: Path, *, token_budget: int = 0, cost_budget: float = 0.0) -> Settings:
@@ -183,6 +186,65 @@ def test_azure_gateway_valid_json_schema_mismatch_is_schema(tmp_path: Path) -> N
     with pytest.raises(AzureGatewayError) as error:
         AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
     assert error.value.code == LlmFailureCode.SCHEMA
+
+
+def _provider_result(body: dict[str, object]) -> ProviderTransportResult:
+    serialized = json.dumps(body).encode('utf-8')
+    return ProviderTransportResult(
+        body=body,
+        provider_request_id='test-request-id',
+        provider_status=200,
+        response_content_type='application/json',
+        response_bytes=len(serialized),
+        response_sha256=hashlib.sha256(serialized).hexdigest(),
+        response_kind='json',
+    )
+
+
+def test_azure_gateway_schema_mismatch_preserves_transport_evidence_and_bounded_detail(tmp_path: Path) -> None:
+    body = _responses_body(json.dumps({'answer': 42}))
+    with pytest.raises(StructuredOutputValidationError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([_provider_result(body)]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.SCHEMA
+    assert error.value.provider_code == 'schema_validation'
+    assert error.value.failure_stage == 'schema_validation'
+    assert error.value.failure_subtype == 'ASSISTANT_SCHEMA_VALIDATION'
+    assert error.value.transport_started is True
+    assert error.value.response_received is True
+    assert error.value.provider_request_id == 'test-request-id'
+    assert error.value.provider_status == 200
+    assert error.value.response_sha256 != ''
+    assert error.value.response_bytes == len(json.dumps(body).encode('utf-8'))
+    assert error.value.response_kind == 'json'
+    assert 'answer:string_type' in error.value.provider_message
+    assert '42' not in error.value.provider_message
+
+
+def test_azure_gateway_repair_shaped_schema_mismatch_is_schema_with_bounded_detail(tmp_path: Path) -> None:
+    registry = PromptSchemaRegistry(version='test')
+    registry.register('repair_proposer_v1', RepairProposal)
+    payload = {
+        'failure_evidence_checksum': 'sha256:' + '0' * 64,
+        'context_pack_checksum': 'sha256:' + '1' * 64,
+        'proposal_format': 'operations',
+        'operations': [{'operation': 'modify_file', 'path': 'src/main.ts', 'preimage_sha256': None, 'old_text': 'old', 'new_text': 'new', 'content': None}],
+        'unified_diff': None,
+        'touched_files': ['src/main.ts'],
+        'rationale': ['reason'],
+        'risk_level': 'low',
+        'validation_targets': ['build'],
+        'limitations': [],
+    }
+    request = _azure_request().model_copy(update={'response_schema': 'repair_proposer_v1'})
+    with pytest.raises(StructuredOutputValidationError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([_provider_result(_responses_body(json.dumps(payload)))]), registry=registry).complete(request)
+    assert error.value.code == LlmFailureCode.SCHEMA
+    assert error.value.provider_code == 'schema_validation'
+    assert error.value.provider_request_id == 'test-request-id'
+    assert error.value.transport_started is True
+    assert error.value.response_received is True
+    assert 'operations.0.operation:literal_error' in error.value.provider_message
+    assert 'modify_file' not in error.value.provider_message
 
 
 def test_assistant_prompt_and_role_policy_are_explicit_and_typed(tmp_path: Path) -> None:
