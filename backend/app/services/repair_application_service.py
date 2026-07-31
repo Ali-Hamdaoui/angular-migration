@@ -572,8 +572,11 @@ class RepairApplicationService:
                     .filter_by(idempotency_key=invocation_id)
                     .one_or_none()
                 )
-            if existing is None:
-                raise
+                if existing is None:
+                    raise
+                existing.status = "in_progress"
+                existing.transport_started = False
+                existing.completed_at = None
 
     def _mark_transport_started(self, context, role: LlmRole) -> None:
         with self._scope() as session:
