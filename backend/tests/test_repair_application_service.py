@@ -800,6 +800,42 @@ def test_failed_replay_retains_all_immutable_failure_artifact_links(tmp_path: Pa
     engine.dispose()
 
 
+def test_failed_then_successful_proposer_replay_retains_failure_evidence(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    invalid = _proposal_candidate()
+    invalid["validation_targets"] = ["deploy"]
+    valid = _proposal_candidate()
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport(
+                [_responses_body(json.dumps(invalid)), _responses_body(json.dumps(valid))]
+            ),
+            _azure_settings(tmp_path),
+        ),
+    )
+
+    with pytest.raises(RepairApplicationError):
+        service.propose(attempt_id)
+    proposal = service.propose(attempt_id)
+    assert service.propose(attempt_id) == proposal
+
+    session = factory()
+    invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+    assert len(invocation.artifact_ids) == 2
+    assert set(invocation.artifact_checksums) == set(invocation.artifact_ids)
+    assert {
+        session.get(ArtifactMetadataModel, "metadata-" + artifact_id).relative_path
+        for artifact_id in invocation.artifact_ids
+    } == {
+        f"05_repairs/attempt-{attempt_id}/propose-error.json",
+        f"05_repairs/attempt-{attempt_id}/proposal.json",
+    }
+    session.close()
+    engine.dispose()
+
+
 def test_unknown_reviewer_target_persists_no_review_artifact(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)

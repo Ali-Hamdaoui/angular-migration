@@ -949,8 +949,13 @@ class RepairApplicationService:
                     response.pricing_version or get_settings().llm_pricing_version
                 )
                 invocation.redacted_summary = json.dumps(summary, sort_keys=True)
-                invocation.artifact_ids = [stored.ref.artifact_id]
-                invocation.artifact_checksums = {stored.ref.artifact_id: stored.ref.checksum}
+                invocation.artifact_ids = list(
+                    dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id])
+                )
+                invocation.artifact_checksums = {
+                    **(invocation.artifact_checksums or {}),
+                    stored.ref.artifact_id: stored.ref.checksum,
+                }
                 invocation.retries = (invocation.retries or 0) + (response.usage.retry_count or 0)
                 if response.provider_request_id and not invocation.provider_request_id:
                     invocation.provider_request_id = response.provider_request_id
