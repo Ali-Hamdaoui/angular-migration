@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+import tempfile
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,41 +57,82 @@ def workspace_apply_lock(workspace: Path):
 
 
 @contextmanager
-def _target_apply_lock(target: Path):
-    """Hold an OS file lock while checking and changing one target."""
+def _target_namespace_lock(target: Path):
     import msvcrt
 
-    if target.exists():
-        fd = os.open(target, os.O_RDWR | getattr(os, "O_BINARY", 0))
-        lock_path = target
-    else:
-        lock_path = target.with_name(f".{target.name}.transformer-repair.target.lock")
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    key = hashlib.sha256(str(target.resolve()).encode()).hexdigest()
+    lock_path = Path(tempfile.gettempdir()) / f"transformer-repair-target-{key}.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
     try:
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
         os.lseek(fd, 0, os.SEEK_SET)
-        yield fd, lock_path is target
+        yield
     finally:
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         os.close(fd)
 
 
-def _fingerprint_with_locked_targets(root: Path, locked_targets: dict[str, tuple[int, bool]]) -> str:
-    digest = hashlib.sha256()
+@contextmanager
+def _target_inode_lock(target: Path):
+    import msvcrt
+
+    if not target.exists():
+        yield None, False
+        return
+    fd = os.open(target, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        os.lseek(fd, 0, os.SEEK_SET)
+        yield fd, True
+    finally:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
+
+
+@contextmanager
+def _target_apply_lock(target: Path, *, lock_inode: bool = True):
+    """Hold the target namespace and current inode locks together."""
+    with _target_namespace_lock(target):
+        if lock_inode:
+            with _target_inode_lock(target) as locked:
+                yield locked
+        else:
+            yield (None, target.exists())
+
+
+def _workspace_manifest(root: Path, locked_targets=None) -> dict[str, bytes]:
+    manifest = {}
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        relative_path = path.relative_to(root).as_posix()
-        relative = relative_path.encode()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        locked = locked_targets.get(relative_path)
-        if locked is None or not locked[1]:
+        if path.name.endswith(".transformer-repair.target.lock"):
+            continue
+        relative = path.relative_to(root).as_posix()
+        locked = (locked_targets or {}).get(relative)
+        if locked is None or not locked[1] or locked[0] is None:
             content = path.read_bytes()
         else:
             fd = locked[0]
+            if os.stat(path).st_ino != os.fstat(fd).st_ino:
+                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair target was recreated during apply")
             os.lseek(fd, 0, os.SEEK_SET)
             content = os.read(fd, os.fstat(fd).st_size)
+        manifest[relative] = content
+    return manifest
+
+
+def _fingerprint_with_locked_targets(root: Path, locked_targets: dict[str, tuple[int | None, bool]]) -> str:
+    return _fingerprint_manifest(_workspace_manifest(root, locked_targets))
+
+
+def _fingerprint_manifest(manifest: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for relative_path, content in sorted(manifest.items()):
+        relative = relative_path.encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return "sha256:" + digest.hexdigest()
@@ -152,6 +194,7 @@ class PatchApplyService:
             raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Approved repair proposal checksum changed")
         if StageSandboxCopier.fingerprint(workspace) != expected_fingerprint:
             raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
+        initial_manifest = _workspace_manifest(workspace)
         prepared = {
             "schema_version": "repair-apply-ledger-v1",
             "attempt_id": attempt_id,
@@ -169,6 +212,12 @@ class PatchApplyService:
             if proposal["proposal_format"] == "operations"
             else self._prepare_unified_diff(str(proposal["unified_diff"]), workspace)
         )
+        expected_manifest = dict(initial_manifest)
+        for change in changes:
+            if change["action"] == "delete":
+                expected_manifest.pop(change["path"], None)
+            else:
+                expected_manifest[change["path"]] = change["content"].encode("utf-8")
         originals = {
             change["path"]: (workspace / change["path"]).read_bytes()
             for change in changes
@@ -181,7 +230,10 @@ class PatchApplyService:
                 if not target.parent.exists():
                     target.parent.mkdir(parents=True, exist_ok=True)
                 locked_targets.setdefault(
-                    change["path"], target_locks.enter_context(_target_apply_lock(target))
+                    change["path"],
+                    target_locks.enter_context(
+                        _target_apply_lock(target, lock_inode=change["action"] != "delete")
+                    ),
                 )
             try:
                 mutation_started = False
@@ -205,14 +257,17 @@ class PatchApplyService:
                         with os.fdopen(fd, "w", encoding="utf-8", newline="") as created:
                             created.write(change["content"])
                         locked_targets[change["path"]] = target_locks.enter_context(
-                            _target_apply_lock(target)
+                            _target_inode_lock(target)
                         )
                         target_fd, target_exists = locked_targets[change["path"]]
                     else:
                         if not target_exists:
                             raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair target disappeared before mutation")
-                        os.lseek(target_fd, 0, os.SEEK_SET)
-                        current_bytes = os.read(target_fd, os.fstat(target_fd).st_size)
+                        if target_fd is None:
+                            current_bytes = target.read_bytes()
+                        else:
+                            os.lseek(target_fd, 0, os.SEEK_SET)
+                            current_bytes = os.read(target_fd, os.fstat(target_fd).st_size)
                         actual = "sha256:" + hashlib.sha256(current_bytes).hexdigest()
                         if actual != expected:
                             raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed before mutation")
@@ -242,9 +297,14 @@ class PatchApplyService:
                             "postimage_sha256": postimage,
                         }
                     )
-                prepared["post_fingerprint"] = _fingerprint_with_locked_targets(
-                    workspace, locked_targets
-                )
+                post_fingerprint = _fingerprint_with_locked_targets(workspace, locked_targets)
+                final_manifest = _workspace_manifest(workspace, locked_targets)
+                if final_manifest != expected_manifest:
+                    raise RepairApplicationError(
+                        "REPAIR_WORKSPACE_STALE",
+                        "Workspace changed outside the approved repair",
+                    )
+                prepared["post_fingerprint"] = post_fingerprint
                 prepared["status"] = "applied"
                 final = self._write(store, run_id, stage_id, attempt_id, "applied", prepared)
             except Exception:

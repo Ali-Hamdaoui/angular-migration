@@ -272,3 +272,86 @@ def test_created_target_remains_locked_through_post_fingerprint(tmp_path: Path, 
             attempt_id="repair-1",
         )
     assert not target.exists()
+
+
+def test_untouched_workspace_change_blocks_apply_and_rolls_back(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "target.ts"
+    untouched = workspace / "src" / "untouched.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    untouched.write_text("stable\n", encoding="utf-8")
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [{
+            "operation": "replace_text",
+            "path": "src/target.ts",
+            "old_text": "old",
+            "new_text": "new",
+            "preimage_sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+        }],
+        "unified_diff": None,
+    }
+    module = __import__("app.services.patch_apply_service", fromlist=["_workspace_manifest"])
+    original_manifest = module._workspace_manifest
+    calls = 0
+
+    def mutate_untouched(root, locked_targets=None):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            untouched.write_text("concurrent\n", encoding="utf-8")
+        return original_manifest(root, locked_targets)
+
+    monkeypatch.setattr(module, "_workspace_manifest", mutate_untouched)
+    with pytest.raises(RepairApplicationError, match="outside the approved repair"):
+        PatchApplyService().apply(
+            proposal=proposal,
+            workspace_path=str(workspace),
+            expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_root=str(artifacts),
+            attempt_id="repair-1",
+        )
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert untouched.read_text(encoding="utf-8") == "concurrent\n"
+
+
+def test_delete_recreate_is_rejected_by_namespace_and_inode_binding(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "deleted.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [{
+            "operation": "delete_text_file",
+            "path": "src/deleted.ts",
+            "preimage_sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+        }],
+        "unified_diff": None,
+    }
+    module = __import__("app.services.patch_apply_service", fromlist=["_fingerprint_with_locked_targets"])
+    original_fingerprint = module._fingerprint_with_locked_targets
+
+    def recreate_before_fingerprint(root, locked_targets):
+        target.write_text("recreated\n", encoding="utf-8")
+        return original_fingerprint(root, locked_targets)
+
+    monkeypatch.setattr(module, "_fingerprint_with_locked_targets", recreate_before_fingerprint)
+    with pytest.raises(RepairApplicationError, match="outside the approved repair"):
+        PatchApplyService().apply(
+            proposal=proposal,
+            workspace_path=str(workspace),
+            expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_root=str(artifacts),
+            attempt_id="repair-1",
+        )
+    assert target.read_text(encoding="utf-8") == "old\n"
