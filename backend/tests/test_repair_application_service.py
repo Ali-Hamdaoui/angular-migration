@@ -383,7 +383,7 @@ def _responses_body(text: str) -> dict[str, object]:
 
 
 def _gateway(transport, settings: Settings):
-    schema_registry = PromptSchemaRegistry()
+    schema_registry = PromptSchemaRegistry(version=settings.llm_schema_registry_version)
     schema_registry.register("repair_proposer_v1", RepairProposal)
     schema_registry.register("repair_reviewer_v1", RepairReview)
     schema_registry.register("repair_proposer_candidate_v2", RepairProposalCandidate)
@@ -475,6 +475,43 @@ def _seed_service(factory, tmp_path: Path):
     session.commit()
     session.close()
     return store, attempt_id, app_ts, artifacts
+
+
+def _seed_failed_v1_invocation(factory, attempt_id: str):
+    session = factory()
+    session.add(
+        LlmInvocationModel(
+            id=f"{attempt_id}:proposer",
+            run_id="run-1",
+            stage_id="stage-1",
+            idempotency_key=f"{attempt_id}:proposer",
+            request_checksum="sha256:legacy-request",
+            input_hashes=["sha256:legacy-failure", "schema:legacy-v1"],
+            correlation_id=f"{attempt_id}:proposer",
+            actor="transformer",
+            role="repair_proposer",
+            task_type="repair_diagnosis",
+            provider="azure_openai",
+            deployment_alias="azure-openai",
+            prompt_version="prompt-repair-proposer-v1",
+            schema_version="schema-registry-v1",
+            pricing_version="mvp-pricing-2026-01",
+            stage="repair",
+            redacted_summary=None,
+            status="failed",
+            failure_code="LLM_PROVIDER_BAD_REQUEST",
+            artifact_ids=[],
+            artifact_checksums={},
+            state_version=1,
+            event_sequence=0,
+            retries=0,
+            started_at=NOW,
+            completed_at=NOW,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
 
 
 def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path: Path):
@@ -589,6 +626,48 @@ def test_repair_runtime_binds_unified_diff_touched_files(tmp_path: Path):
     assert bound["operations"] == []
     assert bound["touched_files"] == ["src/app.ts"]
     engine.dispose()
+
+
+def test_replayed_v1_invocation_refreshes_v2_provenance_for_success_and_failure(
+    tmp_path: Path, monkeypatch
+):
+    for name, response, expected_status in (
+        ("success", _responses_body(json.dumps(_proposal_candidate())), "completed"),
+        (
+            "failure",
+            AzureGatewayError(LlmFailureCode.INVALID_REQUEST, "Azure OpenAI request failed."),
+            "failed",
+        ),
+    ):
+        case_path = tmp_path / name
+        case_path.mkdir()
+        engine, factory = _database(case_path)
+        _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, case_path)
+        _seed_failed_v1_invocation(factory, attempt_id)
+        settings = _azure_settings(case_path).model_copy(
+            update={"llm_schema_registry_version": "repair-schema-registry-v2"}
+        )
+        monkeypatch.setattr("app.services.repair_application_service.get_settings", lambda: settings)
+        service = RepairApplicationService(
+            scope=_scope(factory), gateway=_gateway(_RecordingTransport([response]), settings)
+        )
+
+        if expected_status == "completed":
+            service.propose(attempt_id)
+        else:
+            with pytest.raises(RepairLlmError):
+                service.propose(attempt_id)
+
+        session = factory()
+        invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+        assert invocation.status == expected_status
+        assert invocation.prompt_version == "prompt-repair-proposer-candidate-v2"
+        assert invocation.schema_version == "repair-schema-registry-v2"
+        assert invocation.input_hashes[:2] == ["sha256:failure", "sha256:context"]
+        assert invocation.input_hashes[2].startswith("schema:")
+        assert "legacy" not in " ".join(invocation.input_hashes)
+        session.close()
+        engine.dispose()
 
 
 def test_pre_transport_disabled_failure_persists_without_transport(tmp_path: Path, monkeypatch):

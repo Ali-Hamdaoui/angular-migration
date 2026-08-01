@@ -616,6 +616,17 @@ class RepairApplicationService:
     ) -> None:
         invocation_id = _invocation_key(str(context["attempt_id"]), role)
         now = self._now()
+        request_checksum = "sha256:" + hashlib.sha256(
+            json.dumps(context["segments"], sort_keys=True).encode()
+        ).hexdigest()
+        input_hashes = [
+            str(context["failure_evidence_checksum"]),
+            str(context["context_pack_checksum"]),
+            "schema:"
+            + hashlib.sha256(json.dumps(schema.model_json_schema(), sort_keys=True).encode()).hexdigest(),
+        ]
+        prompt_version = self._prompt_version(schema_name, task_type)
+        schema_version = get_settings().llm_schema_registry_version
         try:
             with self._scope() as session:
                 session.add(
@@ -624,26 +635,16 @@ class RepairApplicationService:
                         run_id=context["run_id"],
                         stage_id=context["stage_id"],
                         idempotency_key=invocation_id,
-                        request_checksum="sha256:"
-                        + hashlib.sha256(
-                            json.dumps(context["segments"], sort_keys=True).encode()
-                        ).hexdigest(),
-                        input_hashes=[
-                            str(context["failure_evidence_checksum"]),
-                            str(context["context_pack_checksum"]),
-                            "schema:"
-                            + hashlib.sha256(
-                                json.dumps(schema.model_json_schema(), sort_keys=True).encode()
-                            ).hexdigest(),
-                        ],
+                        request_checksum=request_checksum,
+                        input_hashes=input_hashes,
                         correlation_id=invocation_id,
                         actor="transformer",
                         role=role.value,
                         task_type=task_type.value,
                         provider="azure_openai",
                         deployment_alias="azure-openai",
-                        prompt_version=self._prompt_version(schema_name, task_type),
-                        schema_version=get_settings().llm_schema_registry_version,
+                        prompt_version=prompt_version,
+                        schema_version=schema_version,
                         pricing_version=get_settings().llm_pricing_version,
                         stage="repair",
                         redacted_summary=None,
@@ -669,6 +670,10 @@ class RepairApplicationService:
                 )
                 if existing is None:
                     raise
+                existing.request_checksum = request_checksum
+                existing.input_hashes = input_hashes
+                existing.prompt_version = prompt_version
+                existing.schema_version = schema_version
                 existing.status = "in_progress"
                 existing.transport_started = False
                 existing.completed_at = None
