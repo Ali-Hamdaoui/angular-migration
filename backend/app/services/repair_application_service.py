@@ -739,6 +739,12 @@ class RepairApplicationService:
         self, context: dict[str, object], *, role: str, include_proposal: bool = False
     ) -> dict[str, object]:
         fresh = self._attempt_context(str(context["attempt_id"]), include_proposal=include_proposal)
+        for key in (
+            "invocation_id", "invocation_state_version", "request_checksum",
+            "prompt_version", "schema_version",
+        ):
+            fresh[key] = context.get(key)
+        fresh["authority_snapshot"] = self._authority_snapshot(fresh)
         if fresh["authority_snapshot"] != context["authority_snapshot"]:
             raise RepairApplicationError(
                 "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
