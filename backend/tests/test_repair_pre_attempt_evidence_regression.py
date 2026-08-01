@@ -551,29 +551,51 @@ def test_failed_proposer_replay_with_real_pre_attempt_evidence(tmp_path: Path):
 
 
 def test_wrong_non_null_pre_attempt_attempt_id_rejected(tmp_path: Path):
-    """A non-NULL wrong attempt_id on pre-attempt evidence stays rejected."""
+    """A wrong attempt_id, run_id or stage_id on pre-attempt evidence is rejected.
+
+    Every tampered envelope binding fails closed with
+    REPAIR_ARTIFACT_RECOVERY_FAILED, the exact stale-envelope message, zero
+    provider calls and zero invocations; the sidecar is restored to the valid
+    seed state (attempt_id=NULL, run_id/stage_id matching) between sub-cases.
+    """
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, artifacts, failure, _route, context = _seed_pre_attempt(
         factory, tmp_path
     )
-    for stored in (failure, context):
-        _rewrite_sidecar(artifacts, stored.ref.relative_path, attempt_id="repair-other")
-        envelope = _read_envelope(artifacts, stored.ref.relative_path)
-        assert envelope["attempt_id"] == "repair-other"
     transport = _FakeAzureTransport([])
     service = RepairApplicationService(
         scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
     )
 
-    with pytest.raises(RepairApplicationError) as raised:
-        service.propose(attempt_id)
-
-    assert raised.value.code == "REPAIR_ARTIFACT_RECOVERY_FAILED"
-    assert raised.value.message == "Repair artifact envelope binding is stale"
-    assert transport.calls == []
-    session = factory()
-    assert session.query(LlmInvocationModel).count() == 0
-    session.close()
+    cases = [
+        ("attempt_id", failure.ref.relative_path, {"attempt_id": "repair-other"}),
+        ("attempt_id", context.ref.relative_path, {"attempt_id": "repair-other"}),
+        ("run_id", failure.ref.relative_path, {"run_id": "run-other"}),
+        ("stage_id", context.ref.relative_path, {"stage_id": "stage-other"}),
+    ]
+    for label, relative_path, update in cases:
+        _rewrite_sidecar(artifacts, relative_path, **update)
+        envelope = _read_envelope(artifacts, relative_path)
+        assert envelope[label] == update[label]
+        with pytest.raises(RepairApplicationError) as raised:
+            service.propose(attempt_id)
+        assert raised.value.code == "REPAIR_ARTIFACT_RECOVERY_FAILED"
+        assert raised.value.message == "Repair artifact envelope binding is stale"
+        assert transport.calls == []
+        session = factory()
+        assert session.query(LlmInvocationModel).count() == 0
+        session.close()
+        _rewrite_sidecar(
+            artifacts,
+            relative_path,
+            attempt_id=None,
+            run_id="run-1",
+            stage_id="stage-1",
+        )
+        envelope = _read_envelope(artifacts, relative_path)
+        assert envelope["attempt_id"] is None
+        assert envelope["run_id"] == "run-1"
+        assert envelope["stage_id"] == "stage-1"
     engine.dispose()
 
 
@@ -581,8 +603,10 @@ def test_completed_proposal_replay_strict(tmp_path: Path):
     """Completed proposal replay keeps strict artifact and lineage validation.
 
     A correct attempt-bound proposal envelope replays without any provider call;
-    a wrong proposal attempt_id, run_id, stage_id, or checksum still blocks with
-    REPAIR_ARTIFACT_RECOVERY_FAILED even though the pre-attempt evidence is valid.
+    a wrong proposal attempt_id (including NULL), run_id, stage_id, or checksum
+    still blocks with REPAIR_ARTIFACT_RECOVERY_FAILED even though the pre-attempt
+    evidence is valid. An attempt-bound proposal artifact must never bypass
+    ownership via NULL.
     """
     engine, factory = _database(tmp_path)
     store, attempt_id, app_ts, artifacts, _failure, _route, _context = _seed_pre_attempt(
@@ -602,6 +626,7 @@ def test_completed_proposal_replay_strict(tmp_path: Path):
 
     for label, update in (
         ("attempt_id", {"attempt_id": "repair-other"}),
+        ("attempt_id_null", {"attempt_id": None}),
         ("run_id", {"run_id": "run-other"}),
         ("stage_id", {"stage_id": "stage-other"}),
     ):
