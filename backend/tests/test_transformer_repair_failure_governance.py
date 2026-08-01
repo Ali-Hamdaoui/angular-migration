@@ -475,7 +475,7 @@ def test_missing_prompt_policy_blocks_without_transport_or_artifact(tmp_path: Pa
         gateway=_gateway(
             transport,
             _azure_settings(tmp_path),
-            prompt_registry=_registry_without("repair_proposer_v1"),
+                prompt_registry=_registry_without("repair_proposer_candidate_v2"),
         ),
     )
 
@@ -505,7 +505,7 @@ def test_missing_prompt_policy_blocks_without_transport_or_artifact(tmp_path: Pa
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
     assert attempt.failure_evidence_checksum == "sha256:failure"
-    assert attempt.context_pack_checksum == "sha256:context"
+    assert attempt.context_pack_checksum == session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id).checksum
     assert attempt.proposal_artifact_id is None
     session.close()
     _assert_not_reclaimable(factory)
@@ -943,6 +943,7 @@ def test_failed_reviewer_persists_failed_invocation_row(tmp_path: Path):
     session.close()
     assert proposal_checksum != "sha256:different"
     stale_review = _review_payload("sha256:different")
+    stale_review["proposal_checksum"] = "sha256:different"
     transport = _FakeAzureTransport([_responses_body(json.dumps(stale_review))])
     repair_service = RepairApplicationService(
         scope=_scope(factory),
@@ -955,7 +956,7 @@ def test_failed_reviewer_persists_failed_invocation_row(tmp_path: Path):
     assert len(transport.calls) == 1
     continuation = session.get(TransformationContinuationModel, "cont-1")
     assert continuation.status == "blocked"
-    assert continuation.last_error_code == "REPAIR_REVIEW_STALE"
+    assert continuation.last_error_code == "LLM_SCHEMA_VALIDATION_FAILED"
     assert continuation.current_node == "review_repair"
     reviewers = (
         session.query(LlmInvocationModel)
@@ -964,8 +965,8 @@ def test_failed_reviewer_persists_failed_invocation_row(tmp_path: Path):
     )
     assert len(reviewers) == 1
     assert reviewers[0].status == "failed"
-    assert reviewers[0].failure_code == "REPAIR_REVIEW_STALE"
-    assert reviewers[0].failure_stage == "repair_semantics"
+    assert reviewers[0].failure_code == "LLM_SCHEMA_VALIDATION_FAILED"
+    assert reviewers[0].failure_stage == "schema_validation"
     assert reviewers[0].transport_started is True
     assert reviewers[0].response_received is True
     assert reviewers[0].provider_request_id is None

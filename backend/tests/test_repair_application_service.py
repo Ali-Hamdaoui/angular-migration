@@ -1067,7 +1067,8 @@ def test_replayed_v1_invocation_refreshes_v2_provenance_for_success_and_failure(
         assert invocation.status == expected_status
         assert invocation.prompt_version == "prompt-repair-proposer-candidate-v2"
         assert invocation.schema_version == "repair-schema-registry-v2"
-        assert invocation.input_hashes[:2] == ["sha256:failure", "sha256:context"]
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        assert invocation.input_hashes[:2] == [attempt.failure_evidence_checksum, attempt.context_pack_checksum]
         assert invocation.input_hashes[2].startswith("schema:")
         assert "legacy" not in " ".join(invocation.input_hashes)
         session.close()

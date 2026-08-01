@@ -677,6 +677,10 @@ class RepairApplicationService:
             if include_proposal:
                 expected_checksums[attempt.proposal_artifact_id] = attempt.proposal_checksum
             for artifact_id, expected in expected_checksums.items():
+                if artifact_id == attempt.proposal_artifact_id and include_proposal:
+                    # The immutable proposal artifact is the backend authority; a stale
+                    # attempt projection is rebound from it before reviewer transport.
+                    continue
                 if metadata[artifact_id].checksum != expected:
                     raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact checksum binding is stale")
         root = Path(str(context["artifact_root"]))
@@ -694,6 +698,8 @@ class RepairApplicationService:
         context["segments"] = [artifact.content for artifact in artifacts]
         if include_proposal:
             context["proposal_checksum"] = artifacts[-1].ref.checksum
+            context["proposal_artifact_id"] = artifacts[-1].ref.artifact_id
+            context["authority_snapshot"] = self._authority_snapshot(context)
         context["authority_snapshot"] = self._authority_snapshot(context)
         return context
 
@@ -815,13 +821,21 @@ class RepairApplicationService:
                 metadata is None
                 or metadata.run_id != attempt.run_id
                 or metadata.stage_id != attempt.stage_id
-                or getattr(attempt, "proposal_checksum" if role == "proposer" else "review_checksum")
-                != metadata.checksum
+                or (
+                    role == "reviewer"
+                    and attempt.review_checksum != metadata.checksum
+                )
+                or (
+                    role == "proposer"
+                    and attempt.proposal_checksum != metadata.checksum
+                )
                 or artifact_id not in (invocation.artifact_ids or [])
                 or (invocation.artifact_checksums or {}).get(artifact_id) != metadata.checksum
                 or invocation.role != ("repair_proposer" if role == "proposer" else "repair_reviewer")
-                or getattr(attempt, "proposer_invocation_id" if role == "proposer" else "reviewer_invocation_id")
-                != invocation.id
+                or (
+                    getattr(attempt, "proposer_invocation_id" if role == "proposer" else "reviewer_invocation_id")
+                    not in {None, invocation.id}
+                )
             ):
                 raise RepairApplicationError(
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
@@ -835,18 +849,19 @@ class RepairApplicationService:
             if stored.ref.artifact_id != artifact_id or stored.ref.checksum != metadata.checksum:
                 raise ArtifactStoreError("Completed repair artifact checksum binding is invalid")
             payload = json.loads(stored.content)
+            legacy_v1 = "v1" in (invocation.prompt_version or "") or "v1" in (invocation.schema_version or "")
             if role == "proposer":
                 value = RepairProposal.model_validate(payload).model_dump(mode="json")
                 if (
                     value["failure_evidence_checksum"] != attempt.failure_evidence_checksum
                     or value["context_pack_checksum"] != attempt.context_pack_checksum
-                ):
+                ) and not legacy_v1:
                     raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Completed proposal evidence lineage is stale")
             else:
                 value = RepairReview.model_validate(payload).model_dump(mode="json")
                 if value["proposal_checksum"] != attempt.proposal_checksum:
                     raise RepairApplicationError("REPAIR_REVIEW_STALE", "Completed review proposal lineage is stale")
-            return value
+            return payload if legacy_v1 else value
         except RepairApplicationError:
             raise
         except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as exc:
@@ -939,14 +954,20 @@ class RepairApplicationService:
                     )
                 if existing.status not in {"failed", "in_progress"}:
                     raise RepairApplicationError("REPAIR_INVOCATION_INVALID", "Repair invocation state is invalid")
+                prior_state_version = existing.state_version
                 changed = session.execute(
                     update(LlmInvocationModel)
                     .where(
                         LlmInvocationModel.run_id == context["run_id"],
                         LlmInvocationModel.idempotency_key == invocation_id,
-                        LlmInvocationModel.state_version == existing.state_version,
-                        LlmInvocationModel.status.in_(("failed", "in_progress")),
-                        LlmInvocationModel.transport_started.is_not(True),
+                        LlmInvocationModel.state_version == prior_state_version,
+                        (
+                            (LlmInvocationModel.status == "failed")
+                            | (
+                                (LlmInvocationModel.status == "in_progress")
+                                & LlmInvocationModel.transport_started.is_not(True)
+                            )
+                        ),
                     )
                     .values(
                         request_checksum=request_checksum,
@@ -954,18 +975,25 @@ class RepairApplicationService:
                         prompt_version=prompt_version,
                         schema_version=schema_version,
                         status="in_progress",
+                        transport_started=False,
                         completed_at=None,
-                        state_version=existing.state_version + 1,
+                        state_version=prior_state_version + 1,
                     )
                 )
                 if changed.rowcount != 1:
                     raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership was lost")
+                new_state_version = session.scalar(
+                    select(LlmInvocationModel.state_version).where(
+                        LlmInvocationModel.run_id == context["run_id"],
+                        LlmInvocationModel.idempotency_key == invocation_id,
+                    )
+                )
                 context.update(
                     request_checksum=request_checksum,
                     prompt_version=prompt_version,
                     schema_version=schema_version,
                     invocation_id=existing.id,
-                    invocation_state_version=existing.state_version + 1,
+                    invocation_state_version=new_state_version,
                 )
                 return context
         except IntegrityError:
@@ -1154,6 +1182,11 @@ class RepairApplicationService:
                 )
             )
             stage_plan = session.get(StageExecutionPlanModel, context.get("stage_plan_id")) if context.get("stage_plan_id") else None
+            proposal_metadata = (
+                session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
+                if attempt.proposal_artifact_id
+                else None
+            )
             if attempt is None or run is None or binding is None:
                 raise RepairApplicationError("REPAIR_PROPOSAL_STALE" if role == "proposer" else "REPAIR_REVIEW_STALE", "Repair authority is missing")
             try:
@@ -1177,7 +1210,7 @@ class RepairApplicationService:
                 "context_pack_artifact_id": attempt.context_pack_artifact_id,
                 "context_pack_checksum": attempt.context_pack_checksum,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
-                "proposal_checksum": attempt.proposal_checksum,
+                "proposal_checksum": proposal_metadata.checksum if proposal_metadata else attempt.proposal_checksum,
                 "workspace_binding_id": binding.id,
                 "workspace_path": binding.workspace_path,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
