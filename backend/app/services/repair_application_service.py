@@ -198,6 +198,7 @@ class RepairReview(RepairReviewCandidate):
 class RepairApplicationService:
     proposer_schema = "repair_proposer_candidate_v2"
     reviewer_schema = "repair_reviewer_candidate_v2"
+    supported_validation_targets = frozenset({"build", "test", "lint"})
     forbidden_parts = {
         ".git",
         "node_modules",
@@ -298,17 +299,25 @@ class RepairApplicationService:
                 context, LlmRole.REPAIR_REVIEWER, error, failure_stage_override="local"
             )
             raise
+        context = self._attempt_context(attempt_id, include_proposal=True)
         try:
             review = self._bind_review_candidate(output, context)
-        except ValidationError as error:
+        except (RepairApplicationError, ValidationError) as error:
+            semantic_error = (
+                error
+                if isinstance(error, RepairApplicationError)
+                else RepairApplicationError(
+                    "REPAIR_REVIEW_INVALID", _review_validation_message(error)
+                )
+            )
             self._persist_failure(
                 context,
                 LlmRole.REPAIR_REVIEWER,
-                RepairApplicationError("REPAIR_REVIEW_INVALID", _review_validation_message(error)),
+                semantic_error,
                 failure_stage_override="repair_semantics",
                 response=response,
             )
-            raise
+            raise semantic_error
         if review["proposal_checksum"] != context["proposal_checksum"]:
             error = RepairApplicationError("REPAIR_REVIEW_STALE", "Reviewer bound a different proposal")
             self._persist_failure(
@@ -345,10 +354,12 @@ class RepairApplicationService:
         operations = []
         for operation in candidate.operations:
             bound = operation.model_dump(mode="json")
+            relative = self._safe_path(operation.path, workspace)
+            bound["path"] = relative
             if operation.operation == "create_text_file":
                 bound["preimage_sha256"] = None
             else:
-                target = workspace / self._safe_path(operation.path, workspace)
+                target = workspace / relative
                 bound["preimage_sha256"] = (
                     "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
                     if target.is_file() and not target.is_symlink()
@@ -356,9 +367,12 @@ class RepairApplicationService:
                 )
             operations.append(bound)
         touched_files = (
-            [operation.path for operation in candidate.operations]
-            if candidate.operations
-            else self._unified_diff_touched_files(candidate.unified_diff)
+            [operation["path"] for operation in operations]
+            if operations
+            else [
+                self._safe_path(path, workspace)
+                for path in self._unified_diff_touched_files(candidate.unified_diff)
+            ]
         )
         return RepairProposal.model_validate(
             {
@@ -367,6 +381,9 @@ class RepairApplicationService:
                 "context_pack_checksum": context["context_pack_checksum"],
                 "operations": operations,
                 "touched_files": touched_files,
+                "validation_targets": self._normalize_validation_targets(
+                    candidate.validation_targets
+                ),
             }
         ).model_dump(mode="json")
 
@@ -393,12 +410,27 @@ class RepairApplicationService:
     def _prompt_version(schema_name: str, task_type: LlmTaskType) -> str:
         return PromptRegistry.defaults().get(schema_name, task_type).version
 
-    @staticmethod
-    def _bind_review_candidate(value: dict[str, object], context: dict[str, object]):
+    def _bind_review_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairReviewCandidate.model_validate(value)
         return RepairReview(
-            **candidate.model_dump(mode="json"), proposal_checksum=context["proposal_checksum"]
+            **candidate.model_dump(
+                mode="json",
+                exclude={"required_validation_targets"},
+            ),
+            required_validation_targets=self._normalize_validation_targets(
+                candidate.required_validation_targets
+            ),
+            proposal_checksum=context["proposal_checksum"],
         ).model_dump(mode="json")
+
+    def _normalize_validation_targets(self, values: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(value.strip().lower() for value in values))
+        if any(value not in self.supported_validation_targets for value in normalized):
+            raise RepairApplicationError(
+                "REPAIR_VALIDATION_TARGET_INVALID",
+                "Repair validation targets must use backend-supported names",
+            )
+        return normalized
 
     def validate_proposal(
         self, value: dict[str, object], context: dict[str, object]
@@ -511,10 +543,13 @@ class RepairApplicationService:
             }
         root = Path(str(context["artifact_root"]))
         store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
-        context["segments"] = [
-            store.read_artifact(str(context["run_id"]), metadata[artifact_id]).content
+        artifacts = [
+            store.read_artifact(str(context["run_id"]), metadata[artifact_id])
             for artifact_id in artifact_ids
         ]
+        context["segments"] = [artifact.content for artifact in artifacts]
+        if include_proposal:
+            context["proposal_checksum"] = artifacts[-1].ref.checksum
         return context
 
     def _call(self, context, *, role, task, schema_name, schema, policy):
@@ -743,6 +778,8 @@ class RepairApplicationService:
             if invocation is None:
                 return
             invocation.status = "failed"
+            invocation.artifact_ids = [stored.ref.artifact_id]
+            invocation.artifact_checksums = {stored.ref.artifact_id: stored.ref.checksum}
             invocation.failure_code = error.code
             invocation.failure_stage = (
                 failure_stage_override or getattr(error, "failure_stage", None) or "local"
@@ -793,6 +830,7 @@ class RepairApplicationService:
             json.dumps(value, sort_keys=True, indent=2),
             ArtifactType.JSON,
             stage_id=str(context["stage_id"]),
+            attempt_id=str(context["attempt_id"]),
             created_by=f"repair-{kind}",
             created_at=self._now(),
             input_hashes={

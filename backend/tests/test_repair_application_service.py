@@ -514,6 +514,22 @@ def _seed_failed_v1_invocation(factory, attempt_id: str):
     session.close()
 
 
+def test_proposer_candidate_schema_rejects_backend_authority_fields():
+    for field, value in (
+        ("failure_evidence_checksum", "sha256:attacker"),
+        ("context_pack_checksum", "sha256:attacker"),
+        ("touched_files", ["src/other.ts"]),
+        ("command", "npm test"),
+    ):
+        with pytest.raises(ValidationError):
+            RepairProposalCandidate.model_validate({**_proposal_candidate(), field: value})
+
+    operation = _proposal_candidate()
+    operation["operations"][0]["preimage_sha256"] = "sha256:attacker"
+    with pytest.raises(ValidationError):
+        RepairProposalCandidate.model_validate(operation)
+
+
 def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
@@ -625,6 +641,246 @@ def test_repair_runtime_binds_unified_diff_touched_files(tmp_path: Path):
 
     assert bound["operations"] == []
     assert bound["touched_files"] == ["src/app.ts"]
+    engine.dispose()
+
+
+@pytest.mark.parametrize("proposal_format", ["operations", "unified_diff"])
+def test_candidate_binding_canonicalizes_paths_targets_and_preimages(
+    tmp_path: Path, proposal_format: str
+):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir()
+    target.write_text("old", encoding="utf-8")
+    candidate = _proposal_candidate()
+    candidate["validation_targets"] = [" build ", "test", "build"]
+    if proposal_format == "operations":
+        candidate["operations"][0]["path"] = "src/./app.ts"
+    else:
+        candidate.update(
+            {
+                "proposal_format": "unified_diff",
+                "operations": [],
+                "unified_diff": "--- a/src/./app.ts\n+++ b/src/./app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+            }
+        )
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:attempt-failure",
+        "context_pack_checksum": "sha256:attempt-context",
+    }
+
+    bound = RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert bound["failure_evidence_checksum"] == "sha256:attempt-failure"
+    assert bound["context_pack_checksum"] == "sha256:attempt-context"
+    assert bound["touched_files"] == ["src/app.ts"]
+    assert bound["validation_targets"] == ["build", "test"]
+    if proposal_format == "operations":
+        assert bound["operations"][0]["path"] == "src/app.ts"
+        assert bound["operations"][0]["preimage_sha256"] == (
+            "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+        )
+
+
+def test_unknown_proposer_target_persists_only_linked_failure_artifact(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)
+    candidate = _proposal_candidate()
+    candidate["validation_targets"] = ["deploy"]
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport([_responses_body(json.dumps(candidate))]),
+            _azure_settings(tmp_path),
+        ),
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+    assert attempt.proposal_artifact_id is None
+    assert len(invocation.artifact_ids) == 1
+    assert invocation.artifact_checksums == {
+        invocation.artifact_ids[0]: session.get(
+            ArtifactMetadataModel, "metadata-" + invocation.artifact_ids[0]
+        ).checksum
+    }
+    session.close()
+    inventory = {
+        path.name for path in (artifacts / "05_repairs" / f"attempt-{attempt_id}").glob("*.json")
+    }
+    assert "proposal.json" not in inventory
+    assert "propose-error.json" in inventory
+    engine.dispose()
+
+
+def test_unknown_reviewer_target_persists_no_review_artifact(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)
+    review = _review_candidate()
+    review["required_validation_targets"] = ["deploy"]
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport(
+                [
+                    _responses_body(json.dumps(_proposal_candidate())),
+                    _responses_body(json.dumps(review)),
+                ]
+            ),
+            _azure_settings(tmp_path),
+        ),
+    )
+    service.propose(attempt_id)
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.review(attempt_id)
+
+    assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    invocation = session.get(LlmInvocationModel, f"{attempt_id}:reviewer")
+    assert attempt.review_artifact_id is None
+    assert len(invocation.artifact_ids) == 1
+    session.close()
+    inventory = {
+        path.name for path in (artifacts / "05_repairs" / f"attempt-{attempt_id}").glob("*.json")
+    }
+    assert "review.json" not in inventory
+    assert "review-error.json" in inventory
+    engine.dispose()
+
+
+def test_review_binds_immutable_active_proposal_artifact_checksum(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport(
+                [
+                    _responses_body(json.dumps(_proposal_candidate())),
+                    _responses_body(json.dumps(_review_candidate())),
+                ]
+            ),
+            _azure_settings(tmp_path),
+        ),
+    )
+    service.propose(attempt_id)
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    artifact_checksum = session.get(
+        ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
+    ).checksum
+    attempt.proposal_checksum = "sha256:stale-row-value"
+    session.commit()
+    session.close()
+
+    review = service.review(attempt_id)
+
+    assert review["proposal_checksum"] == artifact_checksum
+    engine.dispose()
+
+
+def test_v1_persisted_proposal_and_review_artifacts_still_recover(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    store, attempt_id, app_ts, artifacts = _seed_service(factory, tmp_path)
+    proposal_payload = _proposal(app_ts)
+    proposal = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/proposal.json",
+        json.dumps(proposal_payload),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-proposal-v1",
+        created_at=NOW,
+    )
+    review_payload = {
+        "proposal_checksum": proposal.ref.checksum,
+        "decision": "accept",
+        "findings": [],
+        "policy_checks": ["paths"],
+        "risk_assessment": "low",
+        "required_validation_targets": ["build"],
+        "limitations": [],
+    }
+    review = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/review.json",
+        json.dumps(review_payload),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-review-v1",
+        created_at=NOW,
+    )
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    attempt.proposal_artifact_id = proposal.ref.artifact_id
+    attempt.proposal_checksum = proposal.ref.checksum
+    attempt.review_artifact_id = review.ref.artifact_id
+    attempt.review_checksum = review.ref.checksum
+    for role, stored in (("proposer", proposal), ("reviewer", review)):
+        session.add(
+            LlmInvocationModel(
+                id=f"{attempt_id}:{role}",
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=f"{attempt_id}:{role}",
+                request_checksum="sha256:v1-request",
+                input_hashes=["sha256:failure", "sha256:context"],
+                correlation_id=f"{attempt_id}:{role}",
+                actor="transformer",
+                role=f"repair_{role}",
+                task_type="repair_diagnosis" if role == "proposer" else "repair_review",
+                provider="azure_openai",
+                deployment_alias="azure-openai",
+                prompt_version=f"repair-{role}-v1",
+                schema_version="schema-registry-v1",
+                pricing_version="mvp-pricing-2026-01",
+                stage="repair",
+                status="completed",
+                artifact_ids=[stored.ref.artifact_id],
+                artifact_checksums={stored.ref.artifact_id: stored.ref.checksum},
+                state_version=1,
+                event_sequence=0,
+                retries=0,
+                transport_started=True,
+                started_at=NOW,
+                completed_at=NOW,
+                created_at=NOW,
+            )
+        )
+        session.add(
+            ArtifactMetadataModel(
+                id="metadata-" + stored.ref.artifact_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                created_at=NOW,
+                finalized_at=NOW,
+                immutable=True,
+            )
+        )
+    session.commit()
+    session.close()
+    context = {
+        "attempt_id": attempt_id,
+        "run_id": "run-1",
+        "stage_id": "stage-1",
+        "artifact_root": str(artifacts),
+    }
+    service = RepairApplicationService(scope=_scope(factory))
+
+    assert service._recover_completed(context, role="proposer") == proposal_payload
+    assert service._recover_completed(context, role="reviewer") == review_payload
     engine.dispose()
 
 
