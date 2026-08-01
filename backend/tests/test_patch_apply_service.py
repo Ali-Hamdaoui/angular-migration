@@ -156,8 +156,13 @@ def test_target_lock_rejects_noncooperating_writer_before_mutation(tmp_path: Pat
         "unified_diff": None,
     }
     original_ftruncate = os.ftruncate
+    attempted = False
 
     def noncooperating_writer(fd, size):
+        nonlocal attempted
+        if attempted:
+            return original_ftruncate(fd, size)
+        attempted = True
         target.write_text("newer\n", encoding="utf-8")
         return original_ftruncate(fd, size)
 
@@ -173,3 +178,57 @@ def test_target_lock_rejects_noncooperating_writer_before_mutation(tmp_path: Pat
             attempt_id="repair-1",
         )
     assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_all_target_locks_remain_held_until_apply_finishes(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    first = workspace / "src" / "first.ts"
+    second = workspace / "src" / "second.ts"
+    first.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    first.write_text("first-old\n", encoding="utf-8")
+    second.write_text("second-old\n", encoding="utf-8")
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "src/first.ts",
+                "old_text": "first-old",
+                "new_text": "first-new",
+                "preimage_sha256": "sha256:" + hashlib.sha256(first.read_bytes()).hexdigest(),
+            },
+            {
+                "operation": "replace_text",
+                "path": "src/second.ts",
+                "old_text": "second-old",
+                "new_text": "second-new",
+                "preimage_sha256": "sha256:" + hashlib.sha256(second.read_bytes()).hexdigest(),
+            },
+        ],
+        "unified_diff": None,
+    }
+    original_ftruncate = os.ftruncate
+    calls = 0
+
+    def mutate_processed_target(fd, size):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            first.write_text("concurrent\n", encoding="utf-8")
+        return original_ftruncate(fd, size)
+
+    monkeypatch.setattr("os.ftruncate", mutate_processed_target)
+    with pytest.raises(PermissionError):
+        PatchApplyService().apply(
+            proposal=proposal,
+            workspace_path=str(workspace),
+            expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_root=str(artifacts),
+            attempt_id="repair-1",
+        )
+    assert first.read_text(encoding="utf-8") == "first-old\n"
+    assert second.read_text(encoding="utf-8") == "second-old\n"

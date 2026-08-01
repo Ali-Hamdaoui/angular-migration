@@ -7,7 +7,7 @@ import json
 import os
 import re
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -75,6 +75,25 @@ def _target_apply_lock(target: Path):
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         os.close(fd)
+
+
+def _fingerprint_with_locked_targets(root: Path, locked_targets: dict[str, tuple[int, bool]]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative_path = path.relative_to(root).as_posix()
+        relative = relative_path.encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        locked = locked_targets.get(relative_path)
+        if locked is None or not locked[1]:
+            content = path.read_bytes()
+        else:
+            fd = locked[0]
+            os.lseek(fd, 0, os.SEEK_SET)
+            content = os.read(fd, os.fstat(fd).st_size)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return "sha256:" + digest.hexdigest()
 
 
 class PatchApplyService:
@@ -155,13 +174,20 @@ class PatchApplyService:
             for change in changes
             if (workspace / change["path"]).is_file()
         }
-        try:
-            mutation_started = False
+        with ExitStack() as target_locks:
+            locked_targets = {}
             for change in changes:
                 target = workspace / change["path"]
                 if not target.parent.exists():
                     target.parent.mkdir(parents=True, exist_ok=True)
-                with _target_apply_lock(target) as (target_fd, target_exists):
+                locked_targets.setdefault(
+                    change["path"], target_locks.enter_context(_target_apply_lock(target))
+                )
+            try:
+                mutation_started = False
+                for change in changes:
+                    target = workspace / change["path"]
+                    target_fd, target_exists = locked_targets[change["path"]]
                     expected = change.get("preimage_sha256")
                     if expected == "absent":
                         if target.exists():
@@ -196,32 +222,44 @@ class PatchApplyService:
                             os.lseek(target_fd, 0, os.SEEK_SET)
                             os.ftruncate(target_fd, 0)
                             os.write(target_fd, encoded)
-                prepared["operations"].append(
-                    {
-                        "path": change["path"],
-                        "action": change["action"],
-                        "postimage_sha256": (
-                            "deleted"
-                            if change["action"] == "delete"
-                            else "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
-                        ),
-                    }
+                    if change["action"] == "delete":
+                        postimage = "deleted"
+                    elif expected == "absent":
+                        postimage = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+                    else:
+                        os.lseek(target_fd, 0, os.SEEK_SET)
+                        postimage = "sha256:" + hashlib.sha256(
+                            os.read(target_fd, os.fstat(target_fd).st_size)
+                        ).hexdigest()
+                    prepared["operations"].append(
+                        {
+                            "path": change["path"],
+                            "action": change["action"],
+                            "postimage_sha256": postimage,
+                        }
+                    )
+                prepared["post_fingerprint"] = _fingerprint_with_locked_targets(
+                    workspace, locked_targets
                 )
-        except Exception:
-            for change in changes:
-                target = workspace / change["path"]
-                original = originals.get(change["path"])
-                if original is None:
-                    if target.exists():
-                        target.unlink()
-                else:
-                    temporary = target.with_name(f".{target.name}.repair-rollback-{uuid4().hex[:12]}")
-                    temporary.write_bytes(original)
-                    os.replace(temporary, target)
-            raise
-        prepared["post_fingerprint"] = StageSandboxCopier.fingerprint(workspace)
-        prepared["status"] = "applied"
-        final = self._write(store, run_id, stage_id, attempt_id, "applied", prepared)
+                prepared["status"] = "applied"
+                final = self._write(store, run_id, stage_id, attempt_id, "applied", prepared)
+            except Exception:
+                for change in changes:
+                    target = workspace / change["path"]
+                    original = originals.get(change["path"])
+                    if original is None:
+                        if target.exists():
+                            target.unlink()
+                    elif target.exists():
+                        target_fd, _ = locked_targets[change["path"]]
+                        os.lseek(target_fd, 0, os.SEEK_SET)
+                        os.ftruncate(target_fd, 0)
+                        os.write(target_fd, original)
+                    else:
+                        temporary = target.with_name(f".{target.name}.repair-rollback-{uuid4().hex[:12]}")
+                        temporary.write_bytes(original)
+                        os.replace(temporary, target)
+                raise
         return prepared_artifact, final, prepared["post_fingerprint"]
 
     def _prepare_operations(self, operations, workspace: Path):

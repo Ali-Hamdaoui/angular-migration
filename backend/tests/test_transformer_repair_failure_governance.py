@@ -1032,3 +1032,16 @@ def test_apply_preflight_failure_does_not_reconstruct_workspace(tmp_path: Path):
 
     assert scope_calls
     assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+
+
+def test_apply_recovery_state_write_failure_is_not_silenced():
+    @contextmanager
+    def failing_scope():
+        raise RuntimeError("database unavailable")
+        yield
+
+    orchestrator = TransformerOrchestrator.__new__(TransformerOrchestrator)
+    orchestrator._scope = failing_scope
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        orchestrator._mark_apply_recovery_required("cont-1", None)

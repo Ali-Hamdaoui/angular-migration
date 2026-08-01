@@ -1192,6 +1192,7 @@ class TransformerOrchestrator:
                     )
         except Exception:
             logger.exception("unable to persist repair apply recovery state", extra={"continuation_id": continuation_id})
+            raise
 
     def _apply_repair_locked(self, continuation_id: str, worker_id: str, mutation_state=None) -> None:
         mutation_state = mutation_state or {"started": False, "claimed": False}
@@ -1342,6 +1343,7 @@ class TransformerOrchestrator:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approval state changed before mutation")
             mutation_state["claimed"] = True
             context["continuation_state_version"] += 1
+            session.commit()
             if recovering:
                 if not context["checkpoint_path"]:
                     raise TransformerStageError("CHECKPOINT_MISSING", "No pre-repair checkpoint available for recovery")
