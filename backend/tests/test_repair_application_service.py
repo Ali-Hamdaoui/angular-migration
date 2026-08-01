@@ -928,34 +928,38 @@ def test_unknown_reviewer_target_persists_no_review_artifact(tmp_path: Path):
 
 def test_review_binds_immutable_active_proposal_artifact_checksum(tmp_path: Path):
     engine, factory = _database(tmp_path)
-    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)
+    transport = _RecordingTransport([
+        _responses_body(json.dumps(_proposal_candidate())),
+        _responses_body(json.dumps(_review_candidate())),
+    ])
     service = RepairApplicationService(
         scope=_scope(factory),
-        gateway=_gateway(
-            _RecordingTransport(
-                [
-                    _responses_body(json.dumps(_proposal_candidate())),
-                    _responses_body(json.dumps(_review_candidate())),
-                ]
-            ),
-            _azure_settings(tmp_path),
-        ),
+        gateway=_gateway(transport, _azure_settings(tmp_path)),
     )
     service.propose(attempt_id)
+    calls_before_review = len(transport.calls)
     session = factory()
     attempt = session.get(RepairAttemptModel, attempt_id)
-    artifact_checksum = session.get(
-        ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
-    ).checksum
     attempt.proposal_checksum = "sha256:stale-row-value"
     session.commit()
     session.close()
 
-    review = service.review(attempt_id)
+    with pytest.raises(RepairApplicationError) as raised:
+        service.review(attempt_id)
+    assert raised.value.code == "REPAIR_ARTIFACT_RECOVERY_FAILED"
+    assert len(transport.calls) == calls_before_review
 
-    assert review["proposal_checksum"] == artifact_checksum
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.review_artifact_id is None
+    assert session.get(LlmInvocationModel, f"{attempt_id}:reviewer") is None
+    session.close()
+    inventory = {
+        path.name for path in (artifacts / "05_repairs" / f"attempt-{attempt_id}").glob("*.json")
+    }
+    assert "review.json" not in inventory
     engine.dispose()
-
 
 def test_v1_persisted_proposal_and_review_artifacts_still_recover(tmp_path: Path):
     engine, factory = _database(tmp_path)

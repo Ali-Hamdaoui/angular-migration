@@ -866,7 +866,7 @@ class RepairApplicationService:
                 if (
                     value["failure_evidence_checksum"] != attempt.failure_evidence_checksum
                     or value["context_pack_checksum"] != attempt.context_pack_checksum
-                ):
+                ) and not legacy_v1:
                     raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Completed proposal evidence lineage is stale")
             else:
                 value = RepairReview.model_validate(payload).model_dump(mode="json")
