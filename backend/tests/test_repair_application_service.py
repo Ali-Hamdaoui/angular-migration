@@ -644,6 +644,50 @@ def test_repair_runtime_binds_unified_diff_touched_files(tmp_path: Path):
     engine.dispose()
 
 
+@pytest.mark.parametrize(
+    ("unified_diff", "expected_code"),
+    [
+        (
+            "+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+            "REPAIR_DIFF_INVALID",
+        ),
+        (
+            "--- /forbidden\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+            "REPAIR_PATH_FORBIDDEN",
+        ),
+    ],
+)
+def test_unified_diff_requires_safe_paired_headers(
+    tmp_path: Path, unified_diff: str, expected_code: str
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    candidate = _proposal_candidate()
+    candidate.update(
+        {
+            "proposal_format": "unified_diff",
+            "operations": [],
+            "unified_diff": unified_diff,
+        }
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport([_responses_body(json.dumps(candidate))]),
+            _azure_settings(tmp_path),
+        ),
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == expected_code
+    session = factory()
+    assert session.get(RepairAttemptModel, attempt_id).proposal_artifact_id is None
+    session.close()
+    engine.dispose()
+
+
 @pytest.mark.parametrize("proposal_format", ["operations", "unified_diff"])
 def test_candidate_binding_canonicalizes_paths_targets_and_preimages(
     tmp_path: Path, proposal_format: str
@@ -715,6 +759,44 @@ def test_unknown_proposer_target_persists_only_linked_failure_artifact(tmp_path:
     }
     assert "proposal.json" not in inventory
     assert "propose-error.json" in inventory
+    engine.dispose()
+
+
+def test_failed_replay_retains_all_immutable_failure_artifact_links(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    candidate = _proposal_candidate()
+    candidate["validation_targets"] = ["deploy"]
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport(
+                [
+                    _responses_body(json.dumps(candidate)),
+                    _responses_body(json.dumps(candidate)),
+                ]
+            ),
+            _azure_settings(tmp_path),
+        ),
+    )
+
+    for _ in range(2):
+        with pytest.raises(RepairApplicationError, match="backend-supported names"):
+            service.propose(attempt_id)
+
+    session = factory()
+    invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+    assert len(invocation.artifact_ids) == 2
+    assert len(set(invocation.artifact_ids)) == 2
+    assert set(invocation.artifact_checksums) == set(invocation.artifact_ids)
+    assert {
+        session.get(ArtifactMetadataModel, "metadata-" + artifact_id).relative_path
+        for artifact_id in invocation.artifact_ids
+    } == {
+        f"05_repairs/attempt-{attempt_id}/propose-error.json",
+        f"05_repairs/attempt-{attempt_id}/propose-error__v2.json",
+    }
+    session.close()
     engine.dispose()
 
 

@@ -369,10 +369,7 @@ class RepairApplicationService:
         touched_files = (
             [operation["path"] for operation in operations]
             if operations
-            else [
-                self._safe_path(path, workspace)
-                for path in self._unified_diff_touched_files(candidate.unified_diff)
-            ]
+            else self._unified_diff_touched_files(candidate.unified_diff, workspace)
         )
         return RepairProposal.model_validate(
             {
@@ -387,19 +384,32 @@ class RepairApplicationService:
             }
         ).model_dump(mode="json")
 
-    @staticmethod
-    def _unified_diff_touched_files(diff: str | None) -> list[str]:
-        prior_path = None
+    def _unified_diff_touched_files(self, diff: str | None, workspace: Path) -> list[str]:
+        lines = (diff or "").splitlines()
         paths = []
-        for line in (diff or "").splitlines():
-            if line.startswith("--- "):
-                prior_path = line[4:].split("\t", 1)[0].removeprefix("a/")
-            elif line.startswith("+++ "):
-                path = line[4:].split("\t", 1)[0].removeprefix("b/")
-                if path != "/dev/null":
-                    paths.append(path)
-                elif prior_path and prior_path != "/dev/null":
-                    paths.append(prior_path)
+        index = 0
+        while index < len(lines):
+            if lines[index].startswith("+++ ") or not lines[index].startswith("--- "):
+                if lines[index].startswith("+++ "):
+                    raise RepairApplicationError(
+                        "REPAIR_DIFF_INVALID", "Unified diff header pair is incomplete"
+                    )
+                index += 1
+                continue
+            if index + 1 >= len(lines) or not lines[index + 1].startswith("+++ "):
+                raise RepairApplicationError(
+                    "REPAIR_DIFF_INVALID", "Unified diff header pair is incomplete"
+                )
+            old_path = lines[index][4:].split("\t", 1)[0].removeprefix("a/")
+            new_path = lines[index + 1][4:].split("\t", 1)[0].removeprefix("b/")
+            old_path = None if old_path == "/dev/null" else self._safe_path(old_path, workspace)
+            new_path = None if new_path == "/dev/null" else self._safe_path(new_path, workspace)
+            if old_path is None and new_path is None:
+                raise RepairApplicationError(
+                    "REPAIR_DIFF_INVALID", "Unified diff header pair has no file path"
+                )
+            paths.append(new_path or old_path)
+            index += 2
         if not paths:
             raise RepairApplicationError(
                 "REPAIR_TOUCHED_FILES_MISSING", "Unified diff must identify touched files"
@@ -778,8 +788,13 @@ class RepairApplicationService:
             if invocation is None:
                 return
             invocation.status = "failed"
-            invocation.artifact_ids = [stored.ref.artifact_id]
-            invocation.artifact_checksums = {stored.ref.artifact_id: stored.ref.checksum}
+            invocation.artifact_ids = list(
+                dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id])
+            )
+            invocation.artifact_checksums = {
+                **(invocation.artifact_checksums or {}),
+                stored.ref.artifact_id: stored.ref.checksum,
+            }
             invocation.failure_code = error.code
             invocation.failure_stage = (
                 failure_stage_override or getattr(error, "failure_stage", None) or "local"
