@@ -200,6 +200,7 @@ def _seed(
         json.dumps({"evidence": "bounded context"}),
         ArtifactType.JSON,
         stage_id=stage_id,
+        attempt_id=attempt_id,
         created_by="repair-context",
         created_at=NOW,
     )

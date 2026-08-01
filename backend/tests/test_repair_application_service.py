@@ -25,7 +25,9 @@ from app.repositories.models import (
     LlmInvocationModel,
     MigrationRunModel,
     RepairAttemptModel,
+    StageExecutionPlanModel,
     StageWorkspaceBindingModel,
+    TransformationContinuationModel,
 )
 from app.repositories.models.base import Base
 from app.services import repair_application_service
@@ -421,6 +423,7 @@ def _seed_service(factory, tmp_path: Path):
         json.dumps({"evidence": "bounded context"}),
         ArtifactType.JSON,
         stage_id="stage-1",
+        attempt_id=attempt_id,
         created_by="repair-context",
         created_at=NOW,
     )
@@ -447,6 +450,22 @@ def _seed_service(factory, tmp_path: Path):
         active=True,
         created_at=NOW,
     )
+    plan = StageExecutionPlanModel(
+        id="stage-plan-stage-1", run_id="run-1", migration_plan_id="plan-1", stage_id="stage-1",
+        idempotency_key="plan", request_checksum="sha256:plan", actor="operator",
+        correlation_id="corr-1", status="approved", version=1,
+        stage_plan={"repair_policy": {"max_attempts": 3}}, checksum="sha256:stage-plan",
+        artifact_ids=[], artifact_checksums={}, state_version=1, event_sequence=1,
+        created_at=NOW, updated_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-1", run_id="run-1", current_stage_id="stage-1", thread_id="thread-1",
+        status="running", current_node="propose_repair", g06_approval_id="g06-1",
+        plan_id="plan-1", plan_checksum="sha256:plan", stage_plan_id=plan.id,
+        stage_plan_checksum=plan.checksum, worker_id="worker-1", attempt=1, max_attempts=3,
+        lease_expires_at=NOW, idempotency_key="continuation", request_checksum="sha256:continuation",
+        state_version=3, created_at=NOW, updated_at=NOW,
+    )
     attempt = RepairAttemptModel(
         id=attempt_id,
         run_id="run-1",
@@ -469,7 +488,7 @@ def _seed_service(factory, tmp_path: Path):
         created_at=NOW,
         updated_at=NOW,
     )
-    session.add_all([run, binding, attempt])
+    session.add_all([run, plan, binding, continuation, attempt])
     session.add(
         ArtifactMetadataModel(
             id="metadata-" + failure.ref.artifact_id,

@@ -267,6 +267,7 @@ class TransformerStageService:
         artifact_root: str,
         gate_id: str,
         payload: dict[str, object],
+        attempt_id: str | None = None,
     ):
         now = self._now()
         run_root = Path(artifact_root)
@@ -277,6 +278,7 @@ class TransformerStageService:
             json.dumps(payload, sort_keys=True, indent=2),
             ArtifactType.JSON,
             stage_id=stage_id,
+            attempt_id=attempt_id,
             created_by="transformer",
             created_at=now,
             input_hashes={"stage_plan": str(payload["stage_plan_checksum"])},

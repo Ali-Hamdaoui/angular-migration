@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import (
@@ -1076,6 +1076,7 @@ class TransformerOrchestrator:
             artifact_root=context[0],
             gate_id=gate_id,
             payload=payload,
+            attempt_id=attempt.id if gate_id == "G10" else None,
         )
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
@@ -1142,11 +1143,15 @@ class TransformerOrchestrator:
             recovering = attempt.status == "applying"
             context = {
                 "attempt_id": attempt.id,
+                "workspace_binding_id": binding.id,
                 "workspace_path": binding.workspace_path,
                 "fingerprint": binding.workspace_fingerprint,
                 "artifact_root": run.artifact_root,
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
+                "continuation_state_version": continuation.state_version,
+                "g10_package_id": gate.id,
+                "g10_package_checksum": gate.package_checksum,
                 "proposal_path": str(Path(run.artifact_root) / metadata.relative_path),
                 "proposal_relative_path": metadata.relative_path,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
@@ -1164,17 +1169,88 @@ class TransformerOrchestrator:
                 context["stage_root"],
                 context["checkpoint_fingerprint"],
             )
-        proposal_artifact = LocalFilesystemArtifactStore(
-            Path(context["artifact_root"]).parent, fixed_run_root=Path(context["artifact_root"])
-        ).read_artifact(context["run_id"], context["proposal_relative_path"])
-        if (
-            proposal_artifact.ref.artifact_id != context["proposal_artifact_id"]
-            or proposal_artifact.ref.checksum != context["proposal_artifact_checksum"]
-        ):
-            raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
-        if proposal_artifact.ref.checksum != context["proposal_artifact_checksum"]:
-            raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal checksum changed")
-        proposal = json.loads(proposal_artifact.content)
+        with self._scope() as session:
+            current = session.get(TransformationContinuationModel, continuation_id)
+            current_attempt = session.get(RepairAttemptModel, context["attempt_id"])
+            current_binding = self._stage._binding(session, current) if current is not None else None
+            current_gate = session.get(StageGatePackageModel, context["g10_package_id"])
+            current_decision = session.scalar(
+                select(StageGateDecisionModel).where(
+                    StageGateDecisionModel.gate_package_id == context["g10_package_id"],
+                    StageGateDecisionModel.accepted.is_(True),
+                    StageGateDecisionModel.decision == "approve",
+                    StageGateDecisionModel.package_checksum == context["g10_package_checksum"],
+                )
+            )
+            if (
+                current is None
+                or current_attempt is None
+                or current_binding is None
+                or current_gate is None
+                or current_gate.status != "approved"
+                or current_decision is None
+                or current_attempt.status != "applying"
+                or current_binding.id != context["workspace_binding_id"]
+            ):
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed")
+            if current_binding.workspace_path != context["workspace_path"]:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved workspace binding changed")
+            live = StageSandboxCopier.fingerprint(Path(current_binding.workspace_path))
+            if live != current_binding.workspace_fingerprint or live != context["fingerprint"]:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved workspace fingerprint changed")
+            self._gates._validate_repair_lineage(
+                session, current, current_gate.package_artifact_id, current_gate.package_checksum
+            )
+            proposal_metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + current_attempt.proposal_artifact_id
+            )
+            if proposal_metadata is None or proposal_metadata.checksum != current_attempt.proposal_checksum:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal artifact is stale")
+            proposal_artifact = LocalFilesystemArtifactStore(
+                Path(context["artifact_root"]).parent, fixed_run_root=Path(context["artifact_root"])
+            ).read_artifact(context["run_id"], proposal_metadata.relative_path)
+            if proposal_artifact.ref.artifact_id != current_attempt.proposal_artifact_id or proposal_artifact.ref.checksum != current_attempt.proposal_checksum:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
+            binding_claim = session.execute(
+                update(StageWorkspaceBindingModel)
+                .where(
+                    StageWorkspaceBindingModel.id == current_binding.id,
+                    StageWorkspaceBindingModel.run_id == context["run_id"],
+                    StageWorkspaceBindingModel.stage_id == context["stage_id"],
+                    StageWorkspaceBindingModel.active.is_(True),
+                    StageWorkspaceBindingModel.workspace_path == context["workspace_path"],
+                    StageWorkspaceBindingModel.workspace_fingerprint == live,
+                )
+                .values(last_verified_fingerprint=live, last_verified_at=datetime.now(UTC))
+            )
+            if binding_claim.rowcount != 1:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Workspace binding changed before mutation")
+            attempt_claim = session.execute(
+                update(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.id == current_attempt.id,
+                    RepairAttemptModel.run_id == context["run_id"],
+                    RepairAttemptModel.stage_id == context["stage_id"],
+                    RepairAttemptModel.status == "applying",
+                    RepairAttemptModel.proposal_artifact_id == current_attempt.proposal_artifact_id,
+                    RepairAttemptModel.proposal_checksum == current_attempt.proposal_checksum,
+                )
+                .values(updated_at=datetime.now(UTC))
+            )
+            if attempt_claim.rowcount != 1:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Repair attempt changed before mutation")
+            claimed = session.execute(
+                update(TransformationContinuationModel)
+                .where(
+                    TransformationContinuationModel.id == current.id,
+                    TransformationContinuationModel.state_version == context["continuation_state_version"],
+                    TransformationContinuationModel.current_stage_id == context["stage_id"],
+                )
+                .values(state_version=TransformationContinuationModel.state_version + 1, updated_at=datetime.now(UTC))
+            )
+            if claimed.rowcount != 1:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approval state changed before mutation")
+            proposal = json.loads(proposal_artifact.content)
         try:
             prepared, ledger, fingerprint = self._patches.apply(
                 proposal=proposal,

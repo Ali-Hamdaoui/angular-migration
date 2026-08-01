@@ -241,7 +241,16 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package artifact binding is invalid")
         try:
             store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
-            package = json.loads(store.read_artifact(continuation.run_id, metadata.relative_path).content)
+            stored_package = store.read_artifact(continuation.run_id, metadata.relative_path)
+            if (
+                stored_package.ref.artifact_id != package_artifact_id
+                or stored_package.ref.checksum != package_checksum
+                or stored_package.envelope is None
+                or stored_package.envelope.run_id != continuation.run_id
+                or stored_package.envelope.stage_id != continuation.current_stage_id
+            ):
+                raise StageGateError("G10_LINEAGE_STALE", "G10 package envelope binding is invalid")
+            package = json.loads(stored_package.content)
         except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package artifact cannot be verified") from error
         if package.get("gate_id") != StageGateId.G10.value or package.get("run_id") != continuation.run_id or package.get("stage_id") != continuation.current_stage_id:
@@ -261,9 +270,18 @@ class StageGateService:
                 StageWorkspaceBindingModel.active.is_(True),
             )
         )
-        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        stage_plan = session.scalar(
+            select(StageExecutionPlanModel).where(
+                StageExecutionPlanModel.id == continuation.stage_plan_id,
+                StageExecutionPlanModel.run_id == continuation.run_id,
+                StageExecutionPlanModel.stage_id == continuation.current_stage_id,
+                StageExecutionPlanModel.checksum == continuation.stage_plan_checksum,
+            )
+        )
         if attempt is None or binding is None or stage_plan is None or attempt.status != "review_accepted":
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not review-accepted")
+        if stored_package.envelope.attempt_id != attempt.id:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
         expected = {
             "failure_evidence_checksum": attempt.failure_evidence_checksum,
             "context_pack_checksum": attempt.context_pack_checksum,
@@ -304,12 +322,18 @@ class StageGateService:
                 payload = json.loads(stored_artifact.content)
             except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
                 raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact cannot be verified") from error
+            envelope = stored_artifact.envelope
+            if (
+                envelope is None
+                or envelope.run_id != continuation.run_id
+                or envelope.stage_id != continuation.current_stage_id
+                or envelope.attempt_id != attempt.id
+            ):
+                raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact envelope binding is stale")
             if artifact_id == attempt.failure_evidence_artifact_id:
-                if stored_artifact.envelope and stored_artifact.envelope.attempt_id not in {None, attempt.id}:
-                    raise StageGateError("G10_LINEAGE_STALE", "G10 failure evidence attempt binding is stale")
+                pass
             elif artifact_id == attempt.context_pack_artifact_id:
-                if stored_artifact.envelope and stored_artifact.envelope.attempt_id not in {None, attempt.id}:
-                    raise StageGateError("G10_LINEAGE_STALE", "G10 context attempt binding is stale")
+                pass
             elif artifact_id == attempt.proposal_artifact_id:
                 if payload.get("failure_evidence_checksum") != attempt.failure_evidence_checksum or payload.get("context_pack_checksum") != attempt.context_pack_checksum:
                     raise StageGateError("G10_LINEAGE_STALE", "G10 proposal evidence lineage is stale")
@@ -324,5 +348,17 @@ class StageGateService:
             (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum),
         ):
             invocation = session.get(LlmInvocationModel, invocation_id)
-            if invocation is None or invocation.run_id != continuation.run_id or invocation.role != role or invocation.status != "completed" or (invocation.artifact_checksums or {}).get(artifact_id) != checksum:
+            expected_task = "repair_diagnosis" if role == "repair_proposer" else "repair_review"
+            if (
+                invocation is None
+                or invocation.run_id != continuation.run_id
+                or invocation.stage_id != continuation.current_stage_id
+                or invocation.role != role
+                or invocation.task_type != expected_task
+                or invocation.status != "completed"
+                or not invocation.request_checksum
+                or not invocation.prompt_version
+                or not invocation.schema_version
+                or (invocation.artifact_checksums or {}).get(artifact_id) != checksum
+            ):
                 raise StageGateError("G10_LINEAGE_STALE", "G10 invocation lineage is invalid")
