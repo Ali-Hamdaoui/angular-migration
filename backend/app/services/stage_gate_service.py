@@ -364,3 +364,9 @@ class StageGateService:
                 or (invocation.artifact_checksums or {}).get(artifact_id) != checksum
             ):
                 raise StageGateError("G10_LINEAGE_STALE", "G10 invocation lineage is invalid")
+            prefix = "proposer" if role == "repair_proposer" else "reviewer"
+            if any(
+                package.get(f"{prefix}_invocation_{field}") != getattr(invocation, field)
+                for field in ("request_checksum", "prompt_version", "schema_version")
+            ):
+                raise StageGateError("G10_LINEAGE_STALE", "G10 invocation provenance is stale")

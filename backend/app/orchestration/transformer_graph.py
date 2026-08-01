@@ -49,7 +49,7 @@ from app.services.angular_transformation_evidence_service import (
     AngularTransformationEvidenceService,
 )
 from app.services.failure_evidence_service import FailureEvidenceService
-from app.services.patch_apply_service import PatchApplyService
+from app.services.patch_apply_service import PatchApplyService, workspace_apply_lock
 from app.services.prompt_explanation_service import PromptExplanationService
 from app.services.repair_application_service import (
     RepairApplicationError,
@@ -1049,6 +1049,18 @@ class TransformerOrchestrator:
                 "risk_level": attempt.risk_level,
                 "validation_targets": [],
             }
+            proposer_invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
+            reviewer_invocation = session.get(LlmInvocationModel, attempt.reviewer_invocation_id)
+            if proposer_invocation is None or reviewer_invocation is None:
+                raise TransformerStageError("REPAIR_INVOCATION_MISSING", "Repair invocation lineage is missing")
+            payload.update(
+                proposer_invocation_request_checksum=proposer_invocation.request_checksum,
+                proposer_invocation_prompt_version=proposer_invocation.prompt_version,
+                proposer_invocation_schema_version=proposer_invocation.schema_version,
+                reviewer_invocation_request_checksum=reviewer_invocation.request_checksum,
+                reviewer_invocation_prompt_version=reviewer_invocation.prompt_version,
+                reviewer_invocation_schema_version=reviewer_invocation.schema_version,
+            )
             if gate_id == "G10":
                 proposal_metadata = session.get(
                     ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
@@ -1099,6 +1111,52 @@ class TransformerOrchestrator:
                 attempt.updated_at = datetime.now(UTC)
 
     def _apply_repair(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            binding = self._stage._binding(session, continuation)
+            workspace_path = binding.workspace_path
+        with workspace_apply_lock(Path(workspace_path)):
+            try:
+                return self._apply_repair_locked(continuation_id, worker_id)
+            except Exception:
+                self._recover_failed_apply(continuation_id, workspace_path)
+                raise
+
+    def _recover_failed_apply(self, continuation_id: str, workspace_path: str) -> None:
+        try:
+            with self._scope() as session:
+                continuation = session.get(TransformationContinuationModel, continuation_id)
+                attempt = self._latest_repair( session, continuation) if continuation is not None else None
+                run = session.get(MigrationRunModel, continuation.run_id) if continuation else None
+                checkpoint = session.scalar(
+                    select(StageCheckpointModel)
+                    .where(
+                        StageCheckpointModel.stage_id == continuation.current_stage_id if continuation else False,
+                        StageCheckpointModel.kind == "pre_repair",
+                    )
+                    .order_by(StageCheckpointModel.sequence.desc())
+                ) if continuation else None
+            if continuation is None or attempt is None or run is None or checkpoint is None:
+                return
+            restored = self._stage.reconstruct_workspace(
+                checkpoint.workspace_path,
+                workspace_path,
+                (run.workspace_aliases or {})["STAGE_SANDBOX"],
+                checkpoint.workspace_fingerprint,
+            )
+            with self._scope() as session:
+                continuation = session.get(TransformationContinuationModel, continuation_id)
+                attempt = session.get(RepairAttemptModel, attempt.id)
+                if attempt is not None:
+                    attempt.status = "apply_recovery_required"
+                    attempt.post_fingerprint = restored
+                    attempt.updated_at = datetime.now(UTC)
+                if continuation is not None:
+                    self._block(continuation, "REPAIR_APPLY_RECOVERY_REQUIRED", "Repair apply was rolled back after persistence failure")
+        except Exception:
+            logger.exception("repair apply recovery failed", extra={"continuation_id": continuation_id})
+
+    def _apply_repair_locked(self, continuation_id: str, worker_id: str) -> None:
         apply_result = None
         apply_error = None
         with self._scope() as session:
@@ -1318,14 +1376,22 @@ class TransformerOrchestrator:
                     self._block(continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale")
                     return
                 try:
+                    stored_proposal = LocalFilesystemArtifactStore(
+                        Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+                    ).read_artifact(continuation.run_id, metadata.relative_path)
+                    if (
+                        stored_proposal.ref.artifact_id != attempt.proposal_artifact_id
+                        or stored_proposal.ref.checksum != attempt.proposal_checksum
+                        or stored_proposal.envelope is None
+                        or stored_proposal.envelope.run_id != continuation.run_id
+                        or stored_proposal.envelope.stage_id != continuation.current_stage_id
+                        or stored_proposal.envelope.attempt_id != attempt.id
+                    ):
+                        raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair proposal envelope is stale")
                     proposal = RepairProposal.model_validate(
-                        json.loads(
-                            LocalFilesystemArtifactStore(
-                                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
-                            ).read_artifact(continuation.run_id, metadata.relative_path).content
-                        )
+                        json.loads(stored_proposal.content)
                     ).model_dump(mode="json")
-                except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as error:
+                except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, RepairApplicationError) as error:
                     self._block(continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal cannot be verified")
                     return
                 targets = list(proposal.get("validation_targets") or [])

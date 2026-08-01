@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import re
+import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +19,40 @@ from app.services.repair_application_service import (
     _unified_diff_header_path,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
+
+_workspace_lock_guard = threading.Lock()
+_workspace_locks: dict[str, threading.RLock] = {}
+_workspace_lock_state = threading.local()
+
+
+@contextmanager
+def workspace_apply_lock(workspace: Path):
+    """Serialize repair filesystem verification/mutation per workspace."""
+    import msvcrt
+
+    key = str(workspace.resolve())
+    held = getattr(_workspace_lock_state, "held", set())
+    if key in held:
+        yield
+        return
+    with _workspace_lock_guard:
+        lock = _workspace_locks.setdefault(key, threading.RLock())
+    with lock:
+        lock_path = workspace.parent / f".{workspace.name}.transformer-repair.apply.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+        try:
+            os.write(fd, b"0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            held.add(key)
+            _workspace_lock_state.held = held
+            yield
+        finally:
+            held.discard(key)
+            _workspace_lock_state.held = held
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            os.close(fd)
 
 
 class PatchApplyService:
@@ -39,6 +75,32 @@ class PatchApplyService:
         proposal_artifact_checksum: str | None = None,
     ):
         workspace = Path(workspace_path).resolve(strict=True)
+        with workspace_apply_lock(workspace):
+            return self._apply_locked(
+                proposal=proposal,
+                workspace=workspace,
+                expected_fingerprint=expected_fingerprint,
+                run_id=run_id,
+                stage_id=stage_id,
+                artifact_root=artifact_root,
+                attempt_id=attempt_id,
+                approved_proposal_checksum=approved_proposal_checksum,
+                proposal_artifact_checksum=proposal_artifact_checksum,
+            )
+
+    def _apply_locked(
+        self,
+        *,
+        proposal,
+        workspace,
+        expected_fingerprint,
+        run_id,
+        stage_id,
+        artifact_root,
+        attempt_id,
+        approved_proposal_checksum,
+        proposal_artifact_checksum,
+    ):
         if (
             approved_proposal_checksum is not None
             and proposal_artifact_checksum != approved_proposal_checksum
@@ -63,26 +125,51 @@ class PatchApplyService:
             if proposal["proposal_format"] == "operations"
             else self._prepare_unified_diff(str(proposal["unified_diff"]), workspace)
         )
-        for change in changes:
-            target = workspace / change["path"]
-            if change["action"] == "delete":
-                target.unlink()
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                temporary = target.with_name(f".{target.name}.repair-{uuid4().hex[:12]}")
-                temporary.write_text(change["content"], encoding="utf-8", newline="")
-                os.replace(temporary, target)
-            prepared["operations"].append(
-                {
-                    "path": change["path"],
-                    "action": change["action"],
-                    "postimage_sha256": (
-                        "deleted"
-                        if change["action"] == "delete"
-                        else "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
-                    ),
-                }
-            )
+        originals = {
+            change["path"]: (workspace / change["path"]).read_bytes()
+            for change in changes
+            if (workspace / change["path"]).is_file()
+        }
+        try:
+            for change in changes:
+                target = workspace / change["path"]
+                expected = change.get("preimage_sha256")
+                if expected == "absent" and target.exists():
+                    raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair create target appeared before mutation")
+                if expected not in {None, "absent"}:
+                    actual = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+                    if actual != expected:
+                        raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed before mutation")
+                if change["action"] == "delete":
+                    target.unlink()
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = target.with_name(f".{target.name}.repair-{uuid4().hex[:12]}")
+                    temporary.write_text(change["content"], encoding="utf-8", newline="")
+                    os.replace(temporary, target)
+                prepared["operations"].append(
+                    {
+                        "path": change["path"],
+                        "action": change["action"],
+                        "postimage_sha256": (
+                            "deleted"
+                            if change["action"] == "delete"
+                            else "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+                        ),
+                    }
+                )
+        except Exception:
+            for change in changes:
+                target = workspace / change["path"]
+                original = originals.get(change["path"])
+                if original is None:
+                    if target.exists():
+                        target.unlink()
+                else:
+                    temporary = target.with_name(f".{target.name}.repair-rollback-{uuid4().hex[:12]}")
+                    temporary.write_bytes(original)
+                    os.replace(temporary, target)
+            raise
         prepared["post_fingerprint"] = StageSandboxCopier.fingerprint(workspace)
         prepared["status"] = "applied"
         final = self._write(store, run_id, stage_id, attempt_id, "applied", prepared)
@@ -97,7 +184,7 @@ class PatchApplyService:
                 raise RepairApplicationError("REPAIR_SYMLINK_FORBIDDEN", "Repair target is a symlink")
             action = item["operation"]
             if action == "create_text_file":
-                changes.append({"path": item["path"], "action": "write", "content": item["content"]})
+                changes.append({"path": item["path"], "action": "write", "content": item["content"], "preimage_sha256": "absent"})
                 continue
             if not target.is_file():
                 raise RepairApplicationError("REPAIR_PREIMAGE_INVALID", "Repair target is missing")
@@ -106,7 +193,7 @@ class PatchApplyService:
                 raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed")
             current = target.read_text(encoding="utf-8")
             if action == "delete_text_file":
-                changes.append({"path": item["path"], "action": "delete", "content": ""})
+                changes.append({"path": item["path"], "action": "delete", "content": "", "preimage_sha256": actual})
             else:
                 old = item["old_text"]
                 if current.count(old) != 1:
@@ -119,6 +206,7 @@ class PatchApplyService:
                         "path": item["path"],
                         "action": "write",
                         "content": current.replace(old, item["new_text"], 1),
+                        "preimage_sha256": actual,
                     }
                 )
         return changes
@@ -195,7 +283,12 @@ class PatchApplyService:
                 if old_remaining or new_remaining:
                     raise RepairApplicationError("REPAIR_DIFF_INVALID", "Unified diff hunk is incomplete")
             output.extend(original[source_cursor:])
-            changes.append({"path": relative, "action": "write", "content": "".join(output)})
+            changes.append({
+                "path": relative,
+                "action": "write",
+                "content": "".join(output),
+                "preimage_sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+            })
         if not changes:
             raise RepairApplicationError("REPAIR_DIFF_INVALID", "Unified diff contains no file changes")
         return changes

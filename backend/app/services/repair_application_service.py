@@ -245,6 +245,8 @@ class RepairApplicationService:
             schema_name=self.proposer_schema,
             schema=RepairProposalCandidate,
         )
+        if "_recovered_result" in context:
+            return context["_recovered_result"]
         try:
             output, response = self._call(
                 context,
@@ -313,6 +315,8 @@ class RepairApplicationService:
             schema_name=self.reviewer_schema,
             schema=RepairReviewCandidate,
         )
+        if "_recovered_result" in context:
+            return context["_recovered_result"]
         try:
             output, response = self._call(
                 context,
@@ -648,6 +652,8 @@ class RepairApplicationService:
                 "context_pack_artifact_id": attempt.context_pack_artifact_id,
                 "proposal_checksum": attempt.proposal_checksum,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
+                "proposer_invocation_id": attempt.proposer_invocation_id,
+                "reviewer_invocation_id": attempt.reviewer_invocation_id,
                 "failure_evidence_artifact_id": attempt.failure_evidence_artifact_id,
                 "attempt_number": attempt.attempt_number,
                 "attempt_status": attempt.status,
@@ -729,6 +735,7 @@ class RepairApplicationService:
                 "failure_evidence_artifact_id", "failure_evidence_checksum",
                 "context_pack_artifact_id", "context_pack_checksum",
                 "proposal_artifact_id", "proposal_checksum", "workspace_binding_id",
+                "proposer_invocation_id", "reviewer_invocation_id",
                 "workspace_path", "workspace_stored_fingerprint", "workspace_live_fingerprint",
                 "invocation_id", "invocation_state_version", "request_checksum",
                 "prompt_version", "schema_version",
@@ -1051,6 +1058,16 @@ class RepairApplicationService:
                         invocation_state_version=existing.state_version,
                     )
                     context["authority_snapshot"] = self._authority_snapshot(context)
+                    recovered = self._recover_completed(
+                        context,
+                        role=role.value.removeprefix("repair_"),
+                        schema_name=schema_name,
+                        task_type=task_type,
+                        schema=schema,
+                    )
+                    if recovered is None:
+                        raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Completed replay could not be verified")
+                    context["_recovered_result"] = recovered
                     return context
                 if existing.status == "in_progress" and existing.transport_started:
                     raise RepairApplicationError(
@@ -1132,6 +1149,17 @@ class RepairApplicationService:
                         invocation_id=existing.id,
                         invocation_state_version=existing.state_version,
                     )
+                    context["authority_snapshot"] = self._authority_snapshot(context)
+                    recovered = self._recover_completed(
+                        context,
+                        role=role.value.removeprefix("repair_"),
+                        schema_name=schema_name,
+                        task_type=task_type,
+                        schema=schema,
+                    )
+                    if recovered is None:
+                        raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Completed replay could not be verified")
+                    context["_recovered_result"] = recovered
                     return context
                 changed = session.execute(
                     update(LlmInvocationModel)
@@ -1385,6 +1413,8 @@ class RepairApplicationService:
                 "context_pack_checksum": attempt.context_pack_checksum,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
                 "proposal_checksum": proposal_metadata.checksum if proposal_metadata else attempt.proposal_checksum,
+                "proposer_invocation_id": attempt.proposer_invocation_id,
+                "reviewer_invocation_id": attempt.reviewer_invocation_id,
                 "workspace_binding_id": binding.id,
                 "workspace_path": binding.workspace_path,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
@@ -1452,6 +1482,8 @@ class RepairApplicationService:
                 RepairAttemptModel.context_pack_checksum == context["authority_snapshot"]["context_pack_checksum"],
                 RepairAttemptModel.failure_evidence_artifact_id == context["authority_snapshot"]["failure_evidence_artifact_id"],
                 RepairAttemptModel.failure_evidence_checksum == context["authority_snapshot"]["failure_evidence_checksum"],
+                RepairAttemptModel.proposer_invocation_id.is_(None) if context["authority_snapshot"]["proposer_invocation_id"] is None else RepairAttemptModel.proposer_invocation_id == context["authority_snapshot"]["proposer_invocation_id"],
+                RepairAttemptModel.reviewer_invocation_id.is_(None) if context["authority_snapshot"]["reviewer_invocation_id"] is None else RepairAttemptModel.reviewer_invocation_id == context["authority_snapshot"]["reviewer_invocation_id"],
             ]
             old_parent = context["authority_snapshot"]["parent_attempt_id"]
             old_proposal = context["authority_snapshot"]["proposal_checksum"]
