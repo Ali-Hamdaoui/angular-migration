@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -12,11 +13,19 @@ from sqlalchemy.orm import Session
 
 from app.domain.contracts import WorkflowEventType
 from app.domain.transformation import StageGateDecisionRequest, StageGateId, TransformationNode
+from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.repositories.models import (
+    ArtifactMetadataModel,
+    LlmInvocationModel,
+    MigrationRunModel,
+    RepairAttemptModel,
+    StageExecutionPlanModel,
     StageGateDecisionModel,
     StageGatePackageModel,
+    StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.state import StateTransitionService
 
 
@@ -51,6 +60,8 @@ class StageGateService:
         now: datetime | None = None,
     ) -> StageGatePackageModel:
         StageGateId(gate_id)
+        if gate_id == StageGateId.G10.value:
+            self._validate_repair_lineage(session, continuation, package_artifact_id, package_checksum)
         existing = session.scalar(
             select(StageGatePackageModel).where(
                 StageGatePackageModel.run_id == continuation.run_id,
@@ -151,6 +162,10 @@ class StageGateService:
         )
         if package is None:
             raise StageGateError("GATE_NOT_PENDING", f"{gate_id} is not pending")
+        if gate_id == StageGateId.G10.value:
+            self._validate_repair_lineage(
+                session, continuation, package.package_artifact_id, package.package_checksum
+            )
         if (
             continuation.state_version != request.expected_state_version
             or package.expected_state_version != request.expected_state_version
@@ -215,3 +230,84 @@ class StageGateService:
     def _checksum(value: object) -> str:
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
         return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def _validate_repair_lineage(
+        cls, session: Session, continuation, package_artifact_id: str, package_checksum: str
+    ) -> None:
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if metadata is None or run is None or metadata.run_id != continuation.run_id or metadata.checksum != package_checksum:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package artifact binding is invalid")
+        try:
+            store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+            package = json.loads(store.read_artifact(continuation.run_id, metadata.relative_path).content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package artifact cannot be verified") from error
+        if package.get("gate_id") != StageGateId.G10.value or package.get("run_id") != continuation.run_id or package.get("stage_id") != continuation.current_stage_id:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package scope is invalid")
+        attempt = session.scalar(
+            select(RepairAttemptModel).where(
+                RepairAttemptModel.id == package.get("repair_attempt_id"),
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+            )
+        )
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.id == package.get("workspace_binding_id"),
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+        )
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        if attempt is None or binding is None or stage_plan is None or attempt.status != "review_accepted":
+            raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not review-accepted")
+        expected = {
+            "failure_evidence_checksum": attempt.failure_evidence_checksum,
+            "context_pack_checksum": attempt.context_pack_checksum,
+            "proposal_artifact_id": attempt.proposal_artifact_id,
+            "proposal_checksum": attempt.proposal_checksum,
+            "review_artifact_id": attempt.review_artifact_id,
+            "review_checksum": attempt.review_checksum,
+            "proposer_invocation_id": attempt.proposer_invocation_id,
+            "reviewer_invocation_id": attempt.reviewer_invocation_id,
+            "workspace_fingerprint": binding.workspace_fingerprint,
+            "stage_plan_checksum": stage_plan.checksum,
+            "risk_level": attempt.risk_level,
+        }
+        if any(package.get(key) != value for key, value in expected.items()):
+            raise StageGateError("G10_LINEAGE_STALE", "G10 inner lineage does not match authoritative state")
+        try:
+            live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+        except OSError as error:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 workspace is unavailable") from error
+        if live != binding.workspace_fingerprint or package.get("workspace_path") != binding.workspace_path:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 workspace binding is stale")
+        for artifact_id, checksum in (
+            (attempt.proposal_artifact_id, attempt.proposal_checksum),
+            (attempt.review_artifact_id, attempt.review_checksum),
+        ):
+            artifact = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+            if artifact is None or artifact.run_id != continuation.run_id or artifact.checksum != checksum:
+                raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact lineage is missing")
+            try:
+                payload = json.loads(store.read_artifact(continuation.run_id, artifact.relative_path).content)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
+                raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact cannot be verified") from error
+            if artifact_id == attempt.proposal_artifact_id:
+                if payload.get("failure_evidence_checksum") != attempt.failure_evidence_checksum or payload.get("context_pack_checksum") != attempt.context_pack_checksum:
+                    raise StageGateError("G10_LINEAGE_STALE", "G10 proposal evidence lineage is stale")
+                targets = payload.get("validation_targets") or []
+                if not targets or any(target not in {"build", "test", "lint"} for target in targets):
+                    raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
+            elif payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
+                raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
+        for invocation_id, role, artifact_id, checksum in (
+            (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
+            (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum),
+        ):
+            invocation = session.get(LlmInvocationModel, invocation_id)
+            if invocation is None or invocation.run_id != continuation.run_id or invocation.role != role or invocation.status != "completed" or (invocation.artifact_checksums or {}).get(artifact_id) != checksum:
+                raise StageGateError("G10_LINEAGE_STALE", "G10 invocation lineage is invalid")

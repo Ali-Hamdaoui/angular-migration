@@ -35,8 +35,15 @@ class PatchApplyService:
         stage_id: str,
         artifact_root: str,
         attempt_id: str,
+        approved_proposal_checksum: str | None = None,
+        proposal_artifact_checksum: str | None = None,
     ):
         workspace = Path(workspace_path).resolve(strict=True)
+        if (
+            approved_proposal_checksum is not None
+            and proposal_artifact_checksum != approved_proposal_checksum
+        ):
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Approved repair proposal checksum changed")
         if StageSandboxCopier.fingerprint(workspace) != expected_fingerprint:
             raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
         prepared = {

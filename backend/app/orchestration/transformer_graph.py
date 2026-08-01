@@ -37,6 +37,7 @@ from app.repositories.models import (
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
+    StageGateDecisionModel,
     StagePromptRequestModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -54,6 +55,7 @@ from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
     RepairLlmError,
+    RepairProposal,
 )
 from app.services.stage_gate_service import StageGateService
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -1038,7 +1040,30 @@ class TransformerOrchestrator:
                 "proposal_checksum": attempt.proposal_checksum,
                 "review_checksum": attempt.review_checksum,
                 "repair_attempt_id": attempt.id,
+                "proposal_artifact_id": attempt.proposal_artifact_id,
+                "review_artifact_id": attempt.review_artifact_id,
+                "proposer_invocation_id": attempt.proposer_invocation_id,
+                "reviewer_invocation_id": attempt.reviewer_invocation_id,
+                "workspace_binding_id": binding.id,
+                "workspace_path": binding.workspace_path,
+                "risk_level": attempt.risk_level,
+                "validation_targets": [],
             }
+            if gate_id == "G10":
+                proposal_metadata = session.get(
+                    ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
+                )
+                if proposal_metadata is None:
+                    raise TransformerStageError("REPAIR_PROPOSAL_MISSING", "Repair proposal artifact is missing")
+                proposal = json.loads(
+                    LocalFilesystemArtifactStore(
+                        Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+                    ).read_artifact(continuation.run_id, proposal_metadata.relative_path).content
+                )
+                payload["validation_targets"] = list(proposal.get("validation_targets") or [])
+                payload["backend_lineage_checksum"] = self._stage.checksum(
+                    {key: value for key, value in payload.items() if key != "backend_lineage_checksum"}
+                )
             context = (
                 run.artifact_root,
                 binding.workspace_fingerprint,
@@ -1078,9 +1103,34 @@ class TransformerOrchestrator:
             attempt = self._latest_repair(session, continuation)
             binding = self._stage._binding(session, continuation)
             run = session.get(MigrationRunModel, continuation.run_id)
+            gate = session.scalar(
+                select(StageGatePackageModel).where(
+                    StageGatePackageModel.run_id == continuation.run_id,
+                    StageGatePackageModel.stage_id == continuation.current_stage_id,
+                    StageGatePackageModel.gate_id == "G10",
+                    StageGatePackageModel.status == "approved",
+                ).order_by(StageGatePackageModel.gate_version.desc())
+            )
+            decision = session.scalar(
+                select(StageGateDecisionModel).where(
+                    StageGateDecisionModel.gate_package_id == gate.id if gate else False,
+                    StageGateDecisionModel.accepted.is_(True),
+                    StageGateDecisionModel.decision == "approve",
+                )
+            ) if gate else None
+            if gate is None or decision is None:
+                raise TransformerStageError("G10_APPROVAL_REQUIRED", "Repair application requires current human G10 approval")
+            self._gates._validate_repair_lineage(session, continuation, gate.package_artifact_id, gate.package_checksum)
             metadata = session.get(
                 ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
             )
+            if metadata is None or metadata.checksum != attempt.proposal_checksum:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal artifact is stale")
+            proposal_artifact = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            ).read_artifact(continuation.run_id, metadata.relative_path)
+            if proposal_artifact.ref.artifact_id != attempt.proposal_artifact_id or proposal_artifact.ref.checksum != attempt.proposal_checksum:
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
             checkpoint = session.scalar(
                 select(StageCheckpointModel)
                 .where(
@@ -1098,6 +1148,7 @@ class TransformerOrchestrator:
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
                 "proposal_path": str(Path(run.artifact_root) / metadata.relative_path),
+                "proposal_artifact_checksum": attempt.proposal_checksum,
                 "checkpoint_path": checkpoint.workspace_path,
                 "checkpoint_fingerprint": checkpoint.workspace_fingerprint,
                 "stage_root": (run.workspace_aliases or {})["STAGE_SANDBOX"],
@@ -1121,6 +1172,8 @@ class TransformerOrchestrator:
                 stage_id=context["stage_id"],
                 artifact_root=context["artifact_root"],
                 attempt_id=context["attempt_id"],
+                approved_proposal_checksum=context["proposal_artifact_checksum"],
+                proposal_artifact_checksum=context["proposal_artifact_checksum"],
             )
         except RepairApplicationError as error:
             with self._scope() as session:
@@ -1164,8 +1217,22 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
             if attempt.status in {"applied", "revalidating_affected"}:
-                invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
-                proposal = json.loads(invocation.redacted_summary or "{}")
+                run = session.get(MigrationRunModel, continuation.run_id)
+                metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
+                if run is None or metadata is None or metadata.checksum != attempt.proposal_checksum:
+                    self._block(continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale")
+                    return
+                try:
+                    proposal = RepairProposal.model_validate(
+                        json.loads(
+                            LocalFilesystemArtifactStore(
+                                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+                            ).read_artifact(continuation.run_id, metadata.relative_path).content
+                        )
+                    ).model_dump(mode="json")
+                except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as error:
+                    self._block(continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal cannot be verified")
+                    return
                 targets = list(proposal.get("validation_targets") or [])
                 mapping = {"build": "builds", "test": "tests", "lint": "lint"}
                 group = mapping.get(targets[0] if targets else "")

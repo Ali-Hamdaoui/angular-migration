@@ -11,6 +11,7 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import (
@@ -36,9 +37,12 @@ from app.repositories.models import (
     LlmInvocationModel,
     MigrationRunModel,
     RepairAttemptModel,
+    StageExecutionPlanModel,
     StageWorkspaceBindingModel,
+    TransformationContinuationModel,
     UsageCostRecordModel,
 )
+from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
 class RepairApplicationError(ValueError):
@@ -228,7 +232,7 @@ class RepairApplicationService:
         recovered = self._recover_completed(context, role="proposer")
         if recovered is not None:
             return recovered
-        self._start_invocation(
+        context = self._start_invocation(
             context,
             role=LlmRole.REPAIR_PROPOSER,
             task_type=LlmTaskType.REPAIR_DIAGNOSIS,
@@ -255,6 +259,7 @@ class RepairApplicationService:
             )
             raise
         try:
+            context = self._assert_fresh_authority(context, role="proposer")
             proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
         except RepairApplicationError as error:
             self._persist_failure(
@@ -266,14 +271,22 @@ class RepairApplicationService:
             )
             raise
         stored = self._write(context, "proposal", proposal)
-        self._persist_call(
-            context,
-            response,
-            stored,
-            role="proposer",
-            schema_name=self.proposer_schema,
-            summary=proposal,
-        )
+        try:
+            self._persist_call(
+                context,
+                response,
+                stored,
+                role="proposer",
+                schema_name=self.proposer_schema,
+                summary=proposal,
+            )
+        except RepairApplicationError as error:
+            self._remove_uncommitted_artifact(stored)
+            self._persist_failure(
+                context, LlmRole.REPAIR_PROPOSER, error,
+                failure_stage_override="authority_check", response=response,
+            )
+            raise
         return proposal
 
     def review(self, attempt_id: str) -> dict[str, object]:
@@ -281,7 +294,7 @@ class RepairApplicationService:
         recovered = self._recover_completed(context, role="reviewer")
         if recovered is not None:
             return recovered
-        self._start_invocation(
+        context = self._start_invocation(
             context,
             role=LlmRole.REPAIR_REVIEWER,
             task_type=LlmTaskType.REPAIR_REVIEW,
@@ -307,8 +320,8 @@ class RepairApplicationService:
                 context, LlmRole.REPAIR_REVIEWER, error, failure_stage_override="local"
             )
             raise
-        context = self._attempt_context(attempt_id, include_proposal=True)
         try:
+            context = self._assert_fresh_authority(context, role="reviewer", include_proposal=True)
             review = self._bind_review_candidate(output, context)
         except (RepairApplicationError, ValidationError) as error:
             semantic_error = (
@@ -337,14 +350,22 @@ class RepairApplicationService:
             )
             raise error
         stored = self._write(context, "review", review)
-        self._persist_call(
-            context,
-            response,
-            stored,
-            role="reviewer",
-            schema_name=self.reviewer_schema,
-            summary=review,
-        )
+        try:
+            self._persist_call(
+                context,
+                response,
+                stored,
+                role="reviewer",
+                schema_name=self.reviewer_schema,
+                summary=review,
+            )
+        except RepairApplicationError as error:
+            self._remove_uncommitted_artifact(stored)
+            self._persist_failure(
+                context, LlmRole.REPAIR_REVIEWER, error,
+                failure_stage_override="authority_check", response=response,
+            )
+            raise
         return review
 
     def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
@@ -460,6 +481,20 @@ class RepairApplicationService:
     def _prompt_version(schema_name: str, task_type: LlmTaskType) -> str:
         return PromptRegistry.defaults().get(schema_name, task_type).version
 
+    @staticmethod
+    def _logical_request_checksum(
+        segments: list[str], schema_name: str, prompt_version: str, schema_version: str
+    ) -> str:
+        payload = {
+            "segments": segments,
+            "schema_name": schema_name,
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+        }
+        return "sha256:" + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
     def _bind_review_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairReviewCandidate.model_validate(value)
         return RepairReview(
@@ -559,13 +594,40 @@ class RepairApplicationService:
 
     def _attempt_context(self, attempt_id: str, *, include_proposal: bool = False):
         with self._scope() as session:
-            attempt = session.get(RepairAttemptModel, attempt_id)
+            attempt = session.scalar(select(RepairAttemptModel).where(RepairAttemptModel.id == attempt_id))
             if attempt is None:
                 raise RepairApplicationError("REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt is missing")
-            run = session.get(MigrationRunModel, attempt.run_id)
-            binding = session.query(StageWorkspaceBindingModel).filter_by(
-                run_id=attempt.run_id, stage_id=attempt.stage_id, active=True
-            ).one()
+            run = session.scalar(select(MigrationRunModel).where(MigrationRunModel.id == attempt.run_id))
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == attempt.run_id,
+                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if run is None or binding is None:
+                raise RepairApplicationError("REPAIR_AUTHORITY_MISSING", "Repair authority is missing")
+            stage_plan = session.scalar(
+                select(StageExecutionPlanModel).where(
+                    StageExecutionPlanModel.run_id == attempt.run_id,
+                    StageExecutionPlanModel.stage_id == attempt.stage_id,
+                    StageExecutionPlanModel.checksum == (
+                        session.scalar(
+                            select(TransformationContinuationModel.stage_plan_checksum).where(
+                                TransformationContinuationModel.run_id == attempt.run_id,
+                                TransformationContinuationModel.current_stage_id == attempt.stage_id,
+                            )
+                        )
+                        or ""
+                    ),
+                )
+            )
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == attempt.run_id,
+                    TransformationContinuationModel.current_stage_id == attempt.stage_id,
+                )
+            )
             context = {
                 "attempt_id": attempt.id,
                 "run_id": attempt.run_id,
@@ -577,7 +639,20 @@ class RepairApplicationService:
                 "context_pack_artifact_id": attempt.context_pack_artifact_id,
                 "proposal_checksum": attempt.proposal_checksum,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
+                "failure_evidence_artifact_id": attempt.failure_evidence_artifact_id,
+                "attempt_number": attempt.attempt_number,
+                "attempt_status": attempt.status,
+                "parent_attempt_id": attempt.parent_attempt_id,
+                "run_state_version": run.state_version,
+                "continuation_state_version": continuation.state_version if continuation else None,
+                "stage_plan_id": stage_plan.id if stage_plan else (continuation.stage_plan_id if continuation else None),
+                "stage_plan_checksum": stage_plan.checksum if stage_plan else (continuation.stage_plan_checksum if continuation else None),
+                "stage_plan_state_version": stage_plan.state_version if stage_plan else None,
+                "workspace_binding_id": binding.id,
+                "workspace_stored_fingerprint": binding.workspace_fingerprint,
             }
+            if not attempt.context_pack_artifact_id or not attempt.context_pack_checksum:
+                raise RepairApplicationError("REPAIR_CONTEXT_MISSING", "Repair context artifact is missing")
             artifact_ids = [attempt.context_pack_artifact_id]
             if include_proposal:
                 if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
@@ -586,21 +661,75 @@ class RepairApplicationService:
                     )
                 artifact_ids.append(attempt.proposal_artifact_id)
             metadata = {
-                item.id.removeprefix("metadata-"): item.relative_path
+                item.id.removeprefix("metadata-"): item
                 for item in session.query(ArtifactMetadataModel)
-                .filter(ArtifactMetadataModel.id.in_([f"metadata-{item}" for item in artifact_ids]))
+                .filter(
+                    ArtifactMetadataModel.run_id == attempt.run_id,
+                    ArtifactMetadataModel.id.in_([f"metadata-{item}" for item in artifact_ids]),
+                )
                 .all()
             }
+            if any(artifact_id not in metadata for artifact_id in artifact_ids):
+                raise RepairApplicationError("REPAIR_EVIDENCE_MISSING", "Repair artifact metadata is missing")
+            expected_checksums = {
+                attempt.context_pack_artifact_id: attempt.context_pack_checksum,
+            }
+            if include_proposal:
+                expected_checksums[attempt.proposal_artifact_id] = attempt.proposal_checksum
+            for artifact_id, expected in expected_checksums.items():
+                if metadata[artifact_id].checksum != expected:
+                    raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact checksum binding is stale")
         root = Path(str(context["artifact_root"]))
         store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
-        artifacts = [
-            store.read_artifact(str(context["run_id"]), metadata[artifact_id])
-            for artifact_id in artifact_ids
-        ]
+        artifacts = [store.read_artifact(str(context["run_id"]), metadata[artifact_id].relative_path) for artifact_id in artifact_ids]
+        if any(artifact.ref.checksum != metadata[artifact.ref.artifact_id].checksum for artifact in artifacts):
+            raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact checksum verification failed")
+        workspace = Path(str(context["workspace_path"]))
+        try:
+            context["workspace_live_fingerprint"] = StageSandboxCopier.fingerprint(workspace)
+        except OSError as error:
+            raise RepairApplicationError("REPAIR_WORKSPACE_MISSING", "Repair workspace is unavailable") from error
+        if context["workspace_live_fingerprint"] != context["workspace_stored_fingerprint"]:
+            raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
         context["segments"] = [artifact.content for artifact in artifacts]
         if include_proposal:
             context["proposal_checksum"] = artifacts[-1].ref.checksum
+        context["authority_snapshot"] = self._authority_snapshot(context)
         return context
+
+    @staticmethod
+    def _authority_snapshot(context: dict[str, object]) -> dict[str, object]:
+        return {
+            key: context.get(key)
+            for key in (
+                "run_id", "run_state_version", "continuation_state_version", "stage_id",
+                "stage_plan_id", "stage_plan_checksum", "stage_plan_state_version",
+                "attempt_id", "attempt_number", "attempt_status", "parent_attempt_id",
+                "failure_evidence_artifact_id", "failure_evidence_checksum",
+                "context_pack_artifact_id", "context_pack_checksum",
+                "proposal_artifact_id", "proposal_checksum", "workspace_binding_id",
+                "workspace_path", "workspace_stored_fingerprint", "workspace_live_fingerprint",
+            )
+        }
+
+    def _assert_fresh_authority(
+        self, context: dict[str, object], *, role: str, include_proposal: bool = False
+    ) -> dict[str, object]:
+        fresh = self._attempt_context(str(context["attempt_id"]), include_proposal=include_proposal)
+        if fresh["authority_snapshot"] != context["authority_snapshot"]:
+            raise RepairApplicationError(
+                "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
+                "Repair authority changed while the provider was running",
+            )
+        fresh.update(
+            request_checksum=context.get("request_checksum"),
+            prompt_version=context.get("prompt_version"),
+            schema_version=context.get("schema_version"),
+            invocation_id=context.get("invocation_id"),
+            invocation_state_version=context.get("invocation_state_version"),
+            authority_snapshot=context["authority_snapshot"],
+        )
+        return fresh
 
     def _call(self, context, *, role, task, schema_name, schema, policy):
         if self._gateway is None and not get_settings().llm_enabled:
@@ -611,6 +740,9 @@ class RepairApplicationService:
         registry.register(schema_name, schema)
         try:
             gateway = self._gateway or AzureOpenAILLMGateway(settings=get_settings(), registry=registry)
+            if isinstance(gateway, AzureOpenAILLMGateway):
+                gateway._prompt_registry.get(schema_name, task)
+                gateway.registry.json_schema(schema_name)
             self._mark_transport_started(context, role)
             response = gateway.complete(
                 LlmRequest(
@@ -647,7 +779,7 @@ class RepairApplicationService:
         with self._scope() as session:
             invocation = (
                 session.query(LlmInvocationModel)
-                .filter_by(idempotency_key=invocation_key)
+                .filter_by(run_id=context["run_id"], idempotency_key=invocation_key)
                 .one_or_none()
             )
             if invocation is None:
@@ -667,7 +799,7 @@ class RepairApplicationService:
                     "Completed repair LLM invocation is not finalized",
                 )
             attempt = session.get(RepairAttemptModel, context["attempt_id"])
-            if attempt is None:
+            if attempt is None or attempt.run_id != context["run_id"]:
                 raise RepairApplicationError(
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
                     "Repair attempt is missing",
@@ -679,17 +811,44 @@ class RepairApplicationService:
                     "Completed repair LLM invocation has no persisted artifact",
                 )
             metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
-            if metadata is None:
+            if (
+                metadata is None
+                or metadata.run_id != attempt.run_id
+                or metadata.stage_id != attempt.stage_id
+                or getattr(attempt, "proposal_checksum" if role == "proposer" else "review_checksum")
+                != metadata.checksum
+                or artifact_id not in (invocation.artifact_ids or [])
+                or (invocation.artifact_checksums or {}).get(artifact_id) != metadata.checksum
+                or invocation.role != ("repair_proposer" if role == "proposer" else "repair_reviewer")
+                or getattr(attempt, "proposer_invocation_id" if role == "proposer" else "reviewer_invocation_id")
+                != invocation.id
+            ):
                 raise RepairApplicationError(
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
-                    "Completed repair artifact is not registered",
+                    "Completed repair artifact lineage is invalid",
                 )
             relative_path = metadata.relative_path
         root = Path(str(context["artifact_root"]))
         store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
         try:
-            content = store.read_artifact(str(context["run_id"]), relative_path).content
-            return json.loads(content)
+            stored = store.read_artifact(str(context["run_id"]), relative_path)
+            if stored.ref.artifact_id != artifact_id or stored.ref.checksum != metadata.checksum:
+                raise ArtifactStoreError("Completed repair artifact checksum binding is invalid")
+            payload = json.loads(stored.content)
+            if role == "proposer":
+                value = RepairProposal.model_validate(payload).model_dump(mode="json")
+                if (
+                    value["failure_evidence_checksum"] != attempt.failure_evidence_checksum
+                    or value["context_pack_checksum"] != attempt.context_pack_checksum
+                ):
+                    raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Completed proposal evidence lineage is stale")
+            else:
+                value = RepairReview.model_validate(payload).model_dump(mode="json")
+                if value["proposal_checksum"] != attempt.proposal_checksum:
+                    raise RepairApplicationError("REPAIR_REVIEW_STALE", "Completed review proposal lineage is stale")
+            return value
+        except RepairApplicationError:
+            raise
         except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as exc:
             raise RepairApplicationError(
                 "REPAIR_ARTIFACT_RECOVERY_FAILED",
@@ -698,24 +857,30 @@ class RepairApplicationService:
 
     def _start_invocation(
         self, context, *, role: LlmRole, task_type: LlmTaskType, schema_name: str, schema
-    ) -> None:
+    ) -> dict[str, object]:
         invocation_id = _invocation_key(str(context["attempt_id"]), role)
         now = self._now()
-        request_checksum = "sha256:" + hashlib.sha256(
-            json.dumps(context["segments"], sort_keys=True).encode()
-        ).hexdigest()
+        prompt_version = self._prompt_version(schema_name, task_type)
+        schema_version = get_settings().llm_schema_registry_version
+        request_checksum = self._logical_request_checksum(
+            context["segments"], schema_name, prompt_version, schema_version
+        )
         input_hashes = [
             str(context["failure_evidence_checksum"]),
             str(context["context_pack_checksum"]),
             "schema:"
             + hashlib.sha256(json.dumps(schema.model_json_schema(), sort_keys=True).encode()).hexdigest(),
         ]
-        prompt_version = self._prompt_version(schema_name, task_type)
-        schema_version = get_settings().llm_schema_registry_version
         try:
             with self._scope() as session:
-                session.add(
-                    LlmInvocationModel(
+                existing = session.scalar(
+                    select(LlmInvocationModel).where(
+                        LlmInvocationModel.run_id == context["run_id"],
+                        LlmInvocationModel.idempotency_key == invocation_id,
+                    )
+                )
+                if existing is None:
+                    session.add(LlmInvocationModel(
                         id=invocation_id,
                         run_id=context["run_id"],
                         stage_id=context["stage_id"],
@@ -744,34 +909,100 @@ class RepairApplicationService:
                         started_at=now,
                         completed_at=None,
                         created_at=now,
+                    ))
+                    context.update(
+                        request_checksum=request_checksum,
+                        prompt_version=prompt_version,
+                        schema_version=schema_version,
+                        invocation_id=invocation_id,
+                        invocation_state_version=1,
+                    )
+                    return context
+                if existing.request_checksum != request_checksum and existing.status != "failed":
+                    raise RepairApplicationError(
+                        "REPAIR_INVOCATION_PAYLOAD_MISMATCH",
+                        "Repair invocation key has a different logical request",
+                    )
+                if existing.status == "completed":
+                    context.update(
+                        request_checksum=request_checksum,
+                        prompt_version=prompt_version,
+                        schema_version=schema_version,
+                        invocation_id=existing.id,
+                        invocation_state_version=existing.state_version,
+                    )
+                    return context
+                if existing.status == "in_progress" and existing.transport_started:
+                    raise RepairApplicationError(
+                        "REPAIR_INVOCATION_UNCERTAIN",
+                        "Repair LLM invocation outcome is uncertain",
+                    )
+                if existing.status not in {"failed", "in_progress"}:
+                    raise RepairApplicationError("REPAIR_INVOCATION_INVALID", "Repair invocation state is invalid")
+                changed = session.execute(
+                    update(LlmInvocationModel)
+                    .where(
+                        LlmInvocationModel.run_id == context["run_id"],
+                        LlmInvocationModel.idempotency_key == invocation_id,
+                        LlmInvocationModel.state_version == existing.state_version,
+                        LlmInvocationModel.status.in_(("failed", "in_progress")),
+                        LlmInvocationModel.transport_started.is_not(True),
+                    )
+                    .values(
+                        request_checksum=request_checksum,
+                        input_hashes=input_hashes,
+                        prompt_version=prompt_version,
+                        schema_version=schema_version,
+                        status="in_progress",
+                        completed_at=None,
+                        state_version=existing.state_version + 1,
                     )
                 )
+                if changed.rowcount != 1:
+                    raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership was lost")
+                context.update(
+                    request_checksum=request_checksum,
+                    prompt_version=prompt_version,
+                    schema_version=schema_version,
+                    invocation_id=existing.id,
+                    invocation_state_version=existing.state_version + 1,
+                )
+                return context
         except IntegrityError:
             with self._scope() as session:
                 existing = (
                     session.query(LlmInvocationModel)
-                    .filter_by(idempotency_key=invocation_id)
+                    .filter_by(run_id=context["run_id"], idempotency_key=invocation_id)
                     .one_or_none()
                 )
                 if existing is None:
                     raise
-                existing.request_checksum = request_checksum
-                existing.input_hashes = input_hashes
-                existing.prompt_version = prompt_version
-                existing.schema_version = schema_version
-                existing.status = "in_progress"
-                existing.transport_started = False
-                existing.completed_at = None
+                if existing.status == "in_progress" and existing.transport_started:
+                    raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair LLM invocation outcome is uncertain")
+                context.update(
+                    request_checksum=request_checksum,
+                    prompt_version=prompt_version,
+                    schema_version=schema_version,
+                    invocation_id=existing.id,
+                    invocation_state_version=existing.state_version,
+                )
+                return context
 
     def _mark_transport_started(self, context, role: LlmRole) -> None:
         with self._scope() as session:
-            invocation = (
-                session.query(LlmInvocationModel)
-                .filter_by(idempotency_key=_invocation_key(str(context["attempt_id"]), role))
-                .one_or_none()
+            invocation = session.scalar(
+                select(LlmInvocationModel).where(
+                    LlmInvocationModel.run_id == context["run_id"],
+                    LlmInvocationModel.idempotency_key == _invocation_key(str(context["attempt_id"]), role),
+                    LlmInvocationModel.status == "in_progress",
+                    LlmInvocationModel.state_version == context.get("invocation_state_version"),
+                    LlmInvocationModel.transport_started.is_not(True),
+                )
             )
-            if invocation is not None and invocation.status == "in_progress":
-                invocation.transport_started = True
+            if invocation is None:
+                raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership was lost")
+            invocation.transport_started = True
+            invocation.state_version += 1
 
     def _persist_failure(
         self,
@@ -822,7 +1053,10 @@ class RepairApplicationService:
             self._register_artifact_metadata(session, context, stored)
             invocation = (
                 session.query(LlmInvocationModel)
-                .filter_by(idempotency_key=_invocation_key(str(context["attempt_id"]), role))
+                .filter_by(
+                    run_id=context["run_id"],
+                    idempotency_key=_invocation_key(str(context["attempt_id"]), role),
+                )
                 .one_or_none()
             )
             if invocation is None:
@@ -879,6 +1113,7 @@ class RepairApplicationService:
 
     def _write(self, context, kind, value):
         root = Path(str(context["artifact_root"]))
+        self._last_artifact_root = root
         return LocalFilesystemArtifactStore(root.parent, fixed_run_root=root).write_text_artifact(
             str(context["run_id"]),
             f"05_repairs/attempt-{context['attempt_id']}/{kind}.json",
@@ -897,85 +1132,106 @@ class RepairApplicationService:
 
     def _persist_call(self, context, response, stored, *, role, schema_name, summary):
         with self._scope() as session:
-            attempt = session.get(RepairAttemptModel, context["attempt_id"])
+            attempt = session.scalar(
+                select(RepairAttemptModel).where(
+                    RepairAttemptModel.id == context["attempt_id"],
+                    RepairAttemptModel.run_id == context["run_id"],
+                    RepairAttemptModel.stage_id == context["stage_id"],
+                )
+            )
+            run = session.scalar(select(MigrationRunModel).where(MigrationRunModel.id == context["run_id"]))
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == context["run_id"],
+                    StageWorkspaceBindingModel.stage_id == context["stage_id"],
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == context["run_id"],
+                    TransformationContinuationModel.current_stage_id == context["stage_id"],
+                )
+            )
+            stage_plan = session.get(StageExecutionPlanModel, context.get("stage_plan_id")) if context.get("stage_plan_id") else None
+            if attempt is None or run is None or binding is None:
+                raise RepairApplicationError("REPAIR_PROPOSAL_STALE" if role == "proposer" else "REPAIR_REVIEW_STALE", "Repair authority is missing")
+            try:
+                live_fingerprint = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError as error:
+                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace is unavailable") from error
+            current = {
+                "run_id": run.id,
+                "run_state_version": run.state_version,
+                "continuation_state_version": continuation.state_version if continuation else None,
+                "stage_id": attempt.stage_id,
+                "stage_plan_id": stage_plan.id if stage_plan else (continuation.stage_plan_id if continuation else None),
+                "stage_plan_checksum": stage_plan.checksum if stage_plan else (continuation.stage_plan_checksum if continuation else None),
+                "stage_plan_state_version": stage_plan.state_version if stage_plan else None,
+                "attempt_id": attempt.id,
+                "attempt_number": attempt.attempt_number,
+                "attempt_status": attempt.status,
+                "parent_attempt_id": attempt.parent_attempt_id,
+                "failure_evidence_artifact_id": attempt.failure_evidence_artifact_id,
+                "failure_evidence_checksum": attempt.failure_evidence_checksum,
+                "context_pack_artifact_id": attempt.context_pack_artifact_id,
+                "context_pack_checksum": attempt.context_pack_checksum,
+                "proposal_artifact_id": attempt.proposal_artifact_id,
+                "proposal_checksum": attempt.proposal_checksum,
+                "workspace_binding_id": binding.id,
+                "workspace_path": binding.workspace_path,
+                "workspace_stored_fingerprint": binding.workspace_fingerprint,
+                "workspace_live_fingerprint": live_fingerprint,
+            }
+            if current != context["authority_snapshot"]:
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
+                    "Repair authority changed before success persistence",
+                )
+            expected_run_version = context["authority_snapshot"]["run_state_version"]
+            run_claim = session.execute(
+                update(MigrationRunModel)
+                .where(MigrationRunModel.id == context["run_id"], MigrationRunModel.state_version == expected_run_version)
+                .values(state_version=MigrationRunModel.state_version + 1, updated_at=self._now())
+            )
+            if run_claim.rowcount != 1:
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
+                    "Run state changed before success persistence",
+                )
             invocation_id = _invocation_key(attempt.id, role)
             now = self._now()
-            invocation = (
-                session.query(LlmInvocationModel)
-                .filter_by(idempotency_key=invocation_id)
-                .one_or_none()
+            invocation = session.scalar(
+                select(LlmInvocationModel).where(
+                    LlmInvocationModel.run_id == attempt.run_id,
+                    LlmInvocationModel.idempotency_key == invocation_id,
+                )
             )
             if invocation is None:
-                invocation = LlmInvocationModel(
-                    id=invocation_id,
-                    run_id=attempt.run_id,
-                    stage_id=attempt.stage_id,
-                    idempotency_key=invocation_id,
-                    request_checksum="sha256:" + hashlib.sha256(
-                        json.dumps(context["segments"], sort_keys=True).encode()
-                    ).hexdigest(),
-                    input_hashes=[
-                        str(attempt.failure_evidence_checksum),
-                        str(attempt.context_pack_checksum),
-                    ],
-                    correlation_id=invocation_id,
-                    actor="transformer",
-                    role=response.role.value,
-                    task_type=response.task_type.value,
-                    provider="azure_openai",
-                    deployment_alias=response.model_deployment_alias,
-                    prompt_version=response.prompt_version
-                    or self._prompt_version(schema_name, response.task_type),
-                    schema_version=response.schema_version or get_settings().llm_schema_registry_version,
-                    pricing_version=response.pricing_version or get_settings().llm_pricing_version,
-                    stage="repair",
-                    redacted_summary=json.dumps(summary, sort_keys=True),
-                    status="completed",
-                    artifact_ids=[stored.ref.artifact_id],
-                    artifact_checksums={stored.ref.artifact_id: stored.ref.checksum},
-                    state_version=1,
-                    event_sequence=0,
-                    retries=response.usage.retry_count,
-                    provider_request_id=response.provider_request_id,
-                    started_at=now,
-                    completed_at=now,
-                    created_at=now,
-                )
-                session.add(invocation)
-            else:
-                invocation.status = "completed"
-                invocation.failure_code = None
-                invocation.role = response.role.value
-                invocation.task_type = response.task_type.value
-                invocation.deployment_alias = response.model_deployment_alias
-                invocation.prompt_version = response.prompt_version or self._prompt_version(
-                    schema_name, response.task_type
-                )
-                invocation.schema_version = (
-                    response.schema_version or get_settings().llm_schema_registry_version
-                )
-                invocation.pricing_version = (
-                    response.pricing_version or get_settings().llm_pricing_version
-                )
-                invocation.redacted_summary = json.dumps(summary, sort_keys=True)
-                invocation.artifact_ids = list(
-                    dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id])
-                )
-                invocation.artifact_checksums = {
-                    **(invocation.artifact_checksums or {}),
-                    stored.ref.artifact_id: stored.ref.checksum,
-                }
-                invocation.retries = (invocation.retries or 0) + (response.usage.retry_count or 0)
-                if response.provider_request_id and not invocation.provider_request_id:
-                    invocation.provider_request_id = response.provider_request_id
-                invocation.transport_started = True
-                invocation.response_received = True
-                invocation.completed_at = now
-                started_at = invocation.started_at
-                if started_at is not None and started_at.tzinfo is not None:
-                    invocation.latency_ms = max(
-                        0, int((now - started_at).total_seconds() * 1000)
-                    )
+                raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation is missing")
+            if invocation.status != "in_progress" or not invocation.transport_started:
+                raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation is not owned")
+            invocation.status = "completed"
+            invocation.failure_code = None
+            invocation.role = response.role.value
+            invocation.task_type = response.task_type.value
+            invocation.deployment_alias = response.model_deployment_alias
+            invocation.prompt_version = response.prompt_version or self._prompt_version(schema_name, response.task_type)
+            invocation.schema_version = response.schema_version or get_settings().llm_schema_registry_version
+            invocation.pricing_version = response.pricing_version or get_settings().llm_pricing_version
+            invocation.redacted_summary = json.dumps(summary, sort_keys=True)
+            invocation.artifact_ids = list(dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id]))
+            invocation.artifact_checksums = {**(invocation.artifact_checksums or {}), stored.ref.artifact_id: stored.ref.checksum}
+            invocation.retries = (invocation.retries or 0) + (response.usage.retry_count or 0)
+            if response.provider_request_id and not invocation.provider_request_id:
+                invocation.provider_request_id = response.provider_request_id
+            invocation.transport_started = True
+            invocation.response_received = True
+            invocation.completed_at = now
+            invocation.state_version += 1
+            started_at = invocation.started_at
+            if started_at is not None and started_at.tzinfo is not None:
+                invocation.latency_ms = max(0, int((now - started_at).total_seconds() * 1000))
             session.add(
                 UsageCostRecordModel(
                     id="usage-cost-" + uuid4().hex[:12],
@@ -1008,6 +1264,17 @@ class RepairApplicationService:
                     "review_accepted" if summary["decision"] == "accept" else summary["decision"]
                 )
             attempt.updated_at = now
+
+    def _remove_uncommitted_artifact(self, stored) -> None:
+        # The store has already versioned this path; remove only this newly-created pair.
+        run_root = Path(str(self._last_artifact_root)) if hasattr(self, "_last_artifact_root") else None
+        if run_root is None:
+            return
+        for path in (run_root / stored.ref.relative_path, run_root / f"{stored.ref.relative_path}.meta.json"):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _safe_path(self, value: str, workspace: Path) -> str:
         if "\\" in value:

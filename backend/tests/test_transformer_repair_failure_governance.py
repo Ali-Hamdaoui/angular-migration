@@ -43,6 +43,7 @@ from app.services.repair_application_service import (
 )
 from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.transformer_stage_service import TransformerStageService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
@@ -119,20 +120,16 @@ def _responses_body(text: str) -> dict[str, object]:
 def _proposal_payload(app_ts: Path) -> dict[str, object]:
     checksum = "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest()
     return {
-        "failure_evidence_checksum": "sha256:failure",
-        "context_pack_checksum": "sha256:context",
         "proposal_format": "operations",
         "operations": [
             {
                 "operation": "replace_text",
                 "path": "src/app.ts",
-                "preimage_sha256": checksum,
                 "old_text": "old",
                 "new_text": "new",
             }
         ],
         "unified_diff": None,
-        "touched_files": ["src/app.ts"],
         "rationale": ["Fix the compiler error."],
         "risk_level": "low",
         "validation_targets": ["build"],
@@ -142,7 +139,6 @@ def _proposal_payload(app_ts: Path) -> dict[str, object]:
 
 def _review_payload(proposal_checksum: str) -> dict[str, object]:
     return {
-        "proposal_checksum": proposal_checksum,
         "decision": "accept",
         "findings": [],
         "policy_checks": ["paths"],
@@ -154,8 +150,9 @@ def _review_payload(proposal_checksum: str) -> dict[str, object]:
 
 def _gateway(transport, settings, *, prompt_registry: PromptRegistry | None = None):
     schema_registry = PromptSchemaRegistry()
-    schema_registry.register("repair_proposer_v1", RepairProposal)
-    schema_registry.register("repair_reviewer_v1", RepairReview)
+    from app.services.repair_application_service import RepairProposalCandidate, RepairReviewCandidate
+    schema_registry.register("repair_proposer_candidate_v2", RepairProposalCandidate)
+    schema_registry.register("repair_reviewer_candidate_v2", RepairReviewCandidate)
     return AzureOpenAILLMGateway(
         settings=settings,
         transport=transport,
@@ -246,7 +243,7 @@ def _seed(
         stage_id=stage_id,
         alias="STAGE_WORKSPACE_1",
         workspace_path=str(workspace),
-        workspace_fingerprint="fingerprint-1",
+        workspace_fingerprint=StageSandboxCopier.fingerprint(workspace),
         active=True,
         created_at=NOW,
     )
@@ -285,11 +282,11 @@ def _seed(
         failure_route_artifact_id="artifact-route",
         failure_route_checksum="sha256:route",
         context_pack_artifact_id=context.ref.artifact_id,
-        context_pack_checksum="sha256:context",
+        context_pack_checksum=context.ref.checksum,
         proposal_artifact_id=proposal.ref.artifact_id if proposed else None,
         proposal_checksum=proposal.ref.checksum if proposed else None,
         proposer_invocation_id=f"{attempt_id}:proposer" if proposed else None,
-        pre_fingerprint="fingerprint-1",
+        pre_fingerprint=context.ref.checksum,
         failure_fingerprint="fingerprint-failure",
         created_at=NOW,
         updated_at=NOW,

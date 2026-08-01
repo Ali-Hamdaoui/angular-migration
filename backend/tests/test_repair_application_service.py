@@ -39,6 +39,7 @@ from app.services.repair_application_service import (
     RepairReviewCandidate,
     _translate_gateway_failure,
 )
+from app.services.stage_preparation_primitives import StageSandboxCopier
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
@@ -432,7 +433,7 @@ def _seed_service(factory, tmp_path: Path):
         stage_id="stage-1",
         alias="STAGE_WORKSPACE_1",
         workspace_path=str(workspace),
-        workspace_fingerprint="fingerprint-1",
+        workspace_fingerprint=StageSandboxCopier.fingerprint(workspace),
         active=True,
         created_at=NOW,
     )
@@ -449,11 +450,11 @@ def _seed_service(factory, tmp_path: Path):
         failure_route_artifact_id="artifact-route",
         failure_route_checksum="sha256:route",
         context_pack_artifact_id=context.ref.artifact_id,
-        context_pack_checksum="sha256:context",
+        context_pack_checksum=context.ref.checksum,
         proposal_artifact_id=None,
         proposal_checksum=None,
         proposer_invocation_id=None,
-        pre_fingerprint="fingerprint-1",
+        pre_fingerprint=context.ref.checksum,
         failure_fingerprint="fingerprint-failure",
         created_at=NOW,
         updated_at=NOW,
@@ -598,8 +599,10 @@ def test_repair_runtime_uses_v2_candidates_and_binds_authority_fields(tmp_path: 
     ]
     assert "failure_evidence_checksum" not in formats[0]["schema"]["properties"]
     assert "proposal_checksum" not in formats[1]["schema"]["properties"]
-    assert proposal["failure_evidence_checksum"] == "sha256:failure"
-    assert proposal["context_pack_checksum"] == "sha256:context"
+    session = factory()
+    assert proposal["failure_evidence_checksum"] == session.get(RepairAttemptModel, attempt_id).failure_evidence_checksum
+    assert proposal["context_pack_checksum"] == session.get(RepairAttemptModel, attempt_id).context_pack_checksum
+    session.close()
     assert proposal["touched_files"] == ["src/app.ts"]
     assert proposal["operations"][0]["preimage_sha256"] == (
         "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest()
