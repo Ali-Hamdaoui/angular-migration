@@ -34,7 +34,9 @@ from app.services.repair_application_service import (
     RepairApplicationService,
     RepairLlmError,
     RepairProposal,
+    RepairProposalCandidate,
     RepairReview,
+    RepairReviewCandidate,
     _translate_gateway_failure,
 )
 
@@ -61,6 +63,37 @@ def _proposal(path: Path):
         "rationale": ["Fix the compiler error."],
         "risk_level": "low",
         "validation_targets": ["build"],
+        "limitations": [],
+    }
+
+
+def _proposal_candidate():
+    return {
+        "proposal_format": "operations",
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "src/app.ts",
+                "old_text": "old",
+                "new_text": "new",
+                "content": None,
+            }
+        ],
+        "unified_diff": None,
+        "rationale": ["Fix the compiler error."],
+        "risk_level": "low",
+        "validation_targets": ["build"],
+        "limitations": [],
+    }
+
+
+def _review_candidate():
+    return {
+        "decision": "accept",
+        "findings": [],
+        "policy_checks": ["paths"],
+        "risk_assessment": "low",
+        "required_validation_targets": ["build"],
         "limitations": [],
     }
 
@@ -353,6 +386,8 @@ def _gateway(transport, settings: Settings):
     schema_registry = PromptSchemaRegistry()
     schema_registry.register("repair_proposer_v1", RepairProposal)
     schema_registry.register("repair_reviewer_v1", RepairReview)
+    schema_registry.register("repair_proposer_candidate_v2", RepairProposalCandidate)
+    schema_registry.register("repair_reviewer_candidate_v2", RepairReviewCandidate)
     return AzureOpenAILLMGateway(
         settings=settings,
         transport=transport,
@@ -445,17 +480,8 @@ def _seed_service(factory, tmp_path: Path):
 def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
-    out_of_vocabulary = {
-        "failure_evidence_checksum": "sha256:failure",
-        "context_pack_checksum": "sha256:context",
-        "proposal_format": "operations",
-        "operations": [{"operation": "modify_file", "path": "src/app.ts"}],
-        "touched_files": ["src/app.ts"],
-        "rationale": ["x"],
-        "risk_level": "low",
-        "validation_targets": ["build"],
-        "limitations": [],
-    }
+    out_of_vocabulary = _proposal_candidate()
+    out_of_vocabulary["operations"] = [{"operation": "modify_file", "path": "src/app.ts"}]
     body = _responses_body(json.dumps(out_of_vocabulary))
     transport = _RecordingTransport(
         [
@@ -496,6 +522,75 @@ def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path
     engine.dispose()
 
 
+def test_repair_runtime_uses_v2_candidates_and_binds_authority_fields(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, app_ts, _artifacts = _seed_service(factory, tmp_path)
+    transport = _RecordingTransport(
+        [
+            _responses_body(json.dumps(_proposal_candidate())),
+            _responses_body(json.dumps(_review_candidate())),
+        ]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    proposal = service.propose(attempt_id)
+    review = service.review(attempt_id)
+
+    formats = [call["payload"]["text"]["format"] for call in transport.calls]
+    assert [item["name"] for item in formats] == [
+        "repair_proposer_candidate_v2",
+        "repair_reviewer_candidate_v2",
+    ]
+    assert "failure_evidence_checksum" not in formats[0]["schema"]["properties"]
+    assert "proposal_checksum" not in formats[1]["schema"]["properties"]
+    assert proposal["failure_evidence_checksum"] == "sha256:failure"
+    assert proposal["context_pack_checksum"] == "sha256:context"
+    assert proposal["touched_files"] == ["src/app.ts"]
+    assert proposal["operations"][0]["preimage_sha256"] == (
+        "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest()
+    )
+
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    invocations = {item.id: item for item in session.query(LlmInvocationModel).all()}
+    assert review["proposal_checksum"] == attempt.proposal_checksum
+    assert invocations[f"{attempt_id}:proposer"].prompt_version == (
+        "prompt-repair-proposer-candidate-v2"
+    )
+    assert invocations[f"{attempt_id}:reviewer"].prompt_version == (
+        "prompt-repair-reviewer-candidate-v2"
+    )
+    assert invocations[f"{attempt_id}:proposer"].schema_version == "schema-registry-v1"
+    assert invocations[f"{attempt_id}:reviewer"].schema_version == "schema-registry-v1"
+    session.close()
+    engine.dispose()
+
+
+def test_repair_runtime_binds_unified_diff_touched_files(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    proposal = _proposal_candidate()
+    proposal.update(
+        {
+            "proposal_format": "unified_diff",
+            "operations": [],
+            "unified_diff": "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+        }
+    )
+    transport = _RecordingTransport([_responses_body(json.dumps(proposal))])
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    bound = service.propose(attempt_id)
+
+    assert bound["operations"] == []
+    assert bound["touched_files"] == ["src/app.ts"]
+    engine.dispose()
+
+
 def test_pre_transport_disabled_failure_persists_without_transport(tmp_path: Path, monkeypatch):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
@@ -521,6 +616,8 @@ def test_pre_transport_disabled_failure_persists_without_transport(tmp_path: Pat
     assert invocation.provider_request_id is None
     assert invocation.provider_http_status is None
     assert invocation.response_sha256 is None
+    assert invocation.prompt_version == "prompt-repair-proposer-candidate-v2"
+    assert invocation.schema_version == "schema-registry-v1"
     session.close()
     engine.dispose()
 
@@ -530,9 +627,9 @@ def test_semantic_failure_persists_repair_semantics_stage_without_proposal_artif
 ):
     engine, factory = _database(tmp_path)
     _store, attempt_id, app_ts, artifacts = _seed_service(factory, tmp_path)
-    stale = _proposal(app_ts)
-    stale["operations"][0]["preimage_sha256"] = "sha256:stale"
-    transport = _RecordingTransport([_responses_body(json.dumps(stale))])
+    mixed = _proposal_candidate()
+    mixed["unified_diff"] = "--- a/src/app.ts\n+++ b/src/app.ts\n"
+    transport = _RecordingTransport([_responses_body(json.dumps(mixed))])
     service = RepairApplicationService(
         scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
     )
@@ -540,13 +637,13 @@ def test_semantic_failure_persists_repair_semantics_stage_without_proposal_artif
     with pytest.raises(RepairApplicationError) as raised:
         service.propose(attempt_id)
 
-    assert raised.value.code == "REPAIR_PREIMAGE_STALE"
+    assert raised.value.code == "REPAIR_PROPOSAL_FORMAT_INVALID"
     session = factory()
     invocations = session.query(LlmInvocationModel).all()
     assert len(invocations) == 1
     invocation = invocations[0]
     assert invocation.status == "failed"
-    assert invocation.failure_code == "REPAIR_PREIMAGE_STALE"
+    assert invocation.failure_code == "REPAIR_PROPOSAL_FORMAT_INVALID"
     assert invocation.failure_stage == "repair_semantics"
     assert invocation.transport_started is True
     assert invocation.response_received is True

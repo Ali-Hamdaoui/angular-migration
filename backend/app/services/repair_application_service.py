@@ -27,6 +27,7 @@ from app.llm_gateway import (
     LlmRequest,
     LlmRole,
     LlmTaskType,
+    PromptRegistry,
     PromptSchemaRegistry,
 )
 from app.repositories.models import (
@@ -195,8 +196,8 @@ class RepairReview(RepairReviewCandidate):
 
 
 class RepairApplicationService:
-    proposer_schema = "repair_proposer_v1"
-    reviewer_schema = "repair_reviewer_v1"
+    proposer_schema = "repair_proposer_candidate_v2"
+    reviewer_schema = "repair_reviewer_candidate_v2"
     forbidden_parts = {
         ".git",
         "node_modules",
@@ -223,7 +224,7 @@ class RepairApplicationService:
             role=LlmRole.REPAIR_PROPOSER,
             task_type=LlmTaskType.REPAIR_DIAGNOSIS,
             schema_name=self.proposer_schema,
-            schema=RepairProposal,
+            schema=RepairProposalCandidate,
         )
         try:
             output, response = self._call(
@@ -231,7 +232,7 @@ class RepairApplicationService:
                 role=LlmRole.REPAIR_PROPOSER,
                 task=LlmTaskType.REPAIR_DIAGNOSIS,
                 schema_name=self.proposer_schema,
-                schema=RepairProposal,
+                schema=RepairProposalCandidate,
                 policy=(
                     "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
                     "lockfile edits, path escapes, secrets, or policy bypasses."
@@ -245,7 +246,7 @@ class RepairApplicationService:
             )
             raise
         try:
-            proposal = self.validate_proposal(output, context)
+            proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
         except RepairApplicationError as error:
             self._persist_failure(
                 context,
@@ -256,7 +257,14 @@ class RepairApplicationService:
             )
             raise
         stored = self._write(context, "proposal", proposal)
-        self._persist_call(context, response, stored, role="proposer", summary=proposal)
+        self._persist_call(
+            context,
+            response,
+            stored,
+            role="proposer",
+            schema_name=self.proposer_schema,
+            summary=proposal,
+        )
         return proposal
 
     def review(self, attempt_id: str) -> dict[str, object]:
@@ -269,7 +277,7 @@ class RepairApplicationService:
             role=LlmRole.REPAIR_REVIEWER,
             task_type=LlmTaskType.REPAIR_REVIEW,
             schema_name=self.reviewer_schema,
-            schema=RepairReview,
+            schema=RepairReviewCandidate,
         )
         try:
             output, response = self._call(
@@ -277,7 +285,7 @@ class RepairApplicationService:
                 role=LlmRole.REPAIR_REVIEWER,
                 task=LlmTaskType.REPAIR_REVIEW,
                 schema_name=self.reviewer_schema,
-                schema=RepairReview,
+                schema=RepairReviewCandidate,
                 policy=(
                     "Review the supplied proposal against policy. Never author operations, a diff, "
                     "replacement code, commands, or a different proposal."
@@ -291,7 +299,7 @@ class RepairApplicationService:
             )
             raise
         try:
-            review = RepairReview.model_validate(output).model_dump(mode="json")
+            review = self._bind_review_candidate(output, context)
         except ValidationError as error:
             self._persist_failure(
                 context,
@@ -312,8 +320,85 @@ class RepairApplicationService:
             )
             raise error
         stored = self._write(context, "review", review)
-        self._persist_call(context, response, stored, role="reviewer", summary=review)
+        self._persist_call(
+            context,
+            response,
+            stored,
+            role="reviewer",
+            schema_name=self.reviewer_schema,
+            summary=review,
+        )
         return review
+
+    def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
+        candidate = RepairProposalCandidate.model_validate(value)
+        if candidate.proposal_format == "operations":
+            if not candidate.operations or candidate.unified_diff is not None:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_FORMAT_INVALID", "Operations format must contain only operations"
+                )
+        elif candidate.operations or not candidate.unified_diff:
+            raise RepairApplicationError(
+                "REPAIR_PROPOSAL_FORMAT_INVALID", "Unified diff format must contain only a diff"
+            )
+        workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+        operations = []
+        for operation in candidate.operations:
+            bound = operation.model_dump(mode="json")
+            if operation.operation == "create_text_file":
+                bound["preimage_sha256"] = None
+            else:
+                target = workspace / self._safe_path(operation.path, workspace)
+                bound["preimage_sha256"] = (
+                    "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+                    if target.is_file() and not target.is_symlink()
+                    else None
+                )
+            operations.append(bound)
+        touched_files = (
+            [operation.path for operation in candidate.operations]
+            if candidate.operations
+            else self._unified_diff_touched_files(candidate.unified_diff)
+        )
+        return RepairProposal.model_validate(
+            {
+                **candidate.model_dump(mode="json"),
+                "failure_evidence_checksum": context["failure_evidence_checksum"],
+                "context_pack_checksum": context["context_pack_checksum"],
+                "operations": operations,
+                "touched_files": touched_files,
+            }
+        ).model_dump(mode="json")
+
+    @staticmethod
+    def _unified_diff_touched_files(diff: str | None) -> list[str]:
+        prior_path = None
+        paths = []
+        for line in (diff or "").splitlines():
+            if line.startswith("--- "):
+                prior_path = line[4:].split("\t", 1)[0].removeprefix("a/")
+            elif line.startswith("+++ "):
+                path = line[4:].split("\t", 1)[0].removeprefix("b/")
+                if path != "/dev/null":
+                    paths.append(path)
+                elif prior_path and prior_path != "/dev/null":
+                    paths.append(prior_path)
+        if not paths:
+            raise RepairApplicationError(
+                "REPAIR_TOUCHED_FILES_MISSING", "Unified diff must identify touched files"
+            )
+        return paths
+
+    @staticmethod
+    def _prompt_version(schema_name: str, task_type: LlmTaskType) -> str:
+        return PromptRegistry.defaults().get(schema_name, task_type).version
+
+    @staticmethod
+    def _bind_review_candidate(value: dict[str, object], context: dict[str, object]):
+        candidate = RepairReviewCandidate.model_validate(value)
+        return RepairReview(
+            **candidate.model_dump(mode="json"), proposal_checksum=context["proposal_checksum"]
+        ).model_dump(mode="json")
 
     def validate_proposal(
         self, value: dict[str, object], context: dict[str, object]
@@ -557,7 +642,7 @@ class RepairApplicationService:
                         task_type=task_type.value,
                         provider="azure_openai",
                         deployment_alias="azure-openai",
-                        prompt_version=f"repair-{role.value.removeprefix('repair_')}-v1",
+                        prompt_version=self._prompt_version(schema_name, task_type),
                         schema_version=get_settings().llm_schema_registry_version,
                         pricing_version=get_settings().llm_pricing_version,
                         stage="repair",
@@ -712,7 +797,7 @@ class RepairApplicationService:
             policy_version=f"repair-{kind}-v1",
         )
 
-    def _persist_call(self, context, response, stored, *, role, summary):
+    def _persist_call(self, context, response, stored, *, role, schema_name, summary):
         with self._scope() as session:
             attempt = session.get(RepairAttemptModel, context["attempt_id"])
             invocation_id = _invocation_key(attempt.id, role)
@@ -741,7 +826,8 @@ class RepairApplicationService:
                     task_type=response.task_type.value,
                     provider="azure_openai",
                     deployment_alias=response.model_deployment_alias,
-                    prompt_version=response.prompt_version or f"repair-{role}-v1",
+                    prompt_version=response.prompt_version
+                    or self._prompt_version(schema_name, response.task_type),
                     schema_version=response.schema_version or get_settings().llm_schema_registry_version,
                     pricing_version=response.pricing_version or get_settings().llm_pricing_version,
                     stage="repair",
@@ -764,7 +850,9 @@ class RepairApplicationService:
                 invocation.role = response.role.value
                 invocation.task_type = response.task_type.value
                 invocation.deployment_alias = response.model_deployment_alias
-                invocation.prompt_version = response.prompt_version or f"repair-{role}-v1"
+                invocation.prompt_version = response.prompt_version or self._prompt_version(
+                    schema_name, response.task_type
+                )
                 invocation.schema_version = (
                     response.schema_version or get_settings().llm_schema_registry_version
                 )
