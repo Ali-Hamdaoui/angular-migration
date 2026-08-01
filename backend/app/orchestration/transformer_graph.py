@@ -1099,6 +1099,8 @@ class TransformerOrchestrator:
                 attempt.updated_at = datetime.now(UTC)
 
     def _apply_repair(self, continuation_id: str, worker_id: str) -> None:
+        apply_result = None
+        apply_error = None
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
@@ -1251,19 +1253,23 @@ class TransformerOrchestrator:
             if claimed.rowcount != 1:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approval state changed before mutation")
             proposal = json.loads(proposal_artifact.content)
-        try:
-            prepared, ledger, fingerprint = self._patches.apply(
-                proposal=proposal,
-                workspace_path=context["workspace_path"],
-                expected_fingerprint=context["fingerprint"],
-                run_id=context["run_id"],
-                stage_id=context["stage_id"],
-                artifact_root=context["artifact_root"],
-                attempt_id=context["attempt_id"],
-                approved_proposal_checksum=context["proposal_artifact_checksum"],
-                proposal_artifact_checksum=context["proposal_artifact_checksum"],
-            )
-        except RepairApplicationError as error:
+            try:
+                apply_result = self._patches.apply(
+                    proposal=proposal,
+                    workspace_path=context["workspace_path"],
+                    expected_fingerprint=context["fingerprint"],
+                    run_id=context["run_id"],
+                    stage_id=context["stage_id"],
+                    artifact_root=context["artifact_root"],
+                    attempt_id=context["attempt_id"],
+                    approved_proposal_checksum=context["proposal_artifact_checksum"],
+                    proposal_artifact_checksum=context["proposal_artifact_checksum"],
+                )
+            except RepairApplicationError as error:
+                apply_error = error
+                session.rollback()
+        if apply_error is not None:
+            error = apply_error
             with self._scope() as session:
                 attempt = session.get(RepairAttemptModel, context["attempt_id"])
                 attempt.status = "apply_failed"
@@ -1274,6 +1280,7 @@ class TransformerOrchestrator:
                     error.message,
                 )
             return
+        prepared, ledger, fingerprint = apply_result
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)

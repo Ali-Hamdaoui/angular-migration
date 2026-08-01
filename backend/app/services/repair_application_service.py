@@ -860,6 +860,41 @@ class RepairApplicationService:
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
                     "Repair attempt is missing",
                 )
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == attempt.run_id,
+                    TransformationContinuationModel.current_stage_id == attempt.stage_id,
+                )
+            )
+            stage_plan = session.scalar(
+                select(StageExecutionPlanModel).where(
+                    StageExecutionPlanModel.id == continuation.stage_plan_id if continuation else False,
+                    StageExecutionPlanModel.run_id == attempt.run_id,
+                    StageExecutionPlanModel.stage_id == attempt.stage_id,
+                    StageExecutionPlanModel.checksum == continuation.stage_plan_checksum if continuation else False,
+                )
+            ) if continuation else None
+            if (
+                continuation is None
+                or stage_plan is None
+                or (
+                    context.get("continuation_state_version") is not None
+                    and continuation.state_version != context.get("continuation_state_version")
+                )
+                or (
+                    context.get("stage_plan_id") is not None
+                    and continuation.stage_plan_id != context.get("stage_plan_id")
+                )
+                or (
+                    context.get("stage_plan_checksum") is not None
+                    and continuation.stage_plan_checksum != context.get("stage_plan_checksum")
+                )
+                or (
+                    context.get("stage_plan_state_version") is not None
+                    and stage_plan.state_version != context.get("stage_plan_state_version")
+                )
+            ):
+                raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed continuation lineage is stale")
             expected_role = "repair_proposer" if role == "proposer" else "repair_reviewer"
             expected_task = LlmTaskType.REPAIR_DIAGNOSIS.value if role == "proposer" else LlmTaskType.REPAIR_REVIEW.value
             if invocation.role != expected_role or invocation.task_type != expected_task or invocation.stage_id != attempt.stage_id:
@@ -871,7 +906,7 @@ class RepairApplicationService:
                 if parent is None or parent.attempt_number >= attempt.attempt_number:
                     raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed attempt parent lineage is invalid")
             binding = session.scalar(select(StageWorkspaceBindingModel).where(StageWorkspaceBindingModel.run_id == attempt.run_id, StageWorkspaceBindingModel.stage_id == attempt.stage_id, StageWorkspaceBindingModel.active.is_(True)))
-            if context.get("workspace_path") and (binding is None or binding.workspace_path != context["workspace_path"] or StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != binding.workspace_fingerprint):
+            if context.get("workspace_path") and (binding is None or binding.id != context.get("workspace_binding_id") or binding.workspace_path != context["workspace_path"] or StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != binding.workspace_fingerprint):
                 raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed workspace binding is stale")
             artifact_id = getattr(attempt, artifact_field)
             if not artifact_id:
@@ -917,7 +952,7 @@ class RepairApplicationService:
                 if (
                     value["failure_evidence_checksum"] != attempt.failure_evidence_checksum
                     or value["context_pack_checksum"] != attempt.context_pack_checksum
-                ) and not legacy_v1:
+                ):
                     raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Completed proposal evidence lineage is stale")
             else:
                 value = RepairReview.model_validate(payload).model_dump(mode="json")
@@ -1111,6 +1146,7 @@ class RepairApplicationService:
                         ),
                     )
                     .values(
+                        request_checksum=request_checksum,
                         status="in_progress",
                         transport_started=False,
                         prompt_version=prompt_version,
@@ -1121,12 +1157,26 @@ class RepairApplicationService:
                 )
                 if changed.rowcount != 1:
                     raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership was lost")
+                verified = session.scalar(
+                    select(LlmInvocationModel).where(
+                        LlmInvocationModel.run_id == context["run_id"],
+                        LlmInvocationModel.idempotency_key == invocation_id,
+                    )
+                )
+                if (
+                    verified is None
+                    or verified.request_checksum != request_checksum
+                    or verified.status != "in_progress"
+                    or verified.transport_started
+                    or verified.state_version != existing.state_version + 1
+                ):
+                    raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership could not be verified")
                 context.update(
                     request_checksum=request_checksum,
                     prompt_version=prompt_version,
                     schema_version=schema_version,
                     invocation_id=existing.id,
-                    invocation_state_version=existing.state_version + 1,
+                    invocation_state_version=verified.state_version,
                 )
                 context["authority_snapshot"] = self._authority_snapshot(context)
                 return context
@@ -1426,6 +1476,12 @@ class RepairApplicationService:
                 raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation is missing")
             if invocation.status != "in_progress" or not invocation.transport_started:
                 raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation is not owned")
+            if (
+                invocation.request_checksum != context.get("request_checksum")
+                or invocation.prompt_version != context.get("prompt_version")
+                or invocation.schema_version != context.get("schema_version")
+            ):
+                raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation provenance changed")
             invocation_claim = session.execute(update(LlmInvocationModel).where(
                 LlmInvocationModel.id == invocation.id,
                 LlmInvocationModel.run_id == context["run_id"],
@@ -1438,11 +1494,11 @@ class RepairApplicationService:
                 raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership changed")
             invocation.status = "completed"
             invocation.failure_code = None
-            invocation.role = response.role.value
-            invocation.task_type = response.task_type.value
+            invocation.role = "repair_proposer" if role == "proposer" else "repair_reviewer"
+            invocation.task_type = "repair_diagnosis" if role == "proposer" else "repair_review"
             invocation.deployment_alias = response.model_deployment_alias
-            invocation.prompt_version = response.prompt_version or self._prompt_version(schema_name, response.task_type)
-            invocation.schema_version = response.schema_version or get_settings().llm_schema_registry_version
+            invocation.prompt_version = context["prompt_version"]
+            invocation.schema_version = context["schema_version"]
             invocation.pricing_version = response.pricing_version or get_settings().llm_pricing_version
             invocation.redacted_summary = json.dumps(summary, sort_keys=True)
             invocation.artifact_ids = list(dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id]))

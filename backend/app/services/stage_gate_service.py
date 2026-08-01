@@ -278,8 +278,10 @@ class StageGateService:
                 StageExecutionPlanModel.checksum == continuation.stage_plan_checksum,
             )
         )
-        if attempt is None or binding is None or stage_plan is None or attempt.status != "review_accepted":
-            raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not review-accepted")
+        if attempt is None or binding is None or stage_plan is None or attempt.status not in {
+            "review_accepted", "waiting_g10", "applying"
+        }:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
         expected = {

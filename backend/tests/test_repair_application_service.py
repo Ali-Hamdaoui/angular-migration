@@ -983,7 +983,12 @@ def test_review_binds_immutable_active_proposal_artifact_checksum(tmp_path: Path
 def test_v1_persisted_proposal_and_review_artifacts_still_recover(tmp_path: Path):
     engine, factory = _database(tmp_path)
     store, attempt_id, app_ts, artifacts = _seed_service(factory, tmp_path)
+    session = factory()
+    seeded_attempt = session.get(RepairAttemptModel, attempt_id)
     proposal_payload = _proposal(app_ts)
+    proposal_payload["failure_evidence_checksum"] = seeded_attempt.failure_evidence_checksum
+    proposal_payload["context_pack_checksum"] = seeded_attempt.context_pack_checksum
+    session.close()
     proposal = store.write_text_artifact(
         "run-1",
         f"05_repairs/attempt-{attempt_id}/proposal.json",
