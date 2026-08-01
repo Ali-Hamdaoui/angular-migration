@@ -18,6 +18,7 @@ from app.artifact_store import (
     ArtifactNotFoundError,
     ArtifactStoreError,
     LocalFilesystemArtifactStore,
+    StoredArtifact,
 )
 from app.core.config import get_settings
 from app.domain.contracts import AgentKind, ArtifactType
@@ -700,15 +701,15 @@ class RepairApplicationService:
         store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
         artifacts = [store.read_artifact(str(context["run_id"]), metadata[artifact_id].relative_path) for artifact_id in artifact_ids]
         for artifact in artifacts:
-            envelope = artifact.envelope
-            if (
-                artifact.ref.checksum != metadata[artifact.ref.artifact_id].checksum
-                or envelope is None
-                or envelope.run_id != context["run_id"]
-                or envelope.stage_id != context["stage_id"]
-                or envelope.attempt_id != context["attempt_id"]
-            ):
-                raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact envelope binding is stale")
+            pre_attempt = artifact.ref.artifact_id != context.get("proposal_artifact_id")
+            self._validate_artifact_envelope(
+                artifact,
+                expected_run_id=context["run_id"],
+                expected_stage_id=context["stage_id"],
+                expected_attempt_id=context["attempt_id"],
+                pre_attempt=pre_attempt,
+                metadata_checksum=metadata[artifact.ref.artifact_id].checksum,
+            )
         workspace = Path(str(context["workspace_path"]))
         try:
             context["workspace_live_fingerprint"] = StageSandboxCopier.fingerprint(workspace)
@@ -723,6 +724,46 @@ class RepairApplicationService:
             context["authority_snapshot"] = self._authority_snapshot(context)
         context["authority_snapshot"] = self._authority_snapshot(context)
         return context
+
+    @staticmethod
+    def _validate_artifact_envelope(
+        artifact: StoredArtifact,
+        *,
+        expected_run_id: object,
+        expected_stage_id: object,
+        expected_attempt_id: object,
+        pre_attempt: bool,
+        metadata_checksum: str,
+    ) -> None:
+        """Validate one repair artifact envelope's run/stage/attempt ownership.
+
+        PRE-ATTEMPT artifacts (failure evidence, context pack) are written by
+        FailureEvidenceService before the RepairAttempt row exists, so their
+        envelope attempt_id is legitimately NULL; a non-NULL id must still
+        equal the current attempt. ATTEMPT-BOUND artifacts (proposal, review,
+        repair error) require the exact RepairAttempt id and reject NULL.
+        Checksum, run_id and stage_id binding stays strict for both roles.
+        """
+        envelope = artifact.envelope
+        if (
+            artifact.ref.checksum != metadata_checksum
+            or envelope is None
+            or envelope.run_id != expected_run_id
+            or envelope.stage_id != expected_stage_id
+        ):
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact envelope binding is stale"
+            )
+        if pre_attempt:
+            if envelope.attempt_id not in (None, expected_attempt_id):
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact envelope binding is stale"
+                )
+            return
+        if envelope.attempt_id != expected_attempt_id:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact envelope binding is stale"
+            )
 
     @staticmethod
     def _authority_snapshot(context: dict[str, object]) -> dict[str, object]:
