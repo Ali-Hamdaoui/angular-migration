@@ -735,17 +735,19 @@ class RepairApplicationService:
             )
         }
 
+    @staticmethod
+    def _backend_authority_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in snapshot.items()
+            if key not in {"invocation_id", "invocation_state_version", "request_checksum", "prompt_version", "schema_version"}
+        }
+
     def _assert_fresh_authority(
         self, context: dict[str, object], *, role: str, include_proposal: bool = False
     ) -> dict[str, object]:
         fresh = self._attempt_context(str(context["attempt_id"]), include_proposal=include_proposal)
-        for key in (
-            "invocation_id", "invocation_state_version", "request_checksum",
-            "prompt_version", "schema_version",
-        ):
-            fresh[key] = context.get(key)
-        fresh["authority_snapshot"] = self._authority_snapshot(fresh)
-        if fresh["authority_snapshot"] != context["authority_snapshot"]:
+        if self._backend_authority_snapshot(fresh["authority_snapshot"]) != self._backend_authority_snapshot(context["authority_snapshot"]):
             raise RepairApplicationError(
                 "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
                 "Repair authority changed while the provider was running",
@@ -757,6 +759,7 @@ class RepairApplicationService:
             invocation_id=context.get("invocation_id"),
             invocation_state_version=context.get("invocation_state_version"),
             authority_snapshot=context["authority_snapshot"],
+            invocation_owner_state=context.get("invocation_owner_state"),
         )
         return fresh
 
@@ -993,7 +996,13 @@ class RepairApplicationService:
                     )
                     context["authority_snapshot"] = self._authority_snapshot(context)
                     return context
-                if existing.request_checksum != request_checksum:
+                legacy_v1 = existing.schema_version == "schema-registry-v1" and existing.prompt_version in {
+                    "prompt-repair-proposer-v1", "prompt-repair-reviewer-v1",
+                    "repair-proposer-v1", "repair-reviewer-v1",
+                }
+                if existing.request_checksum != request_checksum and not (
+                    existing.status == "failed" and legacy_v1
+                ):
                     raise RepairApplicationError(
                         "REPAIR_INVOCATION_PAYLOAD_MISMATCH",
                         "Repair invocation key has a different logical request",
@@ -1069,7 +1078,13 @@ class RepairApplicationService:
                     raise
                 if existing.status == "in_progress" and existing.transport_started:
                     raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair LLM invocation outcome is uncertain")
-                if existing.request_checksum != request_checksum:
+                legacy_v1 = existing.schema_version == "schema-registry-v1" and existing.prompt_version in {
+                    "prompt-repair-proposer-v1", "prompt-repair-reviewer-v1",
+                    "repair-proposer-v1", "repair-reviewer-v1",
+                }
+                if existing.request_checksum != request_checksum and not (
+                    existing.status == "failed" and legacy_v1
+                ):
                     raise RepairApplicationError(
                         "REPAIR_INVOCATION_PAYLOAD_MISMATCH",
                         "Repair invocation key has a different logical request",
@@ -1132,6 +1147,12 @@ class RepairApplicationService:
             invocation.transport_started = True
             invocation.state_version += 1
             context["invocation_state_version"] = invocation.state_version
+            context["invocation_owner_state"] = {
+                "run_id": context["run_id"],
+                "idempotency_key": invocation.idempotency_key,
+                "invocation_id": invocation.id,
+                "state_version": invocation.state_version,
+            }
 
     def _persist_failure(
         self,
@@ -1324,7 +1345,7 @@ class RepairApplicationService:
                 "prompt_version": context.get("prompt_version"),
                 "schema_version": context.get("schema_version"),
             }
-            if current != context["authority_snapshot"]:
+            if self._backend_authority_snapshot(current) != self._backend_authority_snapshot(context["authority_snapshot"]):
                 raise RepairApplicationError(
                     "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
                     "Repair authority changed before success persistence",

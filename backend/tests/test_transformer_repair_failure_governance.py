@@ -212,6 +212,7 @@ def _seed(
             json.dumps(_proposal_payload(app_ts), sort_keys=True),
             ArtifactType.JSON,
             stage_id=stage_id,
+            attempt_id=attempt_id,
             created_by="repair-proposal",
             created_at=NOW,
         )
