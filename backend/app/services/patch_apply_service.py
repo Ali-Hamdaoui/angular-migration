@@ -55,6 +55,28 @@ def workspace_apply_lock(workspace: Path):
             os.close(fd)
 
 
+@contextmanager
+def _target_apply_lock(target: Path):
+    """Hold an OS file lock while checking and changing one target."""
+    import msvcrt
+
+    if target.exists():
+        fd = os.open(target, os.O_RDWR | getattr(os, "O_BINARY", 0))
+        lock_path = target
+    else:
+        lock_path = target.with_name(f".{target.name}.transformer-repair.target.lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        os.lseek(fd, 0, os.SEEK_SET)
+        yield fd, lock_path is target
+    finally:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
+
+
 class PatchApplyService:
     hunk = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -73,6 +95,7 @@ class PatchApplyService:
         attempt_id: str,
         approved_proposal_checksum: str | None = None,
         proposal_artifact_checksum: str | None = None,
+        mutation_started_callback=None,
     ):
         workspace = Path(workspace_path).resolve(strict=True)
         with workspace_apply_lock(workspace):
@@ -86,6 +109,7 @@ class PatchApplyService:
                 attempt_id=attempt_id,
                 approved_proposal_checksum=approved_proposal_checksum,
                 proposal_artifact_checksum=proposal_artifact_checksum,
+                mutation_started_callback=mutation_started_callback,
             )
 
     def _apply_locked(
@@ -100,6 +124,7 @@ class PatchApplyService:
         attempt_id,
         approved_proposal_checksum,
         proposal_artifact_checksum,
+        mutation_started_callback,
     ):
         if (
             approved_proposal_checksum is not None
@@ -131,22 +156,46 @@ class PatchApplyService:
             if (workspace / change["path"]).is_file()
         }
         try:
+            mutation_started = False
             for change in changes:
                 target = workspace / change["path"]
-                expected = change.get("preimage_sha256")
-                if expected == "absent" and target.exists():
-                    raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair create target appeared before mutation")
-                if expected not in {None, "absent"}:
-                    actual = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
-                    if actual != expected:
-                        raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed before mutation")
-                if change["action"] == "delete":
-                    target.unlink()
-                else:
+                if not target.parent.exists():
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    temporary = target.with_name(f".{target.name}.repair-{uuid4().hex[:12]}")
-                    temporary.write_text(change["content"], encoding="utf-8", newline="")
-                    os.replace(temporary, target)
+                with _target_apply_lock(target) as (target_fd, target_exists):
+                    expected = change.get("preimage_sha256")
+                    if expected == "absent":
+                        if target.exists():
+                            raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair create target appeared before mutation")
+                        if not mutation_started and mutation_started_callback is not None:
+                            mutation_started_callback()
+                            mutation_started = True
+                        try:
+                            fd = os.open(
+                                target,
+                                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                            )
+                        except FileExistsError as error:
+                            raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair create target appeared before mutation") from error
+                        with os.fdopen(fd, "w", encoding="utf-8", newline="") as created:
+                            created.write(change["content"])
+                    else:
+                        if not target_exists:
+                            raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair target disappeared before mutation")
+                        os.lseek(target_fd, 0, os.SEEK_SET)
+                        current_bytes = os.read(target_fd, os.fstat(target_fd).st_size)
+                        actual = "sha256:" + hashlib.sha256(current_bytes).hexdigest()
+                        if actual != expected:
+                            raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed before mutation")
+                        if not mutation_started and mutation_started_callback is not None:
+                            mutation_started_callback()
+                            mutation_started = True
+                        if change["action"] == "delete":
+                            target.unlink()
+                        else:
+                            encoded = change["content"].encode("utf-8")
+                            os.lseek(target_fd, 0, os.SEEK_SET)
+                            os.ftruncate(target_fd, 0)
+                            os.write(target_fd, encoded)
                 prepared["operations"].append(
                     {
                         "path": change["path"],

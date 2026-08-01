@@ -7,6 +7,7 @@ import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -42,7 +43,7 @@ from app.services.repair_application_service import (
     RepairReview,
 )
 from app.services.transformation_continuation_service import TransformationContinuationService
-from app.services.transformer_stage_service import TransformerStageService
+from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
@@ -1002,3 +1003,32 @@ def test_failed_reviewer_persists_failed_invocation_row(tmp_path: Path):
     assert f"05_repairs/attempt-{attempt_id}/review.json" not in inventory
     assert any(name.endswith("/review-error.json") for name in inventory)
     engine.dispose()
+
+
+def test_apply_preflight_failure_does_not_reconstruct_workspace(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sentinel = workspace / "sentinel.txt"
+    sentinel.write_text("untouched\n", encoding="utf-8")
+    continuation = SimpleNamespace(run_id="run-1", current_stage_id="stage-1")
+    binding = SimpleNamespace(workspace_path=str(workspace))
+    scope_calls = []
+
+    @contextmanager
+    def scope():
+        scope_calls.append(True)
+        yield SimpleNamespace()
+
+    orchestrator = TransformerOrchestrator.__new__(TransformerOrchestrator)
+    orchestrator._scope = scope
+    orchestrator._owned = lambda _session, _continuation_id, _worker_id: continuation
+    orchestrator._stage = SimpleNamespace(_binding=lambda _session, _continuation: binding)
+    orchestrator._apply_repair_locked = MagicMock(
+        side_effect=TransformerStageError("G10_APPROVAL_REQUIRED", "approval missing")
+    )
+
+    with pytest.raises(ValueError, match="approval missing"):
+        orchestrator._apply_repair("cont-1", "worker-1")
+
+    assert scope_calls
+    assert sentinel.read_text(encoding="utf-8") == "untouched\n"

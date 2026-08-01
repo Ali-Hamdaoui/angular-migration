@@ -1,4 +1,5 @@
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -133,3 +134,42 @@ def test_apply_rechecks_preimage_after_prepare_before_replace(tmp_path: Path, mo
             attempt_id="repair-1",
         )
     assert target.read_text(encoding="utf-8") == "concurrent\n"
+
+
+def test_target_lock_rejects_noncooperating_writer_before_mutation(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "app.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    preimage = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [{
+            "operation": "replace_text",
+            "path": "src/app.ts",
+            "old_text": "old",
+            "new_text": "new",
+            "preimage_sha256": preimage,
+        }],
+        "unified_diff": None,
+    }
+    original_ftruncate = os.ftruncate
+
+    def noncooperating_writer(fd, size):
+        target.write_text("newer\n", encoding="utf-8")
+        return original_ftruncate(fd, size)
+
+    monkeypatch.setattr("os.ftruncate", noncooperating_writer)
+    with pytest.raises(PermissionError):
+        PatchApplyService().apply(
+            proposal=proposal,
+            workspace_path=str(workspace),
+            expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_root=str(artifacts),
+            attempt_id="repair-1",
+        )
+    assert target.read_text(encoding="utf-8") == "old\n"

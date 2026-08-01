@@ -1111,18 +1111,35 @@ class TransformerOrchestrator:
                 attempt.updated_at = datetime.now(UTC)
 
     def _apply_repair(self, continuation_id: str, worker_id: str) -> None:
+        mutation_state = {"started": False, "claimed": False}
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             binding = self._stage._binding(session, continuation)
             workspace_path = binding.workspace_path
         with workspace_apply_lock(Path(workspace_path)):
             try:
-                return self._apply_repair_locked(continuation_id, worker_id)
+                return self._apply_repair_locked(continuation_id, worker_id, mutation_state)
             except Exception:
-                self._recover_failed_apply(continuation_id, workspace_path)
+                self._recover_failed_apply(
+                    continuation_id,
+                    workspace_path,
+                    mutation_started=mutation_state["started"],
+                    apply_claimed=mutation_state["claimed"],
+                )
                 raise
 
-    def _recover_failed_apply(self, continuation_id: str, workspace_path: str) -> None:
+    def _recover_failed_apply(
+        self,
+        continuation_id: str,
+        workspace_path: str,
+        *,
+        mutation_started: bool,
+        apply_claimed: bool,
+    ) -> None:
+        if not mutation_started:
+            if apply_claimed:
+                self._mark_apply_recovery_required(continuation_id, None)
+            return
         try:
             with self._scope() as session:
                 continuation = session.get(TransformationContinuationModel, continuation_id)
@@ -1137,6 +1154,7 @@ class TransformerOrchestrator:
                     .order_by(StageCheckpointModel.sequence.desc())
                 ) if continuation else None
             if continuation is None or attempt is None or run is None or checkpoint is None:
+                self._mark_apply_recovery_required(continuation_id, None)
                 return
             restored = self._stage.reconstruct_workspace(
                 checkpoint.workspace_path,
@@ -1144,19 +1162,39 @@ class TransformerOrchestrator:
                 (run.workspace_aliases or {})["STAGE_SANDBOX"],
                 checkpoint.workspace_fingerprint,
             )
-            with self._scope() as session:
-                continuation = session.get(TransformationContinuationModel, continuation_id)
-                attempt = session.get(RepairAttemptModel, attempt.id)
-                if attempt is not None:
-                    attempt.status = "apply_recovery_required"
-                    attempt.post_fingerprint = restored
-                    attempt.updated_at = datetime.now(UTC)
-                if continuation is not None:
-                    self._block(continuation, "REPAIR_APPLY_RECOVERY_REQUIRED", "Repair apply was rolled back after persistence failure")
+            self._mark_apply_recovery_required(continuation_id, restored, attempt.id)
         except Exception:
             logger.exception("repair apply recovery failed", extra={"continuation_id": continuation_id})
+            self._mark_apply_recovery_required(continuation_id, None)
 
-    def _apply_repair_locked(self, continuation_id: str, worker_id: str) -> None:
+    def _mark_apply_recovery_required(
+        self,
+        continuation_id: str,
+        fingerprint: str | None,
+        attempt_id: str | None = None,
+    ) -> None:
+        try:
+            with self._scope() as session:
+                continuation = session.get(TransformationContinuationModel, continuation_id)
+                attempt = session.get(RepairAttemptModel, attempt_id) if attempt_id else (
+                    self._latest_repair(session, continuation) if continuation is not None else None
+                )
+                if attempt is not None:
+                    attempt.status = "apply_recovery_required"
+                    if fingerprint is not None:
+                        attempt.post_fingerprint = fingerprint
+                    attempt.updated_at = datetime.now(UTC)
+                if continuation is not None:
+                    self._block(
+                        continuation,
+                        "REPAIR_APPLY_RECOVERY_REQUIRED",
+                        "Repair apply requires durable recovery before resume",
+                    )
+        except Exception:
+            logger.exception("unable to persist repair apply recovery state", extra={"continuation_id": continuation_id})
+
+    def _apply_repair_locked(self, continuation_id: str, worker_id: str, mutation_state=None) -> None:
+        mutation_state = mutation_state or {"started": False, "claimed": False}
         apply_result = None
         apply_error = None
         with self._scope() as session:
@@ -1192,6 +1230,7 @@ class TransformerOrchestrator:
             ).read_artifact(continuation.run_id, metadata.relative_path)
             if proposal_artifact.ref.artifact_id != attempt.proposal_artifact_id or proposal_artifact.ref.checksum != attempt.proposal_checksum:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
+            recovering = attempt.status == "applying"
             checkpoint = session.scalar(
                 select(StageCheckpointModel)
                 .where(
@@ -1199,8 +1238,7 @@ class TransformerOrchestrator:
                     StageCheckpointModel.kind == "pre_repair",
                 )
                 .order_by(StageCheckpointModel.sequence.desc())
-            )
-            recovering = attempt.status == "applying"
+            ) if recovering else None
             context = {
                 "attempt_id": attempt.id,
                 "workspace_binding_id": binding.id,
@@ -1216,19 +1254,11 @@ class TransformerOrchestrator:
                 "proposal_relative_path": metadata.relative_path,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
                 "proposal_artifact_checksum": attempt.proposal_checksum,
-                "checkpoint_path": checkpoint.workspace_path,
-                "checkpoint_fingerprint": checkpoint.workspace_fingerprint,
+                "checkpoint_path": checkpoint.workspace_path if checkpoint else None,
+                "checkpoint_fingerprint": checkpoint.workspace_fingerprint if checkpoint else None,
                 "stage_root": (run.workspace_aliases or {})["STAGE_SANDBOX"],
+                "attempt_status": attempt.status,
             }
-            attempt.status = "applying"
-            attempt.updated_at = datetime.now(UTC)
-        if recovering:
-            context["fingerprint"] = self._stage.reconstruct_workspace(
-                context["checkpoint_path"],
-                context["workspace_path"],
-                context["stage_root"],
-                context["checkpoint_fingerprint"],
-            )
         with self._scope() as session:
             current = session.get(TransformationContinuationModel, continuation_id)
             current_attempt = session.get(RepairAttemptModel, context["attempt_id"])
@@ -1249,7 +1279,7 @@ class TransformerOrchestrator:
                 or current_gate is None
                 or current_gate.status != "approved"
                 or current_decision is None
-                or current_attempt.status != "applying"
+                or current_attempt.status != context["attempt_status"]
                 or current_binding.id != context["workspace_binding_id"]
             ):
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed")
@@ -1291,11 +1321,11 @@ class TransformerOrchestrator:
                     RepairAttemptModel.id == current_attempt.id,
                     RepairAttemptModel.run_id == context["run_id"],
                     RepairAttemptModel.stage_id == context["stage_id"],
-                    RepairAttemptModel.status == "applying",
+                    RepairAttemptModel.status == context["attempt_status"],
                     RepairAttemptModel.proposal_artifact_id == current_attempt.proposal_artifact_id,
                     RepairAttemptModel.proposal_checksum == current_attempt.proposal_checksum,
                 )
-                .values(updated_at=datetime.now(UTC))
+                .values(status="applying", updated_at=datetime.now(UTC))
             )
             if attempt_claim.rowcount != 1:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Repair attempt changed before mutation")
@@ -1310,6 +1340,59 @@ class TransformerOrchestrator:
             )
             if claimed.rowcount != 1:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approval state changed before mutation")
+            mutation_state["claimed"] = True
+            context["continuation_state_version"] += 1
+            if recovering:
+                if not context["checkpoint_path"]:
+                    raise TransformerStageError("CHECKPOINT_MISSING", "No pre-repair checkpoint available for recovery")
+                context["fingerprint"] = self._stage.reconstruct_workspace(
+                    context["checkpoint_path"],
+                    context["workspace_path"],
+                    context["stage_root"],
+                    context["checkpoint_fingerprint"],
+                )
+                session.expire_all()
+                current = session.get(TransformationContinuationModel, continuation_id)
+                current_attempt = session.get(RepairAttemptModel, context["attempt_id"])
+                current_binding = self._stage._binding(session, current) if current is not None else None
+                current_gate = session.get(StageGatePackageModel, context["g10_package_id"])
+                current_decision = session.scalar(
+                    select(StageGateDecisionModel).where(
+                        StageGateDecisionModel.gate_package_id == context["g10_package_id"],
+                        StageGateDecisionModel.accepted.is_(True),
+                        StageGateDecisionModel.decision == "approve",
+                        StageGateDecisionModel.package_checksum == context["g10_package_checksum"],
+                    )
+                )
+                live = StageSandboxCopier.fingerprint(Path(context["workspace_path"]))
+                if (
+                    current is None
+                    or current_attempt is None
+                    or current_binding is None
+                    or current_gate is None
+                    or current_gate.status != "approved"
+                    or current_decision is None
+                    or current_attempt.status != "applying"
+                    or current_binding.id != context["workspace_binding_id"]
+                    or live != context["fingerprint"]
+                ):
+                    raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed during recovery")
+                self._gates._validate_repair_lineage(
+                    session, current, current_gate.package_artifact_id, current_gate.package_checksum
+                )
+                proposal_metadata = session.get(
+                    ArtifactMetadataModel, "metadata-" + str(current_attempt.proposal_artifact_id)
+                )
+                if proposal_metadata is None or proposal_metadata.checksum != current_attempt.proposal_checksum:
+                    raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal artifact is stale")
+                proposal_artifact = LocalFilesystemArtifactStore(
+                    Path(context["artifact_root"]).parent, fixed_run_root=Path(context["artifact_root"])
+                ).read_artifact(context["run_id"], proposal_metadata.relative_path)
+                if (
+                    proposal_artifact.ref.artifact_id != context["proposal_artifact_id"]
+                    or proposal_artifact.ref.checksum != context["proposal_artifact_checksum"]
+                ):
+                    raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed during recovery")
             proposal = json.loads(proposal_artifact.content)
             try:
                 apply_result = self._patches.apply(
@@ -1322,6 +1405,7 @@ class TransformerOrchestrator:
                     attempt_id=context["attempt_id"],
                     approved_proposal_checksum=context["proposal_artifact_checksum"],
                     proposal_artifact_checksum=context["proposal_artifact_checksum"],
+                    mutation_started_callback=lambda: mutation_state.__setitem__("started", True),
                 )
             except RepairApplicationError as error:
                 apply_error = error
