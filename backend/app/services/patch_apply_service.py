@@ -192,9 +192,9 @@ class PatchApplyService:
             and proposal_artifact_checksum != approved_proposal_checksum
         ):
             raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Approved repair proposal checksum changed")
-        if StageSandboxCopier.fingerprint(workspace) != expected_fingerprint:
-            raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
         initial_manifest = _workspace_manifest(workspace)
+        if _fingerprint_manifest(initial_manifest) != expected_fingerprint:
+            raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
         prepared = {
             "schema_version": "repair-apply-ledger-v1",
             "attempt_id": attempt_id,
