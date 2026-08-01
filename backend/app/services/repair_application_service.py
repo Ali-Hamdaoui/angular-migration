@@ -86,6 +86,11 @@ _GATEWAY_FAILURE_CODES = {
 
 _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
+
+def _unified_diff_header_path(line: str, path_prefix: str) -> str:
+    return line[4:].split("\t", 1)[0].strip().removeprefix(path_prefix)
+
+
 def _bounded_text(value: object, limit: int = 240) -> str | None:
     if value is None:
         return None
@@ -403,8 +408,8 @@ class RepairApplicationService:
                 raise RepairApplicationError(
                     "REPAIR_DIFF_INVALID", "Unified diff header pair is incomplete"
                 )
-            old_path = lines[index][4:].split("\t", 1)[0].removeprefix("a/")
-            new_path = lines[index + 1][4:].split("\t", 1)[0].removeprefix("b/")
+            old_path = _unified_diff_header_path(lines[index], "a/")
+            new_path = _unified_diff_header_path(lines[index + 1], "b/")
             old_path = None if old_path == "/dev/null" else self._safe_path(old_path, workspace)
             new_path = None if new_path == "/dev/null" else self._safe_path(new_path, workspace)
             if old_path is None and new_path is None:
@@ -429,6 +434,10 @@ class RepairApplicationService:
                             if line.startswith((" ", "+")):
                                 new_remaining -= 1
                         index += 1
+                    if old_remaining or new_remaining:
+                        raise RepairApplicationError(
+                            "REPAIR_DIFF_INVALID", "Unified diff hunk is incomplete"
+                        )
                     continue
                 if lines[index].startswith("--- "):
                     if index + 1 < len(lines) and lines[index + 1].startswith("+++ "):

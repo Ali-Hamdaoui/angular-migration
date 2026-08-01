@@ -644,6 +644,33 @@ def test_repair_runtime_binds_unified_diff_touched_files(tmp_path: Path):
     engine.dispose()
 
 
+def test_repair_runtime_rejects_incomplete_unified_diff_hunk(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)
+    proposal = _proposal_candidate()
+    proposal.update(
+        {
+            "proposal_format": "unified_diff",
+            "operations": [],
+            "unified_diff": "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n",
+        }
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(
+            _RecordingTransport([_responses_body(json.dumps(proposal))]),
+            _azure_settings(tmp_path),
+        ),
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "REPAIR_DIFF_INVALID"
+    assert not (artifacts / f"05_repairs/attempt-{attempt_id}/proposal.json").exists()
+    engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("unified_diff", "expected_code"),
     [

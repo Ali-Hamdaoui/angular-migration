@@ -12,7 +12,10 @@ from uuid import uuid4
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType
-from app.services.repair_application_service import RepairApplicationError
+from app.services.repair_application_service import (
+    RepairApplicationError,
+    _unified_diff_header_path,
+)
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
@@ -121,11 +124,11 @@ class PatchApplyService:
             if not lines[index].startswith("--- "):
                 index += 1
                 continue
-            old_name = lines[index][4:].strip().removeprefix("a/")
+            old_name = _unified_diff_header_path(lines[index], "a/")
             index += 1
             if index >= len(lines) or not lines[index].startswith("+++ "):
                 raise RepairApplicationError("REPAIR_DIFF_INVALID", "Unified diff header is incomplete")
-            new_name = lines[index][4:].strip().removeprefix("b/")
+            new_name = _unified_diff_header_path(lines[index], "b/")
             relative = new_name if new_name != "/dev/null" else old_name
             if relative.startswith("/") or ".." in Path(relative).parts:
                 raise RepairApplicationError("REPAIR_PATH_ESCAPE", "Unified diff path escapes workspace")
