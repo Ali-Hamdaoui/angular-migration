@@ -629,7 +629,7 @@ def test_repair_runtime_binds_unified_diff_touched_files(tmp_path: Path):
         {
             "proposal_format": "unified_diff",
             "operations": [],
-            "unified_diff": "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+            "unified_diff": "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n--- text\n+++ text\n",
         }
     )
     transport = _RecordingTransport([_responses_body(json.dumps(proposal))])

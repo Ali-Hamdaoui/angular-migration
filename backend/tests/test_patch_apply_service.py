@@ -40,3 +40,31 @@ def test_operations_apply_atomically_with_preimage_and_ledger(tmp_path: Path):
     assert target.read_text(encoding="utf-8") == "const value = 'new';\n"
     assert ledger.ref.checksum
     assert fingerprint == StageSandboxCopier.fingerprint(workspace)
+
+
+def test_unified_diff_apply_accepts_header_like_hunk_content(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "app.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("-- text\n", encoding="utf-8")
+    proposal = {
+        "proposal_format": "unified_diff",
+        "operations": [],
+        "unified_diff": (
+            "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n--- text\n+++ text\n"
+        ),
+    }
+
+    PatchApplyService().apply(
+        proposal=proposal,
+        workspace_path=str(workspace),
+        expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        run_id="run-1",
+        stage_id="stage-1",
+        artifact_root=str(artifacts),
+        attempt_id="repair-1",
+    )
+
+    assert target.read_text(encoding="utf-8") == "++ text\n"

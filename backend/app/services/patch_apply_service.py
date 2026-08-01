@@ -135,16 +135,30 @@ class PatchApplyService:
             output = []
             source_cursor = 0
             index += 1
-            while index < len(lines) and not lines[index].startswith("--- "):
+            while index < len(lines):
+                if lines[index].startswith("diff --git "):
+                    break
                 match = self.hunk.match(lines[index])
                 if not match:
+                    if lines[index].startswith("--- "):
+                        if index + 1 < len(lines) and lines[index + 1].startswith("+++ "):
+                            break
+                        raise RepairApplicationError(
+                            "REPAIR_DIFF_INVALID", "Unified diff header is incomplete"
+                        )
+                    if lines[index].startswith("+++ "):
+                        raise RepairApplicationError(
+                            "REPAIR_DIFF_INVALID", "Unified diff header is incomplete"
+                        )
                     index += 1
                     continue
                 start = int(match.group(1)) - 1
+                old_remaining = int(match.group(2) or 1)
+                new_remaining = int(match.group(4) or 1)
                 output.extend(original[source_cursor:start])
                 source_cursor = start
                 index += 1
-                while index < len(lines) and not lines[index].startswith(("@@ ", "--- ")):
+                while index < len(lines) and (old_remaining or new_remaining):
                     line = lines[index]
                     if line.startswith(" "):
                         if source_cursor >= len(original) or original[source_cursor].rstrip("\r\n") != line[1:].rstrip("\r\n"):
@@ -153,17 +167,23 @@ class PatchApplyService:
                             )
                         output.append(original[source_cursor])
                         source_cursor += 1
+                        old_remaining -= 1
+                        new_remaining -= 1
                     elif line.startswith("-"):
                         if source_cursor >= len(original) or original[source_cursor].rstrip("\r\n") != line[1:].rstrip("\r\n"):
                             raise RepairApplicationError(
                                 "REPAIR_DIFF_STALE", "Unified diff removal no longer matches"
                             )
                         source_cursor += 1
+                        old_remaining -= 1
                     elif line.startswith("+"):
                         output.append(line[1:])
+                        new_remaining -= 1
                     elif not line.startswith("\\"):
                         raise RepairApplicationError("REPAIR_DIFF_INVALID", "Unified diff line is invalid")
                     index += 1
+                if old_remaining or new_remaining:
+                    raise RepairApplicationError("REPAIR_DIFF_INVALID", "Unified diff hunk is incomplete")
             output.extend(original[source_cursor:])
             changes.append({"path": relative, "action": "write", "content": "".join(output)})
         if not changes:

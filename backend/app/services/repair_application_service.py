@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -82,6 +83,8 @@ _GATEWAY_FAILURE_CODES = {
     LlmFailureCode.BUDGET: "LLM_BUDGET_EXCEEDED",
     LlmFailureCode.CANCELLATION: "LLM_CANCELLED",
 }
+
+_UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 def _bounded_text(value: object, limit: int = 240) -> str | None:
     if value is None:
@@ -389,7 +392,7 @@ class RepairApplicationService:
         paths = []
         index = 0
         while index < len(lines):
-            if lines[index].startswith("+++ ") or not lines[index].startswith("--- "):
+            if not lines[index].startswith("--- "):
                 if lines[index].startswith("+++ "):
                     raise RepairApplicationError(
                         "REPAIR_DIFF_INVALID", "Unified diff header pair is incomplete"
@@ -410,6 +413,34 @@ class RepairApplicationService:
                 )
             paths.append(new_path or old_path)
             index += 2
+            while index < len(lines):
+                if lines[index].startswith("diff --git "):
+                    break
+                hunk = _UNIFIED_HUNK.match(lines[index])
+                if hunk:
+                    old_remaining = int(hunk.group(2) or 1)
+                    new_remaining = int(hunk.group(4) or 1)
+                    index += 1
+                    while index < len(lines) and (old_remaining or new_remaining):
+                        line = lines[index]
+                        if not line.startswith("\\"):
+                            if line.startswith((" ", "-")):
+                                old_remaining -= 1
+                            if line.startswith((" ", "+")):
+                                new_remaining -= 1
+                        index += 1
+                    continue
+                if lines[index].startswith("--- "):
+                    if index + 1 < len(lines) and lines[index + 1].startswith("+++ "):
+                        break
+                    raise RepairApplicationError(
+                        "REPAIR_DIFF_INVALID", "Unified diff header pair is incomplete"
+                    )
+                if lines[index].startswith("+++ "):
+                    raise RepairApplicationError(
+                        "REPAIR_DIFF_INVALID", "Unified diff header pair is incomplete"
+                    )
+                index += 1
         if not paths:
             raise RepairApplicationError(
                 "REPAIR_TOUCHED_FILES_MISSING", "Unified diff must identify touched files"
