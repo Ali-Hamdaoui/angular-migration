@@ -5,7 +5,12 @@ sys.path.insert(0, "backend")
 import pytest
 from pydantic import ValidationError
 
-from app.llm_gateway.azure_gateway import PromptSchemaRegistry
+from app.llm_gateway.azure_gateway import (
+    PRODUCTION_LLM_POLICY_TUPLES,
+    PromptRegistry,
+    PromptSchemaRegistry,
+)
+from app.services import repair_application_service
 from app.services.repair_application_service import RepairProposal, RepairReview
 
 
@@ -26,6 +31,12 @@ def _registry() -> PromptSchemaRegistry:
     registry = PromptSchemaRegistry(version="test")
     registry.register("repair_proposer_v1", RepairProposal)
     registry.register("repair_reviewer_v1", RepairReview)
+    registry.register(
+        "repair_proposer_candidate_v2", repair_application_service.RepairProposalCandidate
+    )
+    registry.register(
+        "repair_reviewer_candidate_v2", repair_application_service.RepairReviewCandidate
+    )
     return registry
 
 
@@ -71,7 +82,12 @@ def _review(**overrides) -> dict[str, object]:
 
 def test_repair_provider_schemas_are_azure_strict_and_backend_bound():
     registry = _registry()
-    for name in ("repair_proposer_v1", "repair_reviewer_v1"):
+    for name in (
+        "repair_proposer_v1",
+        "repair_reviewer_v1",
+        "repair_proposer_candidate_v2",
+        "repair_reviewer_candidate_v2",
+    ):
         schema = registry.json_schema(name)
         for node in _walk(schema):
             assert not UNSUPPORTED.intersection(node)
@@ -141,3 +157,98 @@ def test_repair_valid_operations_and_unified_diff_proposals_validate():
 
     review = RepairReview.model_validate(_review())
     assert review.decision == "accept"
+
+
+def test_v2_candidate_models_reject_authority_and_arbitrary_fields():
+    operation = {
+        "operation": "replace_text",
+        "path": "src/main.ts",
+        "old_text": "old",
+        "new_text": "new",
+        "content": None,
+    }
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [operation],
+        "unified_diff": None,
+        "rationale": ["reason"],
+        "risk_level": "low",
+        "validation_targets": ["build"],
+        "limitations": [],
+    }
+    review = {
+        "decision": "accept",
+        "findings": [],
+        "policy_checks": ["no commands"],
+        "risk_assessment": "low risk",
+        "required_validation_targets": ["build"],
+        "limitations": [],
+    }
+    forbidden = (
+        (repair_application_service.RepairOperationCandidate, operation, "preimage_sha256"),
+        (repair_application_service.RepairOperationCandidate, operation, "operation_id"),
+        (repair_application_service.RepairOperationCandidate, operation, "preimage_fingerprint"),
+        (repair_application_service.RepairOperationCandidate, operation, "apply_gate"),
+        (repair_application_service.RepairOperationCandidate, operation, "command"),
+        (repair_application_service.RepairOperationCandidate, operation, "status"),
+        (repair_application_service.RepairProposalCandidate, proposal, "failure_evidence_checksum"),
+        (repair_application_service.RepairProposalCandidate, proposal, "context_pack_checksum"),
+        (repair_application_service.RepairProposalCandidate, proposal, "touched_files"),
+        (repair_application_service.RepairProposalCandidate, proposal, "attempt_id"),
+        (repair_application_service.RepairProposalCandidate, proposal, "workspace_fingerprint"),
+        (repair_application_service.RepairProposalCandidate, proposal, "approval_gate"),
+        (repair_application_service.RepairProposalCandidate, proposal, "command"),
+        (repair_application_service.RepairProposalCandidate, proposal, "status"),
+        (repair_application_service.RepairReviewCandidate, review, "proposal_checksum"),
+        (repair_application_service.RepairReviewCandidate, review, "review_id"),
+        (repair_application_service.RepairReviewCandidate, review, "proposal_fingerprint"),
+        (repair_application_service.RepairReviewCandidate, review, "approval_gate"),
+        (repair_application_service.RepairReviewCandidate, review, "command"),
+        (repair_application_service.RepairReviewCandidate, review, "status"),
+        (repair_application_service.RepairReviewCandidate, review, "arbitrary_extra"),
+    )
+
+    for model, payload, field in forbidden:
+        with pytest.raises(ValidationError):
+            model.model_validate({**payload, field: "authoritative"})
+
+
+def test_v2_reviewer_candidate_cannot_author_operations_or_diff():
+    review = {
+        "decision": "accept",
+        "findings": [],
+        "policy_checks": ["no commands"],
+        "risk_assessment": "low risk",
+        "required_validation_targets": ["build"],
+        "limitations": [],
+    }
+
+    for field, value in (
+        ("operations", [{"operation": "replace_text"}]),
+        ("unified_diff", "--- a/src/main.ts\n+++ b/src/main.ts\n"),
+    ):
+        with pytest.raises(ValidationError):
+            repair_application_service.RepairReviewCandidate.model_validate({**review, field: value})
+
+
+def test_v1_persisted_repair_payloads_remain_readable():
+    assert RepairProposal.model_validate(_proposal()).failure_evidence_checksum.startswith("sha256:")
+    assert RepairReview.model_validate(_review()).proposal_checksum.startswith("sha256:")
+
+
+def test_v2_repair_candidate_registry_and_prompt_versions_exist():
+    registry = _registry()
+    assert registry.json_schema("repair_proposer_candidate_v2")["type"] == "object"
+    assert registry.json_schema("repair_reviewer_candidate_v2")["type"] == "object"
+
+    prompts = PromptRegistry.defaults()
+    assert (
+        prompts.get("repair_proposer_candidate_v2").version
+        == "prompt-repair-proposer-candidate-v2"
+    )
+    assert (
+        prompts.get("repair_reviewer_candidate_v2").version
+        == "prompt-repair-reviewer-candidate-v2"
+    )
+    assert ("repair_proposer_candidate_v2", repair_application_service.LlmTaskType.REPAIR_DIAGNOSIS) in PRODUCTION_LLM_POLICY_TUPLES
+    assert ("repair_reviewer_candidate_v2", repair_application_service.LlmTaskType.REPAIR_REVIEW) in PRODUCTION_LLM_POLICY_TUPLES

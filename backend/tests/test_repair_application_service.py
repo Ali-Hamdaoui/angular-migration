@@ -28,6 +28,7 @@ from app.repositories.models import (
     StageWorkspaceBindingModel,
 )
 from app.repositories.models.base import Base
+from app.services import repair_application_service
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
@@ -83,11 +84,10 @@ def test_proposal_semantics_bind_preimage_and_safe_path(tmp_path: Path):
         service.validate_proposal(escaped, context)
 
 
-def test_reviewer_schema_cannot_author_candidate_content():
+def test_reviewer_candidate_schema_cannot_author_candidate_content():
     with pytest.raises(ValidationError):
-        RepairReview.model_validate(
+        repair_application_service.RepairReviewCandidate.model_validate(
             {
-                "proposal_checksum": "sha256:proposal",
                 "decision": "accept",
                 "findings": [],
                 "policy_checks": ["paths"],
@@ -99,11 +99,10 @@ def test_reviewer_schema_cannot_author_candidate_content():
         )
 
 
-def test_reviewer_schema_rejects_unified_diff_field():
+def test_reviewer_candidate_schema_rejects_unified_diff_field():
     with pytest.raises(ValidationError):
-        RepairReview.model_validate(
+        repair_application_service.RepairReviewCandidate.model_validate(
             {
-                "proposal_checksum": "sha256:proposal",
                 "decision": "accept",
                 "findings": [],
                 "policy_checks": ["paths"],
