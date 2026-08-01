@@ -232,3 +232,43 @@ def test_all_target_locks_remain_held_until_apply_finishes(tmp_path: Path, monke
         )
     assert first.read_text(encoding="utf-8") == "first-old\n"
     assert second.read_text(encoding="utf-8") == "second-old\n"
+
+
+def test_created_target_remains_locked_through_post_fingerprint(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "created.ts"
+    workspace.mkdir()
+    artifacts.mkdir(parents=True)
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [{
+            "operation": "create_text_file",
+            "path": "src/created.ts",
+            "content": "created\n",
+        }],
+        "unified_diff": None,
+    }
+    original_fingerprint = __import__(
+        "app.services.patch_apply_service", fromlist=["_fingerprint_with_locked_targets"]
+    )._fingerprint_with_locked_targets
+
+    def mutate_created(root, locked_targets):
+        target.write_text("concurrent\n", encoding="utf-8")
+        return original_fingerprint(root, locked_targets)
+
+    monkeypatch.setattr(
+        "app.services.patch_apply_service._fingerprint_with_locked_targets",
+        mutate_created,
+    )
+    with pytest.raises(PermissionError):
+        PatchApplyService().apply(
+            proposal=proposal,
+            workspace_path=str(workspace),
+            expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_root=str(artifacts),
+            attempt_id="repair-1",
+        )
+    assert not target.exists()

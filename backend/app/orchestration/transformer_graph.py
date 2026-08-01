@@ -1376,6 +1376,7 @@ class TransformerOrchestrator:
                     or current_decision is None
                     or current_attempt.status != "applying"
                     or current_binding.id != context["workspace_binding_id"]
+                    or current.state_version != context["continuation_state_version"]
                     or live != context["fingerprint"]
                 ):
                     raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed during recovery")
@@ -1395,6 +1396,13 @@ class TransformerOrchestrator:
                     or proposal_artifact.ref.checksum != context["proposal_artifact_checksum"]
                 ):
                     raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed during recovery")
+            session.expire_all()
+            context["continuation_state_version"] = self._claim_current_continuation_for_apply(
+                session,
+                continuation_id,
+                context["stage_id"],
+                context["continuation_state_version"],
+            )
             proposal = json.loads(proposal_artifact.content)
             try:
                 apply_result = self._patches.apply(
@@ -1450,6 +1458,33 @@ class TransformerOrchestrator:
                 step.execution_id = None
                 step.completed_at = None
             self._queue(continuation, "repair_revalidate")
+
+    @staticmethod
+    def _claim_current_continuation_for_apply(
+        session,
+        continuation_id: str,
+        stage_id: str,
+        expected_state_version: int,
+    ) -> int:
+        current = session.get(TransformationContinuationModel, continuation_id)
+        if (
+            current is None
+            or current.current_stage_id != stage_id
+            or current.state_version != expected_state_version
+        ):
+            raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Continuation authority changed before mutation")
+        claim = session.execute(
+            update(TransformationContinuationModel)
+            .where(
+                TransformationContinuationModel.id == continuation_id,
+                TransformationContinuationModel.current_stage_id == stage_id,
+                TransformationContinuationModel.state_version == expected_state_version,
+            )
+            .values(state_version=TransformationContinuationModel.state_version + 1, updated_at=datetime.now(UTC))
+        )
+        if claim.rowcount != 1:
+            raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Continuation changed before mutation")
+        return expected_state_version + 1
 
     def _start_revalidation(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:

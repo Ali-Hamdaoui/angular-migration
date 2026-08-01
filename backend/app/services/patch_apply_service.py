@@ -204,6 +204,10 @@ class PatchApplyService:
                             raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair create target appeared before mutation") from error
                         with os.fdopen(fd, "w", encoding="utf-8", newline="") as created:
                             created.write(change["content"])
+                        locked_targets[change["path"]] = target_locks.enter_context(
+                            _target_apply_lock(target)
+                        )
+                        target_fd, target_exists = locked_targets[change["path"]]
                     else:
                         if not target_exists:
                             raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair target disappeared before mutation")
@@ -224,7 +228,7 @@ class PatchApplyService:
                             os.write(target_fd, encoded)
                     if change["action"] == "delete":
                         postimage = "deleted"
-                    elif expected == "absent":
+                    elif expected == "absent" and not target_exists:
                         postimage = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
                     else:
                         os.lseek(target_fd, 0, os.SEEK_SET)
@@ -244,17 +248,13 @@ class PatchApplyService:
                 prepared["status"] = "applied"
                 final = self._write(store, run_id, stage_id, attempt_id, "applied", prepared)
             except Exception:
+                target_locks.close()
                 for change in changes:
                     target = workspace / change["path"]
                     original = originals.get(change["path"])
                     if original is None:
                         if target.exists():
                             target.unlink()
-                    elif target.exists():
-                        target_fd, _ = locked_targets[change["path"]]
-                        os.lseek(target_fd, 0, os.SEEK_SET)
-                        os.ftruncate(target_fd, 0)
-                        os.write(target_fd, original)
                     else:
                         temporary = target.with_name(f".{target.name}.repair-rollback-{uuid4().hex[:12]}")
                         temporary.write_bytes(original)

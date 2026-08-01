@@ -1045,3 +1045,16 @@ def test_apply_recovery_state_write_failure_is_not_silenced():
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         orchestrator._mark_apply_recovery_required("cont-1", None)
+
+
+def test_apply_rejects_continuation_mutation_after_durable_claim():
+    continuation = SimpleNamespace(current_stage_id="stage-1", state_version=9)
+
+    class Session:
+        def get(self, _model, _identifier):
+            return continuation
+
+    with pytest.raises(ValueError, match="Continuation authority changed"):
+        TransformerOrchestrator._claim_current_continuation_for_apply(
+            Session(), "cont-1", "stage-1", expected_state_version=8
+        )
