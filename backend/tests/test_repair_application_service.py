@@ -405,6 +405,16 @@ def _seed_service(factory, tmp_path: Path):
     app_ts.write_text("old", encoding="utf-8")
     store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
     attempt_id = "repair-1"
+    failure = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/failure-evidence.json",
+        json.dumps({"attempt_id": attempt_id, "failure": "compiler", "stage_id": "stage-1"}),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-failure-evidence",
+        created_at=NOW,
+    )
     context = store.write_text_artifact(
         "run-1",
         f"05_repairs/attempt-{attempt_id}/context-pack.json",
@@ -445,8 +455,8 @@ def _seed_service(factory, tmp_path: Path):
         status="evidence_frozen",
         risk_level="unknown",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
-        failure_evidence_artifact_id="artifact-evidence",
-        failure_evidence_checksum="sha256:failure",
+        failure_evidence_artifact_id=failure.ref.artifact_id,
+        failure_evidence_checksum=failure.ref.checksum,
         failure_route_artifact_id="artifact-route",
         failure_route_checksum="sha256:route",
         context_pack_artifact_id=context.ref.artifact_id,
@@ -460,6 +470,19 @@ def _seed_service(factory, tmp_path: Path):
         updated_at=NOW,
     )
     session.add_all([run, binding, attempt])
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + failure.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=failure.ref.artifact_type.value,
+            relative_path=failure.ref.relative_path,
+            checksum=failure.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
     session.add(
         ArtifactMetadataModel(
             id="metadata-" + context.ref.artifact_id,
@@ -981,7 +1004,7 @@ def test_v1_persisted_proposal_and_review_artifacts_still_recover(tmp_path: Path
                 stage_id="stage-1",
                 idempotency_key=f"{attempt_id}:{role}",
                 request_checksum="sha256:v1-request",
-                input_hashes=["sha256:failure", "sha256:context"],
+                input_hashes=[attempt.failure_evidence_checksum, attempt.context_pack_checksum],
                 correlation_id=f"{attempt_id}:{role}",
                 actor="transformer",
                 role=f"repair_{role}",

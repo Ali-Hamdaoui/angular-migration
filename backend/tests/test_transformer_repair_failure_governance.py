@@ -184,6 +184,16 @@ def _seed(
     app_ts.write_text("old", encoding="utf-8")
     store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
     attempt_id = "repair-1"
+    failure = store.write_text_artifact(
+        run_id,
+        f"05_repairs/attempt-{attempt_id}/failure-evidence.json",
+        json.dumps({"attempt_id": attempt_id, "failure": "compiler", "stage_id": stage_id}),
+        ArtifactType.JSON,
+        stage_id=stage_id,
+        attempt_id=attempt_id,
+        created_by="repair-failure-evidence",
+        created_at=NOW,
+    )
     context = store.write_text_artifact(
         run_id,
         f"05_repairs/attempt-{attempt_id}/context-pack.json",
@@ -277,8 +287,8 @@ def _seed(
         status="proposed" if proposed else "evidence_frozen",
         risk_level="low" if proposed else "unknown",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
-        failure_evidence_artifact_id="artifact-evidence",
-        failure_evidence_checksum="sha256:failure",
+        failure_evidence_artifact_id=failure.ref.artifact_id,
+        failure_evidence_checksum=failure.ref.checksum,
         failure_route_artifact_id="artifact-route",
         failure_route_checksum="sha256:route",
         context_pack_artifact_id=context.ref.artifact_id,
@@ -292,6 +302,19 @@ def _seed(
         updated_at=NOW,
     )
     session.add_all([run, plan, binding, continuation, attempt])
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + failure.ref.artifact_id,
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_type=failure.ref.artifact_type.value,
+            relative_path=failure.ref.relative_path,
+            checksum=failure.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
     session.add(
         ArtifactMetadataModel(
             id="metadata-" + context.ref.artifact_id,
@@ -326,7 +349,7 @@ def _seed(
                 stage_id=stage_id,
                 idempotency_key=f"{attempt_id}:proposer",
                 request_checksum="sha256:request",
-                input_hashes=["sha256:failure", "sha256:context"],
+                input_hashes=[failure.ref.checksum, context.ref.checksum],
                 correlation_id=f"{attempt_id}:proposer",
                 actor="transformer",
                 role="repair_proposer",
@@ -504,7 +527,7 @@ def test_missing_prompt_policy_blocks_without_transport_or_artifact(tmp_path: Pa
     assert session.query(UsageCostRecordModel).count() == 0
     attempt = session.get(RepairAttemptModel, attempt_id)
     assert attempt.status == "evidence_frozen"
-    assert attempt.failure_evidence_checksum == "sha256:failure"
+    assert attempt.failure_evidence_checksum == session.get(ArtifactMetadataModel, "metadata-" + attempt.failure_evidence_artifact_id).checksum
     assert attempt.context_pack_checksum == session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id).checksum
     assert attempt.proposal_artifact_id is None
     session.close()
