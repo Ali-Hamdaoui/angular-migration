@@ -1148,6 +1148,8 @@ class TransformerOrchestrator:
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
                 "proposal_path": str(Path(run.artifact_root) / metadata.relative_path),
+                "proposal_relative_path": metadata.relative_path,
+                "proposal_artifact_id": attempt.proposal_artifact_id,
                 "proposal_artifact_checksum": attempt.proposal_checksum,
                 "checkpoint_path": checkpoint.workspace_path,
                 "checkpoint_fingerprint": checkpoint.workspace_fingerprint,
@@ -1162,7 +1164,17 @@ class TransformerOrchestrator:
                 context["stage_root"],
                 context["checkpoint_fingerprint"],
             )
-        proposal = json.loads(Path(context["proposal_path"]).read_text(encoding="utf-8"))
+        proposal_artifact = LocalFilesystemArtifactStore(
+            Path(context["artifact_root"]).parent, fixed_run_root=Path(context["artifact_root"])
+        ).read_artifact(context["run_id"], context["proposal_relative_path"])
+        if (
+            proposal_artifact.ref.artifact_id != context["proposal_artifact_id"]
+            or proposal_artifact.ref.checksum != context["proposal_artifact_checksum"]
+        ):
+            raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
+        if proposal_artifact.ref.checksum != context["proposal_artifact_checksum"]:
+            raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal checksum changed")
+        proposal = json.loads(proposal_artifact.content)
         try:
             prepared, ledger, fingerprint = self._patches.apply(
                 proposal=proposal,

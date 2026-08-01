@@ -285,7 +285,12 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 workspace is unavailable") from error
         if live != binding.workspace_fingerprint or package.get("workspace_path") != binding.workspace_path:
             raise StageGateError("G10_LINEAGE_STALE", "G10 workspace binding is stale")
+        lineage_payload = {key: value for key, value in package.items() if key != "backend_lineage_checksum"}
+        if package.get("backend_lineage_checksum") != cls._checksum(lineage_payload):
+            raise StageGateError("G10_LINEAGE_STALE", "G10 backend lineage checksum is invalid")
         for artifact_id, checksum in (
+            (attempt.failure_evidence_artifact_id, attempt.failure_evidence_checksum),
+            (attempt.context_pack_artifact_id, attempt.context_pack_checksum),
             (attempt.proposal_artifact_id, attempt.proposal_checksum),
             (attempt.review_artifact_id, attempt.review_checksum),
         ):
@@ -293,14 +298,24 @@ class StageGateService:
             if artifact is None or artifact.run_id != continuation.run_id or artifact.checksum != checksum:
                 raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact lineage is missing")
             try:
-                payload = json.loads(store.read_artifact(continuation.run_id, artifact.relative_path).content)
+                stored_artifact = store.read_artifact(continuation.run_id, artifact.relative_path)
+                if stored_artifact.ref.artifact_id != artifact_id or stored_artifact.ref.checksum != checksum:
+                    raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact identity changed")
+                payload = json.loads(stored_artifact.content)
             except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
                 raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact cannot be verified") from error
-            if artifact_id == attempt.proposal_artifact_id:
+            if artifact_id == attempt.failure_evidence_artifact_id:
+                if stored_artifact.envelope and stored_artifact.envelope.attempt_id not in {None, attempt.id}:
+                    raise StageGateError("G10_LINEAGE_STALE", "G10 failure evidence attempt binding is stale")
+            elif artifact_id == attempt.context_pack_artifact_id:
+                if stored_artifact.envelope and stored_artifact.envelope.attempt_id not in {None, attempt.id}:
+                    raise StageGateError("G10_LINEAGE_STALE", "G10 context attempt binding is stale")
+            elif artifact_id == attempt.proposal_artifact_id:
                 if payload.get("failure_evidence_checksum") != attempt.failure_evidence_checksum or payload.get("context_pack_checksum") != attempt.context_pack_checksum:
                     raise StageGateError("G10_LINEAGE_STALE", "G10 proposal evidence lineage is stale")
-                targets = payload.get("validation_targets") or []
-                if not targets or any(target not in {"build", "test", "lint"} for target in targets):
+                targets = list(payload.get("validation_targets") or [])
+                normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
+                if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in {"build", "test", "lint"} for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
             elif payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
                 raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")

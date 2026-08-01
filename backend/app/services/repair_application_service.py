@@ -651,14 +651,14 @@ class RepairApplicationService:
                 "workspace_binding_id": binding.id,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
             }
+            if not attempt.failure_evidence_artifact_id or not attempt.failure_evidence_checksum:
+                raise RepairApplicationError("REPAIR_EVIDENCE_MISSING", "Failure evidence artifact is missing")
             if not attempt.context_pack_artifact_id or not attempt.context_pack_checksum:
                 raise RepairApplicationError("REPAIR_CONTEXT_MISSING", "Repair context artifact is missing")
-            artifact_ids = [attempt.context_pack_artifact_id]
+            artifact_ids = [attempt.failure_evidence_artifact_id, attempt.context_pack_artifact_id]
             if include_proposal:
                 if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
-                    raise RepairApplicationError(
-                        "REPAIR_PROPOSAL_MISSING", "Repair proposal is missing"
-                    )
+                    raise RepairApplicationError("REPAIR_PROPOSAL_MISSING", "Repair proposal is missing")
                 artifact_ids.append(attempt.proposal_artifact_id)
             metadata = {
                 item.id.removeprefix("metadata-"): item
@@ -672,15 +672,13 @@ class RepairApplicationService:
             if any(artifact_id not in metadata for artifact_id in artifact_ids):
                 raise RepairApplicationError("REPAIR_EVIDENCE_MISSING", "Repair artifact metadata is missing")
             expected_checksums = {
+                attempt.failure_evidence_artifact_id: attempt.failure_evidence_checksum,
                 attempt.context_pack_artifact_id: attempt.context_pack_checksum,
             }
             if include_proposal:
                 expected_checksums[attempt.proposal_artifact_id] = attempt.proposal_checksum
             for artifact_id, expected in expected_checksums.items():
-                if artifact_id == attempt.proposal_artifact_id and include_proposal:
-                    # The immutable proposal artifact is the backend authority; a stale
-                    # attempt projection is rebound from it before reviewer transport.
-                    continue
+
                 if metadata[artifact_id].checksum != expected:
                     raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair artifact checksum binding is stale")
         root = Path(str(context["artifact_root"]))
@@ -810,6 +808,19 @@ class RepairApplicationService:
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
                     "Repair attempt is missing",
                 )
+            expected_role = "repair_proposer" if role == "proposer" else "repair_reviewer"
+            expected_task = LlmTaskType.REPAIR_DIAGNOSIS.value if role == "proposer" else LlmTaskType.REPAIR_REVIEW.value
+            if invocation.role != expected_role or invocation.task_type != expected_task or invocation.stage_id != attempt.stage_id:
+                raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed invocation identity is invalid")
+            if context.get("request_checksum") and invocation.request_checksum != context["request_checksum"]:
+                raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed invocation request lineage is stale")
+            if attempt.parent_attempt_id:
+                parent = session.scalar(select(RepairAttemptModel).where(RepairAttemptModel.id == attempt.parent_attempt_id, RepairAttemptModel.run_id == attempt.run_id, RepairAttemptModel.stage_id == attempt.stage_id))
+                if parent is None or parent.attempt_number >= attempt.attempt_number:
+                    raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed attempt parent lineage is invalid")
+            binding = session.scalar(select(StageWorkspaceBindingModel).where(StageWorkspaceBindingModel.run_id == attempt.run_id, StageWorkspaceBindingModel.stage_id == attempt.stage_id, StageWorkspaceBindingModel.active.is_(True)))
+            if context.get("workspace_path") and (binding is None or binding.workspace_path != context["workspace_path"] or StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != binding.workspace_fingerprint):
+                raise RepairApplicationError("REPAIR_ARTIFACT_RECOVERY_FAILED", "Completed workspace binding is stale")
             artifact_id = getattr(attempt, artifact_field)
             if not artifact_id:
                 raise RepairApplicationError(
@@ -849,13 +860,13 @@ class RepairApplicationService:
             if stored.ref.artifact_id != artifact_id or stored.ref.checksum != metadata.checksum:
                 raise ArtifactStoreError("Completed repair artifact checksum binding is invalid")
             payload = json.loads(stored.content)
-            legacy_v1 = "v1" in (invocation.prompt_version or "") or "v1" in (invocation.schema_version or "")
+            legacy_v1 = invocation.schema_version == "schema-registry-v1" and invocation.prompt_version in {"prompt-repair-proposer-v1", "prompt-repair-reviewer-v1", "repair-proposer-v1", "repair-reviewer-v1"}
             if role == "proposer":
                 value = RepairProposal.model_validate(payload).model_dump(mode="json")
                 if (
                     value["failure_evidence_checksum"] != attempt.failure_evidence_checksum
                     or value["context_pack_checksum"] != attempt.context_pack_checksum
-                ) and not legacy_v1:
+                ):
                     raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Completed proposal evidence lineage is stale")
             else:
                 value = RepairReview.model_validate(payload).model_dump(mode="json")
@@ -1031,6 +1042,7 @@ class RepairApplicationService:
                 raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership was lost")
             invocation.transport_started = True
             invocation.state_version += 1
+            context["invocation_state_version"] = invocation.state_version
 
     def _persist_failure(
         self,
@@ -1078,52 +1090,51 @@ class RepairApplicationService:
         )
         now = self._now()
         with self._scope() as session:
-            self._register_artifact_metadata(session, context, stored)
-            invocation = (
-                session.query(LlmInvocationModel)
-                .filter_by(
-                    run_id=context["run_id"],
-                    idempotency_key=_invocation_key(str(context["attempt_id"]), role),
+            invocation = session.scalar(
+                select(LlmInvocationModel).where(
+                    LlmInvocationModel.run_id == context["run_id"],
+                    LlmInvocationModel.idempotency_key == _invocation_key(str(context["attempt_id"]), role),
                 )
-                .one_or_none()
             )
             if invocation is None:
+                self._remove_uncommitted_artifact(stored)
                 return
-            invocation.status = "failed"
-            invocation.artifact_ids = list(
-                dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id])
+            expected_state = context.get("invocation_state_version")
+            if expected_state is None or invocation.state_version != expected_state or invocation.status != "in_progress":
+                self._remove_uncommitted_artifact(stored)
+                return
+            artifact_ids = list(dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id]))
+            artifact_checksums = {**(invocation.artifact_checksums or {}), stored.ref.artifact_id: stored.ref.checksum}
+            changed = session.execute(
+                update(LlmInvocationModel)
+                .where(
+                    LlmInvocationModel.run_id == context["run_id"],
+                    LlmInvocationModel.idempotency_key == invocation.idempotency_key,
+                    LlmInvocationModel.state_version == expected_state,
+                    LlmInvocationModel.status == "in_progress",
+                )
+                .values(
+                    status="failed", artifact_ids=artifact_ids, artifact_checksums=artifact_checksums,
+                    failure_code=error.code,
+                    failure_stage=failure_stage_override or getattr(error, "failure_stage", None) or "local",
+                    failure_subtype=getattr(error, "failure_subtype", None),
+                    provider_http_status=getattr(cause, "provider_status", None),
+                    provider_error_code=getattr(cause, "provider_code", None),
+                    sanitized_provider_message=_bounded_text(getattr(cause, "provider_message", None)),
+                    provider_request_id=invocation.provider_request_id or request_id,
+                    response_received=response_received, response_content_type=getattr(cause, "response_content_type", None),
+                    response_bytes=getattr(cause, "response_bytes", None), response_sha256=getattr(cause, "response_sha256", None),
+                    response_kind=getattr(cause, "response_kind", None) or ("json" if response is not None else None),
+                    transport_started=transport_started, retryable=getattr(error, "retryable", None),
+                    retries=invocation.retries + retries,
+                    transport_exception_type=type(error.__cause__).__name__ if error.__cause__ else None,
+                    completed_at=now, state_version=expected_state + 1,
+                )
             )
-            invocation.artifact_checksums = {
-                **(invocation.artifact_checksums or {}),
-                stored.ref.artifact_id: stored.ref.checksum,
-            }
-            invocation.failure_code = error.code
-            invocation.failure_stage = (
-                failure_stage_override or getattr(error, "failure_stage", None) or "local"
-            )
-            invocation.failure_subtype = getattr(error, "failure_subtype", None)
-            invocation.provider_http_status = getattr(cause, "provider_status", None)
-            invocation.provider_error_code = getattr(cause, "provider_code", None)
-            invocation.sanitized_provider_message = _bounded_text(
-                getattr(cause, "provider_message", None)
-            )
-            if request_id and not invocation.provider_request_id:
-                invocation.provider_request_id = request_id
-            invocation.response_received = response_received
-            invocation.response_content_type = getattr(cause, "response_content_type", None)
-            invocation.response_bytes = getattr(cause, "response_bytes", None)
-            invocation.response_sha256 = getattr(cause, "response_sha256", None)
-            invocation.response_kind = getattr(cause, "response_kind", None) or (
-                "json" if response is not None else None
-            )
-            invocation.transport_started = transport_started
-            invocation.retryable = getattr(error, "retryable", None)
-            invocation.retries = (invocation.retries or 0) + retries
-            invocation.transport_exception_type = (
-                type(error.__cause__).__name__ if error.__cause__ else None
-            )
-            invocation.completed_at = now
-
+            if changed.rowcount != 1:
+                self._remove_uncommitted_artifact(stored)
+                return
+            self._register_artifact_metadata(session, context, stored)
     def _register_artifact_metadata(self, session, context, stored) -> None:
         session.add(
             ArtifactMetadataModel(
@@ -1182,13 +1193,13 @@ class RepairApplicationService:
                 )
             )
             stage_plan = session.get(StageExecutionPlanModel, context.get("stage_plan_id")) if context.get("stage_plan_id") else None
+            if attempt is None or run is None or binding is None:
+                raise RepairApplicationError("REPAIR_PROPOSAL_STALE" if role == "proposer" else "REPAIR_REVIEW_STALE", "Repair authority is missing")
             proposal_metadata = (
                 session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
                 if attempt.proposal_artifact_id
                 else None
             )
-            if attempt is None or run is None or binding is None:
-                raise RepairApplicationError("REPAIR_PROPOSAL_STALE" if role == "proposer" else "REPAIR_REVIEW_STALE", "Repair authority is missing")
             try:
                 live_fingerprint = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
             except OSError as error:
@@ -1233,6 +1244,59 @@ class RepairApplicationService:
                     "Run state changed before success persistence",
                 )
             invocation_id = _invocation_key(attempt.id, role)
+            continuation_claim = None
+            if continuation is not None:
+                continuation_claim = session.execute(update(TransformationContinuationModel).where(
+                    TransformationContinuationModel.id == continuation.id,
+                    TransformationContinuationModel.run_id == context["run_id"],
+                    TransformationContinuationModel.current_stage_id == context["stage_id"],
+                    TransformationContinuationModel.state_version == context["authority_snapshot"]["continuation_state_version"],
+                ).values(state_version=TransformationContinuationModel.state_version + 1, updated_at=self._now()))
+                if continuation_claim.rowcount != 1:
+                    raise RepairApplicationError("REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE", "Continuation changed before success persistence")
+            if stage_plan is not None:
+                plan_claim = session.execute(update(StageExecutionPlanModel).where(
+                    StageExecutionPlanModel.id == stage_plan.id,
+                    StageExecutionPlanModel.run_id == context["run_id"],
+                    StageExecutionPlanModel.stage_id == context["stage_id"],
+                    StageExecutionPlanModel.checksum == context["authority_snapshot"]["stage_plan_checksum"],
+                    StageExecutionPlanModel.state_version == context["authority_snapshot"]["stage_plan_state_version"],
+                ).values(updated_at=self._now()))
+                if plan_claim.rowcount != 1:
+                    raise RepairApplicationError("REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE", "Stage plan changed before success persistence")
+            binding_claim = session.execute(update(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.id == binding.id,
+                StageWorkspaceBindingModel.run_id == context["run_id"],
+                StageWorkspaceBindingModel.stage_id == context["stage_id"],
+                StageWorkspaceBindingModel.active.is_(True),
+                StageWorkspaceBindingModel.workspace_path == context["authority_snapshot"]["workspace_path"],
+                StageWorkspaceBindingModel.workspace_fingerprint == context["authority_snapshot"]["workspace_stored_fingerprint"],
+            ).values(last_verified_fingerprint=live_fingerprint, last_verified_at=self._now()))
+            if binding_claim.rowcount != 1:
+                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Workspace binding changed before success persistence")
+            attempt_predicates = [
+                RepairAttemptModel.id == attempt.id,
+                RepairAttemptModel.run_id == context["run_id"],
+                RepairAttemptModel.stage_id == context["stage_id"],
+                RepairAttemptModel.attempt_number == context["authority_snapshot"]["attempt_number"],
+                RepairAttemptModel.status == context["authority_snapshot"]["attempt_status"],
+                RepairAttemptModel.context_pack_artifact_id == context["authority_snapshot"]["context_pack_artifact_id"],
+                RepairAttemptModel.context_pack_checksum == context["authority_snapshot"]["context_pack_checksum"],
+                RepairAttemptModel.failure_evidence_artifact_id == context["authority_snapshot"]["failure_evidence_artifact_id"],
+                RepairAttemptModel.failure_evidence_checksum == context["authority_snapshot"]["failure_evidence_checksum"],
+            ]
+            old_parent = context["authority_snapshot"]["parent_attempt_id"]
+            old_proposal = context["authority_snapshot"]["proposal_checksum"]
+            attempt_predicates += [RepairAttemptModel.parent_attempt_id.is_(None) if old_parent is None else RepairAttemptModel.parent_attempt_id == old_parent, RepairAttemptModel.proposal_checksum.is_(None) if old_proposal is None else RepairAttemptModel.proposal_checksum == old_proposal]
+            attempt_values = {"updated_at": self._now()}
+            if role == "proposer":
+                attempt_values.update(proposal_artifact_id=stored.ref.artifact_id, proposal_checksum=stored.ref.checksum, proposer_invocation_id=invocation_id, status="proposed")
+            else:
+                attempt_values.update(review_artifact_id=stored.ref.artifact_id, review_checksum=stored.ref.checksum, reviewer_invocation_id=invocation_id, status=("review_accepted" if summary["decision"] == "accept" else summary["decision"]))
+            attempt_claim = session.execute(update(RepairAttemptModel).where(*attempt_predicates).values(**attempt_values))
+            if attempt_claim.rowcount != 1:
+                raise RepairApplicationError("REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE", "Repair attempt changed before success persistence")
+            invocation_id = _invocation_key(attempt.id, role)
             now = self._now()
             invocation = session.scalar(
                 select(LlmInvocationModel).where(
@@ -1244,6 +1308,16 @@ class RepairApplicationService:
                 raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation is missing")
             if invocation.status != "in_progress" or not invocation.transport_started:
                 raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation is not owned")
+            invocation_claim = session.execute(update(LlmInvocationModel).where(
+                LlmInvocationModel.id == invocation.id,
+                LlmInvocationModel.run_id == context["run_id"],
+                LlmInvocationModel.idempotency_key == invocation_id,
+                LlmInvocationModel.state_version == context["invocation_state_version"],
+                LlmInvocationModel.status == "in_progress",
+                LlmInvocationModel.transport_started.is_(True),
+            ).values(state_version=LlmInvocationModel.state_version))
+            if invocation_claim.rowcount != 1:
+                raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair invocation ownership changed")
             invocation.status = "completed"
             invocation.failure_code = None
             invocation.role = response.role.value
