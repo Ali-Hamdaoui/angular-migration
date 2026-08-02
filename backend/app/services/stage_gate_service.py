@@ -28,6 +28,9 @@ from app.repositories.models import (
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.state import StateTransitionService
 
 
@@ -122,6 +125,7 @@ class StageGateService:
             created_at=created_at,
         )
         session.add(package)
+        expected_state_version = continuation.state_version
         continuation.status = "waiting_gate"
         continuation.current_node = f"wait_{gate_id.lower()}"
         continuation.worker_id = None
@@ -137,6 +141,18 @@ class StageGateService:
             reason=f"{gate_id} evidence package created",
             occurred_at=created_at,
             payload={"stage_id": continuation.current_stage_id, "package_checksum": package_checksum},
+        )
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_gate:{expected_state_version}",
+            reason=f"continuation waits for {gate_id} decision",
+            payload={
+                "gate_id": gate_id,
+                "expected_state_version": expected_state_version,
+            },
+            occurred_at=created_at,
         )
         return package
 
@@ -230,6 +246,7 @@ class StageGateService:
         )
         session.add(decision)
         package.status = "approved" if accepted else "rejected"
+        expected_state_version = continuation.state_version
         if accepted:
             continuation.status = "queued"
             continuation.current_node = _NEXT_NODE[gate_id]
@@ -241,6 +258,37 @@ class StageGateService:
         continuation.state_version += 1
         continuation.updated_at = decided_at
         session.flush()
+        if accepted:
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=f"gate-accepted:{gate_id}:{package.id}",
+                reason=f"{gate_id} approved; continuation requeued",
+                payload={
+                    "gate_id": gate_id,
+                    "package_id": package.id,
+                    "expected_state_version": expected_state_version,
+                },
+                occurred_at=decided_at,
+                actor=actor,
+            )
+        else:
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+                key=f"block:{expected_state_version}:{continuation.last_error_code}",
+                reason=continuation.last_error_message,
+                payload={
+                    "last_error_code": continuation.last_error_code,
+                    "expected_state_version": expected_state_version,
+                    "reason": request.comment or f"{gate_id} was not approved",
+                    "gate_id": gate_id,
+                },
+                occurred_at=decided_at,
+                actor=actor,
+            )
         StateTransitionService(session).append_audit_event(
             run_id=continuation.run_id,
             idempotency_key=f"{request.idempotency_key}:event",

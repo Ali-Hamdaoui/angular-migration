@@ -302,6 +302,9 @@ class TransformationContinuationModel(Base):
     cancel_requested_by: Mapped[str | None] = mapped_column(String(128))
     cancel_idempotency_key: Mapped[str | None] = mapped_column(String(128))
     cancel_request_checksum: Mapped[str | None] = mapped_column(String(128))
+    waiting_execution_id: Mapped[str | None] = mapped_column(
+        ForeignKey("command_executions.id"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

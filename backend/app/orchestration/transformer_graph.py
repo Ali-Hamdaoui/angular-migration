@@ -24,6 +24,7 @@ from app.artifact_store import (
     LocalFilesystemArtifactStore,
     StoredArtifact,
 )
+from app.domain.contracts import WorkflowEventType
 from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
@@ -62,6 +63,9 @@ from app.services.repair_application_service import (
 from app.services.stage_gate_service import StageGateService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.services.validation_runner import (
     BuildAgent,
     TestAgent,
@@ -199,7 +203,7 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = session.get(TransformationContinuationModel, continuation_id)
             if continuation is not None and continuation.status == "running" and continuation.worker_id == worker_id:
-                self._block(continuation, error.code, error.message)
+                self._block(session, continuation, error.code, error.message)
 
     def _validate_g06(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -219,7 +223,7 @@ class TransformerOrchestrator:
                 or pointer is None
                 or pointer.stage_plan_id != continuation.stage_plan_id
             ):
-                self._block(continuation, "G06_BINDING_STALE", "Approved G06 binding changed")
+                self._block(session, continuation, "G06_BINDING_STALE", "Approved G06 binding changed")
                 return
             self._queue(continuation, "prepare_workspace")
 
@@ -229,7 +233,7 @@ class TransformerOrchestrator:
             try:
                 self._stage.runtime_binding(session, continuation)
             except TransformerStageError as error:
-                self._block(continuation, error.code, error.message)
+                self._block(session, continuation, error.code, error.message)
                 return
             continuation.last_error_code = None
             continuation.last_error_message = None
@@ -241,6 +245,7 @@ class TransformerOrchestrator:
             report = self._stage.preflight(session, continuation)
             if report["blockers"]:
                 self._block(
+                    session,
                     continuation,
                     "DEPENDENCY_PREFLIGHT_BLOCKED",
                     ", ".join(report["blockers"]),
@@ -254,7 +259,7 @@ class TransformerOrchestrator:
             decisions = self._stage.known_decisions(session, continuation)
             build = decisions.get("build_system_decision") or {}
             if build.get("action") == "blocked":
-                self._block(continuation, "BUILD_SYSTEM_DECISION_BLOCKED", "Approved build decision blocks execution")
+                self._block(session, continuation, "BUILD_SYSTEM_DECISION_BLOCKED", "Approved build decision blocks execution")
                 return
             self._queue(continuation, "create_g07")
 
@@ -368,7 +373,7 @@ class TransformerOrchestrator:
                 else None
             )
             if execution is None:
-                self._block(continuation, "ANGULAR_UPDATE_EVIDENCE_MISSING", "Angular update execution is missing")
+                self._block(session, continuation, "ANGULAR_UPDATE_EVIDENCE_MISSING", "Angular update execution is missing")
                 return
             if prompt is None:
                 if execution.status == "succeeded":
@@ -446,12 +451,22 @@ class TransformerOrchestrator:
             binding.last_verified_at = datetime.now(UTC)
             prompt.observed_fingerprint = observed
             prompt.status = "waiting_human"
+            expected_state_version = continuation.state_version
             continuation.status = "waiting_prompt"
             continuation.current_node = "wait_prompt_decision"
             continuation.worker_id = None
             continuation.lease_expires_at = None
             continuation.state_version += 1
             continuation.updated_at = datetime.now(UTC)
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+                key=f"wait:waiting_prompt:{expected_state_version}",
+                reason="unexpected prompt detected; continuation waits for human decision",
+                payload={"expected_state_version": expected_state_version},
+            )
 
     def _version_verify(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -487,6 +502,7 @@ class TransformerOrchestrator:
             )
             if angular_execution is None or checkpoint is None:
                 self._block(
+                    session,
                     continuation,
                     "ANGULAR_UPDATE_EVIDENCE_MISSING",
                     "Angular update execution or reconstruction checkpoint is missing",
@@ -494,6 +510,7 @@ class TransformerOrchestrator:
                 return
             if version_execution is None or version_execution.status != "succeeded":
                 self._block(
+                    session,
                     continuation,
                     version_execution.failure_code if version_execution else "VERSION_CHECK_MISSING",
                     "Target version command did not succeed",
@@ -539,7 +556,7 @@ class TransformerOrchestrator:
             )
         except AngularTransformationEvidenceError as error:
             with self._scope() as session:
-                self._block(self._owned(session, continuation_id, worker_id), error.code, error.message)
+                self._block(session, self._owned(session, continuation_id, worker_id), error.code, error.message)
             return
         version_artifact, ledger_artifact = self._evidence.write(
             run_id=context["run_id"],
@@ -605,7 +622,7 @@ class TransformerOrchestrator:
                     attempt_key=attempt_key,
                 )
             except ValidationRunnerError as error:
-                self._validation_failure(continuation, error)
+                self._validation_failure(session, continuation, error)
 
     def _build(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -621,7 +638,7 @@ class TransformerOrchestrator:
                     session, continuation, next_node=next_node, attempt_key=attempt_key
                 )
             except ValidationRunnerError as error:
-                self._validation_failure(continuation, error)
+                self._validation_failure(session, continuation, error)
 
     def _test(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -661,7 +678,7 @@ class TransformerOrchestrator:
                     attempt_key=attempt_key,
                 )
             except ValidationRunnerError as error:
-                self._validation_failure(continuation, error)
+                self._validation_failure(session, continuation, error)
 
     def _aggregate_validation(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -669,7 +686,7 @@ class TransformerOrchestrator:
             try:
                 payload, artifact_root = self._validation.aggregate(session, continuation)
             except ValidationRunnerError as error:
-                self._validation_failure(continuation, error)
+                self._validation_failure(session, continuation, error)
                 return
             plan = session.get(MigrationPlanModel, continuation.plan_id)
             if plan is None or plan.run_id != continuation.run_id:
@@ -812,6 +829,7 @@ class TransformerOrchestrator:
                         return
                     if route.value != "repairable_source":
                         self._block(
+                            session,
                             continuation,
                             f"ANGULAR_UPDATE_{route.value.upper()}",
                             f"Angular update failure routed to {route.value}",
@@ -820,6 +838,7 @@ class TransformerOrchestrator:
 
                 if route.value != "repairable_source":
                     if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
+                        expected_state_version = continuation.state_version
                         continuation.attempt += 1
                         continuation.status = "waiting_retry"
                         continuation.current_node = "final_install"
@@ -828,8 +847,21 @@ class TransformerOrchestrator:
                         continuation.lease_expires_at = None
                         continuation.state_version += 1
                         continuation.updated_at = datetime.now(UTC)
+                        session.flush()
+                        append_continuation_event(
+                            session,
+                            continuation,
+                            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+                            key=f"wait:waiting_retry:{expected_state_version}",
+                            reason="validation failure routed to governed retry",
+                            payload={
+                                "last_error_code": f"FAILURE_ROUTE_{route.value.upper()}",
+                                "expected_state_version": expected_state_version,
+                            },
+                        )
                     else:
                         self._block(
+                            session,
                             continuation,
                             f"FAILURE_ROUTE_{route.value.upper()}",
                             f"Validation failure routed to {route.value}",
@@ -859,6 +891,7 @@ class TransformerOrchestrator:
                     max_repair_applied = 2
                 if attempts >= max_repair_attempts or applied >= max_repair_applied:
                     self._block(
+                        session,
                         continuation,
                         "REPAIR_ATTEMPT_LIMIT",
                         "Governed repair attempt limit reached",
@@ -866,6 +899,7 @@ class TransformerOrchestrator:
                     return
                 if reuse_checkpoint is None and snapshot is None:
                     self._block(
+                        session,
                         continuation,
                         "REPAIR_SNAPSHOT_MISSING",
                         "No pre-repair workspace checkpoint is available",
@@ -962,6 +996,7 @@ class TransformerOrchestrator:
             relative_paths = ", ".join(
                 stored.ref.relative_path for stored in attempt_artifacts
             )
+            expected_state_version = continuation.state_version
             continuation.status = "blocked"
             continuation.last_error_code = code
             continuation.last_error_message = (
@@ -972,6 +1007,18 @@ class TransformerOrchestrator:
             continuation.lease_expires_at = None
             continuation.state_version += 1
             continuation.updated_at = datetime.now(UTC)
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+                key=f"block:{expected_state_version}:{code}",
+                reason="duplicate artifact metadata blocked classification commit",
+                payload={
+                    "last_error_code": code,
+                    "expected_state_version": expected_state_version,
+                },
+            )
 
     def _cleanup_failed_attempt_artifacts(
         self, run_id: str, artifact_root: str, attempt_artifacts: list[StoredArtifact]
@@ -1023,6 +1070,7 @@ class TransformerOrchestrator:
         except (ArtifactNotFoundError, ArtifactStoreError) as error:
             with self._scope() as session:
                 self._block(
+                    session,
                     self._owned(session, continuation_id, worker_id),
                     "REPAIR_EVIDENCE_MISSING",
                     str(error),
@@ -1031,6 +1079,7 @@ class TransformerOrchestrator:
         except (RepairLlmError, RepairApplicationError, ValueError) as error:
             with self._scope() as session:
                 self._block(
+                    session,
                     self._owned(session, continuation_id, worker_id),
                     getattr(error, "code", "REPAIR_PROPOSAL_FAILED"),
                     getattr(error, "message", str(error)),
@@ -1051,6 +1100,7 @@ class TransformerOrchestrator:
         except (ArtifactNotFoundError, ArtifactStoreError) as error:
             with self._scope() as session:
                 self._block(
+                    session,
                     self._owned(session, continuation_id, worker_id),
                     "REPAIR_EVIDENCE_MISSING",
                     str(error),
@@ -1059,6 +1109,7 @@ class TransformerOrchestrator:
         except (RepairLlmError, RepairApplicationError, ValueError) as error:
             with self._scope() as session:
                 self._block(
+                    session,
                     self._owned(session, continuation_id, worker_id),
                     getattr(error, "code", "REPAIR_REVIEW_FAILED"),
                     getattr(error, "message", str(error)),
@@ -1073,7 +1124,8 @@ class TransformerOrchestrator:
             if review["decision"] == "request_changes" and attempt.attempt_number < 3:
                 if attempt.status not in {"request_changes", "review_accepted"}:
                     self._block(
-                        continuation,
+                session,
+                continuation,
                         "REPAIR_PARENT_LINEAGE_INVALID",
                         "Repair child attempt requires an accepted request_changes parent",
                     )
@@ -1087,7 +1139,8 @@ class TransformerOrchestrator:
                         or ancestor.attempt_number >= attempt.attempt_number
                     ):
                         self._block(
-                            continuation,
+                session,
+                continuation,
                             "REPAIR_PARENT_LINEAGE_INVALID",
                             "Repair attempt parent lineage is invalid",
                         )
@@ -1117,6 +1170,7 @@ class TransformerOrchestrator:
                 self._queue(continuation, "propose_repair")
                 return
             self._block(
+                session,
                 continuation,
                 "REPAIR_REVIEW_REJECTED",
                 "Repair reviewer rejected the candidate",
@@ -1401,7 +1455,8 @@ class TransformerOrchestrator:
                             binding.last_verified_fingerprint = fingerprint
                             binding.last_verified_at = datetime.now(UTC)
                     self._block(
-                        continuation,
+                session,
+                continuation,
                         "REPAIR_APPLY_RECOVERY_REQUIRED",
                         "Repair apply requires durable recovery before resume",
                     )
@@ -1715,6 +1770,7 @@ class TransformerOrchestrator:
                 attempt.status = "apply_failed"
                 attempt.updated_at = datetime.now(UTC)
                 self._block(
+                    session,
                     self._owned(session, continuation_id, worker_id),
                     error.code,
                     error.message,
@@ -1782,7 +1838,7 @@ class TransformerOrchestrator:
                 run = session.get(MigrationRunModel, continuation.run_id)
                 metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
                 if run is None or metadata is None or metadata.checksum != attempt.proposal_checksum:
-                    self._block(continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale")
+                    self._block(session, continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale")
                     return
                 try:
                     stored_proposal = LocalFilesystemArtifactStore(
@@ -1801,14 +1857,15 @@ class TransformerOrchestrator:
                         json.loads(stored_proposal.content)
                     ).model_dump(mode="json")
                 except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, RepairApplicationError) as error:
-                    self._block(continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal cannot be verified")
+                    self._block(session, continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal cannot be verified")
                     return
                 targets = list(proposal.get("validation_targets") or [])
                 mapping = {"build": "builds", "test": "tests", "lint": "lint"}
                 group = mapping.get(targets[0] if targets else "")
                 if group is None:
                     self._block(
-                        continuation,
+                session,
+                continuation,
                         "REPAIR_VALIDATION_TARGET_INVALID",
                         "Repair proposal has no approved affected validation target",
                     )
@@ -1825,7 +1882,7 @@ class TransformerOrchestrator:
                         attempt_key=f"{attempt.id}:affected",
                     )
                 except ValidationRunnerError as error:
-                    self._validation_failure(continuation, error)
+                    self._validation_failure(session, continuation, error)
                     return
                 if outcome != "passed":
                     return
@@ -1995,7 +2052,10 @@ class TransformerOrchestrator:
         return attempt
 
     @staticmethod
-    def _validation_failure(continuation, error: ValidationRunnerError) -> None:
+    def _validation_failure(
+        session, continuation, error: ValidationRunnerError
+    ) -> None:
+        expected_state_version = continuation.state_version
         continuation.status = "queued"
         continuation.current_node = "classify_failure"
         continuation.last_error_code = error.code
@@ -2004,6 +2064,18 @@ class TransformerOrchestrator:
         continuation.lease_expires_at = None
         continuation.state_version += 1
         continuation.updated_at = datetime.now(UTC)
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED,
+            key=f"failed:{expected_state_version}:{error.code}",
+            reason="validation failure recorded; failure classification queued",
+            payload={
+                "last_error_code": error.code,
+                "expected_state_version": expected_state_version,
+            },
+        )
 
     @staticmethod
     def _node_for_group(group: str) -> str:
@@ -2060,6 +2132,7 @@ class TransformerOrchestrator:
             ):
                 repair.status = "cancelled"
                 repair.updated_at = datetime.now(UTC)
+            expected_state_version = continuation.state_version
             continuation.status = "cancelled"
             continuation.current_node = "terminal"
             continuation.worker_id = None
@@ -2067,6 +2140,16 @@ class TransformerOrchestrator:
             continuation.completed_at = datetime.now(UTC)
             continuation.updated_at = continuation.completed_at
             continuation.state_version += 1
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CANCELLED,
+                key=f"cancelled:{expected_state_version}",
+                reason="Transformer cancellation completed",
+                payload={"expected_state_version": expected_state_version},
+                occurred_at=continuation.completed_at,
+            )
 
     @staticmethod
     def _owned(session, continuation_id: str, worker_id: str):
@@ -2085,7 +2168,8 @@ class TransformerOrchestrator:
         continuation.updated_at = datetime.now(UTC)
 
     @staticmethod
-    def _block(continuation, code: str, message: str) -> None:
+    def _block(session, continuation, code: str, message: str) -> None:
+        expected_state_version = continuation.state_version
         continuation.status = "blocked"
         continuation.last_error_code = code
         continuation.last_error_message = message
@@ -2093,6 +2177,18 @@ class TransformerOrchestrator:
         continuation.lease_expires_at = None
         continuation.state_version += 1
         continuation.updated_at = datetime.now(UTC)
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+            key=f"block:{expected_state_version}:{code}",
+            reason=message,
+            payload={
+                "last_error_code": code,
+                "expected_state_version": expected_state_version,
+            },
+        )
 
 
 class TransformerWorkflow:
