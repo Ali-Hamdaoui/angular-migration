@@ -228,6 +228,7 @@ def _seed_apply_authority(
         risk_level="low",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
         checkpoint_id=attempt_checkpoint_id,
+        g10_gate_package_id="gate-10",
         failure_evidence_artifact_id="artifact-failure",
         failure_evidence_checksum="sha256:failure",
         failure_route_artifact_id="artifact-route",
