@@ -995,6 +995,170 @@ def test_g07_rejects_stale_workspace_fingerprint(tmp_path: Path):
     engine.dispose()
 
 
+def _seed_child_g10(
+    factory,
+    tmp_path: Path,
+    *,
+    parent_review_decision: str = "request_changes",
+):
+    """Seed a G10-ready stage whose repair attempt is a request-changes child.
+
+    The child (repair-1, attempt_number=2) references a parent attempt
+    (repair-0, attempt_number=1) whose persisted review artifact decided
+    request_changes. G10 create must prove that parent-review lineage.
+    """
+    artifacts = tmp_path / "artifacts"
+    parent_id = "repair-0"
+    store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
+    parent_review = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{parent_id}/review.json",
+        json.dumps(
+            {
+                "decision": parent_review_decision,
+                "findings": [],
+                "policy_checks": ["paths"],
+                "risk_assessment": "low",
+                "required_validation_targets": ["build"],
+                "limitations": [],
+                "proposal_checksum": "sha256:parent-proposal",
+            },
+            sort_keys=True,
+        ),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=parent_id,
+        created_by="repair-review",
+        created_at=NOW_UTC,
+    )
+    _seed_g10(factory, tmp_path)
+    session = factory()
+    child = session.get(RepairAttemptModel, "repair-1")
+    child.attempt_number = 2
+    child.parent_attempt_id = parent_id
+    child.parent_review_artifact_id = parent_review.ref.artifact_id
+    child.parent_review_checksum = parent_review.ref.checksum
+    session.add(
+        RepairAttemptModel(
+            id=parent_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            attempt_number=1,
+            status="request_changes",
+            risk_level="low",
+            diagnosis="repairable_source; checkpoint=ckpt-pre",
+            checkpoint_id="ckpt-pre",
+            failure_evidence_artifact_id="artifact-failure",
+            failure_evidence_checksum="sha256:failure",
+            failure_route_artifact_id="artifact-route",
+            failure_route_checksum="sha256:route",
+            context_pack_artifact_id="artifact-context",
+            context_pack_checksum="sha256:context",
+            proposal_artifact_id="artifact-parent-proposal",
+            proposal_checksum="sha256:parent-proposal",
+            review_artifact_id=parent_review.ref.artifact_id,
+            review_checksum=parent_review.ref.checksum,
+            proposer_invocation_id=f"{parent_id}:proposer",
+            reviewer_invocation_id=f"{parent_id}:reviewer",
+            pre_fingerprint=FINGERPRINT,
+            failure_fingerprint=FINGERPRINT,
+            created_at=NOW_UTC,
+            updated_at=NOW_UTC,
+        )
+    )
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + parent_review.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=parent_review.ref.artifact_type.value,
+            relative_path=parent_review.ref.relative_path,
+            checksum=parent_review.ref.checksum,
+            created_at=NOW_UTC,
+            finalized_at=NOW_UTC,
+            immutable=True,
+        )
+    )
+    session.commit()
+    session.close()
+    return store, parent_review
+
+
+def test_g10_child_package_proves_parent_request_changes_review_lineage(tmp_path: Path):
+    """A child G10 package carries and verifies the parent request-changes review.
+
+    RED until the fix: the child package carries no parent review reference and
+    G10 create never proves the revision chain.
+    """
+    engine, factory = _g10_database(tmp_path)
+    _store, _parent_review = _seed_child_g10(factory, tmp_path)
+
+    orchestrator = _g10_orchestrator(factory)
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    package = _g10_package(session)
+    assert package is not None and package.status == "pending"
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    assert continuation.current_node == "wait_g10"
+    metadata = session.get(ArtifactMetadataModel, "metadata-" + package.package_artifact_id)
+    store = LocalFilesystemArtifactStore(
+        Path(session.get(MigrationRunModel, "run-1").artifact_root).parent,
+        fixed_run_root=Path(session.get(MigrationRunModel, "run-1").artifact_root),
+    )
+    payload = json.loads(store.read_artifact("run-1", metadata.relative_path).content)
+    parent = session.get(RepairAttemptModel, "repair-0")
+    assert payload["parent_attempt_id"] == "repair-0"
+    assert payload["parent_review_artifact_id"] == parent.review_artifact_id
+    assert payload["parent_review_checksum"] == parent.review_checksum
+    session.close()
+    engine.dispose()
+
+
+def test_g10_child_package_rejects_parent_review_that_did_not_request_changes(
+    tmp_path: Path,
+):
+    engine, factory = _g10_database(tmp_path)
+    _store, _parent_review = _seed_child_g10(factory, tmp_path, parent_review_decision="accept")
+
+    with pytest.raises(StageGateError) as raised:
+        _g10_orchestrator(factory).advance("cont-1", "worker-1")
+    assert raised.value.code == "REPAIR_PARENT_LINEAGE_INVALID"
+    engine.dispose()
+
+
+def test_g10_child_package_rejects_tampered_parent_review_checksum(tmp_path: Path):
+    engine, factory = _g10_database(tmp_path)
+    _store, _parent_review = _seed_child_g10(factory, tmp_path)
+    session = factory()
+    child = session.get(RepairAttemptModel, "repair-1")
+    child.parent_review_checksum = "sha256:" + "7" * 64
+    session.commit()
+    session.close()
+
+    with pytest.raises(StageGateError) as raised:
+        _g10_orchestrator(factory).advance("cont-1", "worker-1")
+    assert raised.value.code == "REPAIR_PARENT_LINEAGE_INVALID"
+    engine.dispose()
+
+
+def test_g10_child_package_rejects_missing_parent_review_reference(tmp_path: Path):
+    engine, factory = _g10_database(tmp_path)
+    _store, _parent_review = _seed_child_g10(factory, tmp_path)
+    session = factory()
+    child = session.get(RepairAttemptModel, "repair-1")
+    child.parent_review_artifact_id = None
+    child.parent_review_checksum = None
+    session.commit()
+    session.close()
+
+    with pytest.raises(StageGateError) as raised:
+        _g10_orchestrator(factory).advance("cont-1", "worker-1")
+    assert raised.value.code == "REPAIR_PARENT_LINEAGE_INVALID"
+    engine.dispose()
+
+
 def test_create_binds_actual_plan_version_not_literal_one(tmp_path: Path):
     engine, session = _session(tmp_path)
     plan = session.get(MigrationPlanModel, "plan-1")

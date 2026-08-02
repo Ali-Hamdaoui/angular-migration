@@ -334,6 +334,15 @@ class StageGateService:
         - When ``artifact_set_checksum`` is supplied, the canonical set checksum
           over (failure evidence, context pack, proposal, review, envelope)
           must match it.
+        - A CHILD attempt (``parent_attempt_id`` set) must additionally prove
+          the reviewer request-changes lineage: the package must reference the
+          parent attempt and the parent's persisted request_changes review
+          artifact (id + checksum), the parent row must be a real earlier
+          attempt of the same run/stage, and the parent's review artifact must
+          be byte-identical with a checksum-bound, attempt-bound envelope whose
+          content decision is ``request_changes``. Any deviation fails closed
+          with ``REPAIR_PARENT_LINEAGE_INVALID``. A fresh attempt must not
+          carry parent review references at all.
         """
         session.flush()
         metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
@@ -385,6 +394,81 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
+        if attempt.parent_attempt_id is not None:
+            parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
+            if (
+                parent is None
+                or parent.run_id != attempt.run_id
+                or parent.stage_id != attempt.stage_id
+                or parent.attempt_number >= attempt.attempt_number
+                or not parent.review_artifact_id
+                or not parent.review_checksum
+            ):
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 child repair parent lineage is invalid",
+                )
+            if (
+                package.get("parent_attempt_id") != parent.id
+                or package.get("parent_review_artifact_id") != parent.review_artifact_id
+                or package.get("parent_review_checksum") != parent.review_checksum
+            ):
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 parent review reference does not match authoritative state",
+                )
+            parent_metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + str(parent.review_artifact_id)
+            )
+            if (
+                parent_metadata is None
+                or parent_metadata.run_id != continuation.run_id
+                or parent_metadata.stage_id != continuation.current_stage_id
+                or parent_metadata.checksum != parent.review_checksum
+            ):
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 parent review artifact binding is invalid",
+                )
+            try:
+                stored_parent_review = store.read_artifact(
+                    continuation.run_id, parent_metadata.relative_path
+                )
+                if (
+                    stored_parent_review.ref.artifact_id != parent.review_artifact_id
+                    or stored_parent_review.ref.checksum != parent.review_checksum
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 parent review artifact identity changed",
+                    )
+                parent_review_payload = json.loads(stored_parent_review.content)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 parent review artifact cannot be verified",
+                ) from error
+            parent_envelope = stored_parent_review.envelope
+            if (
+                parent_envelope is None
+                or parent_envelope.run_id != continuation.run_id
+                or parent_envelope.stage_id != continuation.current_stage_id
+                or parent_envelope.attempt_id != parent.id
+                or parent_review_payload.get("decision") != "request_changes"
+            ):
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 parent review lineage is not a request_changes revision",
+                )
+        elif (
+            package.get("parent_attempt_id") is not None
+            or package.get("parent_review_artifact_id") is not None
+            or package.get("parent_review_checksum") is not None
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 package carries a parent review reference without a parent attempt",
+            )
         plan = session.get(MigrationPlanModel, continuation.plan_id)
         if plan is None or plan.run_id != continuation.run_id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package plan binding is missing")
