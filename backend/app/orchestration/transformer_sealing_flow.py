@@ -56,6 +56,10 @@ class TransformerSealingFlow:
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
                 context = self._sealing.context(session, continuation)
+                plan = session.get(MigrationPlanModel, continuation.plan_id)
+                if plan is None or plan.run_id != continuation.run_id:
+                    raise StageSealingError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
+                plan_version = plan.version
             cleanliness = self._sealing.verify_cleanliness(context)
         except StageSealingError as error:
             self._fail(continuation_id, worker_id, error)
@@ -77,6 +81,8 @@ class TransformerSealingFlow:
         payload = {
             **cleanliness,
             "gate_id": "G12",
+            "plan_version": plan_version,
+            "stage_plan_checksum": context["stage_plan_checksum"],
             "cleanliness_artifact_id": clean_artifact.ref.artifact_id,
             "cleanliness_checksum": clean_artifact.ref.checksum,
             "previous_chain_hash": context["previous_chain_hash"],

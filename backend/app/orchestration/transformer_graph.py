@@ -32,6 +32,7 @@ from app.repositories.models import (
     CommandLogChunkModel,
     G06ApprovalModel,
     LlmInvocationModel,
+    MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageCheckpointModel,
@@ -260,7 +261,9 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             run = session.get(MigrationRunModel, continuation.run_id)
-            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            if plan is None or plan.run_id != continuation.run_id:
+                raise TransformerStageError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
             binding = session.scalar(
                 select(StageWorkspaceBindingModel).where(
                     StageWorkspaceBindingModel.run_id == continuation.run_id,
@@ -272,6 +275,7 @@ class TransformerOrchestrator:
                 "gate_id": "G07",
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
+                "plan_version": plan.version,
                 "plan_checksum": continuation.plan_checksum,
                 "stage_plan_checksum": continuation.stage_plan_checksum,
                 "workspace_fingerprint": binding.workspace_fingerprint,
@@ -284,7 +288,6 @@ class TransformerOrchestrator:
                 continuation.current_stage_id,
                 run.artifact_root,
                 binding.workspace_fingerprint,
-                stage_plan.version,
             )
         stored = self._stage.write_gate_package(
             run_id=context[0],
@@ -305,7 +308,6 @@ class TransformerOrchestrator:
                 artifact_set_checksum=self._stage.checksum({stored.ref.artifact_id: stored.ref.checksum}),
                 workspace_fingerprint=context[3],
             )
-            package.plan_version = context[4]
 
     def _angular_update(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -467,6 +469,9 @@ class TransformerOrchestrator:
                 )
             )
             run = session.get(MigrationRunModel, continuation.run_id)
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            if plan is None or plan.run_id != continuation.run_id:
+                raise TransformerStageError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
             stage_value = stage_plan.stage_plan or {}
             context = {
                 "workspace_path": binding.workspace_path,
@@ -478,6 +483,7 @@ class TransformerOrchestrator:
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
                 "artifact_root": run.artifact_root,
+                "plan_version": plan.version,
                 "stage_plan_checksum": continuation.stage_plan_checksum,
                 "workspace_fingerprint": binding.workspace_fingerprint,
             }
@@ -508,6 +514,7 @@ class TransformerOrchestrator:
             "gate_id": "G08",
             "run_id": context["run_id"],
             "stage_id": context["stage_id"],
+            "plan_version": context["plan_version"],
             "stage_plan_checksum": context["stage_plan_checksum"],
             "workspace_fingerprint": context["workspace_fingerprint"],
             "version_evidence_artifact_id": version_artifact.ref.artifact_id,
@@ -626,6 +633,10 @@ class TransformerOrchestrator:
             except ValidationRunnerError as error:
                 self._validation_failure(continuation, error)
                 return
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            if plan is None or plan.run_id != continuation.run_id:
+                raise TransformerStageError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
+            plan_version = plan.version
             repair = (
                 session.query(RepairAttemptModel)
                 .filter(
@@ -641,6 +652,7 @@ class TransformerOrchestrator:
         gate_payload = {
             "gate_id": gate_id,
             **payload,
+            "plan_version": plan_version,
             "validation_summary_artifact_id": summary.ref.artifact_id,
             "validation_summary_checksum": summary.ref.checksum,
         }
@@ -1066,10 +1078,14 @@ class TransformerOrchestrator:
             attempt = self._latest_repair(session, continuation)
             binding = self._stage._binding(session, continuation)
             run = session.get(MigrationRunModel, continuation.run_id)
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            if plan is None or plan.run_id != continuation.run_id:
+                raise TransformerStageError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
             payload = {
                 "gate_id": gate_id,
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
+                "plan_version": plan.version,
                 "stage_plan_checksum": continuation.stage_plan_checksum,
                 "workspace_fingerprint": binding.workspace_fingerprint,
                 "failure_evidence_checksum": attempt.failure_evidence_checksum,
@@ -1671,10 +1687,14 @@ class TransformerOrchestrator:
             attempt = self._latest_repair(session, continuation)
             binding = self._stage._binding(session, continuation)
             run = session.get(MigrationRunModel, continuation.run_id)
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            if plan is None or plan.run_id != continuation.run_id:
+                raise TransformerStageError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
             payload = {
                 "gate_id": "G09",
                 "run_id": continuation.run_id,
                 "stage_id": continuation.current_stage_id,
+                "plan_version": plan.version,
                 "stage_plan_checksum": continuation.stage_plan_checksum,
                 "workspace_fingerprint": binding.workspace_fingerprint,
                 "validation_summary_artifact_id": attempt.validation_summary_artifact_id,
