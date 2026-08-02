@@ -40,6 +40,7 @@ from app.repositories.models import (
     UsageCostRecordModel,
 )
 from app.repositories.models.base import Base
+from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.repair_application_service import (
     RepairApplicationService,
     RepairProposal,
@@ -186,6 +187,7 @@ def _seed(
     (workspace / "src").mkdir(parents=True, exist_ok=True)
     app_ts = workspace / "src" / "app.ts"
     app_ts.write_text("old", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name": "fixture"}', encoding="utf-8")
     store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
     attempt_id = "repair-1"
     failure = store.write_text_artifact(
@@ -198,16 +200,28 @@ def _seed(
         created_by="repair-failure-evidence",
         created_at=NOW,
     )
-    context = store.write_text_artifact(
-        run_id,
-        f"05_repairs/attempt-{attempt_id}/context-pack.json",
-        json.dumps({"evidence": "bounded context"}),
-        ArtifactType.JSON,
-        stage_id=stage_id,
-        attempt_id=attempt_id,
-        created_by="repair-context",
-        created_at=NOW,
-    )
+    evidence = {
+        "schema_version": "transformer-failure-evidence-v1",
+        "run_id": run_id,
+        "stage_id": stage_id,
+        "stage_plan_checksum": "sha256:stage-plan",
+        "workspace_path": str(workspace),
+        "workspace_fingerprint": StageSandboxCopier.fingerprint(workspace),
+        "artifact_root": str(artifacts),
+        "execution_id": "execution-1",
+        "command_log_artifact_id": None,
+        "result_artifact_id": None,
+        "normalized_failure": {
+            "error_code": "COMPILATION_FAILED",
+            "exit_code": 1,
+            "failure_message": "Angular compiler reported an error",
+        },
+        "failure_fingerprint": "fingerprint-failure",
+        "prior_fingerprints": [],
+        "repair_policy": {},
+        "forbidden_change_policy": {},
+    }
+    context = FailureEvidenceService().write_context_pack(evidence, failure.ref.checksum)
     proposal = None
     if proposed:
         proposal = store.write_text_artifact(
@@ -879,7 +893,11 @@ def test_llm_configuration_invalid_blocks_durably(tmp_path: Path, monkeypatch):
 def test_evidence_missing_blocks_durably(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path)
-    context_pack = artifacts / "05_repairs" / f"attempt-{attempt_id}" / "context-pack.json"
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    row = session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id)
+    context_pack = artifacts / row.relative_path
+    session.close()
     assert context_pack.is_file()
     context_pack.unlink()
     repair_service = RepairApplicationService(
