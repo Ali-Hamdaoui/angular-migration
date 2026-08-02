@@ -265,7 +265,18 @@ def _seed(
         correlation_id="corr-1",
         status="approved",
         version=1,
-        stage_plan={"repair_policy": {"max_attempts": 3}, "forbidden_change_policy": {}},
+        stage_plan={
+            "repair_policy": {"max_attempts": 3},
+            "forbidden_change_policy": {},
+            "validation_policy": {"required_checks": ["build", "test"]},
+            "commands": {
+                "bootstrap_install": ({"command_id": "bootstrap_install"},),
+                "final_install": ({"command_id": "final_install"},),
+                "builds": ({"command_id": "build"},),
+                "tests": ({"command_id": "test"},),
+                "lint": ({"command_id": "lint"},),
+            },
+        },
         checksum="sha256:stage-plan",
         artifact_ids=[],
         artifact_checksums={},
@@ -1174,6 +1185,187 @@ def test_g10_package_binds_and_seals_plan_version(tmp_path: Path):
         )
         is None
     )
+    session.close()
+    engine.dispose()
+
+
+def test_g10_create_persists_union_on_attempt_and_seals_it_in_the_package(
+    tmp_path: Path,
+):
+    """G10 create computes the final union once and persists it twice: on the
+    attempt row and inside the sealed package payload."""
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    _transport, repair_service = _reviewed_attempt_with_transport(factory, tmp_path)
+    orchestrator = _governed_orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+
+    _requeue(factory, node="create_g10", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.validation_targets == ["build", "test"]
+    gate = session.query(StageGatePackageModel).one()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert (
+        StageGateService()._validate_repair_lineage(
+            session, continuation, gate.package_artifact_id, gate.package_checksum
+        )
+        is None
+    )
+    session.close()
+    payload = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g10-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["validation_targets"] == ["build", "test"]
+    engine.dispose()
+
+
+def test_g10_package_checksum_changes_with_reviewer_required_targets(tmp_path: Path):
+    """The union is sealed content: a different reviewer-required target set
+    produces a different G10 package payload AND a different checksum."""
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir(parents=True)
+    second_root.mkdir(parents=True)
+    engine, factory = _database(first_root)
+    _store, _attempt_id, _app_ts, artifacts = _seed(factory, first_root, proposed=True)
+    session = factory()
+    proposal_checksum = session.get(RepairAttemptModel, "repair-1").proposal_checksum
+    session.close()
+    transport = _FakeAzureTransport(
+        [
+            _responses_body(
+                json.dumps({**_review_payload(proposal_checksum), "required_validation_targets": ["build"]})
+            )
+        ]
+    )
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(transport, _azure_settings(first_root)),
+    )
+    orchestrator = _governed_orchestrator(factory, repair_service)
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+    _requeue(factory, node="create_g10", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    first_checksum = session.query(StageGatePackageModel).one().package_checksum
+    session.close()
+    first_payload = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g10-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    engine.dispose()
+
+    engine, factory = _database(second_root)
+    _store, _attempt_id, _app_ts, artifacts = _seed(factory, second_root, proposed=True)
+    session = factory()
+    proposal_checksum = session.get(RepairAttemptModel, "repair-1").proposal_checksum
+    session.close()
+    transport = _FakeAzureTransport(
+        [
+            _responses_body(
+                json.dumps(
+                    {**_review_payload(proposal_checksum), "required_validation_targets": ["build", "lint"]}
+                )
+            )
+        ]
+    )
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(transport, _azure_settings(second_root)),
+    )
+    orchestrator = _governed_orchestrator(factory, repair_service)
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+    _requeue(factory, node="create_g10", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    second_checksum = session.query(StageGatePackageModel).one().package_checksum
+    session.close()
+    second_payload = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g10-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    engine.dispose()
+
+    assert first_payload["validation_targets"] == ["build", "test"]
+    assert second_payload["validation_targets"] == ["build", "test", "lint"]
+    assert first_checksum != second_checksum
+
+
+def test_g10_lineage_rejects_package_targets_differing_from_persisted_union(
+    tmp_path: Path,
+):
+    """A resealed package whose targets are the proposal-only list (not the
+    persisted union) is rejected: the persisted union is the authority."""
+    engine, factory = _database(tmp_path)
+    store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    _transport, repair_service = _reviewed_attempt_with_transport(factory, tmp_path)
+    orchestrator = _governed_orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+
+    _requeue(factory, node="create_g10", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    gate = session.query(StageGatePackageModel).one()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.validation_targets == ["build", "test"]
+    metadata = session.get(ArtifactMetadataModel, "metadata-" + gate.package_artifact_id)
+    tampered = json.loads(store.read_artifact("run-1", metadata.relative_path).content)
+    tampered["validation_targets"] = ["build"]
+    tampered["backend_lineage_checksum"] = TransformerStageService().checksum(
+        {key: value for key, value in tampered.items() if key != "backend_lineage_checksum"}
+    )
+    p2 = store.write_text_artifact(
+        "run-1",
+        "04_workflow_state/stages/stage-1/gates/g10-package-tampered.json",
+        json.dumps(tampered, sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="transformer",
+        created_at=NOW,
+    )
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + p2.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=p2.ref.artifact_type.value,
+            relative_path=p2.ref.relative_path,
+            checksum=p2.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.commit()
+    with pytest.raises(StageGateError) as raised:
+        StageGateService()._validate_repair_lineage(
+            session, continuation, p2.ref.artifact_id, p2.ref.checksum
+        )
+    assert raised.value.code == "G10_LINEAGE_STALE"
     session.close()
     engine.dispose()
 

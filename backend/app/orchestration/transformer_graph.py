@@ -25,6 +25,11 @@ from app.artifact_store import (
     StoredArtifact,
 )
 from app.domain.contracts import WorkflowEventType
+from app.domain.planning import (
+    VALIDATION_TARGET_GROUPS,
+    ValidationTargetUnionError,
+    validation_target_union,
+)
 from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
@@ -1315,17 +1320,43 @@ class TransformerOrchestrator:
                 reviewer_invocation_schema_version=reviewer_invocation.schema_version,
             )
             if gate_id == "G10":
+                store = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+                )
                 proposal_metadata = session.get(
                     ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
                 )
                 if proposal_metadata is None:
                     raise TransformerStageError("REPAIR_PROPOSAL_MISSING", "Repair proposal artifact is missing")
                 proposal = json.loads(
-                    LocalFilesystemArtifactStore(
-                        Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
-                    ).read_artifact(continuation.run_id, proposal_metadata.relative_path).content
+                    store.read_artifact(continuation.run_id, proposal_metadata.relative_path).content
                 )
-                payload["validation_targets"] = list(proposal.get("validation_targets") or [])
+                review_metadata = session.get(
+                    ArtifactMetadataModel, "metadata-" + str(attempt.review_artifact_id)
+                )
+                if (
+                    review_metadata is None
+                    or review_metadata.run_id != continuation.run_id
+                    or review_metadata.checksum != attempt.review_checksum
+                ):
+                    raise TransformerStageError("REPAIR_REVIEW_MISSING", "Repair review artifact is missing or stale")
+                review = json.loads(
+                    store.read_artifact(continuation.run_id, review_metadata.relative_path).content
+                )
+                stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+                plan_value = stage_plan.stage_plan if stage_plan is not None else {}
+                policy = plan_value.get("validation_policy") or {}
+                try:
+                    union = validation_target_union(
+                        list(proposal.get("validation_targets") or []),
+                        list(review.get("required_validation_targets") or []),
+                        policy.get("required_checks") or ("build", "test"),
+                        plan_value.get("commands") or {},
+                    )
+                except ValidationTargetUnionError as error:
+                    raise TransformerStageError(error.code, error.message) from error
+                attempt.validation_targets = list(union)
+                payload["validation_targets"] = list(union)
                 payload["backend_lineage_checksum"] = self._stage.checksum(
                     {key: value for key, value in payload.items() if key != "backend_lineage_checksum"}
                 )
@@ -1921,36 +1952,72 @@ class TransformerOrchestrator:
                     proposal = RepairProposal.model_validate(
                         json.loads(stored_proposal.content)
                     ).model_dump(mode="json")
+                    review_targets = self._bound_review_validation_targets(
+                        session, continuation, attempt, run
+                    )
                 except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, RepairApplicationError) as error:
                     self._block(session, continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal cannot be verified")
                     return
-                targets = list(proposal.get("validation_targets") or [])
-                mapping = {"build": "builds", "test": "tests", "lint": "lint"}
-                group = mapping.get(targets[0] if targets else "")
-                if group is None:
-                    self._block(
-                session,
-                continuation,
-                        "REPAIR_VALIDATION_TARGET_INVALID",
-                        "Repair proposal has no approved affected validation target",
-                    )
-                    return
+                stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+                plan_value = stage_plan.stage_plan if stage_plan is not None else {}
+                policy = plan_value.get("validation_policy") or {}
+                persisted = attempt.validation_targets
+                if persisted is not None:
+                    # New rows: the persisted union is the authority.  It was
+                    # sealed into the G10 package at create time, so the sealed
+                    # field must agree; any divergence is tampering.
+                    try:
+                        sealed = self._bound_g10_validation_targets(
+                            session, continuation, attempt, run
+                        )
+                    except RepairApplicationError as error:
+                        self._block(session, continuation, error.code, error.message)
+                        return
+                    if sealed != list(persisted):
+                        self._block(
+                            session,
+                            continuation,
+                            "REPAIR_PROPOSAL_STALE",
+                            "Sealed G10 validation targets do not match the persisted union",
+                        )
+                        return
+                    targets = list(persisted)
+                else:
+                    # Legacy migration path: rows created before the union was
+                    # persisted recompute it here from the checksum-bound
+                    # proposal and review artifacts (verified above).  New rows
+                    # always carry attempt.validation_targets instead.
+                    try:
+                        targets = validation_target_union(
+                            list(proposal.get("validation_targets") or []),
+                            review_targets,
+                            policy.get("required_checks") or ("build", "test"),
+                            plan_value.get("commands") or {},
+                        )
+                    except ValidationTargetUnionError as error:
+                        self._block(session, continuation, error.code, error.message)
+                        return
                 if attempt.status == "applied":
                     attempt.status = "revalidating_affected"
                     attempt.updated_at = datetime.now(UTC)
-                try:
-                    outcome = self._validation.advance_group(
-                        session,
-                        continuation,
-                        group,
-                        next_node="repair_revalidate",
-                        attempt_key=f"{attempt.id}:affected",
-                    )
-                except ValidationRunnerError as error:
-                    self._validation_failure(session, continuation, error)
-                    return
-                if outcome != "passed":
-                    return
+                for target in targets:
+                    try:
+                        outcome = self._validation.advance_group(
+                            session,
+                            continuation,
+                            VALIDATION_TARGET_GROUPS[target],
+                            next_node="repair_revalidate",
+                            attempt_key=f"{attempt.id}:affected",
+                        )
+                    except ValidationRunnerError as error:
+                        self._validation_failure(session, continuation, error)
+                        return
+                    if outcome != "passed":
+                        return
+            # The affected groups above are reset and deliberately re-executed
+            # inside the full validation set below (final_install -> policy
+            # groups) so the aggregate carries one authoritative replay of every
+            # check under the revalidating attempt (plan §10).
             for step in session.query(StageStepModel).filter(
                 StageStepModel.stage_id == continuation.current_stage_id,
                 StageStepModel.name.like("final_install-%")
@@ -1964,6 +2031,69 @@ class TransformerOrchestrator:
             attempt.status = "revalidating"
             attempt.updated_at = datetime.now(UTC)
             self._queue(continuation, "final_install")
+
+    def _bound_review_validation_targets(self, session, continuation, attempt, run) -> list[str]:
+        """Verify the bound repair review and return its required targets.
+
+        Mirrors the proposal verification: the review artifact must exist with
+        matching metadata/checksum identity, an attempt-bound envelope, an
+        accepted decision, and the proposal binding the attempt was approved
+        with.  Any deviation fails closed so revalidation never trusts an
+        unverified or tampered review.
+        """
+        if not attempt.review_artifact_id or not attempt.review_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review is missing")
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.review_artifact_id))
+        if metadata is None or metadata.checksum != attempt.review_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review is missing or stale")
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(continuation.run_id, metadata.relative_path)
+        if (
+            stored.ref.artifact_id != attempt.review_artifact_id
+            or stored.ref.checksum != attempt.review_checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != continuation.run_id
+            or stored.envelope.stage_id != continuation.current_stage_id
+            or stored.envelope.attempt_id != attempt.id
+        ):
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review envelope is stale")
+        payload = json.loads(stored.content)
+        if payload.get("decision") != "accept":
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review is not accepted")
+        if payload.get("proposal_checksum") != attempt.proposal_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review proposal binding is stale")
+        return list(payload.get("required_validation_targets") or [])
+
+    def _bound_g10_validation_targets(self, session, continuation, attempt, run) -> list[str]:
+        """Return the sealed G10 package's validation targets for the attempt.
+
+        Returns None when the attempt has no recorded G10 package row (a
+        legacy row).  Any recorded package must be checksum-bound with an
+        attempt-bound envelope; deviation fails closed so revalidation never
+        consumes an unsealed target set.
+        """
+        if not attempt.g10_gate_package_id:
+            return None
+        package = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+        if package is None:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Sealed G10 package is missing")
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(package.package_artifact_id))
+        if metadata is None or metadata.checksum != package.package_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Sealed G10 package is missing or stale")
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(continuation.run_id, metadata.relative_path)
+        if (
+            stored.ref.artifact_id != package.package_artifact_id
+            or stored.ref.checksum != package.package_checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != continuation.run_id
+            or stored.envelope.stage_id != continuation.current_stage_id
+            or stored.envelope.attempt_id != attempt.id
+        ):
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Sealed G10 package binding is stale")
+        return list(json.loads(stored.content).get("validation_targets") or [])
 
     def _create_g09_from_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:

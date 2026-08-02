@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.planning import VALIDATION_TARGET_GROUPS
 from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
@@ -243,16 +244,16 @@ class ValidationRunner:
 
     @staticmethod
     def required_groups(policy: dict[str, object]) -> list[str]:
-        mapping = {"build": "builds", "test": "tests", "lint": "lint"}
         checks = policy.get("required_checks") or ("build", "test")
         groups = []
         for check in checks:
-            if check not in mapping:
+            if check not in VALIDATION_TARGET_GROUPS:
                 raise ValidationRunnerError(
                     "VALIDATION_CHECK_UNSUPPORTED", f"Unsupported required check: {check}"
                 )
-            if mapping[check] not in groups:
-                groups.append(mapping[check])
+            group = VALIDATION_TARGET_GROUPS[check]
+            if group not in groups:
+                groups.append(group)
         return groups
 
     @staticmethod

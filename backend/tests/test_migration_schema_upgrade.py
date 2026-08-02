@@ -119,6 +119,7 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
     assert {
         "parent_review_artifact_id",
         "parent_review_checksum",
+        "validation_targets",
     }.issubset({column["name"] for column in schema.get_columns("repair_attempts")})
     engine.dispose()
 

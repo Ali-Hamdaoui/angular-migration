@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -32,6 +33,16 @@ APPROVED_BUILDERS = frozenset({
     "@angular-devkit/build-angular:browser-esbuild",
     "@angular-devkit/build-angular:server",
 })
+
+# Authoritative validation-target registry.  Every consumer (proposal binding,
+# G10 lineage, affected-check selection, the full validation set) resolves
+# through these constants so the supported-target set can never diverge.
+VALIDATION_TARGET_GROUPS = MappingProxyType({
+    "build": "builds",
+    "test": "tests",
+    "lint": "lint",
+})
+SUPPORTED_VALIDATION_TARGETS = frozenset(VALIDATION_TARGET_GROUPS)
 
 
 class PlanArtifactInput(ContractModel):
@@ -258,6 +269,74 @@ def _checksum(value: object) -> str:
 def checksum_model(value: ContractModel, *, exclude: tuple[str, ...] = ("checksum",)) -> str:
     payload = value.model_dump(mode="json", exclude=set(exclude))
     return _checksum(payload)
+
+
+class ValidationTargetUnionError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def executable_groups(
+    policy_required_checks, commands: dict[str, object]
+) -> tuple[str, ...]:
+    """Command groups the stage plan can actually execute for the policy checks.
+
+    Deterministic: policy order, deduplicated.  A group whose command list is
+    empty (e.g. lint when the plan omits lint commands) is excluded, so the
+    caller never invents a target the plan does not authorize.
+    """
+    groups = []
+    for check in policy_required_checks:
+        if check not in VALIDATION_TARGET_GROUPS:
+            raise ValidationTargetUnionError(
+                "VALIDATION_CHECK_UNSUPPORTED", f"Unsupported required check: {check}"
+            )
+        group = VALIDATION_TARGET_GROUPS[check]
+        if commands.get(group) and group not in groups:
+            groups.append(group)
+    return tuple(groups)
+
+
+def validation_target_union(
+    proposal_targets,
+    review_required_targets,
+    policy_required_checks,
+    commands: dict[str, object],
+) -> tuple[str, ...]:
+    """The single authoritative affected-validation union.
+
+    The final set is the order-preserving, deduplicated union of the
+    executable mandatory policy groups (ALWAYS present, in policy order), the
+    proposer's targets, and the reviewer's required targets - filtered by
+    executability (a group whose command list is non-empty), never by policy
+    membership alone.  Raises REPAIR_VALIDATION_TARGET_INVALID when nothing
+    executable remains, and for any requested target that is not
+    backend-supported (matching the bind-time rejection so the union never
+    silently drops a target the caller believed it requested).  Unknown
+    POLICY checks keep the VALIDATION_CHECK_UNSUPPORTED code from
+    ``executable_groups``.
+    """
+    policy_set = set(policy_required_checks)
+    union = []
+    for target in (*policy_required_checks, *proposal_targets, *review_required_targets):
+        if target not in VALIDATION_TARGET_GROUPS:
+            raise ValidationTargetUnionError(
+                "VALIDATION_CHECK_UNSUPPORTED"
+                if target in policy_set
+                else "REPAIR_VALIDATION_TARGET_INVALID",
+                f"Unsupported validation target or check: {target}",
+            )
+        group = VALIDATION_TARGET_GROUPS[target]
+        if commands.get(group) and target not in union:
+            union.append(target)
+    if not union:
+        raise ValidationTargetUnionError(
+            "REPAIR_VALIDATION_TARGET_INVALID",
+            "Repair proposal has no approved affected validation target",
+        )
+    return tuple(union)
 
 
 def utc_now() -> datetime:

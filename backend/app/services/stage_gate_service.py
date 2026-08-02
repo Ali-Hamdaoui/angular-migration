@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.contracts import WorkflowEventType
+from app.domain.planning import SUPPORTED_VALIDATION_TARGETS
 from app.domain.transformation import StageGateDecisionRequest, StageGateId, TransformationNode
 from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.repositories.models import (
@@ -485,6 +486,7 @@ class StageGateService:
             "workspace_fingerprint": binding.workspace_fingerprint,
             "stage_plan_checksum": stage_plan.checksum,
             "risk_level": attempt.risk_level,
+            "validation_targets": attempt.validation_targets,
         }
         if any(package.get(key) != value for key, value in expected.items()):
             raise StageGateError("G10_LINEAGE_STALE", "G10 inner lineage does not match authoritative state")
@@ -550,9 +552,9 @@ class StageGateService:
             if role == "proposal":
                 if payload.get("failure_evidence_checksum") != attempt.failure_evidence_checksum or payload.get("context_pack_checksum") != attempt.context_pack_checksum:
                     raise StageGateError("G10_LINEAGE_STALE", "G10 proposal evidence lineage is stale")
-                targets = list(payload.get("validation_targets") or [])
+                targets = list(attempt.validation_targets or [])
                 normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
-                if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in {"build", "test", "lint"} for target in normalized):
+                if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in SUPPORTED_VALIDATION_TARGETS for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
             elif role == "review":
                 if payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
