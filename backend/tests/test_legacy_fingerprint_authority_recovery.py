@@ -66,8 +66,8 @@ from app.services.repair_application_service import (
     RepairProposalCandidate,
     RepairReviewCandidate,
 )
-from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.stage_execution_application_service import StageExecutionApplicationService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageService
 from app.services.workspace_fingerprint import (
     SOURCE_CONFIG_FINGERPRINT_PROFILE,
@@ -665,7 +665,7 @@ def test_legacy_recovery_concurrent_workers_create_one_result(tmp_path: Path):
         barrier.wait()
         try:
             outcomes.append(service.recover_legacy_fingerprint_authority(seed.attempt_id))
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             errors.append(error)
 
     threads = [threading.Thread(target=worker) for _ in range(2)]
@@ -940,6 +940,51 @@ def test_legacy_recovery_pre_fingerprint_mismatch_fails_closed(tmp_path: Path):
     assert raised.value.code == "REPAIR_WORKSPACE_STALE"
     session = factory()
     assert session.get(StageWorkspaceBindingModel, "binding-1").fingerprint_profile_id is None
+    session.close()
+    engine.dispose()
+
+
+def test_blocked_continuation_resumes_into_propose_after_recovery(tmp_path: Path):
+    """A continuation blocked with REPAIR_WORKSPACE_STALE (the pre-fix state of
+    the preserved run) recovers once the operator requeues it.
+
+    Recovery is lazy at the proposer transport entry: after the operator
+    resumes the blocked continuation to running@propose_repair, a worker
+    advance runs the authority recovery, then the bounded context recovery,
+    and only then the proposer transport.
+    """
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path, blocked=True)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "REPAIR_WORKSPACE_STALE"
+    continuation.status = "running"
+    continuation.worker_id = "worker-1"
+    continuation.lease_expires_at = NOW + timedelta(seconds=120)
+    continuation.last_error_code = None
+    continuation.last_error_message = None
+    continuation.state_version += 1
+    session.commit()
+    session.close()
+    transport = _FakeAzureTransport(
+        [_responses_body(json.dumps(_proposal_candidate(seed.app_ts)))]
+    )
+    service = _service(factory, tmp_path, transport=transport)
+    orchestrator = _orchestrator(factory, repair_service=service)
+
+    orchestrator.advance("cont-1", "worker-1")
+
+    assert len(transport.calls) == 1
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.current_node == "review_repair"
+    assert continuation.status == "queued"
+    assert session.get(StageWorkspaceBindingModel, "binding-1").fingerprint_profile_id == (
+        WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
+    )
+    assert session.get(RepairAttemptModel, seed.attempt_id).checkpoint_id == "ckpt-pre"
+    assert session.query(RepairFingerprintRecoveryModel).count() == 1
     session.close()
     engine.dispose()
 
