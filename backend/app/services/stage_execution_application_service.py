@@ -33,6 +33,7 @@ from app.services.stage_preparation_application_service import (
     StagePreparationError,
     StagePreparationResult,
 )
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 from app.state.transition_service import StateTransitionService, TransitionRequest
 
 
@@ -291,6 +292,7 @@ class StageExecutionApplicationService:
                 alias=preparation.workspace_alias,
                 workspace_path=preparation.workspace_path,
                 workspace_fingerprint=preparation.fingerprint,
+                fingerprint_profile_id=STAGE_FINGERPRINT_PROFILE.profile_id,
                 input_fingerprint=preparation.fingerprint,
                 active=True,
                 created_at=now,

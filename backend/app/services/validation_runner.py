@@ -31,7 +31,7 @@ from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
-from app.services.workspace_fingerprint import SOURCE_CONFIG_FINGERPRINT_PROFILE
+from app.services.workspace_fingerprint import SOURCE_CONFIG_FINGERPRINT_PROFILE, STAGE_FINGERPRINT_PROFILE
 
 
 class ValidationRunnerError(ValueError):
@@ -147,6 +147,7 @@ class ValidationRunner:
             step.artifact_ids = list(execution.artifact_ids or [])
             step.updated_at = self._now()
             binding.workspace_fingerprint = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = binding.workspace_fingerprint
             binding.last_verified_at = self._now()
         continuation.status = "queued"

@@ -41,6 +41,7 @@ from app.repositories.models import (
     MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
+    RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
@@ -77,6 +78,7 @@ from app.services.validation_runner import (
     ValidationRunner,
     ValidationRunnerError,
 )
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -414,11 +416,19 @@ class TransformerOrchestrator:
                 reason="prompt_reconstruction",
                 execution_id=execution.id,
             )
+            checkpoint_fingerprint = self._stage.authoritative_checkpoint_fingerprint(
+                session, checkpoint
+            )
+            if checkpoint_fingerprint is None:
+                raise TransformerStageError(
+                    "CHECKPOINT_INTEGRITY_FAILED",
+                    "Prompt-referenced checkpoint is not authoritative",
+                )
             reconstruction = (
                 checkpoint.workspace_path,
                 binding.workspace_path,
                 (run.workspace_aliases or {})["STAGE_SANDBOX"],
-                checkpoint.workspace_fingerprint,
+                checkpoint_fingerprint,
             )
             prompt_id = prompt.id
             execution_id = execution.id
@@ -452,6 +462,7 @@ class TransformerOrchestrator:
                 execution_id=execution_id,
             )
             binding.workspace_fingerprint = observed
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = observed
             binding.last_verified_at = datetime.now(UTC)
             prompt.observed_fingerprint = observed
@@ -593,6 +604,7 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             binding = self._stage._binding(session, continuation)
             binding.workspace_fingerprint = context["workspace_fingerprint"]
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = context["workspace_fingerprint"]
             binding.last_verified_at = datetime.now(UTC)
             for artifact in (version_artifact, ledger_artifact, gate_artifact):
@@ -1467,9 +1479,16 @@ class TransformerOrchestrator:
                     attempt_id=attempt.id,
                 )
                 checkpoint_id = checkpoint.id
-                source_fingerprint = checkpoint.workspace_fingerprint
+                source_fingerprint = self._stage.authoritative_checkpoint_fingerprint(
+                    session, checkpoint
+                )
                 snapshot_path = checkpoint.workspace_path
                 stage_root = (run.workspace_aliases or {})["STAGE_SANDBOX"]
+                if source_fingerprint is None:
+                    raise TransformerStageError(
+                        "CHECKPOINT_INTEGRITY_FAILED",
+                        "Apply-recovery checkpoint is not authoritative",
+                    )
             restored = self._stage.reconstruct_workspace(
                 snapshot_path,
                 workspace_path,
@@ -1548,6 +1567,7 @@ class TransformerOrchestrator:
                                 attempt_id=attempt.id if attempt is not None else None,
                             )
                             binding.workspace_fingerprint = fingerprint
+                            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
                             binding.last_verified_fingerprint = fingerprint
                             binding.last_verified_at = datetime.now(UTC)
                     self._block(
@@ -1634,7 +1654,11 @@ class TransformerOrchestrator:
                 "proposal_artifact_checksum": attempt.proposal_checksum,
                 "checkpoint_id": checkpoint.id if checkpoint else None,
                 "checkpoint_path": checkpoint.workspace_path if checkpoint else None,
-                "checkpoint_fingerprint": checkpoint.workspace_fingerprint if checkpoint else None,
+                "checkpoint_fingerprint": (
+                    self._stage.authoritative_checkpoint_fingerprint(session, checkpoint)
+                    if checkpoint is not None
+                    else None
+                ),
                 "stage_root": (run.workspace_aliases or {})["STAGE_SANDBOX"],
                 "attempt_status": attempt.status,
             }
@@ -1686,10 +1710,16 @@ class TransformerOrchestrator:
                     "CHECKPOINT_MISSING",
                     "Attempt-referenced pre-repair checkpoint is missing",
                 )
+            checkpoint_fingerprint = self._stage.authoritative_checkpoint_fingerprint(
+                session, checkpoint
+            )
             if (
-                checkpoint.workspace_fingerprint != live
-                or current_attempt.pre_fingerprint != live
-                or checkpoint.workspace_fingerprint != current_binding.workspace_fingerprint
+                checkpoint_fingerprint is None
+                or checkpoint_fingerprint != live
+                or (
+                    current_attempt.pre_fingerprint != live
+                    and not self._legacy_authority_recovered(session, current_attempt, checkpoint)
+                )
             ):
                 raise TransformerStageError(
                     "REPAIR_PROPOSAL_STALE",
@@ -1803,8 +1833,20 @@ class TransformerOrchestrator:
                     or checkpoint is None
                     or checkpoint.kind != "pre_repair"
                     or checkpoint.stage_id != context["stage_id"]
-                    or checkpoint.workspace_fingerprint != live
-                    or current_attempt.pre_fingerprint != live
+                ):
+                    raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed during recovery")
+                checkpoint_fingerprint = self._stage.authoritative_checkpoint_fingerprint(
+                    session, checkpoint
+                )
+                if (
+                    checkpoint_fingerprint is None
+                    or checkpoint_fingerprint != live
+                    or (
+                        current_attempt.pre_fingerprint != live
+                        and not self._legacy_authority_recovered(
+                            session, current_attempt, checkpoint
+                        )
+                    )
                 ):
                     raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed during recovery")
                 self._gates._validate_repair_lineage(
@@ -1885,6 +1927,7 @@ class TransformerOrchestrator:
             attempt.status = "applied"
             attempt.updated_at = datetime.now(UTC)
             binding.workspace_fingerprint = fingerprint
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = fingerprint
             binding.last_verified_at = datetime.now(UTC)
             for step in session.query(StageStepModel).filter(
@@ -2214,7 +2257,7 @@ class TransformerOrchestrator:
             checkpoint.workspace_path,
             binding.workspace_path,
             (run.workspace_aliases or {})["STAGE_SANDBOX"],
-            checkpoint.workspace_fingerprint,
+            self._stage.authoritative_checkpoint_fingerprint(session, checkpoint),
         )
         if StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != new_fingerprint:
             raise TransformerStageError(
@@ -2229,6 +2272,7 @@ class TransformerOrchestrator:
             restored_fingerprint=new_fingerprint,
         )
         binding.workspace_fingerprint = new_fingerprint
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
         binding.last_verified_fingerprint = new_fingerprint
         binding.last_verified_at = datetime.now(UTC)
         return checkpoint.id, new_fingerprint
@@ -2245,6 +2289,28 @@ class TransformerOrchestrator:
         if attempt is None:
             raise TransformerStageError("REPAIR_ATTEMPT_MISSING", "Repair attempt is missing")
         return attempt
+
+    @staticmethod
+    def _legacy_authority_recovered(session, attempt, checkpoint) -> bool:
+        """True when the attempt's authority was migrated by legacy fingerprint recovery.
+
+        The lineage row proves the attempt's historical checkpoint hash was
+        verified under a legacy profile AND its tree matched the live
+        workspace under the current canonical profile, so legacy-encoded
+        attempt fields (``pre_fingerprint``, checkpoint stored hash) must not
+        be compared against live digests.
+        """
+        return (
+            session.scalar(
+                select(RepairFingerprintRecoveryModel).where(
+                    RepairFingerprintRecoveryModel.run_id == attempt.run_id,
+                    RepairFingerprintRecoveryModel.stage_id == attempt.stage_id,
+                    RepairFingerprintRecoveryModel.attempt_id == attempt.id,
+                    RepairFingerprintRecoveryModel.checkpoint_id == checkpoint.id,
+                )
+            )
+            is not None
+        )
 
     @staticmethod
     def _validation_failure(
