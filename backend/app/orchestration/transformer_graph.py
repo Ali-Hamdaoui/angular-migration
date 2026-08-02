@@ -626,10 +626,17 @@ class TransformerOrchestrator:
             except ValidationRunnerError as error:
                 self._validation_failure(continuation, error)
                 return
-            repair = session.query(RepairAttemptModel).filter_by(
-                run_id=continuation.run_id, stage_id=continuation.current_stage_id
-            ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-            gate_id = "G11" if repair and repair.status in {"applied", "revalidating"} else "G09"
+            repair = (
+                session.query(RepairAttemptModel)
+                .filter(
+                    RepairAttemptModel.run_id == continuation.run_id,
+                    RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    RepairAttemptModel.status.in_(("applied", "revalidating")),
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+                .first()
+            )
+            gate_id = "G11" if repair is not None else "G09"
         summary = self._validation.write_summary(payload, artifact_root)
         gate_payload = {
             "gate_id": gate_id,
@@ -649,9 +656,16 @@ class TransformerOrchestrator:
             self._validation.register_summary(session, continuation, summary)
             self._stage.register_artifact(session, gate, continuation)
             if gate_id == "G11":
-                repair = session.query(RepairAttemptModel).filter_by(
-                    run_id=continuation.run_id, stage_id=continuation.current_stage_id
-                ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                repair = (
+                    session.query(RepairAttemptModel)
+                    .filter(
+                        RepairAttemptModel.run_id == continuation.run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                        RepairAttemptModel.status.in_(("applied", "revalidating")),
+                    )
+                    .order_by(RepairAttemptModel.attempt_number.desc())
+                    .first()
+                )
                 repair.validation_summary_artifact_id = summary.ref.artifact_id
                 repair.validation_summary_checksum = summary.ref.checksum
                 repair.status = "waiting_g11"
@@ -808,6 +822,7 @@ class TransformerOrchestrator:
                     status="evidence_frozen",
                     risk_level="unknown",
                     diagnosis=f"{route.value}; checkpoint={checkpoint.id}",
+                    checkpoint_id=checkpoint.id,
                     failure_evidence_artifact_id=failure.ref.artifact_id,
                     failure_evidence_checksum=failure.ref.checksum,
                     failure_route_artifact_id=route_artifact.ref.artifact_id,
@@ -992,6 +1007,27 @@ class TransformerOrchestrator:
                 self._queue(continuation, "create_g10")
                 return
             if review["decision"] == "request_changes" and attempt.attempt_number < 3:
+                if attempt.status not in {"request_changes", "review_accepted"}:
+                    self._block(
+                        continuation,
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "Repair child attempt requires an accepted request_changes parent",
+                    )
+                    return
+                if attempt.parent_attempt_id is not None:
+                    ancestor = session.get(RepairAttemptModel, attempt.parent_attempt_id)
+                    if (
+                        ancestor is None
+                        or ancestor.run_id != attempt.run_id
+                        or ancestor.stage_id != attempt.stage_id
+                        or ancestor.attempt_number >= attempt.attempt_number
+                    ):
+                        self._block(
+                            continuation,
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "Repair attempt parent lineage is invalid",
+                        )
+                        return
                 next_attempt = RepairAttemptModel(
                     id=f"repair-{continuation.current_stage_id}-{attempt.attempt_number + 1}",
                     run_id=attempt.run_id,
@@ -1000,6 +1036,7 @@ class TransformerOrchestrator:
                     status="evidence_frozen",
                     risk_level="unknown",
                     diagnosis=attempt.diagnosis,
+                    checkpoint_id=attempt.checkpoint_id,
                     failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
                     failure_evidence_checksum=attempt.failure_evidence_checksum,
                     failure_route_artifact_id=attempt.failure_route_artifact_id,
@@ -1143,16 +1180,22 @@ class TransformerOrchestrator:
         try:
             with self._scope() as session:
                 continuation = session.get(TransformationContinuationModel, continuation_id)
-                attempt = self._latest_repair( session, continuation) if continuation is not None else None
+                attempt = self._latest_repair(session, continuation) if continuation is not None else None
                 run = session.get(MigrationRunModel, continuation.run_id) if continuation else None
-                checkpoint = session.scalar(
-                    select(StageCheckpointModel)
-                    .where(
-                        StageCheckpointModel.stage_id == continuation.current_stage_id if continuation else False,
-                        StageCheckpointModel.kind == "pre_repair",
+                checkpoint = (
+                    session.get(StageCheckpointModel, attempt.checkpoint_id)
+                    if attempt is not None and attempt.checkpoint_id is not None
+                    else None
+                )
+                if (
+                    checkpoint is not None
+                    and continuation is not None
+                    and (
+                        checkpoint.kind != "pre_repair"
+                        or checkpoint.stage_id != continuation.current_stage_id
                     )
-                    .order_by(StageCheckpointModel.sequence.desc())
-                ) if continuation else None
+                ):
+                    checkpoint = None
             if continuation is None or attempt is None or run is None or checkpoint is None:
                 self._mark_apply_recovery_required(continuation_id, None)
                 return
@@ -1179,12 +1222,36 @@ class TransformerOrchestrator:
                 attempt = session.get(RepairAttemptModel, attempt_id) if attempt_id else (
                     self._latest_repair(session, continuation) if continuation is not None else None
                 )
+                if (
+                    attempt is not None
+                    and continuation is not None
+                    and (
+                        attempt.run_id != continuation.run_id
+                        or attempt.stage_id != continuation.current_stage_id
+                    )
+                ):
+                    raise TransformerStageError(
+                        "REPAIR_PROPOSAL_STALE",
+                        "Recovery attempt belongs to a different run or stage",
+                    )
                 if attempt is not None:
                     attempt.status = "apply_recovery_required"
                     if fingerprint is not None:
                         attempt.post_fingerprint = fingerprint
                     attempt.updated_at = datetime.now(UTC)
                 if continuation is not None:
+                    if fingerprint is not None:
+                        binding = session.scalar(
+                            select(StageWorkspaceBindingModel).where(
+                                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                                StageWorkspaceBindingModel.active.is_(True),
+                            )
+                        )
+                        if binding is not None:
+                            binding.workspace_fingerprint = fingerprint
+                            binding.last_verified_fingerprint = fingerprint
+                            binding.last_verified_at = datetime.now(UTC)
                     self._block(
                         continuation,
                         "REPAIR_APPLY_RECOVERY_REQUIRED",
@@ -1232,14 +1299,18 @@ class TransformerOrchestrator:
             if proposal_artifact.ref.artifact_id != attempt.proposal_artifact_id or proposal_artifact.ref.checksum != attempt.proposal_checksum:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
             recovering = attempt.status == "applying"
-            checkpoint = session.scalar(
-                select(StageCheckpointModel)
-                .where(
-                    StageCheckpointModel.stage_id == continuation.current_stage_id,
-                    StageCheckpointModel.kind == "pre_repair",
-                )
-                .order_by(StageCheckpointModel.sequence.desc())
-            ) if recovering else None
+            checkpoint = (
+                session.get(StageCheckpointModel, attempt.checkpoint_id)
+                if attempt.checkpoint_id is not None
+                else None
+            )
+            if checkpoint is None or checkpoint.kind != "pre_repair" or checkpoint.stage_id != continuation.current_stage_id:
+                if recovering:
+                    raise TransformerStageError(
+                        "CHECKPOINT_MISSING",
+                        "No attempt-referenced pre-repair checkpoint available for recovery",
+                    )
+                checkpoint = None
             context = {
                 "attempt_id": attempt.id,
                 "workspace_binding_id": binding.id,
@@ -1255,6 +1326,7 @@ class TransformerOrchestrator:
                 "proposal_relative_path": metadata.relative_path,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
                 "proposal_artifact_checksum": attempt.proposal_checksum,
+                "checkpoint_id": checkpoint.id if checkpoint else None,
                 "checkpoint_path": checkpoint.workspace_path if checkpoint else None,
                 "checkpoint_fingerprint": checkpoint.workspace_fingerprint if checkpoint else None,
                 "stage_root": (run.workspace_aliases or {})["STAGE_SANDBOX"],
@@ -1284,11 +1356,39 @@ class TransformerOrchestrator:
                 or current_binding.id != context["workspace_binding_id"]
             ):
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed")
+            if (
+                current_attempt.run_id != context["run_id"]
+                or current_attempt.stage_id != context["stage_id"]
+            ):
+                raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Repair attempt authority changed")
             if current_binding.workspace_path != context["workspace_path"]:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved workspace binding changed")
             live = StageSandboxCopier.fingerprint(Path(current_binding.workspace_path))
             if live != current_binding.workspace_fingerprint or live != context["fingerprint"]:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved workspace fingerprint changed")
+            checkpoint = (
+                session.get(StageCheckpointModel, current_attempt.checkpoint_id)
+                if current_attempt.checkpoint_id is not None
+                else None
+            )
+            if (
+                checkpoint is None
+                or checkpoint.kind != "pre_repair"
+                or checkpoint.stage_id != context["stage_id"]
+            ):
+                raise TransformerStageError(
+                    "CHECKPOINT_MISSING",
+                    "Attempt-referenced pre-repair checkpoint is missing",
+                )
+            if (
+                checkpoint.workspace_fingerprint != live
+                or current_attempt.pre_fingerprint != live
+                or checkpoint.workspace_fingerprint != current_binding.workspace_fingerprint
+            ):
+                raise TransformerStageError(
+                    "REPAIR_PROPOSAL_STALE",
+                    "Repair checkpoint or attempt pre-fingerprint diverged from the workspace",
+                )
             self._gates._validate_repair_lineage(
                 session, current, current_gate.package_artifact_id, current_gate.package_checksum
             )
@@ -1367,6 +1467,11 @@ class TransformerOrchestrator:
                     )
                 )
                 live = StageSandboxCopier.fingerprint(Path(context["workspace_path"]))
+                checkpoint = (
+                    session.get(StageCheckpointModel, current_attempt.checkpoint_id)
+                    if current_attempt.checkpoint_id is not None
+                    else None
+                )
                 if (
                     current is None
                     or current_attempt is None
@@ -1378,6 +1483,11 @@ class TransformerOrchestrator:
                     or current_binding.id != context["workspace_binding_id"]
                     or current.state_version != context["continuation_state_version"]
                     or live != context["fingerprint"]
+                    or checkpoint is None
+                    or checkpoint.kind != "pre_repair"
+                    or checkpoint.stage_id != context["stage_id"]
+                    or checkpoint.workspace_fingerprint != live
+                    or current_attempt.pre_fingerprint != live
                 ):
                     raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed during recovery")
                 self._gates._validate_repair_lineage(
@@ -1637,16 +1747,14 @@ class TransformerOrchestrator:
         return checkpoint.id, new_fingerprint
 
     @staticmethod
-    def _latest_repair(session, continuation):
-        attempt = (
-            session.query(RepairAttemptModel)
-            .filter_by(
-                run_id=continuation.run_id,
-                stage_id=continuation.current_stage_id,
-            )
-            .order_by(RepairAttemptModel.attempt_number.desc())
-            .first()
+    def _latest_repair(session, continuation, *, statuses=None):
+        query = session.query(RepairAttemptModel).filter_by(
+            run_id=continuation.run_id,
+            stage_id=continuation.current_stage_id,
         )
+        if statuses is not None:
+            query = query.filter(RepairAttemptModel.status.in_(statuses))
+        attempt = query.order_by(RepairAttemptModel.attempt_number.desc()).first()
         if attempt is None:
             raise TransformerStageError("REPAIR_ATTEMPT_MISSING", "Repair attempt is missing")
         return attempt

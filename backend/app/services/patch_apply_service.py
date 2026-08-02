@@ -129,7 +129,14 @@ def _fingerprint_with_locked_targets(root: Path, locked_targets: dict[str, tuple
 
 
 def _fingerprint_manifest(manifest: dict[str, bytes]) -> str:
-    return STAGE_FINGERPRINT_PROFILE.fingerprint_stream(manifest.items())
+    """Digest a workspace manifest with the canonical stage-tree ordering.
+
+    The digest must be byte-identical with ``STAGE_FINGERPRINT_PROFILE.
+    fingerprint`` over the same tree (casefold sort) so the apply pre-check
+    and the post-apply fingerprint recorded into the stage binding compare
+    apples-to-apples with the persisted binding/checkpoint fingerprint.
+    """
+    return STAGE_FINGERPRINT_PROFILE.fingerprint_manifest(manifest.items())
 
 
 class PatchApplyService:

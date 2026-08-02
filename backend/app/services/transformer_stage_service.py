@@ -136,7 +136,7 @@ class TransformerStageService:
                 run.actor or "transformer",
                 preparation,
             )
-            self._checkpoint(
+            input_checkpoint = self._checkpoint(
                 session,
                 continuation,
                 preparation,
@@ -144,6 +144,8 @@ class TransformerStageService:
                 artifacts[-1].ref.artifact_id,
                 artifacts[-1].ref.checksum,
             )
+            binding = self._binding(session, continuation)
+            binding.source_checkpoint_id = input_checkpoint.id
             self._advance(continuation, "resolve_runtime")
             return preparation.fingerprint
 

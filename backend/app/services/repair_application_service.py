@@ -903,7 +903,11 @@ class RepairApplicationService:
                         "Completed invocation provenance is incompatible",
                     )
             attempt = session.get(RepairAttemptModel, context["attempt_id"])
-            if attempt is None or attempt.run_id != context["run_id"]:
+            if (
+                attempt is None
+                or attempt.run_id != context["run_id"]
+                or attempt.stage_id != context["stage_id"]
+            ):
                 raise RepairApplicationError(
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
                     "Repair attempt is missing",
