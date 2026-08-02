@@ -1031,6 +1031,7 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
         created_at=NOW,
     )
     (tmp_path / "workspace4").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "workspace4" / "package.json").write_text("{}", encoding="utf-8")
     continuation = TransformationContinuationModel(
         id="cont-4",
         run_id="run-4",
@@ -1056,7 +1057,7 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
 
     mock_stage = MagicMock(spec=TransformerStageService)
     mock_stage._binding.return_value = binding
-    mock_stage.reconstruct_workspace.return_value = "observed-fingerprint-4"
+    mock_stage.reconstruct_workspace.return_value = checkpoint_fingerprint
     mock_explainer = MagicMock()
 
     orchestrator = TransformerOrchestrator(
@@ -1080,7 +1081,7 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
     assert cont.status == "waiting_prompt"
     assert cont.current_node == "wait_prompt_decision"
     assert prompt.status == "waiting_human"
-    assert prompt.observed_fingerprint == "observed-fingerprint-4"
+    assert prompt.observed_fingerprint == checkpoint_fingerprint
     session.close()
     engine.dispose()
 
@@ -1118,7 +1119,8 @@ def test_angular_update_checkpoint_restoration_success(tmp_path: Path):
         id="exec-cr", run_id="run-cr", stage_id="stage-cr",
         command_id="angular-update-exact", status="failed",
         failure_code="COMMAND_EXIT_NONZERO",
-        failure_message="ng update failed", **_exec_base,
+        failure_message="ng update failed",
+        checkpoint_id="checkpoint-cr", **_exec_base,
     )
     step = StageStepModel(
         id="step-cr", run_id="run-cr", stage_id="stage-cr",
@@ -1128,6 +1130,7 @@ def test_angular_update_checkpoint_restoration_success(tmp_path: Path):
     )
     workspace = tmp_path / "workspace-cr"
     workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "package.json").write_text('{"name":"test"}', encoding="utf-8")
     binding = StageWorkspaceBindingModel(
         id="binding-cr", run_id="run-cr", stage_id="stage-cr",
         alias="STAGE_WORKSPACE_STAGE_CR",
@@ -1220,7 +1223,8 @@ def test_angular_update_failure_routes_to_classify_vertical(tmp_path: Path):
         id="exec-vr", run_id="run-vr", stage_id="stage-vr",
         command_id="angular-update-exact", status="failed",
         failure_code="COMMAND_EXIT_NONZERO",
-        failure_message="ng update failed", **_exec_base,
+        failure_message="ng update failed",
+        checkpoint_id="checkpoint-vr", **_exec_base,
     )
     step = StageStepModel(
         id="step-vr", run_id="run-vr", stage_id="stage-vr",
@@ -1230,6 +1234,7 @@ def test_angular_update_failure_routes_to_classify_vertical(tmp_path: Path):
     )
     workspace = tmp_path / "workspace-vr"
     workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "package.json").write_text('{"name":"test"}', encoding="utf-8")
     binding = StageWorkspaceBindingModel(
         id="binding-vr", run_id="run-vr", stage_id="stage-vr",
         alias="STAGE_WORKSPACE_STAGE_VR",
