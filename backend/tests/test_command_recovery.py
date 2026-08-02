@@ -38,6 +38,7 @@ def _execution(
     worker_id: str | None = None,
     claim_expires_at=None,
     operation_kind: str = "read_only",
+    claim_attempt: int = 0,
 ):
     return CommandExecutionModel(
         id=execution_id,
@@ -49,6 +50,7 @@ def _execution(
         worker_id=worker_id,
         claim_expires_at=claim_expires_at,
         operation_kind=operation_kind,
+        claim_attempt=claim_attempt,
         requested_at=datetime.now(UTC),
     )
 
@@ -113,6 +115,61 @@ def test_running_mutation_with_expired_lease_requires_reconstruction(tmp_path: P
     assert model.status == "interrupted"
     assert model.reconstruction_required is True
     assert model.worker_id is None
+    session.close()
+    engine.dispose()
+
+
+def test_reconcile_requeues_below_claim_retry_threshold(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session = factory()
+    now = datetime.now(UTC)
+    session.add(
+        _execution(
+            "exec-requeue",
+            status="running",
+            worker_id="dead-worker",
+            claim_expires_at=now - timedelta(seconds=1),
+            operation_kind="read_only",
+            claim_attempt=2,
+        )
+    )
+    session.commit()
+
+    recovered = CommandExecutorService().reconcile_expired_executions(session, now)
+
+    model = session.get(CommandExecutionModel, "exec-requeue")
+    assert recovered == ["exec-requeue"]
+    assert model.status == "queued"
+    assert model.failure_code == "COMMAND_WORKER_LOST_REQUEUED"
+    assert model.worker_id is None
+    session.close()
+    engine.dispose()
+
+
+def test_reconcile_blocks_after_repeated_claim_loss(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session = factory()
+    now = datetime.now(UTC)
+    session.add(
+        _execution(
+            "exec-exhausted",
+            status="running",
+            worker_id="dead-worker",
+            claim_expires_at=now - timedelta(seconds=1),
+            operation_kind="mutating",
+            claim_attempt=3,
+        )
+    )
+    session.commit()
+
+    recovered = CommandExecutorService().reconcile_expired_executions(session, now)
+
+    model = session.get(CommandExecutionModel, "exec-exhausted")
+    assert recovered == ["exec-exhausted"]
+    assert model.status == "failed"
+    assert model.failure_code == "COMMAND_CLAIM_EXHAUSTED"
+    assert model.worker_id is None
+    assert model.claim_expires_at is None
     session.close()
     engine.dispose()
 

@@ -33,6 +33,7 @@ from app.repositories.models import (
     CommandLogSummaryModel,
     MigrationRunModel,
     StageCheckpointModel,
+    StageExecutionPlanModel,
     StagePromptRequestModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -44,7 +45,7 @@ from app.services.command_executor_service import (
     CommandExecutorService,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.transformer_stage_service import TransformerStageService
+from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
@@ -505,6 +506,152 @@ def test_recovered_retry_creates_one_idempotent_successor_attempt(tmp_path: Path
     assert replay.execution_id == created.execution_id
     assert replay.idempotent_replay is True
     assert session.query(CommandExecutionModel).count() == 3
+    session.close()
+    engine.dispose()
+
+
+def test_retry_beyond_default_budget_raises_stable_error(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session, _run, _authorization, failed = _seed_execution(
+        factory,
+        tmp_path,
+        status="failed",
+    )
+    failed.failure_code = "COMMAND_PRESPAWN_FAILED"
+    failed.attempt_number = 3
+    session.commit()
+    service = CommandExecutorService()
+
+    with pytest.raises(CommandExecutorError) as excinfo:
+        service.queue_retry_execution(
+            session,
+            failed.id,
+            idempotency_key=f"{failed.id}:retry:9",
+        )
+
+    assert excinfo.value.code == "REQUESTED_RETRY_EXCEEDS_LIMIT"
+    assert session.query(CommandExecutionModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_retry_budget_reads_stage_plan_repair_policy(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session, _run, _authorization, failed = _seed_execution(
+        factory,
+        tmp_path,
+        status="failed",
+    )
+    failed.failure_code = "COMMAND_PRESPAWN_FAILED"
+    session.add(
+        StageExecutionPlanModel(
+            id="stage-plan-1",
+            run_id="run-1",
+            migration_plan_id="plan-1",
+            stage_id="stage-1",
+            idempotency_key="stage-plan",
+            request_checksum="sha256:stage-plan",
+            actor="operator",
+            status="approved",
+            version=1,
+            stage_plan={"repair_policy": {"max_attempts": 2}},
+            checksum="sha256:stage-plan",
+            artifact_ids=[],
+            artifact_checksums={},
+            state_version=1,
+            event_sequence=1,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    failed.attempt_number = 2
+    session.commit()
+    service = CommandExecutorService()
+
+    with pytest.raises(CommandExecutorError) as excinfo:
+        service.queue_retry_execution(
+            session,
+            failed.id,
+            idempotency_key=f"{failed.id}:retry:9",
+        )
+
+    assert excinfo.value.code == "REQUESTED_RETRY_EXCEEDS_LIMIT"
+    session.rollback()
+
+    failed.attempt_number = 1
+    session.commit()
+    retried = service.queue_retry_execution(
+        session,
+        failed.id,
+        idempotency_key=f"{failed.id}:retry:10",
+    )
+    successor = session.get(CommandExecutionModel, retried.execution_id)
+    assert successor.attempt_number == 2
+    session.close()
+    engine.dispose()
+
+
+def test_verify_bootstrap_retry_bounded_by_policy_budget(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session, _run, _authorization, failed = _seed_execution(
+        factory,
+        tmp_path,
+        status="failed",
+    )
+    failed.failure_code = "COMMAND_PRESPAWN_FAILED"
+    failed.attempt_number = 3
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "package-lock.json").write_text("before", encoding="utf-8")
+    initial_fingerprint = StageSandboxCopier.fingerprint(workspace)
+    continuation = TransformationContinuationModel(
+        id="continuation-budget",
+        run_id="run-1",
+        current_stage_id="stage-1",
+        thread_id="thread-budget",
+        status="queued",
+        current_node="verify_bootstrap",
+        g06_approval_id="g06-1",
+        plan_id="plan-1",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-budget",
+        request_checksum="sha256:continuation-budget",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    step = StageStepModel(
+        id="step-budget",
+        run_id="run-1",
+        stage_id="stage-1",
+        name="bootstrap_install-0",
+        status="FAILED",
+        component_type="command",
+        execution_id=failed.id,
+        state_version=1,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-budget",
+        run_id="run-1",
+        stage_id="stage-1",
+        alias="STAGE_WORKSPACE_STAGE_1",
+        workspace_path=str(workspace),
+        workspace_fingerprint=initial_fingerprint,
+        active=True,
+        created_at=NOW,
+    )
+    session.add_all([continuation, step, binding])
+    session.commit()
+    service = TransformerStageService(now_provider=lambda: NOW)
+
+    with pytest.raises(TransformerStageError) as excinfo:
+        service.verify_bootstrap(session, continuation)
+
+    assert excinfo.value.code == "REQUESTED_RETRY_EXCEEDS_LIMIT"
+    assert session.query(CommandExecutionModel).count() == 1
     session.close()
     engine.dispose()
 

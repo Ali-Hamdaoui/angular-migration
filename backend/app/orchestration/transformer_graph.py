@@ -831,7 +831,21 @@ class TransformerOrchestrator:
                     RepairAttemptModel.stage_id == continuation.current_stage_id,
                     RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
                 ).count()
-                if attempts >= 3 or applied >= 2:
+                stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+                repair_policy = (
+                    ((stage_plan.stage_plan or {}).get("repair_policy") or {})
+                    if stage_plan is not None
+                    else {}
+                )
+                try:
+                    max_repair_attempts = int(repair_policy.get("max_attempts") or 3)
+                except (TypeError, ValueError):
+                    max_repair_attempts = 3
+                try:
+                    max_repair_applied = int(repair_policy.get("max_applied") or 2)
+                except (TypeError, ValueError):
+                    max_repair_applied = 2
+                if attempts >= max_repair_attempts or applied >= max_repair_applied:
                     self._block(
                         continuation,
                         "REPAIR_ATTEMPT_LIMIT",
