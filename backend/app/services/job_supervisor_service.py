@@ -22,6 +22,7 @@ from app.repositories.models.workflow import (
     WorkflowEventModel,
     MigrationRunModel,
 )
+from app.repositories.models import TransformationContinuationModel
 from app.state.transition_service import (
     StateTransitionService,
     TransitionRequest,
@@ -218,6 +219,7 @@ class JobSupervisorService:
             exec_model.finished_at = now
             exec_model.worker_id = None
             exec_model.claim_expires_at = None
+            self._wake_command_waiter(session, exec_model, now)
         session.flush()
 
         # The worker emits the terminal command event after process-tree
@@ -309,6 +311,33 @@ class JobSupervisorService:
             .order_by(WorkerLeaseModel.acquired_at.desc())
             .limit(1)
         )
+
+    @staticmethod
+    def _wake_command_waiter(
+        session: Session,
+        execution: CommandExecutionModel,
+        now: datetime,
+    ) -> None:
+        """Release a continuation parked on the cancelled command.
+
+        A QUEUED command transitions straight to ``cancelled`` with no worker
+        execution and therefore no worker wake; without this the parked
+        ``waiting_command`` continuation would never resume. The wake only
+        fires when the continuation is still parked, so repeated triggers
+        (cancel + worker sweep) remain a single wake.
+        """
+        continuation = session.scalar(
+            select(TransformationContinuationModel).where(
+                TransformationContinuationModel.run_id == execution.run_id,
+                TransformationContinuationModel.current_stage_id == execution.stage_id,
+                TransformationContinuationModel.status == "waiting_command",
+            )
+        )
+        if continuation is not None:
+            continuation.status = "queued"
+            continuation.wake_sequence += 1
+            continuation.state_version += 1
+            continuation.updated_at = now
 
     @staticmethod
     def _append_event(

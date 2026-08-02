@@ -512,7 +512,7 @@ class CommandExecutorService:
         idempotency_key: str,
         workspace_recovered: bool = False,
     ) -> CommandExecutionResponse:
-        """Create one immutable successor for a failed execution."""
+        """Create one immutable successor for a failed or interrupted execution."""
         failed = session.get(CommandExecutionModel, failed_execution_id)
         if failed is None:
             raise CommandExecutorError("EXECUTION_NOT_FOUND", "Failed execution does not exist")
@@ -529,7 +529,13 @@ class CommandExecutorService:
                     "Retry key is bound to another execution",
                 )
             return self._response_from_model(existing, idempotent_replay=True)
-        if failed.status != CommandStatus.FAILED.value:
+        if failed.status == CommandStatus.INTERRUPTED.value:
+            if not failed.reconstruction_required:
+                raise CommandExecutorError(
+                    "EXECUTION_NOT_RETRYABLE",
+                    "An interrupted execution may only have a successor after reconstruction is required and verified",
+                )
+        elif failed.status != CommandStatus.FAILED.value:
             raise CommandExecutorError(
                 "EXECUTION_NOT_RETRYABLE",
                 "Only a terminal failed execution may have a successor",
