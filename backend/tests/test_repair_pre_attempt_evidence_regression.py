@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,10 +34,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
 from app.core.config import Settings
 from app.domain.contracts import ArtifactType
 from app.domain.transformation import FailureRoute
@@ -825,3 +826,123 @@ def test_graph_shaped_recovery_reaches_failed_replay(tmp_path: Path):
     assert attempt.proposal_artifact_id is not None
     session.close()
     engine.dispose()
+
+
+def test_legacy_context_pack_recovery_is_bounded_immutable_and_cas_safe(tmp_path: Path):
+    """Recover a pre-bounds pack without weakening validation or starting LLM transport."""
+    def make_legacy(factory, artifacts, context):
+        old_path = artifacts / context.ref.relative_path
+        legacy = json.loads(old_path.read_text(encoding="utf-8"))
+        legacy.pop("bounds")
+        legacy_bytes = json.dumps(legacy, sort_keys=True, indent=2).encode("utf-8")
+        old_path.write_bytes(legacy_bytes)
+        old_checksum = "sha256:" + hashlib.sha256(legacy_bytes).hexdigest()
+        _rewrite_sidecar(
+            artifacts,
+            context.ref.relative_path,
+            content_hash=old_checksum,
+            checksum=old_checksum,
+        )
+        session = factory()
+        attempt = session.get(RepairAttemptModel, "repair-1")
+        context_row = session.get(ArtifactMetadataModel, "metadata-" + context.ref.artifact_id)
+        attempt.context_pack_checksum = old_checksum
+        context_row.checksum = old_checksum
+        session.commit()
+        session.close()
+        return old_checksum
+
+    engine, factory = _database(tmp_path)
+    store, attempt_id, app_ts, artifacts, failure, _route, context = _seed_pre_attempt(
+        factory, tmp_path
+    )
+    old_checksum = make_legacy(factory, artifacts, context)
+
+    transport = _FakeAzureTransport(
+        [_responses_body(json.dumps(_proposal_candidate(app_ts)))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    service._recover_legacy_context_pack(attempt_id)
+    assert transport.calls == []
+    session = factory()
+    recovered = session.get(RepairAttemptModel, attempt_id)
+    assert recovered.context_pack_artifact_id != context.ref.artifact_id
+    assert recovered.context_pack_checksum != old_checksum
+    assert recovered.state_version == 3
+    replacement = store.read_artifact("run-1", session.get(
+        ArtifactMetadataModel, "metadata-" + recovered.context_pack_artifact_id
+    ).relative_path)
+    assert "bounds" in json.loads(replacement.content)
+    assert replacement.envelope.input_hashes["recovered_from"] == old_checksum
+    assert store.read_artifact("run-1", context.ref.relative_path).ref.checksum == old_checksum
+    replacement_count = session.query(ArtifactMetadataModel).filter(
+        ArtifactMetadataModel.relative_path.contains("-context-recovered.json")
+    ).count()
+    session.close()
+
+    # A second worker sees the CAS result and reuses the same immutable replacement.
+    service._recover_legacy_context_pack(attempt_id)
+    session = factory()
+    assert session.query(ArtifactMetadataModel).filter(
+        ArtifactMetadataModel.relative_path.contains("-context-recovered.json")
+    ).count() == replacement_count
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "propose_repair"
+    session.close()
+
+    _orchestrator(factory, service).advance("cont-1", "worker-1")
+    assert len(transport.calls) == 1
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.current_node == "review_repair"
+    assert continuation.status == "queued"
+    session.close()
+
+    # The existing bounded form is reused unchanged and remains transport-free.
+    bounded_checksum = recovered.context_pack_checksum
+    service._recover_legacy_context_pack(attempt_id)
+    session = factory()
+    assert session.get(RepairAttemptModel, attempt_id).context_pack_checksum == bounded_checksum
+    session.close()
+    engine.dispose()
+
+    missing_root = tmp_path / "missing-source"
+    missing_root.mkdir()
+    missing_engine, missing_factory = _database(missing_root)
+    _missing_store, missing_attempt, _app, missing_artifacts, missing_failure, _r, _c = _seed_pre_attempt(
+        missing_factory, missing_root
+    )
+    (missing_artifacts / missing_failure.ref.relative_path).unlink()
+    missing_service = RepairApplicationService(
+        scope=_scope(missing_factory), gateway=_gateway(_FakeAzureTransport([]), _azure_settings(missing_root))
+    )
+    with pytest.raises(ArtifactNotFoundError):
+        missing_service._recover_legacy_context_pack(missing_attempt)
+    missing_engine.dispose()
+
+    escape_root = tmp_path / "escape"
+    escape_root.mkdir()
+    escape_engine, escape_factory = _database(escape_root)
+    _escape_store, escape_attempt, _app, escape_artifacts, _failure, _r, escape_context = _seed_pre_attempt(
+        escape_factory, escape_root
+    )
+    make_legacy(escape_factory, escape_artifacts, escape_context)
+    outside = tmp_path / "escape-outside"
+    shutil.copytree(escape_root / "workspace", outside)
+    session = escape_factory()
+    binding = session.scalar(
+        select(StageWorkspaceBindingModel).where(StageWorkspaceBindingModel.id == "binding-1")
+    )
+    binding.workspace_path = str(outside)
+    binding.workspace_fingerprint = StageSandboxCopier.fingerprint(outside)
+    session.commit()
+    session.close()
+    escape_service = RepairApplicationService(
+        scope=_scope(escape_factory), gateway=_gateway(_FakeAzureTransport([]), _azure_settings(escape_root))
+    )
+    with pytest.raises(RepairApplicationError) as raised:
+        escape_service._recover_legacy_context_pack(escape_attempt)
+    assert raised.value.code == "REPAIR_CONTEXT_RECOVERY_FAILED"
+    escape_engine.dispose()

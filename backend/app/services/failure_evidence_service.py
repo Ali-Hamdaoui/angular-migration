@@ -242,6 +242,8 @@ class FailureEvidenceService:
         max_files: int = CONTEXT_PACK_MAX_FILES,
         max_bytes_per_file: int = CONTEXT_PACK_MAX_BYTES_PER_FILE,
         max_total_bytes: int = CONTEXT_PACK_MAX_TOTAL_BYTES,
+        relative_path: str | None = None,
+        lineage_from: str | None = None,
     ):
         """Write a deterministically bounded, preimage-bound repair context pack.
 
@@ -299,15 +301,19 @@ class FailureEvidenceService:
             "untrusted": True,
         }
         root = Path(str(evidence["artifact_root"]))
+        input_hashes = {"failure": failure_checksum}
+        if lineage_from is not None:
+            input_hashes["recovered_from"] = lineage_from
         return LocalFilesystemArtifactStore(root.parent, fixed_run_root=root).write_text_artifact(
             str(evidence["run_id"]),
-            self._expected_evidence_paths(str(evidence["stage_id"]), evidence["failure_fingerprint"])["context"],
+            relative_path
+            or self._expected_evidence_paths(str(evidence["stage_id"]), evidence["failure_fingerprint"])["context"],
             json.dumps(payload, sort_keys=True, indent=2),
             ArtifactType.JSON,
             stage_id=str(evidence["stage_id"]),
             created_by="failure-evidence-service",
             created_at=self._now(),
-            input_hashes={"failure": failure_checksum},
+            input_hashes=input_hashes,
             policy_version=CONTEXT_PACK_SCHEMA_VERSION,
         )
 

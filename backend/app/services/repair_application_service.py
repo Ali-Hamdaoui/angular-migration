@@ -44,7 +44,7 @@ from app.repositories.models import (
     TransformationContinuationModel,
     UsageCostRecordModel,
 )
-from app.services.failure_evidence_service import validate_context_pack
+from app.services.failure_evidence_service import FailureEvidenceService, validate_context_pack
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
@@ -231,6 +231,7 @@ class RepairApplicationService:
         self._now = now_provider or (lambda: datetime.now(UTC))
 
     def propose(self, attempt_id: str) -> dict[str, object]:
+        self._recover_legacy_context_pack(attempt_id)
         context = self._attempt_context(attempt_id)
         recovered = self._recover_completed(
             context,
@@ -611,7 +612,9 @@ class RepairApplicationService:
             )
         return proposal.model_dump(mode="json")
 
-    def _attempt_context(self, attempt_id: str, *, include_proposal: bool = False):
+    def _attempt_context(
+        self, attempt_id: str, *, include_proposal: bool = False, validate_context_pack: bool = True
+    ):
         with self._scope() as session:
             attempt = session.scalar(select(RepairAttemptModel).where(RepairAttemptModel.id == attempt_id))
             if attempt is None:
@@ -649,8 +652,10 @@ class RepairApplicationService:
                 "run_id": attempt.run_id,
                 "stage_id": attempt.stage_id,
                 "artifact_root": run.artifact_root,
+                "run_root": run.run_root,
                 "workspace_path": binding.workspace_path,
                 "failure_evidence_checksum": attempt.failure_evidence_checksum,
+                "failure_fingerprint": attempt.failure_fingerprint,
                 "context_pack_checksum": attempt.context_pack_checksum,
                 "context_pack_artifact_id": attempt.context_pack_artifact_id,
                 "proposal_checksum": attempt.proposal_checksum,
@@ -660,6 +665,7 @@ class RepairApplicationService:
                 "failure_evidence_artifact_id": attempt.failure_evidence_artifact_id,
                 "attempt_number": attempt.attempt_number,
                 "attempt_status": attempt.status,
+                "attempt_state_version": attempt.state_version,
                 "parent_attempt_id": attempt.parent_attempt_id,
                 "parent_review_artifact_id": attempt.parent_review_artifact_id,
                 "parent_review_checksum": attempt.parent_review_checksum,
@@ -714,7 +720,7 @@ class RepairApplicationService:
                 pre_attempt=pre_attempt,
                 metadata_checksum=metadata[artifact.ref.artifact_id].checksum,
             )
-            if artifact.ref.artifact_id == context["context_pack_artifact_id"]:
+            if artifact.ref.artifact_id == context["context_pack_artifact_id"] and validate_context_pack:
                 self._validate_context_pack(artifact.content)
         workspace = Path(str(context["workspace_path"]))
         try:
@@ -730,6 +736,159 @@ class RepairApplicationService:
             context["authority_snapshot"] = self._authority_snapshot(context)
         context["authority_snapshot"] = self._authority_snapshot(context)
         return context
+
+    def _recover_legacy_context_pack(self, attempt_id: str) -> None:
+        """Replace only a pre-bounds pack from authoritative failure/workspace data."""
+        context = self._attempt_context(attempt_id, validate_context_pack=False)
+        try:
+            old_pack = json.loads(context["segments"][1])
+            failure = json.loads(context["segments"][0])
+        except (TypeError, ValueError, IndexError) as error:
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_RECOVERY_FAILED", "Legacy repair evidence cannot be loaded"
+            ) from error
+        if not isinstance(old_pack, dict) or not isinstance(failure, dict):
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_RECOVERY_FAILED", "Legacy repair evidence is invalid"
+            )
+        if "bounds" in old_pack:
+            self._validate_context_pack(context["segments"][1])
+            return
+        if (
+            failure.get("schema_version") != "transformer-failure-evidence-v1"
+            or failure.get("run_id") != context["run_id"]
+            or failure.get("stage_id") != context["stage_id"]
+            or failure.get("failure_fingerprint") != context.get("failure_fingerprint")
+            or failure.get("workspace_fingerprint") != context["workspace_stored_fingerprint"]
+            or not isinstance(failure.get("normalized_failure"), dict)
+            or not isinstance(failure.get("forbidden_change_policy"), dict)
+        ):
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_RECOVERY_FAILED", "Authoritative repair failure evidence is invalid"
+            )
+
+        old_artifact_id = str(context["context_pack_artifact_id"])
+        old_checksum = str(context["context_pack_checksum"])
+        recovery_path = (
+            f"05_repairs/{context['stage_id']}/"
+            f"{hashlib.sha256(f'{old_artifact_id}:{old_checksum}'.encode()).hexdigest()}"
+            "-context-recovered.json"
+        )
+        evidence = {
+            "run_id": context["run_id"],
+            "stage_id": context["stage_id"],
+            "workspace_path": context["workspace_path"],
+            "workspace_fingerprint": context["workspace_stored_fingerprint"],
+            "artifact_root": context["artifact_root"],
+            "failure_fingerprint": failure["failure_fingerprint"],
+            "normalized_failure": failure["normalized_failure"],
+            "forbidden_change_policy": failure["forbidden_change_policy"],
+        }
+        try:
+            workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+            workspace.relative_to(Path(str(context["run_root"])).resolve(strict=True))
+        except (OSError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_RECOVERY_FAILED", "Repair workspace escapes the authoritative run root"
+            ) from error
+        with self._scope() as session:
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            if (
+                attempt is None
+                or attempt.context_pack_artifact_id != old_artifact_id
+                or attempt.context_pack_checksum != old_checksum
+            ):
+                return
+            expected_state = attempt.state_version
+            claimed = session.execute(
+                update(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.id == attempt_id,
+                    RepairAttemptModel.run_id == context["run_id"],
+                    RepairAttemptModel.stage_id == context["stage_id"],
+                    RepairAttemptModel.state_version == expected_state,
+                    RepairAttemptModel.context_pack_artifact_id == old_artifact_id,
+                    RepairAttemptModel.context_pack_checksum == old_checksum,
+                )
+                .values(state_version=expected_state + 1)
+            )
+            if claimed.rowcount != 1:
+                return
+
+            store = LocalFilesystemArtifactStore(
+                Path(str(context["artifact_root"])).parent,
+                fixed_run_root=Path(str(context["artifact_root"])),
+            )
+            try:
+                replacement = store.read_artifact(context["run_id"], recovery_path)
+                if (
+                    replacement.envelope is None
+                    or replacement.envelope.input_hashes.get("failure")
+                    != context["failure_evidence_checksum"]
+                    or replacement.envelope.input_hashes.get("recovered_from") != old_checksum
+                ):
+                    raise ArtifactStoreError("Legacy context replacement lineage is invalid")
+                self._validate_context_pack(replacement.content)
+            except ArtifactNotFoundError:
+                replacement = FailureEvidenceService(now_provider=self._now).write_context_pack(
+                    evidence,
+                    str(context["failure_evidence_checksum"]),
+                    relative_path=recovery_path,
+                    lineage_from=old_checksum,
+                )
+                if StageSandboxCopier.fingerprint(Path(str(context["workspace_path"]))) != context["workspace_stored_fingerprint"]:
+                    raise RepairApplicationError(
+                        "REPAIR_WORKSPACE_STALE", "Repair workspace changed during context recovery"
+                    )
+                self._validate_context_pack(replacement.content)
+
+            metadata_id = "metadata-" + replacement.ref.artifact_id
+            metadata = session.get(ArtifactMetadataModel, metadata_id)
+            if metadata is None:
+                session.add(
+                    ArtifactMetadataModel(
+                        id=metadata_id,
+                        run_id=context["run_id"],
+                        stage_id=context["stage_id"],
+                        artifact_type=replacement.ref.artifact_type.value,
+                        relative_path=replacement.ref.relative_path,
+                        checksum=replacement.ref.checksum,
+                        schema_version=replacement.envelope.schema_version if replacement.envelope else 1,
+                        created_at=replacement.ref.created_at,
+                        finalized_at=replacement.ref.created_at,
+                        immutable=True,
+                        size_bytes=len(replacement.content.encode("utf-8")),
+                        safe_metadata={
+                            "lineage": {
+                                "recovered_from_artifact_id": old_artifact_id,
+                                "recovered_from_checksum": old_checksum,
+                            }
+                        },
+                    )
+                )
+            elif metadata.checksum != replacement.ref.checksum:
+                raise ArtifactStoreError("Legacy context replacement metadata is stale")
+            finalized = session.execute(
+                update(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.id == attempt_id,
+                    RepairAttemptModel.state_version == expected_state + 1,
+                    RepairAttemptModel.context_pack_artifact_id == old_artifact_id,
+                    RepairAttemptModel.context_pack_checksum == old_checksum,
+                )
+                .values(
+                    context_pack_artifact_id=replacement.ref.artifact_id,
+                    context_pack_checksum=replacement.ref.checksum,
+                    diagnosis=(attempt.diagnosis or "")
+                    + f"; context_recovered_from={old_artifact_id}:{old_checksum}",
+                    state_version=expected_state + 2,
+                    updated_at=self._now(),
+                )
+            )
+            if finalized.rowcount != 1:
+                raise RepairApplicationError(
+                    "REPAIR_CONTEXT_RECOVERY_FAILED", "Repair attempt changed during context recovery"
+                )
 
     @staticmethod
     def _validate_context_pack(content: str) -> None:
