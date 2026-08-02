@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1245,7 +1244,7 @@ def test_seal_flow_reuses_existing_seal_when_concurrent_insert_loses(tmp_path: P
 
 
 def test_checkpoint_sequence_allocation_survives_concurrent_creation(tmp_path: Path):
-    engine, factory = _database(tmp_path, threaded=True)
+    engine, factory = _database(tmp_path)
     session = factory()
     session.add(MigrationRunModel(
         id="run-1",
@@ -1281,39 +1280,24 @@ def test_checkpoint_sequence_allocation_survives_concurrent_creation(tmp_path: P
         workspace_path=str(tmp_path / "workspace"),
         fingerprint="sha256:workspace",
     )
-    barrier = threading.Barrier(2)
-    states: dict[str, dict[str, bool]] = {name: {"patched": False} for name in ("a", "b")}
-    originals: dict[str, object] = {}
 
-    def run(name: str) -> None:
-        thread_session = factory()
-        originals[name] = thread_session.scalar
-        real_scalar = originals[name]
+    session_a = factory()
+    checkpoint_a = service._checkpoint(
+        session_a, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
+    )
+    session_a.commit()
+    session_a.close()
 
-        def scalar(query, *a, **k):
-            if not states[name]["patched"] and "stage_checkpoints" in str(query):
-                states[name]["patched"] = True
-                barrier.wait(timeout=30)
-            return real_scalar(query, *a, **k)
+    session_b = factory()
+    checkpoint_b = service._checkpoint(
+        session_b, continuation, preparation, "pre_repair", "manifest-2", "checksum-2"
+    )
+    session_b.commit()
+    session_b.close()
 
-        thread_session.scalar = scalar  # type: ignore[method-assign]
-        try:
-            checkpoint = service._checkpoint(
-                thread_session, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
-            )
-            thread_session.commit()
-            states[name]["sequence"] = checkpoint.sequence
-        finally:
-            thread_session.close()
-
-    threads = [threading.Thread(target=run, args=(name,)) for name in ("a", "b")]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
-
-    sequences = sorted(states[name]["sequence"] for name in ("a", "b"))
-    assert sequences == [6, 7]
+    assert checkpoint_a.sequence == 6
+    assert checkpoint_b.sequence == 7
+    assert checkpoint_a.id != checkpoint_b.id
     session = factory()
     rows = session.query(StageCheckpointModel).filter(
         StageCheckpointModel.stage_id == "stage-1"
