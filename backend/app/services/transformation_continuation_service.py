@@ -161,6 +161,7 @@ class TransformationContinuationService:
                 or_(
                     TransformationContinuationModel.status == TransformationStatus.QUEUED.value,
                     TransformationContinuationModel.status == TransformationStatus.CANCELLING.value,
+                    TransformationContinuationModel.status == TransformationStatus.WAITING_RETRY.value,
                     (
                         (TransformationContinuationModel.status == TransformationStatus.RUNNING.value)
                         & (TransformationContinuationModel.lease_expires_at <= claimed_at)

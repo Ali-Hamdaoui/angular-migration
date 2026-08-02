@@ -8,6 +8,8 @@ import threading
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from sqlalchemy import select
+
 from app.core.config import get_settings
 from app.repositories.session import session_scope
 from app.repositories.models import CommandExecutionModel, TransformationContinuationModel
@@ -16,6 +18,10 @@ from app.services.transformation_continuation_service import TransformationConti
 from app.orchestration.transformer_graph import TransformerWorkflow
 
 LOGGER = logging.getLogger(__name__)
+
+_TERMINAL_COMMAND_STATUSES = frozenset(
+    {"succeeded", "failed", "timed_out", "cancelled", "interrupted"}
+)
 
 
 class TransformerWorker:
@@ -41,6 +47,7 @@ class TransformerWorker:
         now = datetime.now(UTC)
         with self._scope() as session:
             self.command_executor.reconcile_expired_executions(session, now)
+            self._wake_terminal_command_waiters(session, now)
             execution_id = self.command_executor.claim_next_execution(
                 session,
                 self.worker_id,
@@ -59,12 +66,46 @@ class TransformerWorker:
         self.workflow.invoke(continuation_id, self.worker_id)
         return True
 
+    def _wake_terminal_command_waiters(self, session, now: datetime) -> None:
+        """Deterministically release waiters whose latest command reached a terminal state.
+
+        Reconcile terminalises an expired mutating claim to ``interrupted``
+        without ever executing it, and any terminal command whose wake was
+        lost (worker crash between execution and wake, cancellation of a
+        queued command) otherwise parks the continuation forever. The
+        single-active-command-per-run invariant makes the latest command for
+        (run_id, stage_id) the unambiguous wait target.
+        """
+        waiters = list(
+            session.scalars(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.status == "waiting_command"
+                )
+            )
+        )
+        for continuation in waiters:
+            latest = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                )
+                .order_by(
+                    CommandExecutionModel.requested_at.desc(),
+                    CommandExecutionModel.id.desc(),
+                )
+                .limit(1)
+            )
+            if latest is not None and latest.status in _TERMINAL_COMMAND_STATUSES:
+                continuation.status = "queued"
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+
     def _wake_command_waiter(self, execution_id: str) -> None:
         with self._scope() as session:
             execution = session.get(CommandExecutionModel, execution_id)
-            if execution is None or execution.status not in {
-                "succeeded", "failed", "timed_out", "cancelled", "interrupted"
-            }:
+            if execution is None or execution.status not in _TERMINAL_COMMAND_STATUSES:
                 return
             continuation = session.query(TransformationContinuationModel).filter_by(
                 run_id=execution.run_id,
