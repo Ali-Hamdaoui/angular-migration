@@ -1305,3 +1305,188 @@ def test_checkpoint_sequence_allocation_survives_concurrent_creation(tmp_path: P
     assert [row.sequence for row in rows] == [5, 6, 7]
     session.close()
     engine.dispose()
+
+
+def test_checkpoint_sequence_conflict_retries_with_savepoint(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session = factory()
+    session.add(MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="STAGED_MIGRATION",
+        state_version=7,
+        created_at=NOW,
+        updated_at=NOW,
+    ))
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-5",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_bootstrap",
+            sequence=5,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="sha256:1",
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    service = TransformerStageService(now_provider=lambda: NOW)
+    continuation = SimpleNamespace(run_id="run-1", current_stage_id="stage-1", state_version=3)
+    preparation = SimpleNamespace(
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=str(tmp_path / "workspace"),
+        fingerprint="sha256:workspace",
+    )
+
+    loader = factory()
+    stale = loader.scalar(
+        select(StageCheckpointModel)
+        .where(StageCheckpointModel.stage_id == "stage-1")
+        .order_by(StageCheckpointModel.sequence.desc())
+    )
+    loader.close()
+    assert stale.sequence == 5
+
+    session_a = factory()
+    checkpoint_a = service._checkpoint(
+        session_a, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
+    )
+    session_a.commit()
+    session_a.close()
+    assert checkpoint_a.sequence == 6
+
+    session_b = factory()
+    real_scalar = session_b.scalar
+    hits = {"n": 0}
+
+    def scalar(query, *a, **k):
+        if hits["n"] == 0 and "stage_checkpoints" in str(query):
+            hits["n"] += 1
+            return stale
+        return real_scalar(query, *a, **k)
+
+    session_b.scalar = scalar  # type: ignore[method-assign]
+    checkpoint_b = service._checkpoint(
+        session_b, continuation, preparation, "pre_repair", "manifest-2", "checksum-2"
+    )
+    assert hits["n"] == 1
+    assert checkpoint_b.sequence == 7
+    assert checkpoint_b.source_checkpoint_id == checkpoint_a.id
+    session_b.commit()
+    session_b.close()
+
+    session = factory()
+    rows = session.query(StageCheckpointModel).filter(
+        StageCheckpointModel.stage_id == "stage-1"
+    ).order_by(StageCheckpointModel.sequence).all()
+    assert [row.sequence for row in rows] == [5, 6, 7]
+    session.close()
+    engine.dispose()
+
+
+def test_checkpoint_sequence_conflict_exhaustion_fails_closed(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session = factory()
+    session.add(MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="STAGED_MIGRATION",
+        state_version=7,
+        created_at=NOW,
+        updated_at=NOW,
+    ))
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-5",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_bootstrap",
+            sequence=5,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="sha256:1",
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    service = TransformerStageService(now_provider=lambda: NOW)
+    continuation = SimpleNamespace(run_id="run-1", current_stage_id="stage-1", state_version=3)
+    preparation = SimpleNamespace(
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=str(tmp_path / "workspace"),
+        fingerprint="sha256:workspace",
+    )
+
+    loader = factory()
+    stale = loader.scalar(
+        select(StageCheckpointModel)
+        .where(StageCheckpointModel.stage_id == "stage-1")
+        .order_by(StageCheckpointModel.sequence.desc())
+    )
+    loader.close()
+    assert stale.sequence == 5
+
+    session_a = factory()
+    checkpoint_a = service._checkpoint(
+        session_a, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
+    )
+    session_a.commit()
+    session_a.close()
+    assert checkpoint_a.sequence == 6
+
+    session_x = factory()
+    real_scalar = session_x.scalar
+
+    def scalar(query, *a, **k):
+        if "stage_checkpoints" in str(query):
+            return stale
+        return real_scalar(query, *a, **k)
+
+    session_x.scalar = scalar  # type: ignore[method-assign]
+    with pytest.raises(TransformerStageError) as raised:
+        service._checkpoint(
+            session_x, continuation, preparation, "pre_repair", "manifest-2", "checksum-2"
+        )
+    assert raised.value.code == "CHECKPOINT_SEQUENCE_CONFLICT"
+
+    session_x.add(
+        StageCheckpointModel(
+            id="ckpt-x",
+            run_id="run-1",
+            stage_id="stage-2",
+            kind="pre_bootstrap",
+            sequence=1,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="sha256:2",
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session_x.commit()
+    session_x.close()
+
+    session = factory()
+    rows = session.query(StageCheckpointModel).filter(
+        StageCheckpointModel.stage_id == "stage-1"
+    ).order_by(StageCheckpointModel.sequence).all()
+    assert [row.sequence for row in rows] == [5, 6]
+    assert session.query(StageCheckpointModel).filter(
+        StageCheckpointModel.stage_id == "stage-2"
+    ).count() == 1
+    session.close()
+    engine.dispose()
