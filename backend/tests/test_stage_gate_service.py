@@ -789,6 +789,103 @@ def test_g10_create_replay_leaves_one_package_and_no_orphan_artifacts(tmp_path: 
     engine.dispose()
 
 
+def _replay_pending_g10_create(factory, orchestrator) -> None:
+    """Replay the pending G10 create exactly like the idempotent branch.
+
+    A real worker claim cycle bumps state_version; returning to create_g10
+    with the same pending package is what triggers the replay path.
+    """
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.current_node = "create_g10"
+    continuation.status = "running"
+    continuation.worker_id = "worker-2"
+    continuation.lease_expires_at = NOW_UTC + timedelta(seconds=120)
+    continuation.state_version += 1
+    session.commit()
+    session.close()
+    orchestrator.advance("cont-1", "worker-2")
+
+
+def test_g10_decide_approves_after_idempotent_create_replay(tmp_path: Path):
+    """A replayed G10 create can be approved; state versions stay in lockstep.
+
+    RED until the fix: the idempotent replay branch bumps
+    continuation.state_version without settling package.expected_state_version,
+    so decide() raises TRANSFORMATION_STATE_CONFLICT and a replayed package
+    can never be approved.
+    """
+    engine, factory = _g10_database(tmp_path)
+    _store, _workspace, _artifacts, _attempt_id, _failure, _context, _proposal, _review, _fp = (
+        _seed_g10(factory, tmp_path)
+    )
+    orchestrator = _g10_orchestrator(factory)
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    package = _g10_package(session)
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.state_version == package.expected_state_version
+    session.close()
+
+    _replay_pending_g10_create(factory, orchestrator)
+
+    session = factory()
+    package = _g10_package(session)
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    assert continuation.current_node == "wait_g10"
+    assert continuation.state_version == package.expected_state_version
+    decision = StageGateService().decide(
+        session,
+        continuation,
+        "G10",
+        _g10_decision_request(continuation, package),
+        actor="operator",
+        now=NOW_UTC,
+    )
+    assert decision.accepted is True
+    assert package.status == "approved"
+    assert continuation.status == "queued"
+    assert continuation.current_node == "apply_repair"
+    session.close()
+    engine.dispose()
+
+
+def test_g10_decide_rejects_after_idempotent_create_replay(tmp_path: Path):
+    """A replayed G10 create can also be rejected, not only approved."""
+    engine, factory = _g10_database(tmp_path)
+    _store, _workspace, _artifacts, _attempt_id, _failure, _context, _proposal, _review, _fp = (
+        _seed_g10(factory, tmp_path)
+    )
+    orchestrator = _g10_orchestrator(factory)
+    orchestrator.advance("cont-1", "worker-1")
+
+    _replay_pending_g10_create(factory, orchestrator)
+
+    session = factory()
+    package = _g10_package(session)
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.state_version == package.expected_state_version
+    request = _g10_decision_request(continuation, package).model_copy(
+        update={"idempotency_key": "g10-reject", "decision": "reject"}
+    )
+    decision = StageGateService().decide(
+        session,
+        continuation,
+        "G10",
+        request,
+        actor="operator",
+        now=NOW_UTC,
+    )
+    assert decision.accepted is False
+    assert package.status == "rejected"
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "G10_REJECT"
+    session.close()
+    engine.dispose()
+
+
 def _decision(version: int, *, key: str = "g07-approve", fingerprint: str = "sha256:workspace"):
     return StageGateDecisionRequest(
         expected_state_version=version,

@@ -1039,7 +1039,10 @@ class TransformerOrchestrator:
                 # Idempotent replay: the gate artifact and package row already
                 # exist, so re-writing the package artifact would orphan a
                 # fresh artifact/metadata pair. Settle the continuation exactly
-                # like a fresh create.
+                # like a fresh create, including the package's
+                # expected_state_version (fresh create sets it to
+                # state_version + 1 before incrementing), so decide() can
+                # still approve or reject the replayed package.
                 attempt = self._latest_repair(session, continuation)
                 if gate_id == "G10":
                     attempt.g10_gate_package_id = existing.id
@@ -1049,6 +1052,7 @@ class TransformerOrchestrator:
                 continuation.current_node = f"wait_{gate_id.lower()}"
                 continuation.worker_id = None
                 continuation.lease_expires_at = None
+                existing.expected_state_version = continuation.state_version + 1
                 continuation.state_version += 1
                 continuation.updated_at = datetime.now(UTC)
                 return
