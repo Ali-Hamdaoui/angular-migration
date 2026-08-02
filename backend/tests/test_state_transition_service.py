@@ -8,6 +8,7 @@ from app.domain.contracts import RunStatus, StageStatus, StepStatus, WorkflowEve
 from app.repositories.models import Base, MigrationRunModel, MigrationStageModel, StageStepModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.state import (
+    IllegalRunTransitionError,
     LeaseRequiredError,
     IdempotencyPayloadMismatchError,
     ResumeRejectedError,
@@ -303,5 +304,76 @@ def test_resume_validates_checkpoint_workspace_and_policy_placeholders(tmp_path:
 
     assert resumed.status == "RUNNING"
     assert session.get(MigrationRunModel, "run-001").state_version == 2
+    session.close()
+    engine.dispose()
+
+
+def test_illegal_run_transition_is_rejected_without_side_effects(tmp_path: Path) -> None:
+    engine, session = _session(tmp_path)
+    _create_run(session)
+    service = StateTransitionService(session)
+
+    with pytest.raises(IllegalRunTransitionError):
+        service.apply_transition(
+            _transition_request(
+                idempotency_key="illegal",
+                next_run_status=RunStatus.COMPLETED,
+            )
+        )
+
+    assert session.get(MigrationRunModel, "run-001").status == "CREATED"
+    assert session.get(MigrationRunModel, "run-001").state_version == 1
+    assert session.query(WorkflowEventModel).count() == 0
+    session.close()
+    engine.dispose()
+
+
+def test_all_legal_run_transitions_across_event_types_still_pass(tmp_path: Path) -> None:
+    engine, session = _session(tmp_path)
+    _create_run(session, status="SOURCE_VALIDATION_RUNNING")
+    service = StateTransitionService(session)
+    legal_transitions = [
+        (WorkflowEventType.RUN_STATE_CHANGED, RunStatus.SOURCE_VALIDATION_RUNNING),
+        (WorkflowEventType.RUN_STATE_CHANGED, RunStatus.RUNNING),
+        (WorkflowEventType.RUN_STATE_CHANGED, RunStatus.CANCELLING),
+        (WorkflowEventType.RUN_STATE_CHANGED, RunStatus.CANCELLED),
+        (WorkflowEventType.RUN_START_ACCEPTED, RunStatus.SOURCE_VALIDATION_RUNNING),
+        (WorkflowEventType.RUN_CANCEL_REQUESTED, RunStatus.CANCELLING),
+        (WorkflowEventType.RUN_CANCELLED, RunStatus.CANCELLED),
+        (WorkflowEventType.SOURCE_INTAKE_FAILED, RunStatus.FAILED),
+        (WorkflowEventType.SNAPSHOT_STARTED, RunStatus.SOURCE_VALIDATION_RUNNING),
+        (WorkflowEventType.SNAPSHOT_CREATED, RunStatus.SOURCE_VALIDATED),
+        (WorkflowEventType.BASELINE_QUALIFIED, RunStatus.BASELINE_QUALIFIED),
+        (WorkflowEventType.BASELINE_BLOCKED, RunStatus.DIAGNOSTIC_HOLD),
+        (WorkflowEventType.G03_APPROVED, RunStatus.BASELINE_QUALIFIED),
+        (WorkflowEventType.DISCOVERY_BLOCKED, RunStatus.DIAGNOSTIC_HOLD),
+        (WorkflowEventType.G02_STALE, RunStatus.DIAGNOSTIC_HOLD),
+        (WorkflowEventType.EXECUTION_PROFILE_BLOCKED, RunStatus.DIAGNOSTIC_HOLD),
+        (WorkflowEventType.COMPATIBILITY_RESOLUTION_COMPLETED, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.G04_APPROVED, RunStatus.PLANNING_RUNNING),
+        (WorkflowEventType.G05_APPROVED, RunStatus.PLANNING_RUNNING),
+        (WorkflowEventType.G05_APPROVED, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.G06_APPROVED, RunStatus.WAITING_STAGE_PREPARATION),
+        (WorkflowEventType.G06_REJECTED, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.PLANNING_AGENT_COMPLETED, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.PLANNING_REVIEW_REVISION_REQUIRED, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.PLANNING_REVIEW_REJECTED, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.PLANNING_REVIEW_INSUFFICIENT_CONTEXT, RunStatus.WAITING_PLAN_APPROVAL),
+        (WorkflowEventType.PLANNING_FAILED, RunStatus.FAILED),
+        (WorkflowEventType.STAGED_MIGRATION_COMPLETED, RunStatus.COMPLETED),
+        (WorkflowEventType.STAGE_CREATED, RunStatus.STAGE_CREATED),
+    ]
+    expected_state_version = 1
+    for event_type, next_run_status in legal_transitions:
+        result = service.apply_transition(
+            _transition_request(
+                idempotency_key=f"legal-{event_type.value}-{next_run_status.value}",
+                expected_state_version=expected_state_version,
+                event_type=event_type,
+                next_run_status=next_run_status,
+            )
+        )
+        assert result.status == next_run_status.value
+        expected_state_version = result.next_state_version
     session.close()
     engine.dispose()

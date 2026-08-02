@@ -15,6 +15,7 @@ from app.services.migration_run_service import CreateRunRequest, MigrationRunErr
 from app.core.config import Settings
 from app.orchestration.source_intake import SourceIntakeDispatcher
 import app.orchestration.source_intake as source_intake_module
+from app.state import IdempotencyPayloadMismatchError
 
 
 class RecordingGraph:
@@ -267,6 +268,58 @@ def test_source_intake_attempt_identity_does_not_change_when_reclaimed(tmp_path:
     finally:
         dispatcher._executor.shutdown(wait=True)
     assert claimed is not None and claimed.attempt == 2
+
+
+def test_start_replay_rejects_different_request_payload(tmp_path: Path):
+    service, _, _ = _service(tmp_path)
+    created = service.create(_request("replay-start-create"))
+    started = service.start(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="start-1", actor="operator")
+    assert started.idempotent_replay is False
+
+    with pytest.raises(IdempotencyPayloadMismatchError):
+        service.start(run_id=created.run_id, expected_state_version=started.state_version + 99, idempotency_key="start-1", actor="operator")
+
+
+def test_cancel_replay_rejects_different_request_payload(tmp_path: Path):
+    service, _, _ = _service(tmp_path)
+    created = service.create(_request("replay-cancel-create"))
+    cancelled = service.cancel(run_id=created.run_id, expected_state_version=created.state_version, idempotency_key="cancel-1", actor="operator")
+    assert cancelled.status == RunStatus.CANCELLED.value
+
+    with pytest.raises(IdempotencyPayloadMismatchError):
+        service.cancel(run_id=created.run_id, expected_state_version=cancelled.state_version + 1, idempotency_key="cancel-1", actor="operator")
+
+
+def test_retry_source_intake_replay_rejects_different_request_payload(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("replay-retry-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.FAILED.value
+        session.add(SourceIntakeJobModel(
+            id="intake-replay-failed",
+            run_id=created.run_id,
+            thread_id=created.graph_thread_id,
+            status="failed",
+            actor="operator",
+            idempotency_key="replay-failed-attempt",
+            attempt=1,
+            queued_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+            last_error_code="SNAPSHOT_CREATION_FAILED",
+            last_error_message="source disappeared",
+            state_version=run.state_version,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(run_id=created.run_id, expected_state_version=expected_version, idempotency_key="retry-source-1", actor="operator")
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    replay = service.retry_source_intake(run_id=created.run_id, expected_state_version=expected_version, idempotency_key="retry-source-1", actor="operator")
+    assert replay.idempotent_replay is True
+
+    with pytest.raises(IdempotencyPayloadMismatchError):
+        service.retry_source_intake(run_id=created.run_id, expected_state_version=retried.state_version + 1, idempotency_key="retry-source-1", actor="operator")
 
 
 def test_run_evidence_is_recorded_with_checksums_and_confined_paths(tmp_path: Path):

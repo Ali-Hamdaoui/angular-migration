@@ -24,6 +24,7 @@ from app.domain.contracts import (
     CancellationPolicy,
     CommandRequestDto,
     CommandStatus,
+    WorkflowEventType,
 )
 from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
@@ -33,10 +34,12 @@ from app.repositories.models import (
     CommandLogSummaryModel,
     MigrationRunModel,
     StageCheckpointModel,
+    StageExecutionPlanModel,
     StagePromptRequestModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.repositories.models.base import Base
 from app.services.command_executor_service import (
@@ -44,7 +47,11 @@ from app.services.command_executor_service import (
     CommandExecutorService,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.transformer_stage_service import TransformerStageService
+from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+from app.state.transition_service import (
+    StateTransitionService,
+    StaleStateVersionError,
+)
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
@@ -428,6 +435,62 @@ def test_terminal_transition_rollback_does_not_erase_evidence(
     engine.dispose()
 
 
+def test_terminal_command_event_survives_conflicting_run_cancel_cas(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A conflicting RUN_CANCELLED CAS must never lose the terminal command event."""
+    engine, factory = _database(tmp_path)
+    session, run, authorization, execution = _seed_execution(factory, tmp_path)
+    run.status = "CANCELLING"
+    session.commit()
+    session.close()
+
+    session = factory()
+    run = session.get(MigrationRunModel, "run-1")
+    execution = session.get(CommandExecutionModel, "exec-original")
+    authorization = session.get(CommandAuthorizationAuditModel, "auth-1")
+    service = CommandExecutorService()
+    result = _result(
+        tmp_path,
+        status=CommandStatus.CANCELLED,
+        exit_code=-1,
+        cancelled=True,
+    )
+
+    original_apply_transition = StateTransitionService.apply_transition
+
+    def conflicting_run_cancel_cas(self, request, *args, **kwargs):
+        if request.event_type == WorkflowEventType.RUN_CANCELLED:
+            raise StaleStateVersionError("run was cancelled concurrently")
+        return original_apply_transition(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(StateTransitionService, "apply_transition", conflicting_run_cancel_cas)
+    service._finish_execution(
+        session,
+        execution,
+        result,
+        run=run,
+        authorization=authorization,
+        profile={"checksum": "sha256:runtime"},
+    )
+    session.commit()
+    session.close()
+
+    proof = factory()
+    terminal_event = proof.scalar(
+        select(WorkflowEventModel).where(
+            WorkflowEventModel.run_id == "run-1",
+            WorkflowEventModel.event_type == WorkflowEventType.COMMAND_CANCELLED.value,
+        )
+    )
+    assert terminal_event is not None, "terminal command event was lost by the run CAS rollback"
+    assert terminal_event.payload["execution_id"] == "exec-original"
+    assert proof.get(CommandExecutionModel, "exec-original").status == "cancelled"
+    proof.close()
+    engine.dispose()
+
+
 def test_retry_is_parent_bound_idempotent_and_preserves_failed_attempt(tmp_path: Path):
     engine, factory = _database(tmp_path)
     session, _run, _authorization, failed = _seed_execution(
@@ -505,6 +568,152 @@ def test_recovered_retry_creates_one_idempotent_successor_attempt(tmp_path: Path
     assert replay.execution_id == created.execution_id
     assert replay.idempotent_replay is True
     assert session.query(CommandExecutionModel).count() == 3
+    session.close()
+    engine.dispose()
+
+
+def test_retry_beyond_default_budget_raises_stable_error(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session, _run, _authorization, failed = _seed_execution(
+        factory,
+        tmp_path,
+        status="failed",
+    )
+    failed.failure_code = "COMMAND_PRESPAWN_FAILED"
+    failed.attempt_number = 3
+    session.commit()
+    service = CommandExecutorService()
+
+    with pytest.raises(CommandExecutorError) as excinfo:
+        service.queue_retry_execution(
+            session,
+            failed.id,
+            idempotency_key=f"{failed.id}:retry:9",
+        )
+
+    assert excinfo.value.code == "REQUESTED_RETRY_EXCEEDS_LIMIT"
+    assert session.query(CommandExecutionModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_retry_budget_reads_stage_plan_repair_policy(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session, _run, _authorization, failed = _seed_execution(
+        factory,
+        tmp_path,
+        status="failed",
+    )
+    failed.failure_code = "COMMAND_PRESPAWN_FAILED"
+    session.add(
+        StageExecutionPlanModel(
+            id="stage-plan-1",
+            run_id="run-1",
+            migration_plan_id="plan-1",
+            stage_id="stage-1",
+            idempotency_key="stage-plan",
+            request_checksum="sha256:stage-plan",
+            actor="operator",
+            status="approved",
+            version=1,
+            stage_plan={"repair_policy": {"max_attempts": 2}},
+            checksum="sha256:stage-plan",
+            artifact_ids=[],
+            artifact_checksums={},
+            state_version=1,
+            event_sequence=1,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    failed.attempt_number = 2
+    session.commit()
+    service = CommandExecutorService()
+
+    with pytest.raises(CommandExecutorError) as excinfo:
+        service.queue_retry_execution(
+            session,
+            failed.id,
+            idempotency_key=f"{failed.id}:retry:9",
+        )
+
+    assert excinfo.value.code == "REQUESTED_RETRY_EXCEEDS_LIMIT"
+    session.rollback()
+
+    failed.attempt_number = 1
+    session.commit()
+    retried = service.queue_retry_execution(
+        session,
+        failed.id,
+        idempotency_key=f"{failed.id}:retry:10",
+    )
+    successor = session.get(CommandExecutionModel, retried.execution_id)
+    assert successor.attempt_number == 2
+    session.close()
+    engine.dispose()
+
+
+def test_verify_bootstrap_retry_bounded_by_policy_budget(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session, _run, _authorization, failed = _seed_execution(
+        factory,
+        tmp_path,
+        status="failed",
+    )
+    failed.failure_code = "COMMAND_PRESPAWN_FAILED"
+    failed.attempt_number = 3
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "package-lock.json").write_text("before", encoding="utf-8")
+    initial_fingerprint = StageSandboxCopier.fingerprint(workspace)
+    continuation = TransformationContinuationModel(
+        id="continuation-budget",
+        run_id="run-1",
+        current_stage_id="stage-1",
+        thread_id="thread-budget",
+        status="queued",
+        current_node="verify_bootstrap",
+        g06_approval_id="g06-1",
+        plan_id="plan-1",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation-budget",
+        request_checksum="sha256:continuation-budget",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    step = StageStepModel(
+        id="step-budget",
+        run_id="run-1",
+        stage_id="stage-1",
+        name="bootstrap_install-0",
+        status="FAILED",
+        component_type="command",
+        execution_id=failed.id,
+        state_version=1,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-budget",
+        run_id="run-1",
+        stage_id="stage-1",
+        alias="STAGE_WORKSPACE_STAGE_1",
+        workspace_path=str(workspace),
+        workspace_fingerprint=initial_fingerprint,
+        active=True,
+        created_at=NOW,
+    )
+    session.add_all([continuation, step, binding])
+    session.commit()
+    service = TransformerStageService(now_provider=lambda: NOW)
+
+    with pytest.raises(TransformerStageError) as excinfo:
+        service.verify_bootstrap(session, continuation)
+
+    assert excinfo.value.code == "REQUESTED_RETRY_EXCEEDS_LIMIT"
+    assert session.query(CommandExecutionModel).count() == 1
     session.close()
     engine.dispose()
 
@@ -1031,6 +1240,7 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
         created_at=NOW,
     )
     (tmp_path / "workspace4").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "workspace4" / "package.json").write_text("{}", encoding="utf-8")
     continuation = TransformationContinuationModel(
         id="cont-4",
         run_id="run-4",
@@ -1056,7 +1266,7 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
 
     mock_stage = MagicMock(spec=TransformerStageService)
     mock_stage._binding.return_value = binding
-    mock_stage.reconstruct_workspace.return_value = "observed-fingerprint-4"
+    mock_stage.reconstruct_workspace.return_value = checkpoint_fingerprint
     mock_explainer = MagicMock()
 
     orchestrator = TransformerOrchestrator(
@@ -1080,7 +1290,7 @@ def test_angular_update_handle_prompt_prompt_path_unchanged(tmp_path: Path):
     assert cont.status == "waiting_prompt"
     assert cont.current_node == "wait_prompt_decision"
     assert prompt.status == "waiting_human"
-    assert prompt.observed_fingerprint == "observed-fingerprint-4"
+    assert prompt.observed_fingerprint == checkpoint_fingerprint
     session.close()
     engine.dispose()
 
@@ -1118,7 +1328,8 @@ def test_angular_update_checkpoint_restoration_success(tmp_path: Path):
         id="exec-cr", run_id="run-cr", stage_id="stage-cr",
         command_id="angular-update-exact", status="failed",
         failure_code="COMMAND_EXIT_NONZERO",
-        failure_message="ng update failed", **_exec_base,
+        failure_message="ng update failed",
+        checkpoint_id="checkpoint-cr", **_exec_base,
     )
     step = StageStepModel(
         id="step-cr", run_id="run-cr", stage_id="stage-cr",
@@ -1128,6 +1339,7 @@ def test_angular_update_checkpoint_restoration_success(tmp_path: Path):
     )
     workspace = tmp_path / "workspace-cr"
     workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "package.json").write_text('{"name":"test"}', encoding="utf-8")
     binding = StageWorkspaceBindingModel(
         id="binding-cr", run_id="run-cr", stage_id="stage-cr",
         alias="STAGE_WORKSPACE_STAGE_CR",
@@ -1220,7 +1432,8 @@ def test_angular_update_failure_routes_to_classify_vertical(tmp_path: Path):
         id="exec-vr", run_id="run-vr", stage_id="stage-vr",
         command_id="angular-update-exact", status="failed",
         failure_code="COMMAND_EXIT_NONZERO",
-        failure_message="ng update failed", **_exec_base,
+        failure_message="ng update failed",
+        checkpoint_id="checkpoint-vr", **_exec_base,
     )
     step = StageStepModel(
         id="step-vr", run_id="run-vr", stage_id="stage-vr",
@@ -1230,6 +1443,7 @@ def test_angular_update_failure_routes_to_classify_vertical(tmp_path: Path):
     )
     workspace = tmp_path / "workspace-vr"
     workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "package.json").write_text('{"name":"test"}', encoding="utf-8")
     binding = StageWorkspaceBindingModel(
         id="binding-vr", run_id="run-vr", stage_id="stage-vr",
         alias="STAGE_WORKSPACE_STAGE_VR",

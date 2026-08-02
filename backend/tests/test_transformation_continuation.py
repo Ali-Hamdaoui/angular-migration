@@ -150,7 +150,11 @@ def test_claim_is_single_owner_and_expired_claim_is_recovered(tmp_path: Path):
     continuation = _create(service, session)
     session.commit()
 
-    assert service.claim_next(session, "worker-1", NOW).id == continuation.id
+    claimed = service.claim_next(session, "worker-1", NOW)
+    assert claimed.id == continuation.id
+    assert claimed.worker_id == "worker-1"
+    assert claimed.attempt == 0
+    assert claimed.claim_count == 1
     assert service.claim_next(session, "worker-2", NOW) is None
     continuation.lease_expires_at = NOW - timedelta(seconds=1)
     session.commit()
@@ -159,7 +163,8 @@ def test_claim_is_single_owner_and_expired_claim_is_recovered(tmp_path: Path):
 
     assert reclaimed.id == continuation.id
     assert reclaimed.worker_id == "worker-2"
-    assert reclaimed.attempt == 2
+    assert reclaimed.attempt == 0
+    assert reclaimed.claim_count == 2
     session.close()
     engine.dispose()
 

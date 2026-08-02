@@ -108,6 +108,9 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
         "checkpoint_id",
     }.issubset({column["name"] for column in schema.get_columns("command_executions")})
     assert {
+        "claim_count",
+    }.issubset({column["name"] for column in schema.get_columns("transformation_continuations")})
+    assert {
         "source_checkpoint_id",
         "input_fingerprint",
         "last_verified_fingerprint",
@@ -118,6 +121,15 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
         "parent_review_checksum",
     }.issubset({column["name"] for column in schema.get_columns("repair_attempts")})
     engine.dispose()
+
+    command.downgrade(config, "20260803_39")
+
+    mid = create_engine(database_url)
+    schema = inspect(mid)
+    assert "claim_count" not in {
+        column["name"] for column in schema.get_columns("transformation_continuations")
+    }
+    mid.dispose()
 
     command.downgrade(config, "20260729_35")
 

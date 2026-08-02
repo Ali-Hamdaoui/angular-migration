@@ -109,6 +109,7 @@ def queue_command(
             cancel_requested_by=getattr(result, "cancel_requested_by", None),
             cancelled=bool(getattr(result, "cancelled", False)),
             timed_out=bool(getattr(result, "timed_out", False)),
+            claim_attempt=getattr(result, "claim_attempt", None),
         )
 
 

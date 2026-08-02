@@ -61,6 +61,7 @@ def _seed(
     run_id: str = "run-1",
     angular: bool = True,
     failure_code: str | None = None,
+    repair_policy: dict | None = None,
 ):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
@@ -93,7 +94,7 @@ def _seed(
         correlation_id="corr-1",
         status="approved",
         version=1,
-        stage_plan={"repair_policy": {"max_attempts": 3}, "forbidden_change_policy": {}},
+        stage_plan={"repair_policy": repair_policy or {"max_attempts": 3}, "forbidden_change_policy": {}},
         checksum="sha256:stage-plan",
         artifact_ids=[],
         artifact_checksums={},
@@ -386,12 +387,14 @@ def test_transient_error_propagates_and_continuation_stays_retryable(tmp_path: P
     assert cont.lease_expires_at is not None
     assert session.query(ArtifactMetadataModel).count() == 0
     prior_attempt = cont.attempt
+    prior_claim_count = cont.claim_count or 0
     claimed = TransformationContinuationService().claim_next(
         session, "worker-2", now=cont.lease_expires_at + timedelta(seconds=1)
     )
     assert claimed is not None
     assert claimed.id == "cont-1"
-    assert claimed.attempt == prior_attempt + 1
+    assert claimed.claim_count == prior_claim_count + 1
+    assert claimed.attempt == prior_attempt
     session.close()
     engine.dispose()
 
@@ -530,6 +533,71 @@ def test_classify_failure_repair_attempt_limit_blocks(tmp_path: Path):
     assert cont.status == "blocked"
     assert cont.last_error_code == "REPAIR_ATTEMPT_LIMIT"
     assert session.query(RepairAttemptModel).count() == 3
+    session.close()
+    engine.dispose()
+
+
+def test_classify_failure_repair_limit_reads_plan_max_attempts(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path, repair_policy={"max_attempts": 1})
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "queued"
+    assert cont.current_node == "propose_repair"
+    assert session.query(RepairAttemptModel).count() == 1
+    cont.status = "running"
+    cont.current_node = "classify_failure"
+    cont.worker_id = "worker-1"
+    cont.lease_expires_at = NOW + timedelta(seconds=120)
+    cont.state_version += 1
+    execution = session.get(CommandExecutionModel, "exec-1")
+    execution.failure_message = "ng update failed again"
+    session.commit()
+    session.close()
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "blocked"
+    assert cont.last_error_code == "REPAIR_ATTEMPT_LIMIT"
+    assert session.query(RepairAttemptModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_classify_failure_repair_limit_reads_plan_max_applied(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path, repair_policy={"max_attempts": 3, "max_applied": 1})
+    session = factory()
+    session.add(
+        RepairAttemptModel(
+            id="repair-stage-1-applied",
+            run_id="run-1",
+            stage_id="stage-1",
+            attempt_number=1,
+            status="applied",
+            risk_level="low",
+            diagnosis="applied repair",
+            apply_ledger_artifact_id="artifact-applied",
+            apply_ledger_checksum="sha256:applied",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    cont = session.get(TransformationContinuationModel, "cont-1")
+    assert cont.status == "blocked"
+    assert cont.last_error_code == "REPAIR_ATTEMPT_LIMIT"
+    assert session.query(RepairAttemptModel).count() == 1
     session.close()
     engine.dispose()
 

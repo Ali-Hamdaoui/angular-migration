@@ -17,6 +17,7 @@ from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalF
 from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
+    MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
@@ -27,6 +28,9 @@ from app.repositories.models import (
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.state import StateTransitionService
 
 
@@ -48,6 +52,13 @@ _NEXT_NODE = {
 
 
 class StageGateService:
+    @staticmethod
+    def _current_plan_version(session: Session, continuation: TransformationContinuationModel) -> int:
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if plan is None or plan.run_id != continuation.run_id:
+            raise StageGateError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
+        return plan.version
+
     def create(
         self,
         session: Session,
@@ -106,7 +117,7 @@ class StageGateService:
             package_checksum=package_checksum,
             artifact_set_checksum=artifact_set_checksum,
             plan_id=continuation.plan_id,
-            plan_version=1,
+            plan_version=self._current_plan_version(session, continuation),
             stage_plan_id=continuation.stage_plan_id,
             stage_plan_checksum=continuation.stage_plan_checksum,
             workspace_fingerprint=workspace_fingerprint,
@@ -114,6 +125,7 @@ class StageGateService:
             created_at=created_at,
         )
         session.add(package)
+        expected_state_version = continuation.state_version
         continuation.status = "waiting_gate"
         continuation.current_node = f"wait_{gate_id.lower()}"
         continuation.worker_id = None
@@ -129,6 +141,18 @@ class StageGateService:
             reason=f"{gate_id} evidence package created",
             occurred_at=created_at,
             payload={"stage_id": continuation.current_stage_id, "package_checksum": package_checksum},
+        )
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_gate:{expected_state_version}",
+            reason=f"continuation waits for {gate_id} decision",
+            payload={
+                "gate_id": gate_id,
+                "expected_state_version": expected_state_version,
+            },
+            occurred_at=created_at,
         )
         return package
 
@@ -169,6 +193,15 @@ class StageGateService:
         )
         if package is None:
             raise StageGateError("GATE_NOT_PENDING", f"{gate_id} is not pending")
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if (
+            plan is None
+            or plan.run_id != continuation.run_id
+            or package.plan_version != plan.version
+        ):
+            package.status = "stale"
+            package.stale_at = now or datetime.now(UTC)
+            raise StageGateError("STALE_GATE_BINDING", "Gate package is bound to a stale plan version")
         if gate_id == StageGateId.G10.value:
             self._validate_repair_lineage(
                 session,
@@ -213,6 +246,7 @@ class StageGateService:
         )
         session.add(decision)
         package.status = "approved" if accepted else "rejected"
+        expected_state_version = continuation.state_version
         if accepted:
             continuation.status = "queued"
             continuation.current_node = _NEXT_NODE[gate_id]
@@ -224,6 +258,37 @@ class StageGateService:
         continuation.state_version += 1
         continuation.updated_at = decided_at
         session.flush()
+        if accepted:
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=f"gate-accepted:{gate_id}:{package.id}",
+                reason=f"{gate_id} approved; continuation requeued",
+                payload={
+                    "gate_id": gate_id,
+                    "package_id": package.id,
+                    "expected_state_version": expected_state_version,
+                },
+                occurred_at=decided_at,
+                actor=actor,
+            )
+        else:
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+                key=f"block:{expected_state_version}:{continuation.last_error_code}",
+                reason=continuation.last_error_message,
+                payload={
+                    "last_error_code": continuation.last_error_code,
+                    "expected_state_version": expected_state_version,
+                    "reason": request.comment or f"{gate_id} was not approved",
+                    "gate_id": gate_id,
+                },
+                occurred_at=decided_at,
+                actor=actor,
+            )
         StateTransitionService(session).append_audit_event(
             run_id=continuation.run_id,
             idempotency_key=f"{request.idempotency_key}:event",
@@ -279,6 +344,7 @@ class StageGateService:
           with ``REPAIR_PARENT_LINEAGE_INVALID``. A fresh attempt must not
           carry parent review references at all.
         """
+        session.flush()
         metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
         run = session.get(MigrationRunModel, continuation.run_id)
         if metadata is None or run is None or metadata.run_id != continuation.run_id or metadata.checksum != package_checksum:
@@ -403,7 +469,11 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 package carries a parent review reference without a parent attempt",
             )
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if plan is None or plan.run_id != continuation.run_id:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package plan binding is missing")
         expected = {
+            "plan_version": plan.version,
             "failure_evidence_checksum": attempt.failure_evidence_checksum,
             "context_pack_checksum": attempt.context_pack_checksum,
             "proposal_artifact_id": attempt.proposal_artifact_id,

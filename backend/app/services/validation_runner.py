@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from app.artifact_store import LocalFilesystemArtifactStore
-from app.domain.contracts import ArtifactType
+from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
@@ -27,6 +27,9 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.services.workspace_fingerprint import SOURCE_CONFIG_FINGERPRINT_PROFILE
 
 
@@ -93,20 +96,35 @@ class ValidationRunner:
                 step.status = "RUNNING"
                 step.started_at = self._now()
                 step.updated_at = self._now()
-                self._wait(continuation, next_node=continuation.current_node)
+                self._wait(session, continuation, next_node=continuation.current_node, execution_id=execution.id)
                 return "queued"
             if execution.status not in self.terminal:
-                self._wait(continuation, next_node=continuation.current_node)
+                self._wait(session, continuation, next_node=continuation.current_node, execution_id=execution.id)
                 return "waiting"
             if execution.status != "succeeded" or execution.exit_code != 0:
                 step.status = "FAILED"
                 step.completed_at = self._now()
+                expected_state_version = continuation.state_version
+                failure_code = execution.failure_code or "VALIDATION_COMMAND_FAILED"
                 continuation.status = "queued"
                 continuation.current_node = "classify_failure"
-                continuation.last_error_code = execution.failure_code or "VALIDATION_COMMAND_FAILED"
+                continuation.last_error_code = failure_code
                 continuation.last_error_message = execution.failure_message or f"{group}-{index} failed"
                 continuation.state_version += 1
                 continuation.updated_at = self._now()
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED,
+                    key=f"failed:{expected_state_version}:{failure_code}",
+                    reason="validation command failed; failure classification queued",
+                    payload={
+                        "last_error_code": failure_code,
+                        "execution_id": execution.id,
+                        "expected_state_version": expected_state_version,
+                    },
+                )
                 return "failed"
             if not execution.command_log_artifact_id or not execution.result_artifact_id:
                 raise ValidationRunnerError(
@@ -245,13 +263,34 @@ class ValidationRunner:
         """
         return SOURCE_CONFIG_FINGERPRINT_PROFILE.fingerprint(root)
 
-    @staticmethod
-    def _wait(continuation, *, next_node: str) -> None:
+    def _wait(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        next_node: str,
+        execution_id: str,
+    ) -> None:
+        expected_state_version = continuation.state_version
         continuation.status = "waiting_command"
         continuation.current_node = next_node
         continuation.worker_id = None
         continuation.lease_expires_at = None
+        continuation.waiting_execution_id = execution_id
         continuation.state_version += 1
+        continuation.updated_at = self._now()
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_command:{expected_state_version}",
+            reason="validation command queued; continuation waits for terminal evidence",
+            payload={
+                "execution_id": execution_id,
+                "expected_state_version": expected_state_version,
+            },
+        )
 
     @staticmethod
     def _binding(session, continuation):
