@@ -22,6 +22,7 @@ from app.repositories.models import (
     G06ApprovalModel,
     MigrationPlanModel,
     MigrationRunModel,
+    RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageReconstructionRecordModel,
@@ -459,6 +460,37 @@ class TransformerStageService:
         shutil.rmtree(quarantine)
         return StageSandboxCopier.fingerprint(workspace)
 
+    def authoritative_checkpoint_fingerprint(
+        self, session, checkpoint: StageCheckpointModel
+    ) -> str | None:
+        """The current-profile digest the checkpoint TREE must produce to be authoritative.
+
+        A current-profile checkpoint anchors on its persisted hash: the tree
+        must still reproduce it.  A legacy (pre-profile-identity) checkpoint
+        stores a legacy-profile digest that is NOT comparable against live
+        digests; its authoritative current digest is the one verified during
+        legacy authority recovery (lineage row), so the tree must still
+        reproduce that verified digest.  Returns None when the checkpoint is
+        not authoritative (missing or tampered tree, or a legacy checkpoint
+        without a verified recovery), and callers fail closed.
+        """
+        try:
+            current = STAGE_FINGERPRINT_PROFILE.fingerprint(Path(checkpoint.workspace_path))
+        except OSError:
+            return None
+        if current == checkpoint.workspace_fingerprint:
+            return current
+        lineage = session.scalar(
+            select(RepairFingerprintRecoveryModel).where(
+                RepairFingerprintRecoveryModel.run_id == checkpoint.run_id,
+                RepairFingerprintRecoveryModel.stage_id == checkpoint.stage_id,
+                RepairFingerprintRecoveryModel.checkpoint_id == checkpoint.id,
+            ).order_by(RepairFingerprintRecoveryModel.recovered_at.desc())
+        )
+        if lineage is None or lineage.current_fingerprint != current:
+            return None
+        return current
+
     def begin_reconstruction(
         self,
         session,
@@ -487,28 +519,30 @@ class TransformerStageService:
             )
         )
         if binding is not None and binding.workspace_fingerprint != checkpoint.workspace_fingerprint:
-            transitions.append_audit_event(
-                run_id=continuation.run_id,
-                idempotency_key=(
-                    f"{continuation.current_stage_id}:reconstruct:{reason}:{checkpoint.id}:mismatch"
-                ),
-                event_type=WorkflowEventType.STAGE_WORKSPACE_FINGERPRINT_MISMATCH,
-                actor="transformer",
-                reason="workspace binding fingerprint no longer matches the reconstruction checkpoint",
-                occurred_at=self._now(),
-                payload={
-                    "stage_id": continuation.current_stage_id,
-                    "checkpoint_id": checkpoint.id,
-                    "binding_workspace_fingerprint": binding.workspace_fingerprint,
-                    "checkpoint_workspace_fingerprint": checkpoint.workspace_fingerprint,
-                    "reason": reason,
-                },
-            )
-            session.commit()
-            raise TransformerStageError(
-                "WORKSPACE_FINGERPRINT_MISMATCH",
-                "Durable workspace binding no longer matches the reconstruction checkpoint",
-            )
+            authoritative = self.authoritative_checkpoint_fingerprint(session, checkpoint)
+            if authoritative is None or binding.workspace_fingerprint != authoritative:
+                transitions.append_audit_event(
+                    run_id=continuation.run_id,
+                    idempotency_key=(
+                        f"{continuation.current_stage_id}:reconstruct:{reason}:{checkpoint.id}:mismatch"
+                    ),
+                    event_type=WorkflowEventType.STAGE_WORKSPACE_FINGERPRINT_MISMATCH,
+                    actor="transformer",
+                    reason="workspace binding fingerprint no longer matches the reconstruction checkpoint",
+                    occurred_at=self._now(),
+                    payload={
+                        "stage_id": continuation.current_stage_id,
+                        "checkpoint_id": checkpoint.id,
+                        "binding_workspace_fingerprint": binding.workspace_fingerprint,
+                        "checkpoint_workspace_fingerprint": checkpoint.workspace_fingerprint,
+                        "reason": reason,
+                    },
+                )
+                session.commit()
+                raise TransformerStageError(
+                    "WORKSPACE_FINGERPRINT_MISMATCH",
+                    "Durable workspace binding no longer matches the reconstruction checkpoint",
+                )
         transitions.append_audit_event(
             run_id=continuation.run_id,
             idempotency_key=(

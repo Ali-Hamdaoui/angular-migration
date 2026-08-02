@@ -33,6 +33,7 @@ def upgrade() -> None:
         sa.Column("checkpoint_id", sa.String(64), sa.ForeignKey("stage_checkpoints.id"), nullable=False),
         sa.Column("legacy_profile_id", sa.String(128), nullable=False),
         sa.Column("legacy_fingerprint", sa.String(128), nullable=False),
+        sa.Column("replaced_binding_fingerprint", sa.String(128), nullable=False),
         sa.Column("current_profile_id", sa.String(128), nullable=False),
         sa.Column("current_fingerprint", sa.String(128), nullable=False),
         sa.Column("recovered_at", sa.DateTime(timezone=True), nullable=False),

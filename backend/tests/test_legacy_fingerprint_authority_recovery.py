@@ -52,11 +52,14 @@ from app.repositories.models import (
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
+    StageGateDecisionModel,
+    StageGatePackageModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.patch_apply_service import PatchApplyService
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
@@ -193,7 +196,7 @@ def _gateway(transport, settings: Settings):
     )
 
 
-def _orchestrator(factory, *, repair_service):
+def _orchestrator(factory, *, repair_service, patch_service=None):
     return TransformerOrchestrator(
         scope=_scope(factory),
         stage_service=TransformerStageService(scope=_scope(factory), now_provider=lambda: NOW),
@@ -203,7 +206,7 @@ def _orchestrator(factory, *, repair_service):
         validation_runner=MagicMock(),
         failure_evidence=MagicMock(),
         repair_service=repair_service,
-        patch_service=MagicMock(),
+        patch_service=patch_service or PatchApplyService(now_provider=lambda: NOW),
         sealing_flow=MagicMock(),
     )
 
@@ -620,6 +623,7 @@ def test_legacy_recovery_persists_recovery_lineage(tmp_path: Path):
     assert lineage.checkpoint_id == "ckpt-pre"
     assert lineage.legacy_profile_id == WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID
     assert lineage.legacy_fingerprint == seed.legacy_fingerprint
+    assert lineage.replaced_binding_fingerprint == "sha256:" + "a" * 64
     assert lineage.current_profile_id == WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
     assert lineage.current_fingerprint == seed.live_fingerprint
     assert lineage.recovered_at is not None
@@ -784,5 +788,402 @@ def test_graph_advance_recovers_legacy_authority_then_queues_review_repair(tmp_p
     assert attempt.checkpoint_id == "ckpt-pre"
     assert attempt.proposal_artifact_id is not None
     assert len(transport.calls) == 1
+    session.close()
+    engine.dispose()
+
+
+def test_current_profile_binding_keeps_stale_check_after_recovery(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path)
+    service = _service(factory, tmp_path)
+
+    service.recover_legacy_fingerprint_authority(seed.attempt_id)
+    (seed.workspace / "src" / "app.ts").write_text("mutated", encoding="utf-8")
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_legacy_fingerprint_authority(seed.attempt_id)
+
+    assert raised.value.code == "REPAIR_WORKSPACE_STALE"
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    assert binding.fingerprint_profile_id == WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
+    assert binding.workspace_fingerprint == seed.live_fingerprint
+    assert session.query(RepairFingerprintRecoveryModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_current_profile_binding_with_stale_hash_keeps_repair_workspace_stale(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path)
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    binding.fingerprint_profile_id = WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
+    session.commit()
+    session.close()
+    service = _service(factory, tmp_path)
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_legacy_fingerprint_authority(seed.attempt_id)
+
+    assert raised.value.code == "REPAIR_WORKSPACE_STALE"
+    session = factory()
+    assert session.get(StageWorkspaceBindingModel, "binding-1").workspace_fingerprint == "sha256:" + "a" * 64
+    assert session.query(RepairFingerprintRecoveryModel).count() == 0
+    session.close()
+    engine.dispose()
+
+
+def test_legacy_fast_path_completes_lineage_and_checkpoint_binding(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path)
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    binding.workspace_fingerprint = seed.live_fingerprint
+    session.commit()
+    session.close()
+    service = _service(factory, tmp_path)
+
+    result = service.recover_legacy_fingerprint_authority(seed.attempt_id)
+
+    assert result["recovered"] is True
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    assert binding.fingerprint_profile_id == WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
+    assert binding.workspace_fingerprint == seed.live_fingerprint
+    attempt = session.get(RepairAttemptModel, seed.attempt_id)
+    assert attempt.checkpoint_id == "ckpt-pre"
+    lineage = session.query(RepairFingerprintRecoveryModel).one()
+    assert lineage.legacy_profile_id == WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID
+    assert lineage.legacy_fingerprint == seed.legacy_fingerprint
+    assert lineage.current_fingerprint == seed.live_fingerprint
+    session.close()
+    engine.dispose()
+
+
+def test_legacy_fast_path_stamp_only_when_no_checkpoint_identifiable(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path, unknown_legacy_hash=True)
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    binding.workspace_fingerprint = seed.live_fingerprint
+    session.commit()
+    session.close()
+    service = _service(factory, tmp_path)
+
+    result = service.recover_legacy_fingerprint_authority(seed.attempt_id)
+
+    assert result["recovered"] is False
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    assert binding.fingerprint_profile_id == WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
+    assert binding.workspace_fingerprint == seed.live_fingerprint
+    assert session.get(RepairAttemptModel, seed.attempt_id).checkpoint_id is None
+    assert session.query(RepairFingerprintRecoveryModel).count() == 0
+    session.close()
+    engine.dispose()
+
+
+def test_legacy_recovery_ambiguous_checkpoints_fail_closed(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path)
+    session = factory()
+    second_dir = tmp_path / "stages" / "ckpt-dup"
+    second_dir.mkdir(parents=True)
+    for relative, content in VOLATILE_FILES.items():
+        (second_dir / relative).parent.mkdir(parents=True, exist_ok=True)
+        (second_dir / relative).write_text(content, encoding="utf-8")
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-dup",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_repair",
+            sequence=2,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(second_dir),
+            workspace_fingerprint=seed.legacy_fingerprint,
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+    service = _service(factory, tmp_path)
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_legacy_fingerprint_authority(seed.attempt_id)
+
+    assert raised.value.code == "REPAIR_WORKSPACE_STALE"
+    session = factory()
+    assert session.get(StageWorkspaceBindingModel, "binding-1").fingerprint_profile_id is None
+    assert session.get(RepairAttemptModel, seed.attempt_id).checkpoint_id is None
+    session.close()
+    engine.dispose()
+
+
+def test_legacy_recovery_pre_fingerprint_mismatch_fails_closed(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_authority(factory, tmp_path)
+    session = factory()
+    attempt = session.get(RepairAttemptModel, seed.attempt_id)
+    attempt.pre_fingerprint = "sha256:" + "b" * 64
+    session.commit()
+    session.close()
+    service = _service(factory, tmp_path)
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_legacy_fingerprint_authority(seed.attempt_id)
+
+    assert raised.value.code == "REPAIR_WORKSPACE_STALE"
+    session = factory()
+    assert session.get(StageWorkspaceBindingModel, "binding-1").fingerprint_profile_id is None
+    session.close()
+    engine.dispose()
+
+
+def _proposal_payload(app_ts: Path, failure_checksum: str, context_checksum: str) -> dict[str, object]:
+    return {
+        "proposal_format": "operations",
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "src/app.ts",
+                "preimage_sha256": "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest(),
+                "old_text": "old",
+                "new_text": "new",
+            }
+        ],
+        "unified_diff": None,
+        "failure_evidence_checksum": failure_checksum,
+        "context_pack_checksum": context_checksum,
+        "touched_files": ["src/app.ts"],
+        "rationale": ["Fix the compiler error."],
+        "risk_level": "low",
+        "validation_targets": ["build"],
+        "limitations": [],
+    }
+
+
+def _seed_legacy_apply_authority(factory, tmp_path: Path):
+    """Seed a fully authorized G10 apply path on a legacy repair authority."""
+    artifacts = tmp_path / "artifacts"
+    stages = tmp_path / "stages"
+    workspace = stages / "workspace"
+    checkpoint_dir = stages / "ckpt-pre"
+    workspace.mkdir(parents=True)
+    checkpoint_dir.mkdir(parents=True)
+    for relative, content in VOLATILE_FILES.items():
+        (workspace / relative).parent.mkdir(parents=True, exist_ok=True)
+        (checkpoint_dir / relative).parent.mkdir(parents=True, exist_ok=True)
+        (workspace / relative).write_text(content, encoding="utf-8")
+        (checkpoint_dir / relative).write_text(content, encoding="utf-8")
+    live_fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+    legacy_fingerprint = SOURCE_CONFIG_FINGERPRINT_PROFILE.fingerprint(checkpoint_dir)
+    store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
+    app_ts = workspace / "src" / "app.ts"
+    attempt_id = "repair-1"
+    proposal = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/proposal.json",
+        json.dumps(_proposal_payload(app_ts, "sha256:failure", "sha256:context"), sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-proposal",
+        created_at=NOW,
+    )
+    session = factory()
+    run = MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(artifacts),
+        workspace_aliases={"STAGE_SANDBOX": str(stages)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    plan = StageExecutionPlanModel(
+        id="stage-plan-1",
+        run_id="run-1",
+        migration_plan_id="plan-1",
+        stage_id="stage-1",
+        idempotency_key="plan",
+        request_checksum="sha256:plan",
+        actor="operator",
+        correlation_id="corr-1",
+        status="approved",
+        version=1,
+        stage_plan={"repair_policy": {"max_attempts": 3}, "forbidden_change_policy": {}},
+        checksum="sha256:stage-plan",
+        artifact_ids=[],
+        artifact_checksums={},
+        state_version=1,
+        event_sequence=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-1",
+        run_id="run-1",
+        stage_id="stage-1",
+        alias="STAGE_WORKSPACE_1",
+        workspace_path=str(workspace),
+        workspace_fingerprint="sha256:" + "a" * 64,
+        active=True,
+        created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-1",
+        run_id="run-1",
+        current_stage_id="stage-1",
+        thread_id="thread-1",
+        status="running",
+        current_node="apply_repair",
+        worker_id="worker-1",
+        lease_expires_at=NOW + timedelta(seconds=120),
+        g06_approval_id="g06-1",
+        plan_id="plan-1",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        idempotency_key="continuation",
+        request_checksum="sha256:continuation",
+        state_version=3,
+        attempt=1,
+        max_attempts=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    attempt = RepairAttemptModel(
+        id=attempt_id,
+        run_id="run-1",
+        stage_id="stage-1",
+        attempt_number=1,
+        state_version=1,
+        status="waiting_g10",
+        risk_level="low",
+        diagnosis="repairable_source",
+        checkpoint_id=None,
+        g10_gate_package_id="gate-10",
+        failure_evidence_artifact_id="artifact-failure",
+        failure_evidence_checksum="sha256:failure",
+        failure_route_artifact_id="artifact-route",
+        failure_route_checksum="sha256:route",
+        context_pack_artifact_id="artifact-context",
+        context_pack_checksum="sha256:context",
+        proposal_artifact_id=proposal.ref.artifact_id,
+        proposal_checksum=proposal.ref.checksum,
+        proposer_invocation_id="repair-1:proposer",
+        reviewer_invocation_id="repair-1:reviewer",
+        pre_fingerprint=legacy_fingerprint,
+        failure_fingerprint="fingerprint-failure",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    checkpoint = StageCheckpointModel(
+        id="ckpt-pre",
+        run_id="run-1",
+        stage_id="stage-1",
+        kind="pre_repair",
+        sequence=1,
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=str(checkpoint_dir),
+        workspace_fingerprint=legacy_fingerprint,
+        safe_for_resume=True,
+        sealed=False,
+        state_version=3,
+        created_at=NOW,
+    )
+    gate = StageGatePackageModel(
+        id="gate-10",
+        run_id="run-1",
+        stage_id="stage-1",
+        gate_id="G10",
+        gate_version=1,
+        status="approved",
+        package_artifact_id="artifact-g10",
+        package_checksum="sha256:g10",
+        artifact_set_checksum="sha256:g10-set",
+        plan_id="plan-1",
+        plan_version=1,
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        workspace_fingerprint=live_fingerprint,
+        expected_state_version=3,
+        created_at=NOW,
+    )
+    decision = StageGateDecisionModel(
+        id="decision-10",
+        gate_package_id="gate-10",
+        run_id="run-1",
+        stage_id="stage-1",
+        gate_id="G10",
+        decision="approve",
+        actor="operator",
+        idempotency_key="approve-g10",
+        request_checksum="sha256:approve",
+        expected_state_version=3,
+        package_checksum="sha256:g10",
+        workspace_fingerprint=live_fingerprint,
+        accepted=True,
+        created_at=NOW,
+    )
+    session.add_all([run, plan, binding, continuation, attempt, checkpoint, gate, decision])
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + proposal.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=proposal.ref.artifact_type.value,
+            relative_path=proposal.ref.relative_path,
+            checksum=proposal.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.commit()
+    session.close()
+    return SimpleNamespace(
+        attempt_id=attempt_id,
+        workspace=workspace,
+        live_fingerprint=live_fingerprint,
+        legacy_fingerprint=legacy_fingerprint,
+    )
+
+
+def test_recovered_legacy_attempt_applies_through_g10_gate(tmp_path: Path):
+    """The recovered legacy authority must survive the G10 apply gate end-to-end.
+
+    The apply gate compares the checkpoint's authoritative current digest and
+    the attempt pre-fingerprint against the live workspace; for a recovered
+    legacy attempt the checkpoint's STORED hash and pre_fingerprint are
+    legacy-profile digests that legitimately differ from the live stage
+    digest, so the gate must rely on the verified recovery lineage instead.
+    """
+    engine, factory = _database(tmp_path)
+    seed = _seed_legacy_apply_authority(factory, tmp_path)
+    service = _service(factory, tmp_path)
+
+    service.recover_legacy_fingerprint_authority(seed.attempt_id)
+    _orchestrator(factory, repair_service=service)._apply_repair_locked("cont-1", "worker-1")
+
+    assert (seed.workspace / "src" / "app.ts").read_text(encoding="utf-8") == "new"
+    session = factory()
+    attempt = session.get(RepairAttemptModel, seed.attempt_id)
+    assert attempt.status == "applied"
+    assert attempt.post_fingerprint is not None
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    assert binding.fingerprint_profile_id == WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID
+    assert binding.workspace_fingerprint == attempt.post_fingerprint
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "queued"
+    assert continuation.current_node == "repair_revalidate"
     session.close()
     engine.dispose()

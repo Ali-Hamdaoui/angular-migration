@@ -774,6 +774,7 @@ class RepairFingerprintRecoveryModel(Base):
     checkpoint_id: Mapped[str] = mapped_column(ForeignKey("stage_checkpoints.id"), nullable=False)
     legacy_profile_id: Mapped[str] = mapped_column(String(128), nullable=False)
     legacy_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    replaced_binding_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
     current_profile_id: Mapped[str] = mapped_column(String(128), nullable=False)
     current_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
     recovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

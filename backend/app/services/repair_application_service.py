@@ -766,10 +766,17 @@ class RepairApplicationService:
         On success the binding is migrated to the current fingerprint and
         profile identity, the attempt is CAS-bound to the checkpoint, and one
         explicit legacy -> current lineage row is persisted — all in a single
-        transaction.  On failure (real drift, unknown or ambiguous legacy
-        profile, or an unbindable checkpoint) the state is left untouched and
-        REPAIR_WORKSPACE_STALE is raised.  A current-profile binding keeps the
-        normal stale-workspace check unchanged.  The method is idempotent and
+        transaction.  The binding's own stored legacy hash is intentionally
+        NOT verified against the checkpoint: it is the stale value the runtime
+        blocked on and the checkpoint's stored hash is the authoritative
+        legacy anchor (see ``_commit_authority_recovery``).  On failure (real
+        drift, unknown or ambiguous legacy profile, or an unbindable
+        checkpoint) the state is left untouched and REPAIR_WORKSPACE_STALE is
+        raised.  A current-profile binding keeps the normal stale-workspace
+        check unchanged.  A legacy binding whose stored hash already equals
+        the live workspace completes the same lineage + checkpoint binding
+        when a checkpoint is identifiable, and is otherwise only profile-
+        stamped — never failing.  The method is idempotent and
         concurrency-safe: a losing concurrent worker observes the committed
         migration and returns without writing anything.
         """
@@ -822,20 +829,10 @@ class RepairApplicationService:
             if live_fingerprint != stored_fingerprint:
                 raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
             return {"recovered": False, "checkpoint_id": None}
-        if live_fingerprint == stored_fingerprint:
-            self._stamp_binding_profile(attempt_id, stored_fingerprint)
-            return {"recovered": False, "checkpoint_id": None}
         with self._scope() as session:
             attempt = session.get(RepairAttemptModel, attempt_id)
             if attempt is None:
                 raise RepairApplicationError("REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt is missing")
-            checkpoint, legacy_profile = self._identify_legacy_checkpoint(
-                session, attempt, run_root, live_fingerprint
-            )
-            if checkpoint is None:
-                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
-            if attempt.pre_fingerprint not in (None, checkpoint.workspace_fingerprint):
-                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
             binding = session.scalar(
                 select(StageWorkspaceBindingModel).where(
                     StageWorkspaceBindingModel.run_id == attempt.run_id,
@@ -845,32 +842,55 @@ class RepairApplicationService:
             )
             if binding is None:
                 raise RepairApplicationError("REPAIR_AUTHORITY_MISSING", "Repair authority is missing")
+            try:
+                workspace_root = Path(workspace_path).resolve(strict=True)
+                workspace_root.relative_to(Path(run_root).resolve(strict=True))
+            except (OSError, ValueError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace escapes the authoritative run root",
+                ) from error
+            if live_fingerprint == stored_fingerprint:
+                checkpoint, legacy_profile = self._identify_legacy_checkpoint(
+                    session, attempt, run_root, live_fingerprint
+                )
+                if checkpoint is None:
+                    self._stamp_binding_profile(session, attempt, binding, stored_fingerprint)
+                    return {"recovered": False, "checkpoint_id": None}
+                return self._commit_authority_recovery(
+                    session, attempt, binding, checkpoint, legacy_profile, live_fingerprint
+                )
+            checkpoint, legacy_profile = self._identify_legacy_checkpoint(
+                session, attempt, run_root, live_fingerprint
+            )
+            if checkpoint is None:
+                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
+            if attempt.pre_fingerprint not in (None, checkpoint.workspace_fingerprint):
+                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
             return self._commit_authority_recovery(
                 session, attempt, binding, checkpoint, legacy_profile, live_fingerprint
             )
 
-    def _stamp_binding_profile(self, attempt_id: str, live_fingerprint: str) -> None:
+    @staticmethod
+    def _stamp_binding_profile(session, attempt, binding, live_fingerprint: str) -> None:
         """Stamp a legacy binding whose stored hash already matches the live workspace.
 
         The stored value is already current-profile correct, so only the
         profile identity is persisted.  Never fails: a concurrent worker may
         win the stamp, and losing is idempotent.
         """
-        with self._scope() as session:
-            attempt = session.get(RepairAttemptModel, attempt_id)
-            if attempt is None:
-                return
-            session.execute(
-                update(StageWorkspaceBindingModel)
-                .where(
-                    StageWorkspaceBindingModel.run_id == attempt.run_id,
-                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
-                    StageWorkspaceBindingModel.active.is_(True),
-                    StageWorkspaceBindingModel.fingerprint_profile_id.is_(None),
-                    StageWorkspaceBindingModel.workspace_fingerprint == live_fingerprint,
-                )
-                .values(fingerprint_profile_id=STAGE_FINGERPRINT_PROFILE.profile_id)
+        session.execute(
+            update(StageWorkspaceBindingModel)
+            .where(
+                StageWorkspaceBindingModel.id == binding.id,
+                StageWorkspaceBindingModel.run_id == attempt.run_id,
+                StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+                StageWorkspaceBindingModel.fingerprint_profile_id.is_(None),
+                StageWorkspaceBindingModel.workspace_fingerprint == live_fingerprint,
             )
+            .values(fingerprint_profile_id=STAGE_FINGERPRINT_PROFILE.profile_id)
+        )
 
     @staticmethod
     def _identify_legacy_checkpoint(session, attempt, run_root, live_fingerprint):
@@ -885,13 +905,26 @@ class RepairApplicationService:
         qualifying (checkpoint, profile) pair is accepted; anything else —
         unknown or ambiguous legacy profile, or no/several matching
         checkpoints — returns ``(None, None)`` and the caller fails closed.
+        When the attempt is already bound to a checkpoint, ONLY that
+        checkpoint is eligible (the bound checkpoint either verifies or the
+        recovery fails closed).
         """
-        checkpoints = session.scalars(
-            select(StageCheckpointModel).where(
-                StageCheckpointModel.run_id == attempt.run_id,
-                StageCheckpointModel.stage_id == attempt.stage_id,
-            ).order_by(StageCheckpointModel.sequence)
-        ).all()
+        if attempt.checkpoint_id is not None:
+            bound = session.get(StageCheckpointModel, attempt.checkpoint_id)
+            checkpoints = (
+                [bound]
+                if bound is not None
+                and bound.run_id == attempt.run_id
+                and bound.stage_id == attempt.stage_id
+                else []
+            )
+        else:
+            checkpoints = session.scalars(
+                select(StageCheckpointModel).where(
+                    StageCheckpointModel.run_id == attempt.run_id,
+                    StageCheckpointModel.stage_id == attempt.stage_id,
+                ).order_by(StageCheckpointModel.sequence)
+            ).all()
         try:
             run_root_resolved = Path(run_root).resolve(strict=True)
         except OSError:
@@ -932,8 +965,16 @@ class RepairApplicationService:
         rolls back on failure.  Only the first concurrent worker wins the
         binding CAS; every other worker observes ``fingerprint_profile_id``
         already set and returns without writing.
+
+        The binding's STORED legacy hash is intentionally NOT required to
+        match the checkpoint hash: the binding hash is precisely the stale
+        legacy value being replaced (the runtime blocked on it), while the
+        checkpoint's stored hash is the authoritative legacy anchor that
+        check 1 verifies under the identified legacy profile.  The lineage
+        row records the replaced binding hash explicitly.
         """
         now = self._now()
+        replaced_binding_fingerprint = binding.workspace_fingerprint
         binding_claim = session.execute(
             update(StageWorkspaceBindingModel)
             .where(
@@ -942,7 +983,7 @@ class RepairApplicationService:
                 StageWorkspaceBindingModel.stage_id == attempt.stage_id,
                 StageWorkspaceBindingModel.active.is_(True),
                 StageWorkspaceBindingModel.fingerprint_profile_id.is_(None),
-                StageWorkspaceBindingModel.workspace_fingerprint == binding.workspace_fingerprint,
+                StageWorkspaceBindingModel.workspace_fingerprint == replaced_binding_fingerprint,
             )
             .values(
                 workspace_fingerprint=live_fingerprint,
@@ -978,7 +1019,7 @@ class RepairApplicationService:
                 )
         elif attempt.checkpoint_id != checkpoint.id:
             raise RepairApplicationError(
-                "REPAIR_ARTIFACT_RECOVERY_FAILED", "Repair attempt binds a different checkpoint"
+                "REPAIR_WORKSPACE_STALE", "Repair attempt binds a different checkpoint"
             )
         existing_lineage = session.scalar(
             select(RepairFingerprintRecoveryModel).where(
@@ -998,6 +1039,7 @@ class RepairApplicationService:
                     checkpoint_id=checkpoint.id,
                     legacy_profile_id=legacy_profile.profile_id,
                     legacy_fingerprint=checkpoint.workspace_fingerprint,
+                    replaced_binding_fingerprint=replaced_binding_fingerprint,
                     current_profile_id=STAGE_FINGERPRINT_PROFILE.profile_id,
                     current_fingerprint=live_fingerprint,
                     recovered_at=now,
