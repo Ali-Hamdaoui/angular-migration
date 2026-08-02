@@ -290,7 +290,8 @@ def test_waiting_retry_is_claimable_when_next_attempt_is_due(tmp_path: Path):
     assert claimed is not None
     assert claimed.id == "cont-stage-1"
     assert claimed.status == "running"
-    assert claimed.attempt == 3
+    assert claimed.attempt == 2
+    assert claimed.claim_count == 1
     session.close()
     engine.dispose()
 
