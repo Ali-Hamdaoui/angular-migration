@@ -25,6 +25,11 @@ from app.artifact_store import (
     StoredArtifact,
 )
 from app.domain.contracts import WorkflowEventType
+from app.domain.planning import (
+    VALIDATION_TARGET_GROUPS,
+    ValidationTargetUnionError,
+    validation_target_union,
+)
 from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
@@ -1921,36 +1926,46 @@ class TransformerOrchestrator:
                     proposal = RepairProposal.model_validate(
                         json.loads(stored_proposal.content)
                     ).model_dump(mode="json")
+                    review_targets = self._bound_review_validation_targets(
+                        session, continuation, attempt, run
+                    )
                 except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, RepairApplicationError) as error:
                     self._block(session, continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal cannot be verified")
                     return
-                targets = list(proposal.get("validation_targets") or [])
-                mapping = {"build": "builds", "test": "tests", "lint": "lint"}
-                group = mapping.get(targets[0] if targets else "")
-                if group is None:
-                    self._block(
-                session,
-                continuation,
-                        "REPAIR_VALIDATION_TARGET_INVALID",
-                        "Repair proposal has no approved affected validation target",
+                stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+                plan_value = stage_plan.stage_plan if stage_plan is not None else {}
+                policy = plan_value.get("validation_policy") or {}
+                try:
+                    targets = validation_target_union(
+                        list(proposal.get("validation_targets") or []),
+                        review_targets,
+                        policy.get("required_checks") or ("build", "test"),
+                        plan_value.get("commands") or {},
                     )
+                except ValidationTargetUnionError as error:
+                    self._block(session, continuation, error.code, error.message)
                     return
                 if attempt.status == "applied":
                     attempt.status = "revalidating_affected"
                     attempt.updated_at = datetime.now(UTC)
-                try:
-                    outcome = self._validation.advance_group(
-                        session,
-                        continuation,
-                        group,
-                        next_node="repair_revalidate",
-                        attempt_key=f"{attempt.id}:affected",
-                    )
-                except ValidationRunnerError as error:
-                    self._validation_failure(session, continuation, error)
-                    return
-                if outcome != "passed":
-                    return
+                for target in targets:
+                    try:
+                        outcome = self._validation.advance_group(
+                            session,
+                            continuation,
+                            VALIDATION_TARGET_GROUPS[target],
+                            next_node="repair_revalidate",
+                            attempt_key=f"{attempt.id}:affected",
+                        )
+                    except ValidationRunnerError as error:
+                        self._validation_failure(session, continuation, error)
+                        return
+                    if outcome != "passed":
+                        return
+            # The affected groups above are reset and deliberately re-executed
+            # inside the full validation set below (final_install -> policy
+            # groups) so the aggregate carries one authoritative replay of every
+            # check under the revalidating attempt (plan §10).
             for step in session.query(StageStepModel).filter(
                 StageStepModel.stage_id == continuation.current_stage_id,
                 StageStepModel.name.like("final_install-%")
@@ -1964,6 +1979,39 @@ class TransformerOrchestrator:
             attempt.status = "revalidating"
             attempt.updated_at = datetime.now(UTC)
             self._queue(continuation, "final_install")
+
+    def _bound_review_validation_targets(self, session, continuation, attempt, run) -> list[str]:
+        """Verify the bound repair review and return its required targets.
+
+        Mirrors the proposal verification: the review artifact must exist with
+        matching metadata/checksum identity, an attempt-bound envelope, an
+        accepted decision, and the proposal binding the attempt was approved
+        with.  Any deviation fails closed so revalidation never trusts an
+        unverified or tampered review.
+        """
+        if not attempt.review_artifact_id or not attempt.review_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review is missing")
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.review_artifact_id))
+        if metadata is None or metadata.checksum != attempt.review_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review is missing or stale")
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(continuation.run_id, metadata.relative_path)
+        if (
+            stored.ref.artifact_id != attempt.review_artifact_id
+            or stored.ref.checksum != attempt.review_checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != continuation.run_id
+            or stored.envelope.stage_id != continuation.current_stage_id
+            or stored.envelope.attempt_id != attempt.id
+        ):
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review envelope is stale")
+        payload = json.loads(stored.content)
+        if payload.get("decision") != "accept":
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review is not accepted")
+        if payload.get("proposal_checksum") != attempt.proposal_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review proposal binding is stale")
+        return list(payload.get("required_validation_targets") or [])
 
     def _create_g09_from_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:

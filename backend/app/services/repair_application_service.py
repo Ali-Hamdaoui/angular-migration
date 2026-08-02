@@ -22,6 +22,7 @@ from app.artifact_store import (
 )
 from app.core.config import get_settings
 from app.domain.contracts import AgentKind, ArtifactType
+from app.domain.planning import SUPPORTED_VALIDATION_TARGETS
 from app.llm_gateway import (
     AzureGatewayError,
     AzureOpenAILLMGateway,
@@ -212,7 +213,7 @@ class RepairReview(RepairReviewCandidate):
 class RepairApplicationService:
     proposer_schema = "repair_proposer_candidate_v2"
     reviewer_schema = "repair_reviewer_candidate_v2"
-    supported_validation_targets = frozenset({"build", "test", "lint"})
+    supported_validation_targets = SUPPORTED_VALIDATION_TARGETS
     forbidden_parts = {
         ".git",
         "node_modules",
