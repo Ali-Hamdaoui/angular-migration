@@ -27,6 +27,7 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.workspace_fingerprint import SOURCE_CONFIG_FINGERPRINT_PROFILE
 
 
 class ValidationRunnerError(ValueError):
@@ -238,20 +239,11 @@ class ValidationRunner:
 
     @staticmethod
     def source_fingerprint(root: Path) -> str:
-        import hashlib
+        """Fingerprint source and configuration files, excluding generated outputs.
 
-        digest = hashlib.sha256()
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            relative = path.relative_to(root)
-            if any(part in StageSandboxCopier.excluded_names for part in relative.parts):
-                continue
-            name = relative.as_posix().encode()
-            content = path.read_bytes()
-            digest.update(len(name).to_bytes(8, "big"))
-            digest.update(name)
-            digest.update(len(content).to_bytes(8, "big"))
-            digest.update(content)
-        return "sha256:" + digest.hexdigest()
+        Delegates to the canonical source-config workspace fingerprint profile.
+        """
+        return SOURCE_CONFIG_FINGERPRINT_PROFILE.fingerprint(root)
 
     @staticmethod
     def _wait(continuation, *, next_node: str) -> None:

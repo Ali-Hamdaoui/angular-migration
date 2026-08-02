@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.workspaces.baseline import baseline_tree_fingerprint
+from app.services.workspace_fingerprint import PLANNING_FINGERPRINT_PROFILE
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class WorkspaceIntegrityError(ValueError):
 class WorkspaceIntegrityService:
     @staticmethod
     def fingerprint(root: Path) -> str:
-        return baseline_tree_fingerprint(root)
+        return PLANNING_FINGERPRINT_PROFILE.fingerprint(root)
 
     def verify(self, workspace: Path, *, expected_fingerprint: str) -> WorkspaceIntegrityResult:
         workspace = Path(workspace).resolve(strict=True)

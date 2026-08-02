@@ -20,6 +20,7 @@ from app.services.repair_application_service import (
     _unified_diff_header_path,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 _workspace_lock_guard = threading.Lock()
 _workspace_locks: dict[str, threading.RLock] = {}
@@ -128,14 +129,7 @@ def _fingerprint_with_locked_targets(root: Path, locked_targets: dict[str, tuple
 
 
 def _fingerprint_manifest(manifest: dict[str, bytes]) -> str:
-    digest = hashlib.sha256()
-    for relative_path, content in sorted(manifest.items()):
-        relative = relative_path.encode()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return "sha256:" + digest.hexdigest()
+    return STAGE_FINGERPRINT_PROFILE.fingerprint_stream(manifest.items())
 
 
 class PatchApplyService:
