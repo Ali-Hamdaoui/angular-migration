@@ -44,6 +44,7 @@ from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -710,6 +711,7 @@ class TransformerStageService:
         if fingerprint == binding.workspace_fingerprint:
             raise TransformerStageError("BOOTSTRAP_NO_CHANGE", "Bootstrap install produced no workspace change")
         binding.workspace_fingerprint = fingerprint
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
         binding.last_verified_fingerprint = fingerprint
         binding.last_verified_at = self._now()
         step.status = "PASSED"

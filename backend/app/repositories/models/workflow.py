@@ -452,6 +452,7 @@ class StageWorkspaceBindingModel(Base):
     alias: Mapped[str] = mapped_column(String(128), nullable=False)
     workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
     workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    fingerprint_profile_id: Mapped[str | None] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     source_checkpoint_id: Mapped[str | None] = mapped_column(ForeignKey("stage_checkpoints.id"))
     input_fingerprint: Mapped[str | None] = mapped_column(String(128))
@@ -745,6 +746,37 @@ class RepairAttemptModel(Base):
     validation_targets: Mapped[list[str] | None] = mapped_column(JSON)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RepairFingerprintRecoveryModel(Base):
+    """Durable legacy-profile -> current-profile workspace authority lineage.
+
+    One row per (run, stage, attempt, checkpoint): the attempt's historical
+    pre-repair checkpoint stored a fingerprint computed by a legacy scope
+    before profile identity existed, and the recovery migrated the active
+    workspace binding to the current canonical profile.  The unique
+    constraint guarantees that concurrent workers can never persist two
+    authority migrations for the same attempt.
+    """
+
+    __tablename__ = "repair_fingerprint_recoveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "stage_id", "attempt_id", "checkpoint_id",
+            name="uq_repair_fingerprint_recovery",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("repair_attempts.id"), nullable=False, index=True)
+    checkpoint_id: Mapped[str] = mapped_column(ForeignKey("stage_checkpoints.id"), nullable=False)
+    legacy_profile_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    legacy_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    current_profile_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    current_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    recovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class LlmUsageRecordModel(Base):

@@ -102,6 +102,10 @@ from pathlib import Path
 
 WORKSPACE_FINGERPRINT_VERSION = "workspace-fingerprint-v1"
 
+WORKSPACE_FINGERPRINT_PLANNING_PROFILE_ID = f"{WORKSPACE_FINGERPRINT_VERSION}:planning"
+WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID = f"{WORKSPACE_FINGERPRINT_VERSION}:stage"
+WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID = f"{WORKSPACE_FINGERPRINT_VERSION}:source-config"
+
 PLANNING_VOLATILE_ROOTS = frozenset({"node_modules", ".angular", "dist", "coverage"})
 STAGE_VOLATILE_NAMES = frozenset({"node_modules", ".angular", ".cache", "dist", "build", "logs", "reports", "tmp", ".pytest_cache"})
 
@@ -179,6 +183,7 @@ class WorkspaceFingerprintProfile:
 
     version: str = WORKSPACE_FINGERPRINT_VERSION
     excluded_names: frozenset[str] = frozenset()
+    profile_id: str | None = None
 
     def fingerprint(self, root: Path) -> str:
         return workspace_fingerprint_v1(root, exclude=self.excluded_names)
@@ -190,6 +195,33 @@ class WorkspaceFingerprintProfile:
         return encode_fingerprint_manifest(entries)
 
 
-PLANNING_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(excluded_names=PLANNING_VOLATILE_ROOTS)
-STAGE_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(excluded_names=frozenset())
-SOURCE_CONFIG_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(excluded_names=STAGE_VOLATILE_NAMES)
+PLANNING_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
+    excluded_names=PLANNING_VOLATILE_ROOTS,
+    profile_id=WORKSPACE_FINGERPRINT_PLANNING_PROFILE_ID,
+)
+STAGE_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
+    excluded_names=frozenset(),
+    profile_id=WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID,
+)
+SOURCE_CONFIG_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
+    excluded_names=STAGE_VOLATILE_NAMES,
+    profile_id=WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID,
+)
+
+#: Supported legacy fingerprint profiles, in deterministic identification order.
+#:
+#: A fingerprint persisted before profile identity existed is "legacy".  The
+#: legacy stage-scope and source-config-scope implementations used the same
+#: length-prefixed stream encoding as ``workspace-fingerprint-v1`` with their
+#: documented exclusion sets, so their digests are byte-reproducible by the
+#: corresponding current profile (see the module docstring).  The legacy
+#: planning/baseline encoding is NOT reproducible and is therefore not a
+#: supported candidate: a stored hash that matches no candidate fails closed.
+#:
+#: Identification is deterministic: candidates are evaluated in this exact
+#: order, and a stored hash that matches more than one candidate is
+#: ambiguous and fails closed.
+SUPPORTED_LEGACY_FINGERPRINT_PROFILES: tuple[WorkspaceFingerprintProfile, ...] = (
+    SOURCE_CONFIG_FINGERPRINT_PROFILE,
+    STAGE_FINGERPRINT_PROFILE,
+)

@@ -77,6 +77,7 @@ from app.services.validation_runner import (
     ValidationRunner,
     ValidationRunnerError,
 )
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -452,6 +453,7 @@ class TransformerOrchestrator:
                 execution_id=execution_id,
             )
             binding.workspace_fingerprint = observed
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = observed
             binding.last_verified_at = datetime.now(UTC)
             prompt.observed_fingerprint = observed
@@ -593,6 +595,7 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             binding = self._stage._binding(session, continuation)
             binding.workspace_fingerprint = context["workspace_fingerprint"]
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = context["workspace_fingerprint"]
             binding.last_verified_at = datetime.now(UTC)
             for artifact in (version_artifact, ledger_artifact, gate_artifact):
@@ -1548,6 +1551,7 @@ class TransformerOrchestrator:
                                 attempt_id=attempt.id if attempt is not None else None,
                             )
                             binding.workspace_fingerprint = fingerprint
+                            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
                             binding.last_verified_fingerprint = fingerprint
                             binding.last_verified_at = datetime.now(UTC)
                     self._block(
@@ -1885,6 +1889,7 @@ class TransformerOrchestrator:
             attempt.status = "applied"
             attempt.updated_at = datetime.now(UTC)
             binding.workspace_fingerprint = fingerprint
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = fingerprint
             binding.last_verified_at = datetime.now(UTC)
             for step in session.query(StageStepModel).filter(
@@ -2229,6 +2234,7 @@ class TransformerOrchestrator:
             restored_fingerprint=new_fingerprint,
         )
         binding.workspace_fingerprint = new_fingerprint
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
         binding.last_verified_fingerprint = new_fingerprint
         binding.last_verified_at = datetime.now(UTC)
         return checkpoint.id, new_fingerprint
