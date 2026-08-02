@@ -8,7 +8,7 @@ import threading
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
 from app.repositories.session import session_scope
@@ -79,31 +79,121 @@ class TransformerWorker:
         This reconciliation reruns the wake decision from durable state:
         terminal referenced execution -> requeue (RESUMED); referenced execution
         row missing -> deterministic block (BLOCKED).
+
+        Waiters whose ``waiting_execution_id`` is NULL (pre-linkage rows) are
+        resolved against the stage's command history: exactly one terminal
+        execution -> requeue; zero command rows -> deterministic block; several
+        terminal executions -> deterministic block (ambiguous); only in-flight
+        commands -> still waiting, not stuck.
         """
         checked_at = now or datetime.now(UTC)
         waiters = list(
             session.scalars(
                 select(TransformationContinuationModel).where(
-                    TransformationContinuationModel.status == "waiting_command",
-                    TransformationContinuationModel.waiting_execution_id.is_not(None),
+                    TransformationContinuationModel.status == "waiting_command"
                 )
             )
         )
         reconciled: list[str] = []
         for continuation in waiters:
-            execution = session.get(
-                CommandExecutionModel, continuation.waiting_execution_id
-            )
-            if execution is None:
-                self._block_lost_command_waiter(session, continuation, checked_at)
-                reconciled.append(continuation.id)
-            elif execution.status in TERMINAL_EXECUTION_STATUSES:
-                self._wake_continuation(
-                    session, continuation, execution.id, checked_at, reason="command reached terminal state"
+            if continuation.waiting_execution_id is not None:
+                execution = session.get(
+                    CommandExecutionModel, continuation.waiting_execution_id
                 )
-                reconciled.append(continuation.id)
+                if execution is None:
+                    self._block_command_waiter(
+                        session,
+                        continuation,
+                        checked_at,
+                        code="COMMAND_LOST_AFTER_RESTART",
+                        message=(
+                            "The command this continuation waits on is no longer "
+                            "tracked; worker restart lost the referenced execution."
+                        ),
+                    )
+                    reconciled.append(continuation.id)
+                elif execution.status in TERMINAL_EXECUTION_STATUSES:
+                    self._wake_continuation(
+                        session, continuation, execution.id, checked_at, reason="command reached terminal state"
+                    )
+                    reconciled.append(continuation.id)
+                continue
+            self._reconcile_null_linkage_waiter(
+                session, continuation, checked_at, reconciled
+            )
         session.flush()
         return reconciled
+
+    def _reconcile_null_linkage_waiter(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        now: datetime,
+        reconciled: list[str],
+    ) -> None:
+        """Resolve a NULL-linkage waiter from the stage's command executions.
+
+        The codebase enforces one active workflow command per run (partial
+        unique index), so a single terminal candidate is unambiguous. Multiple
+        terminal candidates are never guessed between; the waiter is blocked
+        instead.
+        """
+        terminal = list(
+            session.scalars(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                    CommandExecutionModel.status.in_(TERMINAL_EXECUTION_STATUSES),
+                )
+                .order_by(
+                    CommandExecutionModel.finished_at.desc(),
+                    CommandExecutionModel.id.desc(),
+                )
+            )
+        )
+        if len(terminal) == 1:
+            self._wake_continuation(
+                session,
+                continuation,
+                terminal[0].id,
+                now,
+                reason="command reached terminal state",
+            )
+            reconciled.append(continuation.id)
+            return
+        command_count = session.scalar(
+            select(func.count())
+            .select_from(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
+            )
+        )
+        if len(terminal) > 1:
+            self._block_command_waiter(
+                session,
+                continuation,
+                now,
+                code="COMMAND_WAIT_AMBIGUOUS",
+                message=(
+                    "Multiple terminal command executions exist for this stage; "
+                    "the waited-on command cannot be resolved unambiguously."
+                ),
+            )
+            reconciled.append(continuation.id)
+        elif command_count == 0:
+            self._block_command_waiter(
+                session,
+                continuation,
+                now,
+                code="COMMAND_LOST_AFTER_RESTART",
+                message=(
+                    "The command this continuation waits on is no longer tracked; "
+                    "worker restart lost the referenced execution."
+                ),
+            )
+            reconciled.append(continuation.id)
 
     def _wake_command_waiter(self, execution_id: str) -> None:
         with self._scope() as session:
@@ -157,18 +247,18 @@ class TransformerWorker:
         )
 
     @staticmethod
-    def _block_lost_command_waiter(
+    def _block_command_waiter(
         session,
         continuation: TransformationContinuationModel,
         now: datetime,
+        *,
+        code: str,
+        message: str,
     ) -> None:
         expected_state_version = continuation.state_version
         continuation.status = "blocked"
-        continuation.last_error_code = "COMMAND_LOST_AFTER_RESTART"
-        continuation.last_error_message = (
-            "The command this continuation waits on is no longer tracked; "
-            "worker restart lost the referenced execution."
-        )
+        continuation.last_error_code = code
+        continuation.last_error_message = message
         continuation.worker_id = None
         continuation.lease_expires_at = None
         continuation.state_version += 1
@@ -178,10 +268,10 @@ class TransformerWorker:
             session,
             continuation,
             event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
-            key=f"block:{expected_state_version}:COMMAND_LOST_AFTER_RESTART",
-            reason="referenced command execution is missing after worker restart",
+            key=f"block:{expected_state_version}:{code}",
+            reason=message,
             payload={
-                "last_error_code": "COMMAND_LOST_AFTER_RESTART",
+                "last_error_code": code,
                 "expected_state_version": expected_state_version,
             },
             occurred_at=now,

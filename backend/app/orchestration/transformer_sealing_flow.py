@@ -475,6 +475,7 @@ class TransformerSealingFlow:
                     },
                 )
             )
+            expected_state_version = continuation.state_version
             continuation.status = "completed"
             continuation.current_node = "terminal"
             continuation.worker_id = None
@@ -482,6 +483,15 @@ class TransformerSealingFlow:
             continuation.completed_at = datetime.now(UTC)
             continuation.state_version += 1
             continuation.updated_at = datetime.now(UTC)
+            session.flush()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_COMPLETED,
+                key="complete",
+                reason="durable Transformer continuation completed",
+                payload={"expected_state_version": expected_state_version},
+            )
 
     def _fail(self, continuation_id, worker_id, error) -> None:
         with self._scope() as session:

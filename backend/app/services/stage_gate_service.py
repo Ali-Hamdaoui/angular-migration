@@ -229,6 +229,7 @@ class StageGateService:
         )
         session.add(decision)
         package.status = "approved" if accepted else "rejected"
+        expected_state_version = continuation.state_version
         if accepted:
             continuation.status = "queued"
             continuation.current_node = _NEXT_NODE[gate_id]
@@ -240,6 +241,37 @@ class StageGateService:
         continuation.state_version += 1
         continuation.updated_at = decided_at
         session.flush()
+        if accepted:
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                key=f"gate-accepted:{gate_id}:{package.id}",
+                reason=f"{gate_id} approved; continuation requeued",
+                payload={
+                    "gate_id": gate_id,
+                    "package_id": package.id,
+                    "expected_state_version": expected_state_version,
+                },
+                occurred_at=decided_at,
+                actor=actor,
+            )
+        else:
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+                key=f"block:{expected_state_version}:{continuation.last_error_code}",
+                reason=continuation.last_error_message,
+                payload={
+                    "last_error_code": continuation.last_error_code,
+                    "expected_state_version": expected_state_version,
+                    "reason": request.comment or f"{gate_id} was not approved",
+                    "gate_id": gate_id,
+                },
+                occurred_at=decided_at,
+                actor=actor,
+            )
         StateTransitionService(session).append_audit_event(
             run_id=continuation.run_id,
             idempotency_key=f"{request.idempotency_key}:event",
