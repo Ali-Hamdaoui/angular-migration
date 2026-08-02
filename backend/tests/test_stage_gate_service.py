@@ -18,6 +18,7 @@ from app.repositories.models import (
     LlmInvocationModel,
     MigrationRunModel,
     RepairAttemptModel,
+    StageCheckpointModel,
     StageExecutionPlanModel,
     StageGateDecisionModel,
     StageGatePackageModel,
@@ -199,6 +200,20 @@ def _seed_g10(
         active=True,
         created_at=NOW_UTC,
     )
+    checkpoint = StageCheckpointModel(
+        id="ckpt-pre",
+        run_id=run_id,
+        stage_id=stage_id,
+        kind="pre_repair",
+        sequence=1,
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=str(workspace),
+        workspace_fingerprint=workspace_fingerprint,
+        safe_for_resume=True,
+        sealed=False,
+        state_version=3,
+        created_at=NOW_UTC,
+    )
     continuation = TransformationContinuationModel(
         id="cont-1",
         run_id=run_id,
@@ -229,6 +244,8 @@ def _seed_g10(
         status="review_accepted",
         risk_level="low",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
+        checkpoint_id="ckpt-pre",
+        pre_fingerprint=workspace_fingerprint,
         failure_evidence_artifact_id=failure.ref.artifact_id,
         failure_evidence_checksum=failure.ref.checksum,
         failure_route_artifact_id=route_artifact.ref.artifact_id,
@@ -245,7 +262,7 @@ def _seed_g10(
         created_at=NOW_UTC,
         updated_at=NOW_UTC,
     )
-    session.add_all([run, stage_plan, binding, continuation, attempt])
+    session.add_all([run, stage_plan, binding, checkpoint, continuation, attempt])
     for stored in (failure, route_artifact, context, proposal, review):
         session.add(
             ArtifactMetadataModel(
