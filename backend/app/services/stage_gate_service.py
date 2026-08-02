@@ -17,6 +17,7 @@ from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalF
 from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
+    MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
@@ -48,6 +49,13 @@ _NEXT_NODE = {
 
 
 class StageGateService:
+    @staticmethod
+    def _current_plan_version(session: Session, continuation: TransformationContinuationModel) -> int:
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if plan is None or plan.run_id != continuation.run_id:
+            raise StageGateError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
+        return plan.version
+
     def create(
         self,
         session: Session,
@@ -106,7 +114,7 @@ class StageGateService:
             package_checksum=package_checksum,
             artifact_set_checksum=artifact_set_checksum,
             plan_id=continuation.plan_id,
-            plan_version=1,
+            plan_version=self._current_plan_version(session, continuation),
             stage_plan_id=continuation.stage_plan_id,
             stage_plan_checksum=continuation.stage_plan_checksum,
             workspace_fingerprint=workspace_fingerprint,
@@ -169,6 +177,15 @@ class StageGateService:
         )
         if package is None:
             raise StageGateError("GATE_NOT_PENDING", f"{gate_id} is not pending")
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if (
+            plan is None
+            or plan.run_id != continuation.run_id
+            or package.plan_version != plan.version
+        ):
+            package.status = "stale"
+            package.stale_at = now or datetime.now(UTC)
+            raise StageGateError("STALE_GATE_BINDING", "Gate package is bound to a stale plan version")
         if gate_id == StageGateId.G10.value:
             self._validate_repair_lineage(
                 session,
@@ -270,6 +287,7 @@ class StageGateService:
           over (failure evidence, context pack, proposal, review, envelope)
           must match it.
         """
+        session.flush()
         metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
         run = session.get(MigrationRunModel, continuation.run_id)
         if metadata is None or run is None or metadata.run_id != continuation.run_id or metadata.checksum != package_checksum:
@@ -319,7 +337,11 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if plan is None or plan.run_id != continuation.run_id:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package plan binding is missing")
         expected = {
+            "plan_version": plan.version,
             "failure_evidence_checksum": attempt.failure_evidence_checksum,
             "context_pack_checksum": attempt.context_pack_checksum,
             "proposal_artifact_id": attempt.proposal_artifact_id,
