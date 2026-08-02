@@ -98,6 +98,7 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
         "stage_prompt_requests",
         "stage_gate_packages",
         "stage_gate_decisions",
+        "stage_reconstruction_records",
     }.issubset(schema.get_table_names())
     assert {
         "claim_attempt",

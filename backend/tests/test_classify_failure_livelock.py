@@ -24,6 +24,7 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.transformer_stage_service import TransformerStageService
 
@@ -115,6 +116,7 @@ def _seed(
         state_version=1,
         attempt_number=1,
         operation_kind="mutating",
+        checkpoint_id="ckpt-pre",
     )
     step = StageStepModel(
         id="step-1",
@@ -466,7 +468,9 @@ def test_classify_failure_angular_transient_restores_checkpoint_and_requeues(tmp
     stage_service = MagicMock(spec=TransformerStageService)
     stage_service.register_artifact.return_value = None
     stage_service._binding.return_value = MagicMock(workspace_path=str(tmp_path / "workspace"))
-    stage_service.reconstruct_workspace.return_value = "fingerprint-2"
+    stage_service.reconstruct_workspace.return_value = StageSandboxCopier.fingerprint(
+        tmp_path / "workspace"
+    )
     _orchestrator(factory, stage_service=stage_service)._classify_failure("cont-1", "worker-1")
 
     session = factory()

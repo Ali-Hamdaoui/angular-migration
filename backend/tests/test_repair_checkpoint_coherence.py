@@ -33,8 +33,10 @@ from app.repositories.models import (
     StageExecutionPlanModel,
     StageGateDecisionModel,
     StageGatePackageModel,
+    StageReconstructionRecordModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.repositories.models.base import Base
 from app.services.patch_apply_service import PatchApplyService
@@ -466,6 +468,18 @@ def test_recovery_uses_attempt_referenced_checkpoint_not_latest_stage_checkpoint
     assert binding.workspace_fingerprint == attempt.post_fingerprint
     assert binding.last_verified_fingerprint == attempt.post_fingerprint
     assert binding.last_verified_at is not None
+    records = session.query(StageReconstructionRecordModel).all()
+    assert len(records) == 1
+    assert records[0].checkpoint_id == "ckpt-pre"
+    assert records[0].attempt_id == attempt_id
+    assert records[0].source_workspace_fingerprint == attempt.pre_fingerprint
+    assert records[0].restored_workspace_fingerprint == binding.workspace_fingerprint
+    event_types = {
+        event.event_type
+        for event in session.query(WorkflowEventModel).filter(WorkflowEventModel.run_id == "run-1")
+    }
+    assert "STAGE_WORKSPACE_RECONSTRUCTION_STARTED" in event_types
+    assert "STAGE_WORKSPACE_RECONSTRUCTED" in event_types
     continuation = session.get(TransformationContinuationModel, "cont-1")
     assert continuation.status == "blocked"
     assert continuation.last_error_code == "REPAIR_APPLY_RECOVERY_REQUIRED"
