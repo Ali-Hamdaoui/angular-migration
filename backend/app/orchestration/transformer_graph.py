@@ -1320,17 +1320,43 @@ class TransformerOrchestrator:
                 reviewer_invocation_schema_version=reviewer_invocation.schema_version,
             )
             if gate_id == "G10":
+                store = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+                )
                 proposal_metadata = session.get(
                     ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
                 )
                 if proposal_metadata is None:
                     raise TransformerStageError("REPAIR_PROPOSAL_MISSING", "Repair proposal artifact is missing")
                 proposal = json.loads(
-                    LocalFilesystemArtifactStore(
-                        Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
-                    ).read_artifact(continuation.run_id, proposal_metadata.relative_path).content
+                    store.read_artifact(continuation.run_id, proposal_metadata.relative_path).content
                 )
-                payload["validation_targets"] = list(proposal.get("validation_targets") or [])
+                review_metadata = session.get(
+                    ArtifactMetadataModel, "metadata-" + str(attempt.review_artifact_id)
+                )
+                if (
+                    review_metadata is None
+                    or review_metadata.run_id != continuation.run_id
+                    or review_metadata.checksum != attempt.review_checksum
+                ):
+                    raise TransformerStageError("REPAIR_REVIEW_MISSING", "Repair review artifact is missing or stale")
+                review = json.loads(
+                    store.read_artifact(continuation.run_id, review_metadata.relative_path).content
+                )
+                stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+                plan_value = stage_plan.stage_plan if stage_plan is not None else {}
+                policy = plan_value.get("validation_policy") or {}
+                try:
+                    union = validation_target_union(
+                        list(proposal.get("validation_targets") or []),
+                        list(review.get("required_validation_targets") or []),
+                        policy.get("required_checks") or ("build", "test"),
+                        plan_value.get("commands") or {},
+                    )
+                except ValidationTargetUnionError as error:
+                    raise TransformerStageError(error.code, error.message) from error
+                attempt.validation_targets = list(union)
+                payload["validation_targets"] = list(union)
                 payload["backend_lineage_checksum"] = self._stage.checksum(
                     {key: value for key, value in payload.items() if key != "backend_lineage_checksum"}
                 )
@@ -1935,16 +1961,42 @@ class TransformerOrchestrator:
                 stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
                 plan_value = stage_plan.stage_plan if stage_plan is not None else {}
                 policy = plan_value.get("validation_policy") or {}
-                try:
-                    targets = validation_target_union(
-                        list(proposal.get("validation_targets") or []),
-                        review_targets,
-                        policy.get("required_checks") or ("build", "test"),
-                        plan_value.get("commands") or {},
-                    )
-                except ValidationTargetUnionError as error:
-                    self._block(session, continuation, error.code, error.message)
-                    return
+                persisted = attempt.validation_targets
+                if persisted is not None:
+                    # New rows: the persisted union is the authority.  It was
+                    # sealed into the G10 package at create time, so the sealed
+                    # field must agree; any divergence is tampering.
+                    try:
+                        sealed = self._bound_g10_validation_targets(
+                            session, continuation, attempt, run
+                        )
+                    except RepairApplicationError as error:
+                        self._block(session, continuation, error.code, error.message)
+                        return
+                    if sealed != list(persisted):
+                        self._block(
+                            session,
+                            continuation,
+                            "REPAIR_PROPOSAL_STALE",
+                            "Sealed G10 validation targets do not match the persisted union",
+                        )
+                        return
+                    targets = list(persisted)
+                else:
+                    # Legacy migration path: rows created before the union was
+                    # persisted recompute it here from the checksum-bound
+                    # proposal and review artifacts (verified above).  New rows
+                    # always carry attempt.validation_targets instead.
+                    try:
+                        targets = validation_target_union(
+                            list(proposal.get("validation_targets") or []),
+                            review_targets,
+                            policy.get("required_checks") or ("build", "test"),
+                            plan_value.get("commands") or {},
+                        )
+                    except ValidationTargetUnionError as error:
+                        self._block(session, continuation, error.code, error.message)
+                        return
                 if attempt.status == "applied":
                     attempt.status = "revalidating_affected"
                     attempt.updated_at = datetime.now(UTC)
@@ -2012,6 +2064,36 @@ class TransformerOrchestrator:
         if payload.get("proposal_checksum") != attempt.proposal_checksum:
             raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair review proposal binding is stale")
         return list(payload.get("required_validation_targets") or [])
+
+    def _bound_g10_validation_targets(self, session, continuation, attempt, run) -> list[str]:
+        """Return the sealed G10 package's validation targets for the attempt.
+
+        Returns None when the attempt has no recorded G10 package row (a
+        legacy row).  Any recorded package must be checksum-bound with an
+        attempt-bound envelope; deviation fails closed so revalidation never
+        consumes an unsealed target set.
+        """
+        if not attempt.g10_gate_package_id:
+            return None
+        package = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+        if package is None:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Sealed G10 package is missing")
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + str(package.package_artifact_id))
+        if metadata is None or metadata.checksum != package.package_checksum:
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Sealed G10 package is missing or stale")
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(continuation.run_id, metadata.relative_path)
+        if (
+            stored.ref.artifact_id != package.package_artifact_id
+            or stored.ref.checksum != package.package_checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != continuation.run_id
+            or stored.envelope.stage_id != continuation.current_stage_id
+            or stored.envelope.attempt_id != attempt.id
+        ):
+            raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Sealed G10 package binding is stale")
+        return list(json.loads(stored.content).get("validation_targets") or [])
 
     def _create_g09_from_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:

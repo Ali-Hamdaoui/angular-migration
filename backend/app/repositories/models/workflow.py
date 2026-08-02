@@ -741,6 +741,7 @@ class RepairAttemptModel(Base):
     parent_attempt_id: Mapped[str | None] = mapped_column(ForeignKey("repair_attempts.id"))
     parent_review_artifact_id: Mapped[str | None] = mapped_column(String(128))
     parent_review_checksum: Mapped[str | None] = mapped_column(String(128))
+    validation_targets: Mapped[list[str] | None] = mapped_column(JSON)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

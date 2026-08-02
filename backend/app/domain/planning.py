@@ -307,25 +307,36 @@ def validation_target_union(
 ) -> tuple[str, ...]:
     """The single authoritative affected-validation union.
 
-    Merges the repair proposal's targets with the reviewer's required targets
-    (order-preserving, deduplicated), then intersects them with the plan's
-    executable groups.  Raises REPAIR_VALIDATION_TARGET_INVALID when nothing
-    executable remains, so the workflow blocks instead of inventing a target.
+    The final set is the order-preserving, deduplicated union of the
+    executable mandatory policy groups (ALWAYS present, in policy order), the
+    proposer's targets, and the reviewer's required targets - filtered by
+    executability (a group whose command list is non-empty), never by policy
+    membership alone.  Raises REPAIR_VALIDATION_TARGET_INVALID when nothing
+    executable remains, and for any requested target that is not
+    backend-supported (matching the bind-time rejection so the union never
+    silently drops a target the caller believed it requested).  Unknown
+    POLICY checks keep the VALIDATION_CHECK_UNSUPPORTED code from
+    ``executable_groups``.
     """
-    merged = []
-    for target in (*proposal_targets, *review_required_targets):
-        if target in SUPPORTED_VALIDATION_TARGETS and target not in merged:
-            merged.append(target)
-    executable = executable_groups(policy_required_checks, commands)
-    union = tuple(
-        target for target in merged if VALIDATION_TARGET_GROUPS[target] in executable
-    )
+    policy_set = set(policy_required_checks)
+    union = []
+    for target in (*policy_required_checks, *proposal_targets, *review_required_targets):
+        if target not in VALIDATION_TARGET_GROUPS:
+            raise ValidationTargetUnionError(
+                "VALIDATION_CHECK_UNSUPPORTED"
+                if target in policy_set
+                else "REPAIR_VALIDATION_TARGET_INVALID",
+                f"Unsupported validation target or check: {target}",
+            )
+        group = VALIDATION_TARGET_GROUPS[target]
+        if commands.get(group) and target not in union:
+            union.append(target)
     if not union:
         raise ValidationTargetUnionError(
             "REPAIR_VALIDATION_TARGET_INVALID",
             "Repair proposal has no approved affected validation target",
         )
-    return union
+    return tuple(union)
 
 
 def utc_now() -> datetime:

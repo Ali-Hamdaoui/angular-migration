@@ -36,6 +36,7 @@ from app.repositories.models import (
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
+    StageGatePackageModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
@@ -139,28 +140,63 @@ def test_union_excludes_lint_when_the_plan_omits_lint_commands():
     assert union == ("build", "test")
 
 
-def test_union_blocks_when_the_executable_intersection_is_empty():
+def test_union_blocks_when_nothing_executable_remains():
     with pytest.raises(ValidationTargetUnionError) as raised:
-        validation_target_union(["lint"], [], ("build", "test"), _commands(lint=False))
+        validation_target_union(
+            ["lint"], [], ("build", "test"), {"final_install": ({"command_id": "fi"},)}
+        )
     assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
     with pytest.raises(ValidationTargetUnionError) as raised:
-        validation_target_union([], [], ("build", "test"), _commands())
+        validation_target_union([], [], ("build", "test"), {})
     assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
 
 
-def test_union_intersects_with_the_policy_executable_groups():
+def test_union_keeps_executable_targets_beyond_the_policy_checks():
     assert validation_target_union(
         ["build", "test"], [], ("build",), _commands()
-    ) == ("build",)
+    ) == ("build", "test")
     with pytest.raises(ValidationTargetUnionError) as raised:
-        validation_target_union(["test"], [], ("build",), _commands())
+        validation_target_union(
+            ["test"], [], ("build",), {"lint": ({"command_id": "lint"},)}
+        )
     assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
 
 
-def test_union_filters_unknown_targets_defensively():
+def test_union_rejects_unknown_targets_consistently_with_bind_time():
+    with pytest.raises(ValidationTargetUnionError) as raised:
+        validation_target_union(
+            ["deploy", "build"], ["other"], ("build", "test"), _commands()
+        )
+    assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
+    with pytest.raises(ValidationTargetUnionError) as raised:
+        validation_target_union(
+            ["build"], ["deploy"], ("build", "test"), _commands()
+        )
+    assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
+
+
+def test_union_always_includes_executable_mandatory_policy_targets():
     assert validation_target_union(
-        ["deploy", "build"], ["other"], ("build", "test"), _commands()
-    ) == ("build",)
+        ["test"], [], ("build", "test"), _commands()
+    ) == ("build", "test")
+    assert validation_target_union(
+        [], [], ("build", "test"), _commands()
+    ) == ("build", "test")
+    assert validation_target_union(
+        ["test"], ["test"], ("build", "test"), _commands()
+    ) == ("build", "test")
+
+
+def test_union_includes_reviewer_required_targets_when_their_group_has_commands():
+    assert validation_target_union(
+        ["build", "test"], ["lint"], ("build", "test"), _commands(lint=True)
+    ) == ("build", "test", "lint")
+    assert validation_target_union(
+        ["build"], ["lint"], ("build",), _commands(lint=True)
+    ) == ("build", "lint")
+    assert validation_target_union(
+        ["build", "test"], ["lint"], ("build", "test"), _commands(lint=False)
+    ) == ("build", "test")
 
 
 def test_union_is_deterministic():
@@ -171,7 +207,7 @@ def test_union_is_deterministic():
     second = validation_target_union(
         ["test", "build"], ["lint", "build"], ("build", "test", "lint"), commands
     )
-    assert first == second == ("test", "build", "lint")
+    assert first == second == ("build", "test", "lint")
 
 
 class RecordingValidationRunner:
@@ -214,6 +250,9 @@ def _seed_revalidation(
     review_targets=("test",),
     attempt_status: str = "applied",
     lint_commands: bool = True,
+    persisted_targets=None,
+    package_targets=None,
+    commands_override=None,
 ):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
@@ -288,10 +327,32 @@ def _seed_revalidation(
     }
     if lint_commands:
         commands["lint"] = ({"command_id": "lint"},)
+    if commands_override is not None:
+        commands = commands_override
     stage_plan = {
         "validation_policy": {"required_checks": ["build", "test"]},
         "commands": commands,
     }
+    package = None
+    if package_targets is not None:
+        package = store.write_text_artifact(
+            "run-1",
+            "04_workflow_state/stages/stage-1/gates/g10-package.json",
+            json.dumps(
+                {
+                    "gate_id": "G10",
+                    "run_id": "run-1",
+                    "stage_id": "stage-1",
+                    "validation_targets": list(package_targets),
+                },
+                sort_keys=True,
+            ),
+            ArtifactType.JSON,
+            stage_id="stage-1",
+            attempt_id=attempt_id,
+            created_by="transformer",
+            created_at=NOW,
+        )
     session = factory()
     run = MigrationRunModel(
         id="run-1",
@@ -379,9 +440,31 @@ def _seed_revalidation(
         reviewer_invocation_id=f"{attempt_id}:reviewer",
         pre_fingerprint="sha256:pre",
         failure_fingerprint="fingerprint-failure",
+        validation_targets=list(persisted_targets) if persisted_targets is not None else None,
         created_at=NOW,
         updated_at=NOW,
     )
+    g10_package = None
+    if package is not None:
+        g10_package = StageGatePackageModel(
+            id="gate-package-g10",
+            run_id="run-1",
+            stage_id="stage-1",
+            gate_id="G10",
+            gate_version=1,
+            status="approved",
+            package_artifact_id=package.ref.artifact_id,
+            package_checksum=package.ref.checksum,
+            artifact_set_checksum="sha256:set",
+            plan_id="plan-1",
+            plan_version=1,
+            stage_plan_id="stage-plan-1",
+            stage_plan_checksum="sha256:stage-plan",
+            workspace_fingerprint="sha256:binding",
+            expected_state_version=3,
+            created_at=NOW,
+        )
+        attempt.g10_gate_package_id = g10_package.id
     session.add_all([run, plan, binding, continuation, attempt])
     for stored in (proposal, review):
         session.add(
@@ -392,6 +475,21 @@ def _seed_revalidation(
                 artifact_type=stored.ref.artifact_type.value,
                 relative_path=stored.ref.relative_path,
                 checksum=stored.ref.checksum,
+                created_at=NOW,
+                finalized_at=NOW,
+                immutable=True,
+            )
+        )
+    if g10_package is not None:
+        session.add(g10_package)
+        session.add(
+            ArtifactMetadataModel(
+                id="metadata-" + package.ref.artifact_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                artifact_type=package.ref.artifact_type.value,
+                relative_path=package.ref.relative_path,
+                checksum=package.ref.checksum,
                 created_at=NOW,
                 finalized_at=NOW,
                 immutable=True,
@@ -444,7 +542,7 @@ def test_start_revalidation_affected_attempt_key_shape_matches_idempotency_contr
     engine.dispose()
 
 
-def test_start_revalidation_excludes_lint_when_the_plan_omits_lint_commands(
+def test_start_revalidation_includes_mandatory_policy_targets_and_excludes_lint_without_commands(
     tmp_path: Path,
 ):
     engine, factory = _database(tmp_path)
@@ -459,7 +557,7 @@ def test_start_revalidation_excludes_lint_when_the_plan_omits_lint_commands(
 
     _orchestrator(factory, runner).advance("cont-1", "worker-1")
 
-    assert [group for group, _key in runner.calls] == ["tests"]
+    assert [group for group, _key in runner.calls] == ["builds", "tests"]
     session = factory()
     continuation = session.get(TransformationContinuationModel, "cont-1")
     assert continuation.status == "queued"
@@ -476,6 +574,10 @@ def test_start_revalidation_blocks_when_the_union_is_empty(tmp_path: Path):
         proposal_targets=("lint",),
         review_targets=(),
         lint_commands=False,
+        commands_override={
+            "bootstrap_install": ({"command_id": "bootstrap_install"},),
+            "final_install": ({"command_id": "final_install"},),
+        },
     )
     runner = RecordingValidationRunner()
 
@@ -502,6 +604,56 @@ def test_start_revalidation_missing_review_blocks_stale(tmp_path: Path):
     attempt.review_checksum = None
     session.commit()
     session.close()
+    runner = RecordingValidationRunner()
+
+    _orchestrator(factory, runner).advance("cont-1", "worker-1")
+
+    assert runner.calls == []
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "REPAIR_PROPOSAL_STALE"
+    session.close()
+    engine.dispose()
+
+
+def test_start_revalidation_consumes_persisted_union_not_recomputed(tmp_path: Path):
+    """The persisted union is the authority: the recomputed union (which would
+    include lint from the proposal) must NOT be executed for a new row."""
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _artifacts = _seed_revalidation(
+        factory,
+        tmp_path,
+        proposal_targets=("build", "test", "lint"),
+        review_targets=("test",),
+        persisted_targets=("build", "test"),
+        package_targets=["build", "test"],
+    )
+    runner = RecordingValidationRunner()
+
+    _orchestrator(factory, runner).advance("cont-1", "worker-1")
+
+    assert runner.calls == [
+        ("builds", f"{attempt_id}:affected"),
+        ("tests", f"{attempt_id}:affected"),
+    ]
+    engine.dispose()
+
+
+def test_start_revalidation_blocks_when_sealed_package_diverges_from_persisted_union(
+    tmp_path: Path,
+):
+    """A package whose sealed targets differ from the persisted union is
+    tampering: revalidation fails closed instead of trusting either side."""
+    engine, factory = _database(tmp_path)
+    _store, _attempt_id, _artifacts = _seed_revalidation(
+        factory,
+        tmp_path,
+        proposal_targets=("build", "test"),
+        review_targets=("test",),
+        persisted_targets=("build", "test"),
+        package_targets=["build", "test", "lint"],
+    )
     runner = RecordingValidationRunner()
 
     _orchestrator(factory, runner).advance("cont-1", "worker-1")

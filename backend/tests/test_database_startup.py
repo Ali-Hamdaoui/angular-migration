@@ -11,7 +11,7 @@ def test_database_path_and_heads_are_resolved_from_repository_settings(tmp_path:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     settings = Settings(_env_file=None, application_data_root=tmp_path / "AngularMigrationControlTower")
     assert database_path(settings.database_url) == (tmp_path / "AngularMigrationControlTower" / "control-tower.db").resolve()
-    assert expected_heads(settings.platform_repository_root / "backend") == ("20260803_42",)
+    assert expected_heads(settings.platform_repository_root / "backend") == ("20260803_43",)
 
 
 def test_startup_rejects_head_claim_with_missing_provider_failure_columns(tmp_path: Path):

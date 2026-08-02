@@ -486,6 +486,7 @@ class StageGateService:
             "workspace_fingerprint": binding.workspace_fingerprint,
             "stage_plan_checksum": stage_plan.checksum,
             "risk_level": attempt.risk_level,
+            "validation_targets": attempt.validation_targets,
         }
         if any(package.get(key) != value for key, value in expected.items()):
             raise StageGateError("G10_LINEAGE_STALE", "G10 inner lineage does not match authoritative state")
@@ -551,7 +552,7 @@ class StageGateService:
             if role == "proposal":
                 if payload.get("failure_evidence_checksum") != attempt.failure_evidence_checksum or payload.get("context_pack_checksum") != attempt.context_pack_checksum:
                     raise StageGateError("G10_LINEAGE_STALE", "G10 proposal evidence lineage is stale")
-                targets = list(payload.get("validation_targets") or [])
+                targets = list(attempt.validation_targets or [])
                 normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
                 if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in SUPPORTED_VALIDATION_TARGETS for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
