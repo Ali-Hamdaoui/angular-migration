@@ -48,6 +48,7 @@ from app.services.angular_transformation_evidence_service import (
     AngularTransformationEvidenceError,
     AngularTransformationEvidenceService,
 )
+from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.patch_apply_service import PatchApplyService, workspace_apply_lock
 from app.services.prompt_explanation_service import PromptExplanationService
@@ -1026,6 +1027,31 @@ class TransformerOrchestrator:
     ) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            existing = session.scalar(
+                select(StageGatePackageModel).where(
+                    StageGatePackageModel.run_id == continuation.run_id,
+                    StageGatePackageModel.stage_id == continuation.current_stage_id,
+                    StageGatePackageModel.gate_id == gate_id,
+                    StageGatePackageModel.status == "pending",
+                )
+            )
+            if existing is not None:
+                # Idempotent replay: the gate artifact and package row already
+                # exist, so re-writing the package artifact would orphan a
+                # fresh artifact/metadata pair. Settle the continuation exactly
+                # like a fresh create.
+                attempt = self._latest_repair(session, continuation)
+                if gate_id == "G10":
+                    attempt.g10_gate_package_id = existing.id
+                    attempt.status = "waiting_g10"
+                    attempt.updated_at = datetime.now(UTC)
+                continuation.status = "waiting_gate"
+                continuation.current_node = f"wait_{gate_id.lower()}"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
+                return
             attempt = self._latest_repair(session, continuation)
             binding = self._stage._binding(session, continuation)
             run = session.get(MigrationRunModel, continuation.run_id)
@@ -1094,15 +1120,28 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
             self._stage.register_artifact(session, gate, continuation)
+            session.flush()
+            if gate_id == "G10":
+                artifact_set_checksum = canonical_artifact_set_checksum(
+                    [
+                        {"artifact_id": attempt.failure_evidence_artifact_id, "checksum": attempt.failure_evidence_checksum},
+                        {"artifact_id": attempt.context_pack_artifact_id, "checksum": attempt.context_pack_checksum},
+                        {"artifact_id": attempt.proposal_artifact_id, "checksum": attempt.proposal_checksum},
+                        {"artifact_id": attempt.review_artifact_id, "checksum": attempt.review_checksum},
+                        {"artifact_id": gate.ref.artifact_id, "checksum": gate.ref.checksum},
+                    ]
+                )
+            else:
+                artifact_set_checksum = self._stage.checksum(
+                    {gate.ref.artifact_id: gate.ref.checksum}
+                )
             package = self._gates.create(
                 session,
                 continuation,
                 gate_id=gate_id,
                 package_artifact_id=gate.ref.artifact_id,
                 package_checksum=gate.ref.checksum,
-                artifact_set_checksum=self._stage.checksum(
-                    {gate.ref.artifact_id: gate.ref.checksum}
-                ),
+                artifact_set_checksum=artifact_set_checksum,
                 workspace_fingerprint=context[1],
             )
             if gate_id == "G10":
@@ -1208,8 +1247,9 @@ class TransformerOrchestrator:
                     StageGatePackageModel.run_id == continuation.run_id,
                     StageGatePackageModel.stage_id == continuation.current_stage_id,
                     StageGatePackageModel.gate_id == "G10",
+                    StageGatePackageModel.id == attempt.g10_gate_package_id,
                     StageGatePackageModel.status == "approved",
-                ).order_by(StageGatePackageModel.gate_version.desc())
+                )
             )
             decision = session.scalar(
                 select(StageGateDecisionModel).where(
@@ -1220,7 +1260,13 @@ class TransformerOrchestrator:
             ) if gate else None
             if gate is None or decision is None:
                 raise TransformerStageError("G10_APPROVAL_REQUIRED", "Repair application requires current human G10 approval")
-            self._gates._validate_repair_lineage(session, continuation, gate.package_artifact_id, gate.package_checksum)
+            self._gates._validate_repair_lineage(
+                session,
+                continuation,
+                gate.package_artifact_id,
+                gate.package_checksum,
+                artifact_set_checksum=gate.artifact_set_checksum,
+            )
             metadata = session.get(
                 ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
             )
@@ -1290,7 +1336,11 @@ class TransformerOrchestrator:
             if live != current_binding.workspace_fingerprint or live != context["fingerprint"]:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved workspace fingerprint changed")
             self._gates._validate_repair_lineage(
-                session, current, current_gate.package_artifact_id, current_gate.package_checksum
+                session,
+                current,
+                current_gate.package_artifact_id,
+                current_gate.package_checksum,
+                artifact_set_checksum=current_gate.artifact_set_checksum,
             )
             proposal_metadata = session.get(
                 ArtifactMetadataModel, "metadata-" + current_attempt.proposal_artifact_id
@@ -1381,7 +1431,11 @@ class TransformerOrchestrator:
                 ):
                     raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair authority changed during recovery")
                 self._gates._validate_repair_lineage(
-                    session, current, current_gate.package_artifact_id, current_gate.package_checksum
+                    session,
+                    current,
+                    current_gate.package_artifact_id,
+                    current_gate.package_checksum,
+                    artifact_set_checksum=current_gate.artifact_set_checksum,
                 )
                 proposal_metadata = session.get(
                     ArtifactMetadataModel, "metadata-" + str(current_attempt.proposal_artifact_id)
