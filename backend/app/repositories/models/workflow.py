@@ -125,6 +125,22 @@ class WorkflowEventModel(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class RunEventSequenceModel(Base):
+    """Per-run atomic event-sequence counter.
+
+    Every workflow-event writer allocates its next sequence through this
+    single counter row (see app.state.event_sequencer). The atomic
+    UPDATE ... RETURNING guarantees that exactly one writer wins each
+    sequence number per run, so concurrent appends can never surface an
+    IntegrityError on uq_workflow_events_run_sequence.
+    """
+
+    __tablename__ = "run_event_sequences"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), primary_key=True)
+    last_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class AssistantConversationModel(Base):
     """Run-scoped durable assistant thread metadata."""
     __tablename__ = "assistant_conversations"
@@ -273,6 +289,7 @@ class TransformationContinuationModel(Base):
     worker_id: Mapped[str | None] = mapped_column(String(128), index=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    claim_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     wake_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

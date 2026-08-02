@@ -155,6 +155,7 @@ class TransformationContinuationService:
             stage_plan_checksum=stage_plan_checksum,
             attempt=0,
             max_attempts=3,
+            claim_count=0,
             wake_sequence=0,
             idempotency_key=idempotency_key,
             request_checksum=request_checksum,
@@ -188,6 +189,7 @@ class TransformationContinuationService:
                 or_(
                     TransformationContinuationModel.status == TransformationStatus.QUEUED.value,
                     TransformationContinuationModel.status == TransformationStatus.CANCELLING.value,
+                    TransformationContinuationModel.status == TransformationStatus.WAITING_RETRY.value,
                     (
                         (TransformationContinuationModel.status == TransformationStatus.RUNNING.value)
                         & (TransformationContinuationModel.lease_expires_at <= claimed_at)
@@ -205,7 +207,7 @@ class TransformationContinuationService:
         )
         if candidate is None:
             return None
-        prior_attempt = candidate.attempt
+        prior_claim_count = candidate.claim_count or 0
         claimed = session.execute(
             update(TransformationContinuationModel)
             .where(TransformationContinuationModel.id == candidate.id)
@@ -213,7 +215,7 @@ class TransformationContinuationService:
             .values(
                 status=TransformationStatus.RUNNING.value,
                 worker_id=worker_id,
-                attempt=prior_attempt + 1,
+                claim_count=prior_claim_count + 1,
                 lease_expires_at=claimed_at + timedelta(seconds=self.lease_seconds),
                 state_version=candidate.state_version + 1,
                 started_at=candidate.started_at or claimed_at,
@@ -229,7 +231,7 @@ class TransformationContinuationService:
             session,
             candidate,
             event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_CLAIMED,
-            key=f"claim:{candidate.attempt}",
+            key=f"claim:{candidate.claim_count}",
             reason="durable Transformer continuation claimed by worker",
             payload={
                 "worker_id": candidate.worker_id or "",

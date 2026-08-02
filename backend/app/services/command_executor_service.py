@@ -59,7 +59,7 @@ from app.repositories.models.workflow import (
     WorkerLeaseModel,
     WorkflowEventModel,
 )
-from app.repositories.models import ExecutionProfileModel
+from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
@@ -72,6 +72,7 @@ from app.services.transformer_prompt_service import (
     AngularPromptDetector,
     TransformerPromptService,
 )
+from app.state.event_sequencer import append_workflow_event
 
 
 class CommandExecutorError(ValueError):
@@ -167,6 +168,7 @@ class CommandExecutionResponse:
     cancel_requested_by: str | None = None
     cancelled: bool = False
     timed_out: bool = False
+    claim_attempt: int | None = None
 
 
 class CommandExecutorService:
@@ -217,6 +219,10 @@ class CommandExecutorService:
         CommandStatus.TIMED_OUT.value: set(),
         CommandStatus.CANCELLED.value: set(),
     }
+
+    # Bounded claim-loss budget: an execution whose lease expired this many
+    # times is blocked instead of being requeued forever.
+    _CLAIM_RETRY_THRESHOLD = 3
 
     @classmethod
     def transition_execution(cls, session: Session, model: CommandExecutionModel, next_status: str, *, now: datetime | None = None) -> None:
@@ -330,7 +336,15 @@ class CommandExecutorService:
             prior_worker = model.worker_id
             model.worker_id = None
             model.claim_expires_at = None
-            if model.status == CommandStatus.QUEUED.value:
+            if (model.claim_attempt or 0) >= self._CLAIM_RETRY_THRESHOLD:
+                model.status = CommandStatus.FAILED.value
+                model.finished_at = checked_at
+                model.failure_code = "COMMAND_CLAIM_EXHAUSTED"
+                model.failure_message = (
+                    "Command claim was lost repeatedly beyond the bounded claim-retry threshold."
+                )
+                model.blockers = [model.failure_code]
+            elif model.status == CommandStatus.QUEUED.value:
                 model.failure_code = None
                 model.failure_message = None
             elif model.operation_kind == "mutating":
@@ -512,7 +526,7 @@ class CommandExecutorService:
         idempotency_key: str,
         workspace_recovered: bool = False,
     ) -> CommandExecutionResponse:
-        """Create one immutable successor for a failed execution."""
+        """Create one immutable successor for a failed or interrupted execution."""
         failed = session.get(CommandExecutionModel, failed_execution_id)
         if failed is None:
             raise CommandExecutorError("EXECUTION_NOT_FOUND", "Failed execution does not exist")
@@ -529,10 +543,21 @@ class CommandExecutorService:
                     "Retry key is bound to another execution",
                 )
             return self._response_from_model(existing, idempotent_replay=True)
-        if failed.status != CommandStatus.FAILED.value:
+        if failed.status == CommandStatus.INTERRUPTED.value:
+            if not failed.reconstruction_required:
+                raise CommandExecutorError(
+                    "EXECUTION_NOT_RETRYABLE",
+                    "An interrupted execution may only have a successor after reconstruction is required and verified",
+                )
+        elif failed.status != CommandStatus.FAILED.value:
             raise CommandExecutorError(
                 "EXECUTION_NOT_RETRYABLE",
                 "Only a terminal failed execution may have a successor",
+            )
+        if (failed.attempt_number or 1) >= self._retry_budget(session, failed):
+            raise CommandExecutorError(
+                "REQUESTED_RETRY_EXCEEDS_LIMIT",
+                "Requested retry exceeds the stage plan repair policy retry budget",
             )
         if (
             failed.process_id is not None or failed.exit_code is not None
@@ -1002,28 +1027,42 @@ class CommandExecutorService:
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
         model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
         session.flush()
-        # Command evidence is durable before terminal CAS/transition handling.
+        # Command evidence is durable before the terminal transition; a
+        # terminal CAS failure must never erase command evidence.
         session.commit()
         model = session.get(CommandExecutionModel, model.id)
+        # The terminal status transition, command row update, and the
+        # terminal COMMAND_* event are committed together in ONE transaction.
+        # There is no post-commit event append that a later rollback could
+        # silently discard.
         self.transition_execution(session, model, final_status, now=finished)
         event_type = (WorkflowEventType.COMMAND_CANCELLED if model.status == CommandStatus.CANCELLED.value else WorkflowEventType.COMMAND_INTERRUPTED if model.status == CommandStatus.TIMED_OUT.value else WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED)
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
+        session.commit()
+        # The optional RUN_CANCELLED run-level CAS runs in its own
+        # transaction AFTER the terminal event is committed: a stale run
+        # state version can only roll back the cancellation CAS, never the
+        # terminal command event.
         if model.status in {CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
             current_run = session.get(MigrationRunModel, model.run_id)
             if current_run is not None and current_run.status == "CANCELLING":
-                from app.state.transition_service import StateTransitionService, TransitionRequest
-                StateTransitionService(session).apply_transition(TransitionRequest(
-                    run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
-                    expected_state_version=current_run.state_version,
-                    event_type=WorkflowEventType.RUN_CANCELLED,
-                    next_run_status=RunStatus.CANCELLED,
-                    actor="command-execution-worker",
-                    reason="command cancellation completed; partial evidence retained",
-                    occurred_at=finished,
-                    payload={"execution_id": model.id, "partial_evidence": 1},
-                ))
+                from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionRequest
+                try:
+                    StateTransitionService(session).apply_transition(TransitionRequest(
+                        run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
+                        expected_state_version=current_run.state_version,
+                        event_type=WorkflowEventType.RUN_CANCELLED,
+                        next_run_status=RunStatus.CANCELLED,
+                        actor="command-execution-worker",
+                        reason="command cancellation completed; partial evidence retained",
+                        occurred_at=finished,
+                        payload={"execution_id": model.id, "partial_evidence": 1},
+                    ))
+                    session.commit()
+                except StaleStateVersionError:
+                    session.rollback()
 
     @staticmethod
     def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
@@ -1191,6 +1230,29 @@ class CommandExecutorService:
         return CommandStatus.FAILED
 
     @staticmethod
+    def _retry_budget(session: Session, execution: CommandExecutionModel) -> int:
+        """Resolve the bounded retry budget from the stage plan repair policy."""
+        stage_plan = session.scalar(
+            select(StageExecutionPlanModel)
+            .where(
+                StageExecutionPlanModel.run_id == execution.run_id,
+                StageExecutionPlanModel.stage_id == execution.stage_id,
+            )
+            .order_by(StageExecutionPlanModel.version.desc())
+            .limit(1)
+        )
+        repair_policy = (
+            ((stage_plan.stage_plan or {}).get("repair_policy") or {})
+            if stage_plan is not None
+            else {}
+        )
+        try:
+            budget = int(repair_policy.get("max_attempts") or 3)
+        except (TypeError, ValueError):
+            budget = 3
+        return max(1, budget)
+
+    @staticmethod
     def _append_event(
         session: Session,
         run_id: str,
@@ -1200,26 +1262,17 @@ class CommandExecutorService:
         reason: str,
         payload: dict[str, Any],
     ) -> WorkflowEventModel:
-        latest = session.scalar(
-            select(WorkflowEventModel)
-            .where(WorkflowEventModel.run_id == run_id)
-            .order_by(WorkflowEventModel.sequence.desc())
-            .limit(1)
-        )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        return append_workflow_event(
+            session,
             run_id=run_id,
             stage_id=stage_id,
             event_type=event_type.value,
             idempotency_key=idempotency_key,
             actor="command-executor",
             reason=reason,
-            sequence=(latest.sequence + 1) if latest else 1,
             payload=payload,
             occurred_at=datetime.now(UTC),
         )
-        session.add(event)
-        return event
 
     @staticmethod
     def _response_from_model(
@@ -1267,4 +1320,5 @@ class CommandExecutorService:
             cancelled=bool(model.cancelled),
             timed_out=bool(model.timed_out),
             request_payload_hash=model.request_payload_hash,
+            claim_attempt=model.claim_attempt,
         )

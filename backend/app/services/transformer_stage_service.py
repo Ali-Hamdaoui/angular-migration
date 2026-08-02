@@ -663,7 +663,13 @@ class TransformerStageService:
             return execution.id
         if (
             execution is not None
-            and execution.status == "failed"
+            and (
+                execution.status == "failed"
+                or (
+                    execution.status == "interrupted"
+                    and execution.reconstruction_required
+                )
+            )
         ):
             workspace_recovered = False
             if execution.process_id is not None or execution.exit_code is not None:

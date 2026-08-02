@@ -343,7 +343,7 @@ def test_run_once_requeues_stuck_waiter_then_reclaims_it(tmp_path: Path):
         durable = session.get(TransformationContinuationModel, continuation.id)
         assert durable.status == "running"
         assert durable.worker_id == "worker-loop"
-        assert durable.attempt == 1
+        assert durable.claim_count == 1
         event_types = [event.event_type for event in _events(session)]
         assert RESUMED in event_types
         assert CLAIMED in event_types
