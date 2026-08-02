@@ -28,6 +28,7 @@ from app.state.transition_service import (
     TransitionRequest,
     LeaseRequiredError,
 )
+from app.state.event_sequencer import append_workflow_event
 
 
 class JobSupervisorError(ValueError):
@@ -348,23 +349,13 @@ class JobSupervisorService:
         reason: str,
         payload: dict[str, Any],
     ) -> WorkflowEventModel:
-        latest = session.scalar(
-            select(WorkflowEventModel)
-            .where(WorkflowEventModel.run_id == run_id)
-            .order_by(WorkflowEventModel.sequence.desc())
-            .limit(1)
-        )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        return append_workflow_event(
+            session,
             run_id=run_id,
-            stage_id=None,
             event_type=event_type.value,
             idempotency_key=idempotency_key,
             actor="job-supervisor",
             reason=reason,
-            sequence=(latest.sequence + 1) if latest else 1,
             payload=payload,
             occurred_at=datetime.now(UTC),
         )
-        session.add(event)
-        return event

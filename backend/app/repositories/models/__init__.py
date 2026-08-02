@@ -53,6 +53,7 @@ from app.repositories.models.workflow import (
     PlanningJobModel,
     TransformationContinuationModel,
     SourceSnapshotModel,
+    RunEventSequenceModel,
     WorkflowEventModel,
     WorkerLeaseModel,
 )
@@ -139,6 +140,7 @@ __all__ = [
     "PlanningJobModel",
     "TransformationContinuationModel",
     "SourceSnapshotModel",
+    "RunEventSequenceModel",
     "WorkflowEventModel",
     "WorkerLeaseModel",
     "ApprovalGateModel",

@@ -18,7 +18,14 @@ from app.orchestration.source_intake import SourceIntakeGraph, default_source_in
 from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, PlanningJobModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
-from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
+from app.state.transition_service import (
+    IdempotencyPayloadMismatchError,
+    StaleStateVersionError,
+    StateTransitionService,
+    TransitionError,
+    TransitionRequest,
+    canonical_request_checksum,
+)
 from app.services.migration_workspace_layout_service import MigrationWorkspaceLayoutService, WorkspaceLayoutError
 from app.services.workflow_projection_service import WorkflowProjectionService
 
@@ -187,11 +194,13 @@ class MigrationRunService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            thread_id = self._thread_id(session, run_id)
             existing = session.scalar(select(WorkflowEventModel).where(
                 WorkflowEventModel.run_id == run_id,
                 WorkflowEventModel.idempotency_key.in_({idempotency_key, idempotency_key + ":accepted"}),
             ).order_by(WorkflowEventModel.sequence.desc()))
             if existing is not None:
+                self._replay_or_reject(session, existing, self._start_request(run_id, expected_state_version, idempotency_key, actor, thread_id))
                 return self._result_from_event(session, existing, replay=True)
             if run.status != RunStatus.CREATED.value:
                 raise MigrationRunError("RUN_NOT_STARTABLE", "Only a newly created run can be started.")
@@ -199,11 +208,7 @@ class MigrationRunService:
             active_job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"})))
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
-            thread_id = self._thread_id(session, run_id)
-            accepted = StateTransitionService(session).apply_transition(TransitionRequest(
-                run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
-                event_type=WorkflowEventType.RUN_START_ACCEPTED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
-                actor=actor, reason="source-intake handoff accepted", payload={"graph_thread_id": thread_id}, occurred_at=self._now()))
+            accepted = StateTransitionService(session).apply_transition(self._start_request(run_id, expected_state_version, idempotency_key, actor, thread_id))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
                 status="queued", actor=actor, idempotency_key=idempotency_key,
@@ -231,14 +236,15 @@ class MigrationRunService:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise MigrationRunError("RUN_NOT_FOUND", "Migration run does not exist.")
+            previous = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status == "failed").order_by(SourceIntakeJobModel.attempt.desc()))
             existing = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.idempotency_key.in_({idempotency_key, idempotency_key + ":accepted"})).order_by(WorkflowEventModel.sequence.desc()))
             if existing is not None:
+                self._replay_or_reject(session, existing, self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
                 return self._result_from_event(session, existing, replay=True)
             if run.status != RunStatus.FAILED.value:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
-            previous = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id).order_by(SourceIntakeJobModel.attempt.desc()))
             retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError"}
-            if previous is None or previous.status != "failed" or previous.last_error_code not in retryable_codes:
+            if previous is None or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
             self._validate_start_boundary(session, run)
             if run.state_version != expected_state_version:
@@ -248,10 +254,7 @@ class MigrationRunService:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
             post_g03 = previous.last_error_code == "ExecutionProfileApplicationError" and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
-            accepted = StateTransitionService(session).apply_transition(TransitionRequest(
-                run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
-                event_type=WorkflowEventType.RUN_STATE_CHANGED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
-                actor=actor, reason="explicit source-intake retry accepted", payload={"previous_job_id": previous.id, "attempt": previous.attempt + 1}, occurred_at=self._now()))
+            accepted = StateTransitionService(session).apply_transition(self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
                 status="waiting_g03" if post_g03 else "queued", actor=actor, idempotency_key=idempotency_key,
@@ -329,6 +332,7 @@ class MigrationRunService:
                 WorkflowEventModel.idempotency_key == idempotency_key,
             ))
             if existing is not None:
+                self._replay_or_reject(session, existing, self._cancel_request(run_id, expected_state_version, idempotency_key, actor))
                 return self._result_from_event(session, existing, replay=True)
             if run.status not in self._CANCELLABLE_STATUSES:
                 raise MigrationRunError(
@@ -347,13 +351,7 @@ class MigrationRunService:
                     "Cancel the active command before cancelling the migration run.",
                 )
             try:
-                transition = StateTransitionService(session).apply_transition(TransitionRequest(
-                    run_id=run_id, expected_state_version=expected_state_version,
-                    idempotency_key=idempotency_key, event_type=WorkflowEventType.RUN_CANCELLED,
-                    next_run_status=RunStatus.CANCELLED, actor=actor,
-                    reason="operator cancelled run; evidence retained and ownership released",
-                    payload={"claim_released": "true"}, occurred_at=self._now(),
-                ))
+                transition = StateTransitionService(session).apply_transition(self._cancel_request(run_id, expected_state_version, idempotency_key, actor))
             except StaleStateVersionError as error:
                 raise MigrationRunError("STALE_STATE_VERSION", "The run changed. Refresh its authoritative state and retry.") from error
             except TransitionError as error:
@@ -367,6 +365,52 @@ class MigrationRunService:
                 run_id, transition.status, transition.next_state_version, transition.event_sequence,
                 self._thread_id(session, run_id), artifacts=tuple(self._artifacts_for_run(session, run_id)),
             )
+
+    @staticmethod
+    def _replay_or_reject(session, event: WorkflowEventModel, request: TransitionRequest | None) -> None:
+        """Replay an event only when its stored request checksum matches.
+
+        A different request reusing the same idempotency key is rejected
+        instead of silently served from the stored event.
+        """
+        if request is None:
+            return
+        stored_checksum = (event.payload or {}).get("request_checksum")
+        if stored_checksum is not None and stored_checksum != canonical_request_checksum(request):
+            raise IdempotencyPayloadMismatchError(
+                f"idempotency key {request.idempotency_key} was already used for a different request"
+            )
+
+    @staticmethod
+    def _start_request(run_id: str, expected_state_version: int, idempotency_key: str, actor: str, thread_id: str) -> TransitionRequest:
+        return TransitionRequest(
+            run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
+            event_type=WorkflowEventType.RUN_START_ACCEPTED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
+            actor=actor, reason="source-intake handoff accepted", payload={"graph_thread_id": thread_id},
+            occurred_at=datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _retry_request(run_id: str, expected_state_version: int, idempotency_key: str, actor: str, previous: SourceIntakeJobModel | None) -> TransitionRequest | None:
+        if previous is None:
+            return None
+        return TransitionRequest(
+            run_id=run_id, expected_state_version=expected_state_version, idempotency_key=idempotency_key + ":accepted",
+            event_type=WorkflowEventType.RUN_STATE_CHANGED, next_run_status=RunStatus.SOURCE_VALIDATION_RUNNING,
+            actor=actor, reason="explicit source-intake retry accepted",
+            payload={"previous_job_id": previous.id, "attempt": previous.attempt + 1},
+            occurred_at=datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _cancel_request(run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> TransitionRequest:
+        return TransitionRequest(
+            run_id=run_id, expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key, event_type=WorkflowEventType.RUN_CANCELLED,
+            next_run_status=RunStatus.CANCELLED, actor=actor,
+            reason="operator cancelled run; evidence retained and ownership released",
+            payload={"claim_released": "true"}, occurred_at=datetime.now(UTC),
+        )
 
     @staticmethod
     def _release_reservation_for_run(session, run: MigrationRunModel | None) -> None:

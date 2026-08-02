@@ -217,6 +217,74 @@ def test_feasibility_requires_physical_workspace_fingerprint(tmp_path):
         assert session.query(G05ApprovalModel).count() == 0
 
 
+def test_g05_reject_decision_returns_run_to_waiting_plan_approval(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    result = service.resolve("run-1", payload, "operator")
+
+    decision = service.decide_g05(
+        "run-1",
+        G05DecisionRequest(
+            expected_state_version=result.state_version,
+            idempotency_key="g05-reject",
+            gate_version=result.gate_version,
+            package_checksum=result.package_checksum,
+            artifact_set_checksum=result.package["artifact_set_checksum"],
+            workspace_fingerprint=payload.workspace_fingerprint,
+            decision="reject",
+        ),
+        "operator",
+    )
+
+    assert decision.accepted is False
+    assert decision.status == "reject"
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        assert run.status == "WAITING_PLAN_APPROVAL"
+        assert run.state_version == 4
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="reject").one()
+        assert gate.decision == "reject"
+        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == [
+            "COMPATIBILITY_RESOLUTION_STARTED",
+            "COMPATIBILITY_RESOLUTION_COMPLETED",
+            "G05_CREATED",
+            "G05_REJECTED",
+        ]
+
+
+def test_g05_request_modification_decision_returns_run_to_waiting_plan_approval(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    result = service.resolve("run-1", payload, "operator")
+
+    decision = service.decide_g05(
+        "run-1",
+        G05DecisionRequest(
+            expected_state_version=result.state_version,
+            idempotency_key="g05-request-modification",
+            gate_version=result.gate_version,
+            package_checksum=result.package_checksum,
+            artifact_set_checksum=result.package["artifact_set_checksum"],
+            workspace_fingerprint=payload.workspace_fingerprint,
+            decision="request_modification",
+        ),
+        "operator",
+    )
+
+    assert decision.accepted is False
+    assert decision.status == "request_modification"
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        assert run.status == "WAITING_PLAN_APPROVAL"
+        assert run.state_version == 4
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="request_modification").one()
+        assert gate.decision == "request_modification"
+        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == [
+            "COMPATIBILITY_RESOLUTION_STARTED",
+            "COMPATIBILITY_RESOLUTION_COMPLETED",
+            "G05_CREATED",
+            "G05_MODIFICATION_REQUESTED",
+        ]
+
+
 def test_g05_cannot_approve_legacy_package_without_workspace_fingerprint(tmp_path):
     service, payload, sessions, _, _ = setup(tmp_path)
     result = service.resolve("run-1", payload, "operator")

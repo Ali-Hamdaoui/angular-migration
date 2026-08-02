@@ -3,10 +3,11 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.repositories.models import CommandExecutionModel, MigrationRunModel, WorkflowEventModel
+from app.state.event_sequencer import append_workflow_event
 
 
 class StaleStateVersionError(RuntimeError):
@@ -73,19 +74,15 @@ class MigrationRunRepository:
         stage_id: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> WorkflowEventModel:
-        latest_sequence = self._session.scalar(
-            select(func.max(WorkflowEventModel.sequence)).where(WorkflowEventModel.run_id == run_id)
-        )
-        event = WorkflowEventModel(
-            id=event_id,
+        event = append_workflow_event(
+            self._session,
+            event_id=event_id,
             run_id=run_id,
             stage_id=stage_id,
             event_type=event_type,
-            sequence=(latest_sequence or 0) + 1,
-            payload=payload or {},
+            payload=payload,
             occurred_at=occurred_at,
         )
-        self._session.add(event)
         self._session.flush()
         return event
 

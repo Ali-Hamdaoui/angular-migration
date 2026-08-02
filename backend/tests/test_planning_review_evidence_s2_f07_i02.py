@@ -439,6 +439,52 @@ def test_revision_explanation_and_g06_persist_evidence_and_events(tmp_path):
     )
 
 
+def test_g06_request_modification_decision_returns_run_to_waiting_plan_approval(tmp_path):
+    generated, sessions, _, service = setup(tmp_path)
+    service._planning_agent = FakePlanningAgent()
+    explanation = service.explain(
+        "run-1",
+        PlanningExplanationApiRequest(
+            expected_state_version=1,
+            idempotency_key="explain-g06-request-modification",
+            plan=generated.plan.model_dump(mode="json"),
+            stage_plan=generated.first_stage_plan.model_dump(mode="json"),
+            artifact_set_checksum="sha256:" + "3" * 64,
+            plan_version=1,
+        ),
+        "operator",
+    )
+    assert explanation.gate_status == "pending"
+
+    decision = service.decide_g06(
+        "run-1",
+        G06DecisionApiRequest(
+            expected_state_version=2,
+            idempotency_key="decision-request-modification",
+            gate_version=explanation.gate_version,
+            package_checksum=explanation.package_checksum,
+            artifact_set_checksum=explanation.package["artifact_set_checksum"],
+            plan_checksum=explanation.package["plan_checksum"],
+            stage_plan_checksum=explanation.package["stage_plan_checksum"],
+            decision=G06Decision.REQUEST_MODIFICATION,
+        ),
+        "operator",
+    )
+
+    assert decision.accepted is False
+    assert decision.status == "request_modification"
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        assert run.status == "WAITING_PLAN_APPROVAL"
+        assert run.state_version == 3
+        gate = session.query(G06ApprovalModel).one()
+        assert gate.decision == "request_modification"
+        assert gate.status == "request_modification"
+        assert "G06_MODIFICATION_REQUESTED" in {
+            event.event_type for event in session.query(WorkflowEventModel).all()
+        }
+
+
 def test_revision_and_decision_reject_stale_or_conflicting_requests(tmp_path):
     generated, _, _, service = setup(tmp_path)
     stale = PlanRevisionApiRequest(
