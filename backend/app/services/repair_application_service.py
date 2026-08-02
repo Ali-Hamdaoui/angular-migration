@@ -43,6 +43,7 @@ from app.repositories.models import (
     TransformationContinuationModel,
     UsageCostRecordModel,
 )
+from app.services.failure_evidence_service import validate_context_pack
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
@@ -710,6 +711,8 @@ class RepairApplicationService:
                 pre_attempt=pre_attempt,
                 metadata_checksum=metadata[artifact.ref.artifact_id].checksum,
             )
+            if artifact.ref.artifact_id == context["context_pack_artifact_id"]:
+                self._validate_context_pack(artifact.content)
         workspace = Path(str(context["workspace_path"]))
         try:
             context["workspace_live_fingerprint"] = StageSandboxCopier.fingerprint(workspace)
@@ -724,6 +727,26 @@ class RepairApplicationService:
             context["authority_snapshot"] = self._authority_snapshot(context)
         context["authority_snapshot"] = self._authority_snapshot(context)
         return context
+
+    @staticmethod
+    def _validate_context_pack(content: str) -> None:
+        """Re-validate the repair context pack's bounds contract at use time.
+
+        The pack is checksum-bound to the attempt row and envelope, but its
+        internal bounds block (byte budgets, preimage checksums, deterministic
+        entry ordering) is only enforced here, so a structurally invalid or
+        tampered pack fails closed with REPAIR_CONTEXT_INVALID.
+        """
+        try:
+            payload = json.loads(content)
+        except ValueError as error:
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_INVALID", "Repair context pack is not valid JSON"
+            ) from error
+        try:
+            validate_context_pack(payload)
+        except ValueError as error:
+            raise RepairApplicationError("REPAIR_CONTEXT_INVALID", str(error)) from error
 
     @staticmethod
     def _validate_artifact_envelope(

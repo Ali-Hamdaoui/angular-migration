@@ -31,6 +31,7 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services import repair_application_service
+from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.repair_application_service import (
     RepairApplicationError,
     RepairApplicationService,
@@ -405,6 +406,9 @@ def _seed_service(factory, tmp_path: Path):
     (workspace / "src").mkdir(parents=True, exist_ok=True)
     app_ts = workspace / "src" / "app.ts"
     app_ts.write_text("old", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name": "fixture"}', encoding="utf-8")
+    (workspace / "angular.json").write_text('{"project": "fixture"}', encoding="utf-8")
+    (workspace / "tsconfig.json").write_text('{"compilerOptions": {}}', encoding="utf-8")
     store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
     attempt_id = "repair-1"
     failure = store.write_text_artifact(
@@ -417,16 +421,28 @@ def _seed_service(factory, tmp_path: Path):
         created_by="repair-failure-evidence",
         created_at=NOW,
     )
-    context = store.write_text_artifact(
-        "run-1",
-        f"05_repairs/attempt-{attempt_id}/context-pack.json",
-        json.dumps({"evidence": "bounded context"}),
-        ArtifactType.JSON,
-        stage_id="stage-1",
-        attempt_id=attempt_id,
-        created_by="repair-context",
-        created_at=NOW,
-    )
+    evidence = {
+        "schema_version": "transformer-failure-evidence-v1",
+        "run_id": "run-1",
+        "stage_id": "stage-1",
+        "stage_plan_checksum": "sha256:stage-plan",
+        "workspace_path": str(workspace),
+        "workspace_fingerprint": StageSandboxCopier.fingerprint(workspace),
+        "artifact_root": str(artifacts),
+        "execution_id": "execution-1",
+        "command_log_artifact_id": None,
+        "result_artifact_id": None,
+        "normalized_failure": {
+            "error_code": "COMPILATION_FAILED",
+            "exit_code": 1,
+            "failure_message": "Angular compiler reported an error",
+        },
+        "failure_fingerprint": "fingerprint-failure",
+        "prior_fingerprints": [],
+        "repair_policy": {},
+        "forbidden_change_policy": {},
+    }
+    context = FailureEvidenceService().write_context_pack(evidence, failure.ref.checksum)
     session = factory()
     run = MigrationRunModel(
         id="run-1",
@@ -1252,4 +1268,74 @@ def test_recover_completed_failed_returns_none_and_uncertain_transport_raises(
     with pytest.raises(RepairApplicationError) as raised:
         service._recover_completed(context, role="proposer")
     assert raised.value.code == "REPAIR_INVOCATION_UNCERTAIN"
+    engine.dispose()
+
+
+def _tamper_context_pack(artifacts: Path, factory, *, mutate, sort_keys: bool = True) -> None:
+    """Rewrite the bound context pack keeping envelope/metadata checksums consistent."""
+    session = factory()
+    attempt = session.get(RepairAttemptModel, "repair-1")
+    row = session.get(ArtifactMetadataModel, "metadata-" + attempt.context_pack_artifact_id)
+    relative_path = row.relative_path
+    session.close()
+    context_path = artifacts / relative_path
+    payload = json.loads(context_path.read_text(encoding="utf-8"))
+    mutate(payload)
+    context_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=sort_keys), encoding="utf-8"
+    )
+    content_hash = "sha256:" + hashlib.sha256(context_path.read_bytes()).hexdigest()
+    sidecar = artifacts / f"{relative_path}.meta.json"
+    envelope = json.loads(sidecar.read_text(encoding="utf-8"))
+    envelope["content_hash"] = content_hash
+    sidecar.write_text(json.dumps(envelope, indent=2, sort_keys=True), encoding="utf-8")
+    session = factory()
+    row = session.get(ArtifactMetadataModel, row.id)
+    row.checksum = content_hash
+    attempt = session.get(RepairAttemptModel, "repair-1")
+    attempt.context_pack_checksum = content_hash
+    session.commit()
+    session.close()
+
+
+def _reorder_file_excerpts(payload) -> None:
+    entries = payload["file_excerpts"]
+    first = entries.pop("package.json")
+    payload["file_excerpts"] = {"package.json": first, **entries}
+
+
+@pytest.mark.parametrize(
+    "mutate, sort_keys",
+    [
+        (
+            lambda payload: payload["file_excerpts"]["package.json"].update(
+                {"sha256": "sha256:" + "0" * 64}
+            ),
+            True,
+        ),
+        (
+            lambda payload: payload["file_excerpts"]["package.json"].update({"size_bytes": 0}),
+            True,
+        ),
+        (lambda payload: payload["bounds"].update({"max_total_bytes": 1}), True),
+        (_reorder_file_excerpts, False),
+    ],
+)
+def test_tampered_context_pack_rejected_at_use_time(tmp_path: Path, mutate, sort_keys):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)
+    _tamper_context_pack(artifacts, factory, mutate=mutate, sort_keys=sort_keys)
+    transport = _RecordingTransport([])
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "REPAIR_CONTEXT_INVALID"
+    assert transport.calls == []
+    session = factory()
+    assert session.query(LlmInvocationModel).count() == 0
+    session.close()
     engine.dispose()

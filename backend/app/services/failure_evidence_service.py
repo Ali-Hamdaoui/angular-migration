@@ -19,6 +19,13 @@ from app.domain.contracts import ArtifactType
 from app.domain.transformation import FailureRoute
 
 
+CONTEXT_PACK_SCHEMA_VERSION = "repair-context-pack-v1"
+CONTEXT_PACK_FILES = ("package.json", "angular.json", "tsconfig.json")
+CONTEXT_PACK_MAX_FILES = 8
+CONTEXT_PACK_MAX_BYTES_PER_FILE = 20_000
+CONTEXT_PACK_MAX_TOTAL_BYTES = 100_000
+
+
 class FailureEvidenceService:
     transient_codes: ClassVar[set[str]] = {
         "COMMAND_WORKER_LOST_REQUEUED",
@@ -227,21 +234,68 @@ class FailureEvidenceService:
         )
         return failure, route_artifact
 
-    def write_context_pack(self, evidence: dict[str, object], failure_checksum: str):
+    def write_context_pack(
+        self,
+        evidence: dict[str, object],
+        failure_checksum: str,
+        *,
+        max_files: int = CONTEXT_PACK_MAX_FILES,
+        max_bytes_per_file: int = CONTEXT_PACK_MAX_BYTES_PER_FILE,
+        max_total_bytes: int = CONTEXT_PACK_MAX_TOTAL_BYTES,
+    ):
+        """Write a deterministically bounded, preimage-bound repair context pack.
+
+        Every included file entry carries its exact SHA-256 preimage (``sha256``
+        over the file bytes as read), ``size_bytes`` and a ``truncated`` flag.
+        Files that are not valid UTF-8 or exceed ``max_bytes_per_file`` become
+        checksum-only entries (``content`` is None) mirroring the diff-manifest
+        policy for binary/oversized files. Entries are added in sorted path
+        order until ``max_files`` or ``max_total_bytes`` is exhausted; paths
+        skipped because of either bound are recorded in ``bounds.omitted`` so
+        truncation/omission is never silent. ``bounds`` declares the enforced
+        limits, the included byte total, and the truncated/omitted paths.
+        """
+        if max_files < 1 or max_bytes_per_file < 1 or max_total_bytes < 1:
+            raise ValueError("repair context pack bounds must be positive")
         workspace = Path(str(evidence["workspace_path"])).resolve(strict=True)
-        excerpts = {}
-        for relative in ("package.json", "angular.json", "tsconfig.json"):
+        entries: dict[str, dict[str, object]] = {}
+        truncated: list[str] = []
+        omitted: list[str] = []
+        included_bytes = 0
+        for relative in sorted(CONTEXT_PACK_FILES):
+            if len(entries) >= max_files:
+                omitted.append(relative)
+                continue
             path = workspace / relative
-            if path.is_file() and not path.is_symlink():
-                excerpts[relative] = path.read_text(encoding="utf-8", errors="replace")[:20_000]
+            if not path.is_file() or path.is_symlink():
+                continue
+            entry = self._context_file_entry(relative, path.read_bytes(), max_bytes_per_file)
+            contribution = (
+                len(entry["content"].encode("utf-8")) if entry["content"] is not None else 0
+            )
+            if included_bytes + contribution > max_total_bytes:
+                omitted.append(relative)
+                continue
+            entries[relative] = entry
+            if entry["truncated"]:
+                truncated.append(relative)
+            included_bytes += contribution
         payload = {
-            "schema_version": "repair-context-pack-v1",
+            "schema_version": CONTEXT_PACK_SCHEMA_VERSION,
             "failure_evidence_checksum": failure_checksum,
             "failure_fingerprint": evidence["failure_fingerprint"],
             "workspace_fingerprint": evidence["workspace_fingerprint"],
             "normalized_failure": evidence["normalized_failure"],
             "forbidden_change_policy": evidence["forbidden_change_policy"],
-            "file_excerpts": excerpts,
+            "file_excerpts": entries,
+            "bounds": {
+                "max_files": max_files,
+                "max_bytes_per_file": max_bytes_per_file,
+                "max_total_bytes": max_total_bytes,
+                "included_bytes": included_bytes,
+                "truncated": truncated,
+                "omitted": omitted,
+            },
             "untrusted": True,
         }
         root = Path(str(evidence["artifact_root"]))
@@ -254,5 +308,100 @@ class FailureEvidenceService:
             created_by="failure-evidence-service",
             created_at=self._now(),
             input_hashes={"failure": failure_checksum},
-            policy_version="repair-context-pack-v1",
+            policy_version=CONTEXT_PACK_SCHEMA_VERSION,
         )
+
+    @staticmethod
+    def _context_file_entry(
+        relative: str, raw: bytes, max_bytes_per_file: int
+    ) -> dict[str, object]:
+        """One deterministic file entry: exact preimage checksum plus bounded content."""
+        checksum = "sha256:" + hashlib.sha256(raw).hexdigest()
+        size_bytes = len(raw)
+        try:
+            content: str | None = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            content = None
+        truncated = content is None or size_bytes > max_bytes_per_file
+        return {
+            "path": relative,
+            "sha256": checksum,
+            "size_bytes": size_bytes,
+            "truncated": truncated,
+            "content": None if truncated else content,
+        }
+
+
+def validate_context_pack(payload: object) -> None:
+    """Fail-closed structural validation of a repair context pack.
+
+    Verifies the bounds block, deterministic (sorted) entry ordering, per-file
+    and total byte budgets, and that every non-truncated entry's content
+    preimage matches its declared SHA-256. Raises ``ValueError`` with a stable
+    message on the first violation so callers fail closed.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("repair context pack must be a JSON object")
+    if payload.get("schema_version") != CONTEXT_PACK_SCHEMA_VERSION:
+        raise ValueError("repair context pack schema_version is not supported")
+    bounds = payload.get("bounds")
+    if not isinstance(bounds, dict):
+        raise ValueError("repair context pack bounds block is missing")
+    max_files = bounds.get("max_files")
+    max_bytes_per_file = bounds.get("max_bytes_per_file")
+    max_total_bytes = bounds.get("max_total_bytes")
+    if not all(
+        isinstance(value, int) and value >= 1 for value in (max_files, max_bytes_per_file, max_total_bytes)
+    ):
+        raise ValueError("repair context pack bounds limits are invalid")
+    included_bytes = bounds.get("included_bytes")
+    if not isinstance(included_bytes, int) or included_bytes < 0:
+        raise ValueError("repair context pack included_bytes is invalid")
+    for key in ("truncated", "omitted"):
+        value = bounds.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"repair context pack bounds {key} list is invalid")
+        if value != sorted(value) or len(set(value)) != len(value):
+            raise ValueError(f"repair context pack bounds {key} list is not deterministic")
+    excerpts = payload.get("file_excerpts")
+    if not isinstance(excerpts, dict):
+        raise ValueError("repair context pack file_excerpts is invalid")
+    if list(excerpts.keys()) != sorted(excerpts.keys()):
+        raise ValueError("repair context pack file entries are not sorted by path")
+    if len(excerpts) > max_files:
+        raise ValueError("repair context pack exceeds max_files bound")
+    recomputed_bytes = 0
+    truncated_paths: list[str] = []
+    for relative, entry in excerpts.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"repair context pack entry {relative} is invalid")
+        if entry.get("path") != relative:
+            raise ValueError(f"repair context pack entry {relative} path mismatch")
+        checksum = entry.get("sha256")
+        if not isinstance(checksum, str) or not checksum.startswith("sha256:"):
+            raise ValueError(f"repair context pack entry {relative} preimage checksum is missing")
+        size_bytes = entry.get("size_bytes")
+        if not isinstance(size_bytes, int) or size_bytes < 0:
+            raise ValueError(f"repair context pack entry {relative} size_bytes is invalid")
+        content = entry.get("content")
+        if entry.get("truncated") != (content is None):
+            raise ValueError(f"repair context pack entry {relative} truncation flag is inconsistent")
+        if content is None:
+            truncated_paths.append(relative)
+            continue
+        if not isinstance(content, str):
+            raise ValueError(f"repair context pack entry {relative} content is invalid")
+        encoded = content.encode("utf-8")
+        if size_bytes != len(encoded):
+            raise ValueError(f"repair context pack entry {relative} size_bytes mismatch")
+        if size_bytes > max_bytes_per_file:
+            raise ValueError(f"repair context pack entry {relative} exceeds per-file bound")
+        if "sha256:" + hashlib.sha256(encoded).hexdigest() != checksum:
+            raise ValueError(f"repair context pack entry {relative} preimage checksum mismatch")
+        recomputed_bytes += len(encoded)
+    if recomputed_bytes != included_bytes:
+        raise ValueError("repair context pack included_bytes mismatch")
+    if included_bytes > max_total_bytes:
+        raise ValueError("repair context pack exceeds total byte budget")
+    if bounds["truncated"] != truncated_paths:
+        raise ValueError("repair context pack bounds truncated list mismatch")
