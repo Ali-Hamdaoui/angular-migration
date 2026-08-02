@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -10,10 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
 
+from app.services.workspace_fingerprint import PLANNING_VOLATILE_ROOTS, workspace_fingerprint_v1
 from app.workspaces.services import BaselineBoundaryError
 
 
-BASELINE_VOLATILE_ROOTS = frozenset({"node_modules", ".angular", "dist", "coverage"})
+BASELINE_VOLATILE_ROOTS = PLANNING_VOLATILE_ROOTS
 
 
 class BaselineCopyCancelled(RuntimeError):
@@ -121,25 +121,12 @@ class BaselineSandboxService:
 
 
 def baseline_tree_fingerprint(root: Path) -> str:
-    """Fingerprint approval-critical baseline files, excluding expected generated roots."""
+    """Fingerprint approval-critical baseline files, excluding expected generated roots.
 
-    root = Path(root).resolve(strict=True)
-    digest = hashlib.sha256()
-    for path in sorted(
-        (
-            item
-            for item in root.rglob("*")
-            if item.is_file()
-            and not (
-                (relative := item.relative_to(root)).parts
-                and relative.parts[0] in BASELINE_VOLATILE_ROOTS
-            )
-        ),
-        key=lambda item: item.relative_to(root).as_posix().casefold(),
-    ):
-        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return f"sha256:{digest.hexdigest()}"
+    Delegates to the canonical planning-scope workspace fingerprint profile.
+    """
+
+    return workspace_fingerprint_v1(root, exclude=BASELINE_VOLATILE_ROOTS)
 
 
 _tree_fingerprint = baseline_tree_fingerprint

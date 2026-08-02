@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 import shutil
 from uuid import uuid4
+
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE, STAGE_VOLATILE_NAMES
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class SandboxCopyReport:
 
 
 class StageSandboxCopier:
-    excluded_names = frozenset({"node_modules", ".angular", ".cache", "dist", "build", "logs", "reports", "tmp", ".pytest_cache"})
+    excluded_names = STAGE_VOLATILE_NAMES
 
     def copy(self, source: Path, target: Path, *, registered_root: Path | None = None) -> SandboxCopyReport:
         source = Path(source).resolve(strict=True)
@@ -89,12 +90,5 @@ class StageSandboxCopier:
 
     @staticmethod
     def fingerprint(root: Path) -> str:
-        digest = hashlib.sha256()
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            relative = path.relative_to(root).as_posix().encode()
-            digest.update(len(relative).to_bytes(8, "big"))
-            digest.update(relative)
-            content = path.read_bytes()
-            digest.update(len(content).to_bytes(8, "big"))
-            digest.update(content)
-        return "sha256:" + digest.hexdigest()
+        """Fingerprint the complete stage sandbox with the canonical stage profile."""
+        return STAGE_FINGERPRINT_PROFILE.fingerprint(root)
