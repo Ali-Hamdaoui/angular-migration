@@ -841,6 +841,7 @@ class CommandExecutionResponseDto(ContractModel):
     cancel_requested_by: str | None = None
     cancelled: bool = False
     timed_out: bool = False
+    claim_attempt: int | None = None
 
 
 class CancelCommandRequestDto(ContractModel):

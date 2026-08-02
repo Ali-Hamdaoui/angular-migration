@@ -84,6 +84,8 @@ class RepairPolicy(ContractModel):
     enabled: bool = True
     proposer_reviewer_required: bool = True
     human_apply_required: bool = True
+    max_attempts: int = Field(default=3, ge=1)
+    max_applied: int = Field(default=2, ge=1)
 
 
 class ForbiddenChangePolicy(ContractModel):

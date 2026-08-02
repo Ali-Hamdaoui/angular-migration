@@ -273,6 +273,7 @@ class TransformationContinuationModel(Base):
     worker_id: Mapped[str | None] = mapped_column(String(128), index=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    claim_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     wake_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
