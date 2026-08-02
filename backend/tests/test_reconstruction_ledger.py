@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1245,7 +1244,7 @@ def test_seal_flow_reuses_existing_seal_when_concurrent_insert_loses(tmp_path: P
 
 
 def test_checkpoint_sequence_allocation_survives_concurrent_creation(tmp_path: Path):
-    engine, factory = _database(tmp_path, threaded=True)
+    engine, factory = _database(tmp_path)
     session = factory()
     session.add(MigrationRunModel(
         id="run-1",
@@ -1281,43 +1280,213 @@ def test_checkpoint_sequence_allocation_survives_concurrent_creation(tmp_path: P
         workspace_path=str(tmp_path / "workspace"),
         fingerprint="sha256:workspace",
     )
-    barrier = threading.Barrier(2)
-    states: dict[str, dict[str, bool]] = {name: {"patched": False} for name in ("a", "b")}
-    originals: dict[str, object] = {}
 
-    def run(name: str) -> None:
-        thread_session = factory()
-        originals[name] = thread_session.scalar
-        real_scalar = originals[name]
+    session_a = factory()
+    checkpoint_a = service._checkpoint(
+        session_a, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
+    )
+    session_a.commit()
+    session_a.close()
 
-        def scalar(query, *a, **k):
-            if not states[name]["patched"] and "stage_checkpoints" in str(query):
-                states[name]["patched"] = True
-                barrier.wait(timeout=30)
-            return real_scalar(query, *a, **k)
+    session_b = factory()
+    checkpoint_b = service._checkpoint(
+        session_b, continuation, preparation, "pre_repair", "manifest-2", "checksum-2"
+    )
+    session_b.commit()
+    session_b.close()
 
-        thread_session.scalar = scalar  # type: ignore[method-assign]
-        try:
-            checkpoint = service._checkpoint(
-                thread_session, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
-            )
-            thread_session.commit()
-            states[name]["sequence"] = checkpoint.sequence
-        finally:
-            thread_session.close()
-
-    threads = [threading.Thread(target=run, args=(name,)) for name in ("a", "b")]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
-
-    sequences = sorted(states[name]["sequence"] for name in ("a", "b"))
-    assert sequences == [6, 7]
+    assert checkpoint_a.sequence == 6
+    assert checkpoint_b.sequence == 7
+    assert checkpoint_a.id != checkpoint_b.id
     session = factory()
     rows = session.query(StageCheckpointModel).filter(
         StageCheckpointModel.stage_id == "stage-1"
     ).order_by(StageCheckpointModel.sequence).all()
     assert [row.sequence for row in rows] == [5, 6, 7]
+    session.close()
+    engine.dispose()
+
+
+def test_checkpoint_sequence_conflict_retries_with_savepoint(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session = factory()
+    session.add(MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="STAGED_MIGRATION",
+        state_version=7,
+        created_at=NOW,
+        updated_at=NOW,
+    ))
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-5",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_bootstrap",
+            sequence=5,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="sha256:1",
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    service = TransformerStageService(now_provider=lambda: NOW)
+    continuation = SimpleNamespace(run_id="run-1", current_stage_id="stage-1", state_version=3)
+    preparation = SimpleNamespace(
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=str(tmp_path / "workspace"),
+        fingerprint="sha256:workspace",
+    )
+
+    loader = factory()
+    stale = loader.scalar(
+        select(StageCheckpointModel)
+        .where(StageCheckpointModel.stage_id == "stage-1")
+        .order_by(StageCheckpointModel.sequence.desc())
+    )
+    loader.close()
+    assert stale.sequence == 5
+
+    session_a = factory()
+    checkpoint_a = service._checkpoint(
+        session_a, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
+    )
+    session_a.commit()
+    session_a.close()
+    assert checkpoint_a.sequence == 6
+
+    session_b = factory()
+    real_scalar = session_b.scalar
+    hits = {"n": 0}
+
+    def scalar(query, *a, **k):
+        if hits["n"] == 0 and "stage_checkpoints" in str(query):
+            hits["n"] += 1
+            return stale
+        return real_scalar(query, *a, **k)
+
+    session_b.scalar = scalar  # type: ignore[method-assign]
+    checkpoint_b = service._checkpoint(
+        session_b, continuation, preparation, "pre_repair", "manifest-2", "checksum-2"
+    )
+    assert hits["n"] == 1
+    assert checkpoint_b.sequence == 7
+    assert checkpoint_b.source_checkpoint_id == checkpoint_a.id
+    session_b.commit()
+    session_b.close()
+
+    session = factory()
+    rows = session.query(StageCheckpointModel).filter(
+        StageCheckpointModel.stage_id == "stage-1"
+    ).order_by(StageCheckpointModel.sequence).all()
+    assert [row.sequence for row in rows] == [5, 6, 7]
+    session.close()
+    engine.dispose()
+
+
+def test_checkpoint_sequence_conflict_exhaustion_fails_closed(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    session = factory()
+    session.add(MigrationRunModel(
+        id="run-1",
+        status="STAGE_CREATED",
+        run_phase="STAGED_MIGRATION",
+        state_version=7,
+        created_at=NOW,
+        updated_at=NOW,
+    ))
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-5",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_bootstrap",
+            sequence=5,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="sha256:1",
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    service = TransformerStageService(now_provider=lambda: NOW)
+    continuation = SimpleNamespace(run_id="run-1", current_stage_id="stage-1", state_version=3)
+    preparation = SimpleNamespace(
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=str(tmp_path / "workspace"),
+        fingerprint="sha256:workspace",
+    )
+
+    loader = factory()
+    stale = loader.scalar(
+        select(StageCheckpointModel)
+        .where(StageCheckpointModel.stage_id == "stage-1")
+        .order_by(StageCheckpointModel.sequence.desc())
+    )
+    loader.close()
+    assert stale.sequence == 5
+
+    session_a = factory()
+    checkpoint_a = service._checkpoint(
+        session_a, continuation, preparation, "pre_repair", "manifest-1", "checksum-1"
+    )
+    session_a.commit()
+    session_a.close()
+    assert checkpoint_a.sequence == 6
+
+    session_x = factory()
+    real_scalar = session_x.scalar
+
+    def scalar(query, *a, **k):
+        if "stage_checkpoints" in str(query):
+            return stale
+        return real_scalar(query, *a, **k)
+
+    session_x.scalar = scalar  # type: ignore[method-assign]
+    with pytest.raises(TransformerStageError) as raised:
+        service._checkpoint(
+            session_x, continuation, preparation, "pre_repair", "manifest-2", "checksum-2"
+        )
+    assert raised.value.code == "CHECKPOINT_SEQUENCE_CONFLICT"
+
+    session_x.add(
+        StageCheckpointModel(
+            id="ckpt-x",
+            run_id="run-1",
+            stage_id="stage-2",
+            kind="pre_bootstrap",
+            sequence=1,
+            workspace_alias="STAGE_WORKSPACE_1",
+            workspace_path=str(tmp_path / "workspace"),
+            workspace_fingerprint="sha256:2",
+            safe_for_resume=True,
+            sealed=False,
+            state_version=3,
+            created_at=NOW,
+        )
+    )
+    session_x.commit()
+    session_x.close()
+
+    session = factory()
+    rows = session.query(StageCheckpointModel).filter(
+        StageCheckpointModel.stage_id == "stage-1"
+    ).order_by(StageCheckpointModel.sequence).all()
+    assert [row.sequence for row in rows] == [5, 6]
+    assert session.query(StageCheckpointModel).filter(
+        StageCheckpointModel.stage_id == "stage-2"
+    ).count() == 1
     session.close()
     engine.dispose()

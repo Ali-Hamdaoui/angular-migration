@@ -785,15 +785,15 @@ class TransformerStageService:
                 state_version=continuation.state_version,
                 created_at=self._now(),
             )
-            session.add(checkpoint)
             try:
-                session.flush()
+                with session.begin_nested():
+                    session.add(checkpoint)
+                    session.flush()
                 return checkpoint
             except IntegrityError as error:
                 detail = str(getattr(error, "orig", "") or error)
                 if "stage_checkpoints" not in detail:
                     raise
-                session.expunge(checkpoint)
         raise TransformerStageError(
             "CHECKPOINT_SEQUENCE_CONFLICT",
             "Concurrent checkpoint creation for the same stage exceeded the retry budget",
