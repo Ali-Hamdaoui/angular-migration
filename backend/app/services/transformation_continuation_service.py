@@ -29,6 +29,34 @@ class TransformationContinuationError(ValueError):
         self.message = message
 
 
+def append_continuation_event(
+    session: Session,
+    continuation: TransformationContinuationModel,
+    *,
+    event_type: WorkflowEventType,
+    key: str,
+    reason: str,
+    payload: dict[str, str | int | None] | None = None,
+    occurred_at: datetime | None = None,
+    actor: str = "transformer",
+) -> None:
+    """Append a durable continuation lifecycle event atomically in the caller's transaction.
+
+    The event shares the continuation's transaction, so the status change and
+    the event commit together; replaying the same deterministic key appends
+    nothing a second time.
+    """
+    StateTransitionService(session).append_audit_event(
+        run_id=continuation.run_id,
+        idempotency_key=f"{continuation.id}:{key}",
+        event_type=event_type,
+        actor=actor,
+        reason=reason,
+        occurred_at=occurred_at or continuation.updated_at,
+        payload=payload or {},
+    )
+
+
 class TransformationContinuationService:
     def __init__(self, *, lease_seconds: int = 120) -> None:
         self.lease_seconds = lease_seconds
@@ -197,6 +225,18 @@ class TransformationContinuationService:
             session.expire_all()
             return None
         session.refresh(candidate)
+        append_continuation_event(
+            session,
+            candidate,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_CLAIMED,
+            key=f"claim:{candidate.attempt}",
+            reason="durable Transformer continuation claimed by worker",
+            payload={
+                "worker_id": candidate.worker_id or "",
+                "expected_state_version": candidate.state_version - 1,
+            },
+            occurred_at=claimed_at,
+        )
         return candidate
 
     def wait(
@@ -218,13 +258,24 @@ class TransformationContinuationService:
         }:
             raise TransformationContinuationError("TRANSFORMATION_STATUS_INVALID", "Invalid continuation wait status")
         model = self._owned(session, continuation_id, worker_id)
+        occurred_at = now or datetime.now(UTC)
+        expected_state_version = model.state_version
         model.status = status
         model.current_node = TransformationNode(current_node).value
         model.worker_id = None
         model.lease_expires_at = None
         model.state_version += 1
-        model.updated_at = now or datetime.now(UTC)
+        model.updated_at = occurred_at
         session.flush()
+        append_continuation_event(
+            session,
+            model,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:{status}:{expected_state_version}",
+            reason=f"Transformer continuation waits on {status}",
+            payload={"expected_state_version": expected_state_version},
+            occurred_at=occurred_at,
+        )
         return model
 
     def wake(
@@ -293,6 +344,7 @@ class TransformationContinuationService:
                 "Terminal continuation cannot be cancelled",
             )
         requested_at = now or datetime.now(UTC)
+        expected_state_version = model.state_version
         model.cancel_requested_at = requested_at
         model.cancel_requested_by = actor
         model.cancel_idempotency_key = idempotency_key
@@ -304,6 +356,18 @@ class TransformationContinuationService:
         model.state_version += 1
         model.updated_at = requested_at
         session.flush()
+        append_continuation_event(
+            session,
+            model,
+            event_type=WorkflowEventType.TRANSFORMATION_CANCEL_REQUESTED,
+            key=f"cancel:{idempotency_key}",
+            reason="Transformer cancellation requested",
+            payload={
+                "actor": actor,
+                "expected_state_version": expected_state_version,
+            },
+            occurred_at=requested_at,
+        )
         return model
 
     def complete(
@@ -316,6 +380,7 @@ class TransformationContinuationService:
     ) -> TransformationContinuationModel:
         model = self._owned(session, continuation_id, worker_id)
         completed_at = now or datetime.now(UTC)
+        expected_state_version = model.state_version
         model.status = TransformationStatus.COMPLETED.value
         model.current_node = TransformationNode.TERMINAL.value
         model.worker_id = None
@@ -324,6 +389,15 @@ class TransformationContinuationService:
         model.updated_at = completed_at
         model.state_version += 1
         session.flush()
+        append_continuation_event(
+            session,
+            model,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_COMPLETED,
+            key="complete",
+            reason="durable Transformer continuation completed",
+            payload={"expected_state_version": expected_state_version},
+            occurred_at=completed_at,
+        )
         return model
 
     @staticmethod

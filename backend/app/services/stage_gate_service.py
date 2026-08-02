@@ -26,6 +26,9 @@ from app.repositories.models import (
     TransformationContinuationModel,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.state import StateTransitionService
 
 
@@ -107,6 +110,7 @@ class StageGateService:
             created_at=created_at,
         )
         session.add(package)
+        expected_state_version = continuation.state_version
         continuation.status = "waiting_gate"
         continuation.current_node = f"wait_{gate_id.lower()}"
         continuation.worker_id = None
@@ -122,6 +126,18 @@ class StageGateService:
             reason=f"{gate_id} evidence package created",
             occurred_at=created_at,
             payload={"stage_id": continuation.current_stage_id, "package_checksum": package_checksum},
+        )
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_gate:{expected_state_version}",
+            reason=f"continuation waits for {gate_id} decision",
+            payload={
+                "gate_id": gate_id,
+                "expected_state_version": expected_state_version,
+            },
+            occurred_at=created_at,
         )
         return package
 

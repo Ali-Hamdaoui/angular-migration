@@ -39,6 +39,9 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -492,13 +495,26 @@ class TransformerStageService:
             step.execution_id = result.execution_id
             step.status = "RUNNING"
             step.updated_at = self._now()
+        expected_state_version = continuation.state_version
         continuation.status = "waiting_command"
         continuation.current_node = next_node
         continuation.worker_id = None
         continuation.lease_expires_at = None
+        continuation.waiting_execution_id = result.execution_id
         continuation.state_version += 1
         continuation.updated_at = self._now()
         session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_command:{expected_state_version}",
+            reason="stage command queued; continuation waits for terminal evidence",
+            payload={
+                "execution_id": result.execution_id,
+                "expected_state_version": expected_state_version,
+            },
+        )
         return result
 
     def verify_bootstrap(self, session, continuation: TransformationContinuationModel) -> str:
@@ -510,7 +526,7 @@ class TransformerStageService:
         )
         execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
         if execution is not None and execution.status in {"pending", "queued", "running"}:
-            self._wait_for_command(continuation)
+            self._wait_for_command(session, continuation, execution.id)
             return execution.id
         if (
             execution is not None
@@ -542,7 +558,7 @@ class TransformerStageService:
             step.attempt_id = successor.id
             step.status = "RUNNING"
             step.updated_at = self._now()
-            self._wait_for_command(continuation)
+            self._wait_for_command(session, continuation, successor.id)
             return successor.id
         if execution is None or execution.status != "succeeded":
             raise TransformerStageError(
@@ -580,12 +596,31 @@ class TransformerStageService:
         session.flush()
         return fingerprint
 
-    def _wait_for_command(self, continuation: TransformationContinuationModel) -> None:
+    def _wait_for_command(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        execution_id: str,
+    ) -> None:
+        expected_state_version = continuation.state_version
         continuation.status = "waiting_command"
         continuation.worker_id = None
         continuation.lease_expires_at = None
+        continuation.waiting_execution_id = execution_id
         continuation.state_version += 1
         continuation.updated_at = self._now()
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_command:{expected_state_version}",
+            reason="continuation waits for terminal command evidence",
+            payload={
+                "execution_id": execution_id,
+                "expected_state_version": expected_state_version,
+            },
+        )
 
     @staticmethod
     def _request(run, continuation, gate):

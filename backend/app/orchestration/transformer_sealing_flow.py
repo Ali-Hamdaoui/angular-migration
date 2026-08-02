@@ -31,6 +31,9 @@ from app.services.next_stage_materializer_service import (
     NextStageMaterializerService,
 )
 from app.services.stage_sealing_service import StageSealingError, StageSealingService
+from app.services.transformation_continuation_service import (
+    append_continuation_event,
+)
 from app.services.transformer_stage_service import TransformerStageError
 from app.state import StateTransitionService, TransitionRequest
 
@@ -130,7 +133,7 @@ class TransformerSealingFlow:
                 .order_by(StageGatePackageModel.gate_version.desc())
             )
             if g12 is None:
-                self._block(continuation, "G12_APPROVAL_REQUIRED", "Approved G12 is missing")
+                self._block(session, continuation, "G12_APPROVAL_REQUIRED", "Approved G12 is missing")
                 return
             g12_checksum = g12.package_checksum
         try:
@@ -243,6 +246,7 @@ class TransformerSealingFlow:
             existing = session.get(StageExecutionPlanModel, stage_plan.stage_plan_id)
             if existing is not None and existing.checksum != stage_plan.checksum:
                 self._block(
+                    session,
                     continuation,
                     "NEXT_STAGE_IDEMPOTENCY_CONFLICT",
                     "Materialized stage ID is bound to different content",
@@ -262,6 +266,7 @@ class TransformerSealingFlow:
                         is None
                     ):
                         self._block(
+                            session,
                             continuation,
                             "COMMAND_CATALOGUE_DRIFT",
                             "Materialized command template is not registered",
@@ -380,6 +385,7 @@ class TransformerSealingFlow:
             }
             if not route or any(stage_id not in stages or stages[stage_id].status != "sealed" for stage_id in route):
                 self._block(
+                    session,
                     continuation,
                     "COMPLETION_INVARIANT_FAILED",
                     "Every approved route stage must have an immutable seal",
@@ -395,6 +401,7 @@ class TransformerSealingFlow:
                 }
                 if not {"G07", "G08", "G09", "G12"}.issubset(approved):
                     self._block(
+                        session,
                         continuation,
                         "COMPLETION_GATE_INVARIANT_FAILED",
                         f"Stage {stage_id} lacks required approved gates",
@@ -428,6 +435,7 @@ class TransformerSealingFlow:
                 )
             ):
                 self._block(
+                    session,
                     continuation,
                     "COMPLETION_WORK_REMAINS",
                     "Active command, prompt, or repair work remains",
@@ -462,6 +470,7 @@ class TransformerSealingFlow:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             self._block(
+                session,
                 continuation,
                 getattr(error, "code", "STAGE_SEALING_FAILED"),
                 getattr(error, "message", str(error)),
@@ -490,7 +499,8 @@ class TransformerSealingFlow:
         continuation.updated_at = datetime.now(UTC)
 
     @staticmethod
-    def _block(continuation, code: str, message: str) -> None:
+    def _block(session, continuation, code: str, message: str) -> None:
+        expected_state_version = continuation.state_version
         continuation.status = "blocked"
         continuation.last_error_code = code
         continuation.last_error_message = message
@@ -498,3 +508,15 @@ class TransformerSealingFlow:
         continuation.lease_expires_at = None
         continuation.state_version += 1
         continuation.updated_at = datetime.now(UTC)
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+            key=f"block:{expected_state_version}:{code}",
+            reason=message,
+            payload={
+                "last_error_code": code,
+                "expected_state_version": expected_state_version,
+            },
+        )
