@@ -305,4 +305,23 @@ class TestLegacyWindowsOrderingCompatibility:
         expected = "sha256:" + digest.hexdigest()
         assert STAGE_FINGERPRINT_PROFILE.fingerprint_stream(manifest.items()) == expected
         assert encode_fingerprint(manifest.items()) == expected
-        assert _fingerprint_manifest(manifest) == expected
+
+    def test_apply_manifest_uses_tree_order_and_matches_stage_tree_digest(self, tmp_path):
+        """T02: apply-time manifest digest must be apples-to-apples with the binding.
+
+        The apply pre-check compares the manifest digest against
+        ``StageWorkspaceBindingModel.workspace_fingerprint``, which is
+        persisted with the stage tree profile (casefold sort).  The apply
+        manifest must therefore be digested with the SAME ordering, not the
+        raw stream order, or mixed-case trees are falsely rejected.
+        """
+        root = _write_tree(tmp_path / "workspace", self.SCAFFOLD)
+        manifest = {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        tree_digest = STAGE_FINGERPRINT_PROFILE.fingerprint(root)
+        assert _fingerprint_manifest(manifest) == tree_digest
+        stream_digest = STAGE_FINGERPRINT_PROFILE.fingerprint_stream(manifest.items())
+        assert stream_digest != tree_digest

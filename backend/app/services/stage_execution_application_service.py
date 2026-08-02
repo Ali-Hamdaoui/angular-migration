@@ -277,6 +277,7 @@ class StageExecutionApplicationService:
                 alias=preparation.workspace_alias,
                 workspace_path=preparation.workspace_path,
                 workspace_fingerprint=preparation.fingerprint,
+                input_fingerprint=preparation.fingerprint,
                 active=True,
                 created_at=now,
             ))

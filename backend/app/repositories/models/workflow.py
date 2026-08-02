@@ -665,6 +665,7 @@ class RepairAttemptModel(Base):
     risk_level: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     diagnosis: Mapped[str | None] = mapped_column(Text)
+    checkpoint_id: Mapped[str | None] = mapped_column(ForeignKey("stage_checkpoints.id"), index=True)
     failure_evidence_artifact_id: Mapped[str | None] = mapped_column(String(128))
     failure_evidence_checksum: Mapped[str | None] = mapped_column(String(128))
     failure_route_artifact_id: Mapped[str | None] = mapped_column(String(128))
