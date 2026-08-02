@@ -500,6 +500,7 @@ def _seed_apply_authority(
         stage_id="stage-1",
         attempt_number=1,
         status=attempt_status,
+        g10_gate_package_id="gate-10",
         risk_level="low",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
         checkpoint_id="ckpt-pre",
