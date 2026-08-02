@@ -72,6 +72,7 @@ from app.services.transformer_prompt_service import (
     AngularPromptDetector,
     TransformerPromptService,
 )
+from app.state.event_sequencer import append_workflow_event
 
 
 class CommandExecutorError(ValueError):
@@ -1002,28 +1003,42 @@ class CommandExecutorService:
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
         model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
         session.flush()
-        # Command evidence is durable before terminal CAS/transition handling.
+        # Command evidence is durable before the terminal transition; a
+        # terminal CAS failure must never erase command evidence.
         session.commit()
         model = session.get(CommandExecutionModel, model.id)
+        # The terminal status transition, command row update, and the
+        # terminal COMMAND_* event are committed together in ONE transaction.
+        # There is no post-commit event append that a later rollback could
+        # silently discard.
         self.transition_execution(session, model, final_status, now=finished)
         event_type = (WorkflowEventType.COMMAND_CANCELLED if model.status == CommandStatus.CANCELLED.value else WorkflowEventType.COMMAND_INTERRUPTED if model.status == CommandStatus.TIMED_OUT.value else WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED)
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
+        session.commit()
+        # The optional RUN_CANCELLED run-level CAS runs in its own
+        # transaction AFTER the terminal event is committed: a stale run
+        # state version can only roll back the cancellation CAS, never the
+        # terminal command event.
         if model.status in {CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
             current_run = session.get(MigrationRunModel, model.run_id)
             if current_run is not None and current_run.status == "CANCELLING":
-                from app.state.transition_service import StateTransitionService, TransitionRequest
-                StateTransitionService(session).apply_transition(TransitionRequest(
-                    run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
-                    expected_state_version=current_run.state_version,
-                    event_type=WorkflowEventType.RUN_CANCELLED,
-                    next_run_status=RunStatus.CANCELLED,
-                    actor="command-execution-worker",
-                    reason="command cancellation completed; partial evidence retained",
-                    occurred_at=finished,
-                    payload={"execution_id": model.id, "partial_evidence": 1},
-                ))
+                from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionRequest
+                try:
+                    StateTransitionService(session).apply_transition(TransitionRequest(
+                        run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
+                        expected_state_version=current_run.state_version,
+                        event_type=WorkflowEventType.RUN_CANCELLED,
+                        next_run_status=RunStatus.CANCELLED,
+                        actor="command-execution-worker",
+                        reason="command cancellation completed; partial evidence retained",
+                        occurred_at=finished,
+                        payload={"execution_id": model.id, "partial_evidence": 1},
+                    ))
+                    session.commit()
+                except StaleStateVersionError:
+                    session.rollback()
 
     @staticmethod
     def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
@@ -1200,26 +1215,17 @@ class CommandExecutorService:
         reason: str,
         payload: dict[str, Any],
     ) -> WorkflowEventModel:
-        latest = session.scalar(
-            select(WorkflowEventModel)
-            .where(WorkflowEventModel.run_id == run_id)
-            .order_by(WorkflowEventModel.sequence.desc())
-            .limit(1)
-        )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        return append_workflow_event(
+            session,
             run_id=run_id,
             stage_id=stage_id,
             event_type=event_type.value,
             idempotency_key=idempotency_key,
             actor="command-executor",
             reason=reason,
-            sequence=(latest.sequence + 1) if latest else 1,
             payload=payload,
             occurred_at=datetime.now(UTC),
         )
-        session.add(event)
-        return event
 
     @staticmethod
     def _response_from_model(

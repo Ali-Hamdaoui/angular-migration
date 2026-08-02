@@ -20,6 +20,7 @@ from app.repositories.models import (
     WorkflowEventModel,
     WorkerLeaseModel,
 )
+from app.state.event_sequencer import append_workflow_event
 
 
 class TransitionError(RuntimeError):
@@ -40,6 +41,10 @@ class LeaseRequiredError(TransitionError):
 
 class ResumeRejectedError(TransitionError):
     """Raised when a run cannot resume from the last safe checkpoint."""
+
+
+class IllegalRunTransitionError(TransitionError):
+    """Raised when an event would move a run to a status its event type forbids."""
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,47 @@ class TransitionResult:
 class StateTransitionService:
     """Apply accepted transitions and ordered events in one database transaction."""
 
+    # Closed run-level transition map: for each workflow event type that may
+    # move a run, the exact set of next run statuses that event type may
+    # produce. Event types absent from the map never change run status.
+    # Enumerated from every apply_transition call site across the services
+    # and orchestrators (migration_run_service, source_intake, planning,
+    # source_snapshot, g02, baseline_g03, discovery, analysis, compatibility,
+    # planning_review, transformer_stage, transformer_sealing_flow, command
+    # executor and supervisor services).
+    _LEGAL_RUN_TRANSITIONS: dict[WorkflowEventType, frozenset[RunStatus]] = {
+        WorkflowEventType.RUN_STATE_CHANGED: frozenset({
+            RunStatus.SOURCE_VALIDATION_RUNNING,
+            RunStatus.RUNNING,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+        }),
+        WorkflowEventType.RUN_START_ACCEPTED: frozenset({RunStatus.SOURCE_VALIDATION_RUNNING}),
+        WorkflowEventType.RUN_CANCEL_REQUESTED: frozenset({RunStatus.CANCELLING}),
+        WorkflowEventType.RUN_CANCELLED: frozenset({RunStatus.CANCELLED}),
+        WorkflowEventType.SOURCE_INTAKE_FAILED: frozenset({RunStatus.FAILED}),
+        WorkflowEventType.SNAPSHOT_STARTED: frozenset({RunStatus.SOURCE_VALIDATION_RUNNING}),
+        WorkflowEventType.SNAPSHOT_CREATED: frozenset({RunStatus.SOURCE_VALIDATED}),
+        WorkflowEventType.BASELINE_QUALIFIED: frozenset({RunStatus.BASELINE_QUALIFIED}),
+        WorkflowEventType.BASELINE_BLOCKED: frozenset({RunStatus.DIAGNOSTIC_HOLD}),
+        WorkflowEventType.G03_APPROVED: frozenset({RunStatus.BASELINE_QUALIFIED}),
+        WorkflowEventType.DISCOVERY_BLOCKED: frozenset({RunStatus.DIAGNOSTIC_HOLD}),
+        WorkflowEventType.G02_STALE: frozenset({RunStatus.DIAGNOSTIC_HOLD}),
+        WorkflowEventType.EXECUTION_PROFILE_BLOCKED: frozenset({RunStatus.DIAGNOSTIC_HOLD}),
+        WorkflowEventType.COMPATIBILITY_RESOLUTION_COMPLETED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.G04_APPROVED: frozenset({RunStatus.PLANNING_RUNNING}),
+        WorkflowEventType.G05_APPROVED: frozenset({RunStatus.PLANNING_RUNNING, RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.G06_APPROVED: frozenset({RunStatus.WAITING_STAGE_PREPARATION}),
+        WorkflowEventType.G06_REJECTED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.PLANNING_AGENT_COMPLETED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.PLANNING_REVIEW_REVISION_REQUIRED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.PLANNING_REVIEW_REJECTED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.PLANNING_REVIEW_INSUFFICIENT_CONTEXT: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.PLANNING_FAILED: frozenset({RunStatus.FAILED}),
+        WorkflowEventType.STAGED_MIGRATION_COMPLETED: frozenset({RunStatus.COMPLETED}),
+        WorkflowEventType.STAGE_CREATED: frozenset({RunStatus.STAGE_CREATED}),
+    }
+
     def __init__(self, session: Session, *, lease_seconds: int = 120) -> None:
         self._session = session
         self._lease_seconds = lease_seconds
@@ -99,6 +145,12 @@ class StateTransitionService:
             raise StaleStateVersionError(
                 f"run {request.run_id} is at state version {run.state_version}, expected {request.expected_state_version}"
             )
+        if request.next_run_status is not None:
+            allowed_statuses = self._LEGAL_RUN_TRANSITIONS.get(request.event_type)
+            if allowed_statuses is None or request.next_run_status not in allowed_statuses:
+                raise IllegalRunTransitionError(
+                    f"run transition {request.event_type.value} -> {request.next_run_status.value} is not a legal workflow transition"
+                )
         if request.next_stage_status is not None:
             self._validate_stage_status(request)
         if request.next_step_status is not None:
@@ -200,16 +252,34 @@ class StateTransitionService:
 
         Some durable evidence lifecycle events (for example G05_CREATED) are
         projections of an already-committed transition and must not introduce
-        a second optimistic-concurrency step.
+        a second optimistic-concurrency step. Replays verify the canonical
+        audit checksum, so a different payload reusing the same key conflicts.
         """
         existing = self._find_idempotent_event(run_id, idempotency_key)
         if existing is not None:
+            stored_checksum = (existing.payload or {}).get("request_checksum")
+            if stored_checksum is not None and stored_checksum != canonical_audit_checksum(
+                run_id=run_id, idempotency_key=idempotency_key, event_type=event_type,
+                actor=actor, reason=reason, payload=payload,
+            ):
+                raise IdempotencyPayloadMismatchError(
+                    f"idempotency key {idempotency_key} was already used for a different audit event"
+                )
             return self._result_from_event(existing, idempotent_replay=True)
         run = self._session.get(MigrationRunModel, run_id)
         if run is None:
             raise TransitionError(f"run does not exist: {run_id}")
         current = run.state_version
-        body = {"previous_state_version": current, "next_state_version": current, "actor": actor, "reason": reason}
+        body: dict[str, str | int | None] = {
+            "previous_state_version": current,
+            "next_state_version": current,
+            "actor": actor,
+            "reason": reason,
+            "request_checksum": canonical_audit_checksum(
+                run_id=run_id, idempotency_key=idempotency_key, event_type=event_type,
+                actor=actor, reason=reason, payload=payload,
+            ),
+        }
         body.update(payload or {})
         event = self._append_event(TransitionRequest(run_id=run_id, idempotency_key=idempotency_key, expected_state_version=current, event_type=event_type, actor=actor, reason=reason, occurred_at=occurred_at), occurred_at, body)
         self._session.flush()
@@ -308,23 +378,17 @@ class StateTransitionService:
         return step
 
     def _append_event(self, request: TransitionRequest, occurred_at: datetime, payload: dict[str, str | int | None]) -> WorkflowEventModel:
-        latest_sequence = self._session.scalar(
-            select(func.max(WorkflowEventModel.sequence)).where(WorkflowEventModel.run_id == request.run_id)
-        )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        return append_workflow_event(
+            self._session,
             run_id=request.run_id,
             stage_id=request.stage_id,
             event_type=request.event_type.value,
             idempotency_key=request.idempotency_key,
             actor=request.actor,
             reason=request.reason,
-            sequence=(latest_sequence or 0) + 1,
             payload=payload,
             occurred_at=occurred_at,
         )
-        self._session.add(event)
-        return event
 
     def _find_idempotent_event(self, run_id: str, idempotency_key: str) -> WorkflowEventModel | None:
         return self._session.scalar(
@@ -335,26 +399,7 @@ class StateTransitionService:
 
     @staticmethod
     def _request_checksum(request: TransitionRequest) -> str:
-        body = {
-            "run_id": request.run_id,
-            "idempotency_key": request.idempotency_key,
-            "expected_state_version": request.expected_state_version,
-            "event_type": request.event_type.value,
-            "next_run_status": request.next_run_status.value if request.next_run_status else None,
-            "next_run_phase": request.next_run_phase,
-            "next_phase_status": request.next_phase_status,
-            "next_approval_status": request.next_approval_status,
-            "next_stage_status": request.next_stage_status.value if request.next_stage_status else None,
-            "next_step_status": request.next_step_status.value if request.next_step_status else None,
-            "stage_id": request.stage_id,
-            "step_id": request.step_id,
-            "actor": request.actor,
-            "reason": request.reason,
-            "worker_id": request.worker_id,
-            "payload": request.payload,
-        }
-        encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()
-        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+        return canonical_request_checksum(request)
 
     def _result_from_event(self, event: WorkflowEventModel, *, idempotent_replay: bool) -> TransitionResult:
         payload = event.payload
@@ -377,3 +422,41 @@ class StateTransitionService:
             .where(WorkerLeaseModel.expires_at > now)
         )
         return lease is not None
+
+
+def canonical_request_checksum(request: TransitionRequest) -> str:
+    """Canonical checksum of a transition request, used to verify replays."""
+    body = {
+        "run_id": request.run_id,
+        "idempotency_key": request.idempotency_key,
+        "expected_state_version": request.expected_state_version,
+        "event_type": request.event_type.value,
+        "next_run_status": request.next_run_status.value if request.next_run_status else None,
+        "next_run_phase": request.next_run_phase,
+        "next_phase_status": request.next_phase_status,
+        "next_approval_status": request.next_approval_status,
+        "next_stage_status": request.next_stage_status.value if request.next_stage_status else None,
+        "next_step_status": request.next_step_status.value if request.next_step_status else None,
+        "stage_id": request.stage_id,
+        "step_id": request.step_id,
+        "actor": request.actor,
+        "reason": request.reason,
+        "worker_id": request.worker_id,
+        "payload": request.payload,
+    }
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_audit_checksum(*, run_id: str, idempotency_key: str, event_type: WorkflowEventType, actor: str, reason: str, payload: dict[str, str | int | None] | None) -> str:
+    """Canonical checksum of an audit/evidence event, used to verify replays."""
+    body = {
+        "run_id": run_id,
+        "idempotency_key": idempotency_key,
+        "event_type": event_type.value,
+        "actor": actor,
+        "reason": reason,
+        "payload": payload,
+    }
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()

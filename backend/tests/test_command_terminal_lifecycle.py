@@ -24,6 +24,7 @@ from app.domain.contracts import (
     CancellationPolicy,
     CommandRequestDto,
     CommandStatus,
+    WorkflowEventType,
 )
 from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
@@ -37,6 +38,7 @@ from app.repositories.models import (
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.repositories.models.base import Base
 from app.services.command_executor_service import (
@@ -45,6 +47,10 @@ from app.services.command_executor_service import (
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageService
+from app.state.transition_service import (
+    StateTransitionService,
+    StaleStateVersionError,
+)
 
 
 NOW = datetime(2026, 7, 30, tzinfo=UTC)
@@ -424,6 +430,62 @@ def test_terminal_transition_rollback_does_not_erase_evidence(
     assert durable.failure_message == "durable npm failure"
     assert durable.stdout_artifact_id and durable.stderr_artifact_id
     assert proof.get(CommandLogSummaryModel, execution.id).finalized is True
+    proof.close()
+    engine.dispose()
+
+
+def test_terminal_command_event_survives_conflicting_run_cancel_cas(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A conflicting RUN_CANCELLED CAS must never lose the terminal command event."""
+    engine, factory = _database(tmp_path)
+    session, run, authorization, execution = _seed_execution(factory, tmp_path)
+    run.status = "CANCELLING"
+    session.commit()
+    session.close()
+
+    session = factory()
+    run = session.get(MigrationRunModel, "run-1")
+    execution = session.get(CommandExecutionModel, "exec-original")
+    authorization = session.get(CommandAuthorizationAuditModel, "auth-1")
+    service = CommandExecutorService()
+    result = _result(
+        tmp_path,
+        status=CommandStatus.CANCELLED,
+        exit_code=-1,
+        cancelled=True,
+    )
+
+    original_apply_transition = StateTransitionService.apply_transition
+
+    def conflicting_run_cancel_cas(self, request, *args, **kwargs):
+        if request.event_type == WorkflowEventType.RUN_CANCELLED:
+            raise StaleStateVersionError("run was cancelled concurrently")
+        return original_apply_transition(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(StateTransitionService, "apply_transition", conflicting_run_cancel_cas)
+    service._finish_execution(
+        session,
+        execution,
+        result,
+        run=run,
+        authorization=authorization,
+        profile={"checksum": "sha256:runtime"},
+    )
+    session.commit()
+    session.close()
+
+    proof = factory()
+    terminal_event = proof.scalar(
+        select(WorkflowEventModel).where(
+            WorkflowEventModel.run_id == "run-1",
+            WorkflowEventModel.event_type == WorkflowEventType.COMMAND_CANCELLED.value,
+        )
+    )
+    assert terminal_event is not None, "terminal command event was lost by the run CAS rollback"
+    assert terminal_event.payload["execution_id"] == "exec-original"
+    assert proof.get(CommandExecutionModel, "exec-original").status == "cancelled"
     proof.close()
     engine.dispose()
 

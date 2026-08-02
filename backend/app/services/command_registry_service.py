@@ -39,6 +39,7 @@ from app.domain.contracts import (
     WorkflowEventType,
 )
 from app.services.path_validation_service import is_portable_absolute_path
+from app.state.event_sequencer import append_workflow_event
 
 
 class CommandRegistryError(ValueError):
@@ -423,27 +424,19 @@ class CommandPolicyEngineService:
             audit.artifact_ids = [stored.ref.artifact_id]
 
         # Emit authorization event
-        from app.repositories.models.workflow import WorkflowEventModel
-        latest = session.scalar(
-            select(WorkflowEventModel)
-            .where(WorkflowEventModel.run_id == request.run_id)
-            .order_by(WorkflowEventModel.sequence.desc())
-            .limit(1)
-        )
         event_type = (
             WorkflowEventType.COMMAND_AUTHORIZATION_ACCEPTED
             if decision.value == "accepted"
             else WorkflowEventType.COMMAND_AUTHORIZATION_REJECTED
         )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        event = append_workflow_event(
+            session,
             run_id=request.run_id,
             stage_id=request.stage_id,
             event_type=event_type.value,
             idempotency_key=request.idempotency_key,
             actor=request.requested_by or "system",
             reason=f"command authorization {decision.value}",
-            sequence=(latest.sequence + 1) if latest else 1,
             payload={
                 "authorization_id": authorization_id,
                 "command_id": request.command_id,
@@ -466,7 +459,6 @@ class CommandPolicyEngineService:
             },
             occurred_at=now,
         )
-        session.add(event)
         session.flush()
 
         return self._response_from_audit(audit, replay=False)
