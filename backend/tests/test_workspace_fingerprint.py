@@ -7,6 +7,7 @@ independent fingerprint algorithm.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from app.services.workspace_fingerprint import (
     PLANNING_FINGERPRINT_PROFILE,
     SOURCE_CONFIG_FINGERPRINT_PROFILE,
     STAGE_FINGERPRINT_PROFILE,
+    STAGE_VOLATILE_NAMES,
     WORKSPACE_FINGERPRINT_VERSION,
     WorkspaceFingerprintProfile,
     encode_fingerprint,
@@ -191,3 +193,116 @@ class TestConsumerConvergence:
 def test_fingerprint_of_missing_root_fails_closed(tmp_path):
     with pytest.raises(OSError):
         workspace_fingerprint_v1(tmp_path / "does-not-exist")
+
+
+class TestLegacyWindowsOrderingCompatibility:
+    """Golden guard for persisted-digest compatibility (T01 CRITICAL finding).
+
+    Legacy stage and source-config fingerprints ordered files with
+    ``sorted(item for item in root.rglob("*") if item.is_file())``.  On
+    Windows, ``Path`` comparison uses ``os.path.normcase`` (lowercased) full
+    paths, so mixed-case trees (a typical ``ng new`` scaffold) were digested
+    in casefolded relative-path order.  Stage bindings, checkpoints,
+    repair-ledger pre/post fingerprints, and sealed-output digests persisted
+    by legacy code embed that ordering; the canonical stage and source-config
+    profiles must reproduce it byte-for-byte or previously persisted
+    workspaces are rejected.  The references below are the verbatim legacy
+    algorithms, and the pinned literals are the digests they produce for the
+    fixed scaffold tree (Windows persistence contract; the platform on which
+    all legacy digests were created).
+    """
+
+    STAGE_GOLDEN_MIXED_CASE = "sha256:62fbf03396cd92b63051b0d13566ffe6057573d32b3c9f91d421614de04d085b"
+    STAGE_GOLDEN_WITH_VOLATILES = "sha256:92d204dab23dbd0f1c6c3536360a8d8d407e76f466c81ba810ec84041777ed61"
+
+    SCAFFOLD = {
+        "README.md": "readme",
+        "package.json": "{}",
+        "angular.json": "{}",
+        "src/main.ts": "main",
+        "src/app/app.component.ts": "component",
+        "src/assets/Logo.PNG": "logo",
+        "tsconfig.json": "{}",
+    }
+
+    @staticmethod
+    def _legacy_stage_fingerprint(root: Path) -> str:
+        """Verbatim legacy StageSandboxCopier.fingerprint (base a769e26)."""
+        digest = hashlib.sha256()
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            relative = path.relative_to(root).as_posix().encode()
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            content = path.read_bytes()
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        return "sha256:" + digest.hexdigest()
+
+    @staticmethod
+    def _legacy_source_config_fingerprint(root: Path) -> str:
+        """Verbatim legacy ValidationRunner.source_fingerprint (base a769e26)."""
+        digest = hashlib.sha256()
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            relative = path.relative_to(root)
+            if any(part in STAGE_VOLATILE_NAMES for part in relative.parts):
+                continue
+            name = relative.as_posix().encode()
+            content = path.read_bytes()
+            digest.update(len(name).to_bytes(8, "big"))
+            digest.update(name)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        return "sha256:" + digest.hexdigest()
+
+    @staticmethod
+    def _raw_order_fingerprint(root: Path) -> str:
+        """Digest with raw code-point ordering (the ordering legacy code did NOT use)."""
+        digest = hashlib.sha256()
+        for relative, content in sorted(
+            ((item.relative_to(root).as_posix(), item.read_bytes()) for item in root.rglob("*") if item.is_file()),
+            key=lambda entry: entry[0],
+        ):
+            relative = relative.encode("utf-8")
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        return "sha256:" + digest.hexdigest()
+
+    def test_stage_profile_matches_legacy_digest_on_mixed_case_scaffold(self, tmp_path):
+        root = _write_tree(tmp_path / "workspace", self.SCAFFOLD)
+        assert STAGE_FINGERPRINT_PROFILE.fingerprint(root) == self._legacy_stage_fingerprint(root)
+        assert STAGE_FINGERPRINT_PROFILE.fingerprint(root) == self.STAGE_GOLDEN_MIXED_CASE
+
+    def test_source_config_profile_matches_legacy_digest_on_mixed_case_scaffold(self, tmp_path):
+        root = _write_tree(tmp_path / "workspace", self.SCAFFOLD)
+        _write_tree(root, {"dist/bundle.js": "generated", "node_modules/dep.js": "dep"})
+        assert SOURCE_CONFIG_FINGERPRINT_PROFILE.fingerprint(root) == self._legacy_source_config_fingerprint(root)
+        assert SOURCE_CONFIG_FINGERPRINT_PROFILE.fingerprint(root) == self.STAGE_GOLDEN_MIXED_CASE
+        assert STAGE_FINGERPRINT_PROFILE.fingerprint(root) == self._legacy_stage_fingerprint(root)
+        assert STAGE_FINGERPRINT_PROFILE.fingerprint(root) == self.STAGE_GOLDEN_WITH_VOLATILES
+
+    def test_mixed_case_order_differs_from_raw_byte_order(self, tmp_path):
+        root = _write_tree(tmp_path / "workspace", self.SCAFFOLD)
+        assert STAGE_FINGERPRINT_PROFILE.fingerprint(root) != self._raw_order_fingerprint(root)
+        assert PLANNING_FINGERPRINT_PROFILE.fingerprint(root) != self._raw_order_fingerprint(root)
+
+    def test_manifest_stream_keeps_legacy_raw_order_with_mixed_case_keys(self):
+        manifest = {
+            "README.md": b"readme",
+            "angular.json": b"{}",
+            "package.json": b"{}",
+            "src/main.ts": b"main",
+            "tsconfig.json": b"{}",
+        }
+        digest = hashlib.sha256()
+        for relative_path, content in sorted(manifest.items()):
+            relative = relative_path.encode()
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        expected = "sha256:" + digest.hexdigest()
+        assert STAGE_FINGERPRINT_PROFILE.fingerprint_stream(manifest.items()) == expected
+        assert encode_fingerprint(manifest.items()) == expected
+        assert _fingerprint_manifest(manifest) == expected
