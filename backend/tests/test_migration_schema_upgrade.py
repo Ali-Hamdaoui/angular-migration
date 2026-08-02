@@ -98,6 +98,7 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
         "stage_prompt_requests",
         "stage_gate_packages",
         "stage_gate_decisions",
+        "stage_reconstruction_records",
     }.issubset(schema.get_table_names())
     assert {
         "claim_attempt",
@@ -107,12 +108,24 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
         "checkpoint_id",
     }.issubset({column["name"] for column in schema.get_columns("command_executions")})
     assert {
+        "claim_count",
+    }.issubset({column["name"] for column in schema.get_columns("transformation_continuations")})
+    assert {
         "source_checkpoint_id",
         "input_fingerprint",
         "last_verified_fingerprint",
         "last_verified_at",
     }.issubset({column["name"] for column in schema.get_columns("stage_workspace_bindings")})
     engine.dispose()
+
+    command.downgrade(config, "20260803_39")
+
+    mid = create_engine(database_url)
+    schema = inspect(mid)
+    assert "claim_count" not in {
+        column["name"] for column in schema.get_columns("transformation_continuations")
+    }
+    mid.dispose()
 
     command.downgrade(config, "20260729_35")
 

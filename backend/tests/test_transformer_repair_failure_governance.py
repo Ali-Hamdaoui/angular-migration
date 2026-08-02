@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
 from app.domain.contracts import ArtifactType
+from app.domain.transformation import StageGateDecisionRequest
 from app.llm_gateway import (
     AzureGatewayError,
     AzureOpenAILLMGateway,
@@ -29,9 +30,11 @@ from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
+    MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
+    StageGatePackageModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     UsageCostRecordModel,
@@ -42,6 +45,7 @@ from app.services.repair_application_service import (
     RepairProposal,
     RepairReview,
 )
+from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -119,7 +123,6 @@ def _responses_body(text: str) -> dict[str, object]:
 
 
 def _proposal_payload(app_ts: Path) -> dict[str, object]:
-    checksum = "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest()
     return {
         "proposal_format": "operations",
         "operations": [
@@ -210,7 +213,14 @@ def _seed(
         proposal = store.write_text_artifact(
             run_id,
             f"05_repairs/attempt-{attempt_id}/proposal.json",
-            json.dumps(_proposal_payload(app_ts), sort_keys=True),
+            json.dumps(
+                {
+                    **_proposal_payload(app_ts),
+                    "failure_evidence_checksum": failure.ref.checksum,
+                    "context_pack_checksum": context.ref.checksum,
+                },
+                sort_keys=True,
+            ),
             ArtifactType.JSON,
             stage_id=stage_id,
             attempt_id=attempt_id,
@@ -243,6 +253,24 @@ def _seed(
         version=1,
         stage_plan={"repair_policy": {"max_attempts": 3}, "forbidden_change_policy": {}},
         checksum="sha256:stage-plan",
+        artifact_ids=[],
+        artifact_checksums={},
+        state_version=1,
+        event_sequence=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    migration_plan = MigrationPlanModel(
+        id="plan-1",
+        run_id=run_id,
+        idempotency_key="plan",
+        request_checksum="sha256:plan",
+        actor="operator",
+        correlation_id="corr-1",
+        status="approved",
+        version=1,
+        plan={},
+        checksum="sha256:plan",
         artifact_ids=[],
         artifact_checksums={},
         state_version=1,
@@ -304,7 +332,7 @@ def _seed(
         created_at=NOW,
         updated_at=NOW,
     )
-    session.add_all([run, plan, binding, continuation, attempt])
+    session.add_all([run, plan, migration_plan, binding, continuation, attempt])
     session.add(
         ArtifactMetadataModel(
             id="metadata-" + failure.ref.artifact_id,
@@ -386,6 +414,22 @@ def _orchestrator(factory, repair_service):
         scope=scope,
         stage_service=TransformerStageService(scope=scope),
         gate_service=MagicMock(),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=MagicMock(),
+        repair_service=repair_service,
+        patch_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+
+def _governed_orchestrator(factory, repair_service):
+    scope = _scope(factory)
+    return TransformerOrchestrator(
+        scope=scope,
+        stage_service=TransformerStageService(scope=scope),
+        gate_service=StageGateService(),
         transformation_evidence=MagicMock(),
         prompt_explainer=MagicMock(),
         validation_runner=MagicMock(),
@@ -1058,3 +1102,181 @@ def test_apply_rejects_continuation_mutation_after_durable_claim():
         TransformerOrchestrator._claim_current_continuation_for_apply(
             Session(), "cont-1", "stage-1", expected_state_version=8
         )
+
+
+def _reviewed_attempt_with_transport(factory, tmp_path: Path):
+    session = factory()
+    attempt = session.get(RepairAttemptModel, "repair-1")
+    proposal_checksum = attempt.proposal_checksum
+    session.close()
+    transport = _FakeAzureTransport([_responses_body(json.dumps(_review_payload(proposal_checksum)))])
+    repair_service = RepairApplicationService(
+        scope=_scope(factory),
+        gateway=_gateway(transport, _azure_settings(tmp_path)),
+    )
+    return transport, repair_service
+
+
+def test_g10_package_binds_and_seals_plan_version(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    _transport, repair_service = _reviewed_attempt_with_transport(factory, tmp_path)
+    orchestrator = _governed_orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+
+    _requeue(factory, node="create_g10", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    gate = session.query(StageGatePackageModel).one()
+    assert gate.gate_id == "G10"
+    assert gate.plan_version == 1
+    session.close()
+
+    payload = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g10-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["plan_version"] == 1
+    sealed = {key: value for key, value in payload.items() if key != "backend_lineage_checksum"}
+    assert payload["backend_lineage_checksum"] == TransformerStageService().checksum(sealed)
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert (
+        StageGateService()._validate_repair_lineage(
+            session, continuation, gate.package_artifact_id, gate.package_checksum
+        )
+        is None
+    )
+    session.close()
+    engine.dispose()
+
+
+def test_g10_plan_version_tampering_fails_lineage_and_decide_marks_stale(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    _transport, repair_service = _reviewed_attempt_with_transport(factory, tmp_path)
+    orchestrator = _governed_orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+
+    _requeue(factory, node="create_g10", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    gate = session.query(StageGatePackageModel).one()
+    assert gate.gate_id == "G10"
+    assert gate.plan_version == 1
+    session.close()
+
+    payload_path = artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g10-package.json"
+    tampered = json.loads(payload_path.read_text(encoding="utf-8"))
+    tampered["plan_version"] = 99
+    payload_path.write_text(json.dumps(tampered, sort_keys=True, indent=2), encoding="utf-8")
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    with pytest.raises(StageGateError) as raised:
+        StageGateService()._validate_repair_lineage(
+            session, continuation, gate.package_artifact_id, gate.package_checksum
+        )
+    assert raised.value.code == "G10_LINEAGE_STALE"
+    session.close()
+
+    session = factory()
+    plan = session.get(MigrationPlanModel, "plan-1")
+    plan.version = 2
+    session.commit()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    gate_row = session.get(StageGatePackageModel, gate.id)
+    with pytest.raises(StageGateError) as raised:
+        StageGateService().decide(
+            session,
+            continuation,
+            "G10",
+            StageGateDecisionRequest(
+                expected_state_version=continuation.state_version,
+                idempotency_key="g10-approve",
+                package_checksum=gate.package_checksum,
+                workspace_fingerprint=gate.workspace_fingerprint,
+                decision="approve",
+                correlation_id="correlation-g10",
+            ),
+            actor="operator",
+            now=NOW,
+        )
+    assert raised.value.code == "STALE_GATE_BINDING"
+    assert gate_row.status == "stale"
+    assert gate_row.stale_at == NOW
+    session.close()
+    engine.dispose()
+
+
+def test_g11_package_binds_actual_plan_version(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    _transport, repair_service = _reviewed_attempt_with_transport(factory, tmp_path)
+    orchestrator = _governed_orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+
+    _requeue(factory, node="create_g11", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    gate = session.query(StageGatePackageModel).one()
+    assert gate.gate_id == "G11"
+    assert gate.plan_version == 1
+    session.close()
+    payload = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g11-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["plan_version"] == 1
+    engine.dispose()
+
+
+def test_g09_from_repair_package_binds_actual_plan_version(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, artifacts = _seed(factory, tmp_path, proposed=True)
+    _transport, repair_service = _reviewed_attempt_with_transport(factory, tmp_path)
+    orchestrator = _governed_orchestrator(factory, repair_service)
+
+    orchestrator.advance("cont-1", "worker-1")
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").current_node == "create_g10"
+    session.close()
+
+    _requeue(factory, node="create_g09", worker="worker-1")
+    orchestrator.advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    gate = session.query(StageGatePackageModel).one()
+    assert gate.gate_id == "G09"
+    assert gate.plan_version == 1
+    session.close()
+    payload = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g09-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["plan_version"] == 1
+    engine.dispose()

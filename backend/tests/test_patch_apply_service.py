@@ -1,8 +1,10 @@
 import hashlib
+import json
 import os
 from pathlib import Path
 
 import pytest
+from app.artifact_store import LocalFilesystemArtifactStore
 from app.services.patch_apply_service import PatchApplyService
 from app.services.repair_application_service import RepairApplicationError
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -396,3 +398,93 @@ def test_initial_manifest_is_authority_checked_as_one_snapshot(tmp_path: Path, m
             attempt_id="repair-1",
         )
     assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def _ledger_payload(artifacts: Path, ledger):
+    store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
+    return json.loads(store.read_artifact_by_id(ledger.ref.artifact_id).content)
+
+
+def test_apply_ledger_binds_approved_proposal_artifact_checksum(tmp_path: Path):
+    """The apply ledger binds the approved proposal ARTIFACT checksum.
+
+    ``RepairAttemptModel.proposal_checksum`` is the checksum of the stored
+    proposal artifact bytes (``json.dumps(..., sort_keys=True, indent=2)``);
+    the ledger must record that exact identity, not a canonical re-encoding of
+    the parsed dict. RED until the fix: the ledger re-encodes with
+    ``separators=(",", ":")`` and therefore differs from the approved checksum.
+    """
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "app.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    approved = "sha256:" + "a" * 64
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [{
+            "operation": "replace_text",
+            "path": "src/app.ts",
+            "old_text": "old",
+            "new_text": "new",
+            "preimage_sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+        }],
+        "unified_diff": None,
+    }
+
+    _prepared, ledger, _fingerprint = PatchApplyService().apply(
+        proposal=proposal,
+        workspace_path=str(workspace),
+        expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        run_id="run-1",
+        stage_id="stage-1",
+        artifact_root=str(artifacts),
+        attempt_id="repair-1",
+        approved_proposal_checksum=approved,
+        proposal_artifact_checksum=approved,
+    )
+
+    assert _ledger_payload(artifacts, ledger)["proposal_checksum"] == approved
+    assert PatchApplyService._checksum(proposal) != approved
+
+
+def test_apply_ledger_proposal_checksum_falls_back_to_canonical_encoding(tmp_path: Path):
+    """Without an artifact checksum the ledger pins a documented fallback.
+
+    Direct service use (no approved artifact checksum supplied) records the
+    canonical re-encoding ``json.dumps(sort_keys=True, separators=(",", ":"))``
+    as an explicit, documented fallback; no consumer compares it against the
+    stored-artifact checksum.
+    """
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    target = workspace / "src" / "app.ts"
+    target.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [{
+            "operation": "replace_text",
+            "path": "src/app.ts",
+            "old_text": "old",
+            "new_text": "new",
+            "preimage_sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+        }],
+        "unified_diff": None,
+    }
+
+    _prepared, ledger, _fingerprint = PatchApplyService().apply(
+        proposal=proposal,
+        workspace_path=str(workspace),
+        expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        run_id="run-1",
+        stage_id="stage-1",
+        artifact_root=str(artifacts),
+        attempt_id="repair-1",
+    )
+
+    assert _ledger_payload(artifacts, ledger)["proposal_checksum"] == PatchApplyService._checksum(
+        proposal
+    )

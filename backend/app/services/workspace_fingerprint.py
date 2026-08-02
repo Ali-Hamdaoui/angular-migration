@@ -38,11 +38,17 @@ Sort contract (two entry points, two documented orders)
   filesystem).  Separators are normalized to forward slashes so the digest is
   independent of the host filesystem path separator.
 - Manifest stream (``encode_fingerprint`` -> ``Profile.fingerprint_stream``):
-  entries sorted by raw relative posix path code points.  This is the legacy
-  ``patch_apply_service._fingerprint_manifest`` contract (``sorted(manifest
-  .items())`` over already-posix-normalized keys) and is deliberately NOT
-  case-normalized: repair-ledger pre/post fingerprints persisted by that
-  implementation used raw code-point order.
+  entries sorted by raw relative posix path code points.  This preserves the
+  generic stream contract (``sorted(manifest.items())`` over
+  already-posix-normalized keys) for callers that explicitly need raw order.
+- Apply manifest (``encode_fingerprint_manifest`` ->
+  ``Profile.fingerprint_manifest``): entries sorted by
+  ``(relative_posix_path.casefold(), relative_posix_path)`` — the SAME
+  ordering as the stage tree profile.  ``patch_apply_service`` hashes its
+  apply-time workspace manifest with this function so the pre-check digest and
+  the post-apply fingerprint recorded into the stage binding are
+  byte-identical with ``StageWorkspaceBindingModel.workspace_fingerprint``
+  (apples-to-apples comparison on mixed-case trees).
 
 Scope policy
 ------------
@@ -75,8 +81,11 @@ Windows ``Path`` sort).
 - Source-config digests (``ValidationRunner.source_fingerprint`` start/end
   evidence) are byte-identical with the legacy implementation: same sort
   ordering, same stream encoding, same exclusion set.
-- Manifest-stream digests are byte-identical with legacy
-  ``_fingerprint_manifest`` (raw code-point order).
+- Manifest-stream digests preserve raw code-point order through
+  ``encode_fingerprint``/``fingerprint_stream``; the apply-time manifest
+  (``encode_fingerprint_manifest``/``fingerprint_manifest``) uses the same
+  casefold order as the stage tree profile so apply pre-checks and post-apply
+  binding fingerprints compare apples-to-apples.
 - Planning-scope digests are a deliberate versioned change: the legacy
   baseline fingerprint used a different encoding (path bytes + per-file
   content digest, no length prefixes).  Planning digests are re-created per
@@ -125,12 +134,24 @@ def encode_fingerprint(entries: Iterable[tuple[str, bytes]]) -> str:
     """Encode a ``(relative_posix_path, content_bytes)`` stream into a canonical digest.
 
     Entries are ordered by raw relative posix path code points.  This is the
-    legacy manifest-stream contract: ``patch_apply_service._fingerprint_manifest``
-    sorted ``dict.items()`` over already-posix-normalized string keys, so
-    digests produced here are byte-identical with persisted repair-ledger
-    pre/post fingerprints.
+    generic manifest-stream contract (``sorted(manifest.items())`` over
+    already-posix-normalized keys); callers that must compare against a
+    persisted stage-tree digest should use ``encode_fingerprint_manifest``
+    instead.
     """
     return _encode_stream(entries, sort_key=lambda entry: entry[0])
+
+
+def encode_fingerprint_manifest(entries: Iterable[tuple[str, bytes]]) -> str:
+    """Encode a ``(relative_posix_path, content_bytes)`` manifest into a canonical tree-order digest.
+
+    Entries are ordered by ``(relative_posix_path.casefold(),
+    relative_posix_path)`` — the same ordering as ``workspace_fingerprint_v1``
+    and ``STAGE_FINGERPRINT_PROFILE.fingerprint``.  A manifest digest over a
+    workspace tree is therefore byte-identical with the stage binding and
+    checkpoint fingerprint persisted for the same tree.
+    """
+    return _encode_stream(entries, sort_key=_legacy_path_order_key)
 
 
 def workspace_fingerprint_v1(root: Path, *, exclude: frozenset[str] = frozenset()) -> str:
@@ -164,6 +185,9 @@ class WorkspaceFingerprintProfile:
 
     def fingerprint_stream(self, entries: Iterable[tuple[str, bytes]]) -> str:
         return encode_fingerprint(entries)
+
+    def fingerprint_manifest(self, entries: Iterable[tuple[str, bytes]]) -> str:
+        return encode_fingerprint_manifest(entries)
 
 
 PLANNING_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(excluded_names=PLANNING_VOLATILE_ROOTS)

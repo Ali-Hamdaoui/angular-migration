@@ -59,7 +59,7 @@ from app.repositories.models.workflow import (
     WorkerLeaseModel,
     WorkflowEventModel,
 )
-from app.repositories.models import ExecutionProfileModel
+from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
@@ -168,6 +168,7 @@ class CommandExecutionResponse:
     cancel_requested_by: str | None = None
     cancelled: bool = False
     timed_out: bool = False
+    claim_attempt: int | None = None
 
 
 class CommandExecutorService:
@@ -218,6 +219,10 @@ class CommandExecutorService:
         CommandStatus.TIMED_OUT.value: set(),
         CommandStatus.CANCELLED.value: set(),
     }
+
+    # Bounded claim-loss budget: an execution whose lease expired this many
+    # times is blocked instead of being requeued forever.
+    _CLAIM_RETRY_THRESHOLD = 3
 
     @classmethod
     def transition_execution(cls, session: Session, model: CommandExecutionModel, next_status: str, *, now: datetime | None = None) -> None:
@@ -331,7 +336,15 @@ class CommandExecutorService:
             prior_worker = model.worker_id
             model.worker_id = None
             model.claim_expires_at = None
-            if model.status == CommandStatus.QUEUED.value:
+            if (model.claim_attempt or 0) >= self._CLAIM_RETRY_THRESHOLD:
+                model.status = CommandStatus.FAILED.value
+                model.finished_at = checked_at
+                model.failure_code = "COMMAND_CLAIM_EXHAUSTED"
+                model.failure_message = (
+                    "Command claim was lost repeatedly beyond the bounded claim-retry threshold."
+                )
+                model.blockers = [model.failure_code]
+            elif model.status == CommandStatus.QUEUED.value:
                 model.failure_code = None
                 model.failure_message = None
             elif model.operation_kind == "mutating":
@@ -513,7 +526,7 @@ class CommandExecutorService:
         idempotency_key: str,
         workspace_recovered: bool = False,
     ) -> CommandExecutionResponse:
-        """Create one immutable successor for a failed execution."""
+        """Create one immutable successor for a failed or interrupted execution."""
         failed = session.get(CommandExecutionModel, failed_execution_id)
         if failed is None:
             raise CommandExecutorError("EXECUTION_NOT_FOUND", "Failed execution does not exist")
@@ -530,10 +543,21 @@ class CommandExecutorService:
                     "Retry key is bound to another execution",
                 )
             return self._response_from_model(existing, idempotent_replay=True)
-        if failed.status != CommandStatus.FAILED.value:
+        if failed.status == CommandStatus.INTERRUPTED.value:
+            if not failed.reconstruction_required:
+                raise CommandExecutorError(
+                    "EXECUTION_NOT_RETRYABLE",
+                    "An interrupted execution may only have a successor after reconstruction is required and verified",
+                )
+        elif failed.status != CommandStatus.FAILED.value:
             raise CommandExecutorError(
                 "EXECUTION_NOT_RETRYABLE",
                 "Only a terminal failed execution may have a successor",
+            )
+        if (failed.attempt_number or 1) >= self._retry_budget(session, failed):
+            raise CommandExecutorError(
+                "REQUESTED_RETRY_EXCEEDS_LIMIT",
+                "Requested retry exceeds the stage plan repair policy retry budget",
             )
         if (
             failed.process_id is not None or failed.exit_code is not None
@@ -1206,6 +1230,29 @@ class CommandExecutorService:
         return CommandStatus.FAILED
 
     @staticmethod
+    def _retry_budget(session: Session, execution: CommandExecutionModel) -> int:
+        """Resolve the bounded retry budget from the stage plan repair policy."""
+        stage_plan = session.scalar(
+            select(StageExecutionPlanModel)
+            .where(
+                StageExecutionPlanModel.run_id == execution.run_id,
+                StageExecutionPlanModel.stage_id == execution.stage_id,
+            )
+            .order_by(StageExecutionPlanModel.version.desc())
+            .limit(1)
+        )
+        repair_policy = (
+            ((stage_plan.stage_plan or {}).get("repair_policy") or {})
+            if stage_plan is not None
+            else {}
+        )
+        try:
+            budget = int(repair_policy.get("max_attempts") or 3)
+        except (TypeError, ValueError):
+            budget = 3
+        return max(1, budget)
+
+    @staticmethod
     def _append_event(
         session: Session,
         run_id: str,
@@ -1273,4 +1320,5 @@ class CommandExecutorService:
             cancelled=bool(model.cancelled),
             timed_out=bool(model.timed_out),
             request_payload_hash=model.request_payload_hash,
+            claim_attempt=model.claim_attempt,
         )

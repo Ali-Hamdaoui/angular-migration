@@ -17,6 +17,7 @@ from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalF
 from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
+    MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
@@ -25,6 +26,7 @@ from app.repositories.models import (
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
+from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.state import StateTransitionService
 
@@ -47,6 +49,13 @@ _NEXT_NODE = {
 
 
 class StageGateService:
+    @staticmethod
+    def _current_plan_version(session: Session, continuation: TransformationContinuationModel) -> int:
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if plan is None or plan.run_id != continuation.run_id:
+            raise StageGateError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
+        return plan.version
+
     def create(
         self,
         session: Session,
@@ -61,7 +70,13 @@ class StageGateService:
     ) -> StageGatePackageModel:
         StageGateId(gate_id)
         if gate_id == StageGateId.G10.value:
-            self._validate_repair_lineage(session, continuation, package_artifact_id, package_checksum)
+            self._validate_repair_lineage(
+                session,
+                continuation,
+                package_artifact_id,
+                package_checksum,
+                artifact_set_checksum=artifact_set_checksum,
+            )
         existing = session.scalar(
             select(StageGatePackageModel).where(
                 StageGatePackageModel.run_id == continuation.run_id,
@@ -99,7 +114,7 @@ class StageGateService:
             package_checksum=package_checksum,
             artifact_set_checksum=artifact_set_checksum,
             plan_id=continuation.plan_id,
-            plan_version=1,
+            plan_version=self._current_plan_version(session, continuation),
             stage_plan_id=continuation.stage_plan_id,
             stage_plan_checksum=continuation.stage_plan_checksum,
             workspace_fingerprint=workspace_fingerprint,
@@ -162,9 +177,22 @@ class StageGateService:
         )
         if package is None:
             raise StageGateError("GATE_NOT_PENDING", f"{gate_id} is not pending")
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if (
+            plan is None
+            or plan.run_id != continuation.run_id
+            or package.plan_version != plan.version
+        ):
+            package.status = "stale"
+            package.stale_at = now or datetime.now(UTC)
+            raise StageGateError("STALE_GATE_BINDING", "Gate package is bound to a stale plan version")
         if gate_id == StageGateId.G10.value:
             self._validate_repair_lineage(
-                session, continuation, package.package_artifact_id, package.package_checksum
+                session,
+                continuation,
+                package.package_artifact_id,
+                package.package_checksum,
+                artifact_set_checksum=package.artifact_set_checksum,
             )
         if (
             continuation.state_version != request.expected_state_version
@@ -233,8 +261,33 @@ class StageGateService:
 
     @classmethod
     def _validate_repair_lineage(
-        cls, session: Session, continuation, package_artifact_id: str, package_checksum: str
+        cls,
+        session: Session,
+        continuation,
+        package_artifact_id: str,
+        package_checksum: str,
+        artifact_set_checksum: str | None = None,
     ) -> None:
+        """Verify the G10 envelope and its four inner artifacts by ROLE.
+
+        Role authority contract (never weakened):
+
+        - ``failure_evidence`` and ``context_pack`` are PRE-ATTEMPT roles:
+          FailureEvidenceService writes them before the RepairAttempt row
+          exists, so their envelope ``attempt_id`` is legitimately NULL; a
+          non-NULL id must still equal the current attempt.
+        - ``proposal`` and ``review`` are ATTEMPT-BOUND roles: their envelope
+          ``attempt_id`` must be the exact RepairAttempt id (NULL is rejected).
+        - Every role still requires the exact run id, stage id, artifact
+          identity, and checksum.
+        - The four role artifact ids must be distinct: a single artifact id may
+          not satisfy two roles, and role-specific content checks always run
+          per role.
+        - When ``artifact_set_checksum`` is supplied, the canonical set checksum
+          over (failure evidence, context pack, proposal, review, envelope)
+          must match it.
+        """
+        session.flush()
         metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
         run = session.get(MigrationRunModel, continuation.run_id)
         if metadata is None or run is None or metadata.run_id != continuation.run_id or metadata.checksum != package_checksum:
@@ -284,7 +337,11 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if plan is None or plan.run_id != continuation.run_id:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 package plan binding is missing")
         expected = {
+            "plan_version": plan.version,
             "failure_evidence_checksum": attempt.failure_evidence_checksum,
             "context_pack_checksum": attempt.context_pack_checksum,
             "proposal_artifact_id": attempt.proposal_artifact_id,
@@ -308,12 +365,34 @@ class StageGateService:
         lineage_payload = {key: value for key, value in package.items() if key != "backend_lineage_checksum"}
         if package.get("backend_lineage_checksum") != cls._checksum(lineage_payload):
             raise StageGateError("G10_LINEAGE_STALE", "G10 backend lineage checksum is invalid")
-        for artifact_id, checksum in (
-            (attempt.failure_evidence_artifact_id, attempt.failure_evidence_checksum),
-            (attempt.context_pack_artifact_id, attempt.context_pack_checksum),
-            (attempt.proposal_artifact_id, attempt.proposal_checksum),
-            (attempt.review_artifact_id, attempt.review_checksum),
-        ):
+        role_specs = (
+            ("failure_evidence", attempt.failure_evidence_artifact_id, attempt.failure_evidence_checksum),
+            ("context_pack", attempt.context_pack_artifact_id, attempt.context_pack_checksum),
+            ("proposal", attempt.proposal_artifact_id, attempt.proposal_checksum),
+            ("review", attempt.review_artifact_id, attempt.review_checksum),
+        )
+        role_ids = [artifact_id for _role, artifact_id, _checksum in role_specs]
+        if any(item is None for item in role_ids):
+            raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact lineage is missing")
+        if len(set(role_ids)) != len(role_ids):
+            raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact roles are not distinct")
+        if artifact_set_checksum is not None:
+            try:
+                computed_set = canonical_artifact_set_checksum(
+                    [
+                        {"artifact_id": attempt.failure_evidence_artifact_id, "checksum": attempt.failure_evidence_checksum},
+                        {"artifact_id": attempt.context_pack_artifact_id, "checksum": attempt.context_pack_checksum},
+                        {"artifact_id": attempt.proposal_artifact_id, "checksum": attempt.proposal_checksum},
+                        {"artifact_id": attempt.review_artifact_id, "checksum": attempt.review_checksum},
+                        {"artifact_id": package_artifact_id, "checksum": package_checksum},
+                    ]
+                )
+            except ValueError as error:
+                raise StageGateError("G10_LINEAGE_STALE", "G10 artifact set checksum is invalid") from error
+            if computed_set != artifact_set_checksum:
+                raise StageGateError("G10_LINEAGE_STALE", "G10 artifact set checksum is invalid")
+        for role, artifact_id, checksum in role_specs:
+            pre_attempt = role in {"failure_evidence", "context_pack"}
             artifact = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
             if artifact is None or artifact.run_id != continuation.run_id or artifact.checksum != checksum:
                 raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact lineage is missing")
@@ -329,22 +408,23 @@ class StageGateService:
                 envelope is None
                 or envelope.run_id != continuation.run_id
                 or envelope.stage_id != continuation.current_stage_id
-                or envelope.attempt_id != attempt.id
+                or (
+                    envelope.attempt_id not in (None, attempt.id)
+                    if pre_attempt
+                    else envelope.attempt_id != attempt.id
+                )
             ):
                 raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact envelope binding is stale")
-            if artifact_id == attempt.failure_evidence_artifact_id:
-                pass
-            elif artifact_id == attempt.context_pack_artifact_id:
-                pass
-            elif artifact_id == attempt.proposal_artifact_id:
+            if role == "proposal":
                 if payload.get("failure_evidence_checksum") != attempt.failure_evidence_checksum or payload.get("context_pack_checksum") != attempt.context_pack_checksum:
                     raise StageGateError("G10_LINEAGE_STALE", "G10 proposal evidence lineage is stale")
                 targets = list(payload.get("validation_targets") or [])
                 normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
                 if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in {"build", "test", "lint"} for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
-            elif payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
-                raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
+            elif role == "review":
+                if payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
+                    raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
         for invocation_id, role, artifact_id, checksum in (
             (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
             (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum),

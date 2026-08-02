@@ -1,4 +1,16 @@
-"""Deterministic application of one checksum-bound, human-approved repair."""
+"""Deterministic application of one checksum-bound, human-approved repair.
+
+The apply ledger binds the exact approved proposal ARTIFACT checksum
+(``proposal_artifact_checksum``, taken by callers from
+``RepairAttemptModel.proposal_checksum`` / the stored proposal artifact bytes)
+so the ledger identifies the very bytes that were human-approved. When no
+artifact checksum is supplied (direct service use), the ledger falls back to
+the canonical re-encoding of the proposal dict (``json.dumps(..., sort_keys=True,
+separators=(",", ":"))``). The stored-artifact checksum and the canonical
+re-encoding are intentionally distinct checksums: they serialize the same
+object with different separators/indentation, and no consumer compares the two.
+The fallback exists only to give unbound ledger writes a stable identity.
+"""
 
 from __future__ import annotations
 
@@ -129,7 +141,14 @@ def _fingerprint_with_locked_targets(root: Path, locked_targets: dict[str, tuple
 
 
 def _fingerprint_manifest(manifest: dict[str, bytes]) -> str:
-    return STAGE_FINGERPRINT_PROFILE.fingerprint_stream(manifest.items())
+    """Digest a workspace manifest with the canonical stage-tree ordering.
+
+    The digest must be byte-identical with ``STAGE_FINGERPRINT_PROFILE.
+    fingerprint`` over the same tree (casefold sort) so the apply pre-check
+    and the post-apply fingerprint recorded into the stage binding compare
+    apples-to-apples with the persisted binding/checkpoint fingerprint.
+    """
+    return STAGE_FINGERPRINT_PROFILE.fingerprint_manifest(manifest.items())
 
 
 class PatchApplyService:
@@ -192,7 +211,7 @@ class PatchApplyService:
         prepared = {
             "schema_version": "repair-apply-ledger-v1",
             "attempt_id": attempt_id,
-            "proposal_checksum": self._checksum(proposal),
+            "proposal_checksum": proposal_artifact_checksum or self._checksum(proposal),
             "pre_fingerprint": expected_fingerprint,
             "status": "prepared",
             "operations": [],

@@ -1,24 +1,31 @@
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.transformation import StageGateDecisionRequest
 from app.orchestration.transformer_graph import TransformerOrchestrator, TransformerWorkflow
+from app.orchestration.transformer_sealing_flow import TransformerSealingFlow
 from app.repositories.models import (
     ActivePlanVersionModel,
     CommandExecutionModel,
+    CommandLogChunkModel,
     ExecutionProfileModel,
     MigrationRunModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
+    StageStepModel,
+    StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
 from app.services.stage_gate_service import StageGateService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from tests.test_transformation_continuation import _create, _session
@@ -206,6 +213,7 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
         gate = session.query(StageGatePackageModel).one()
         assert durable.status == "waiting_gate"
         assert durable.current_node == "wait_g07"
+        assert gate.plan_version == 1
         StageGateService().decide(
             session,
             durable,
@@ -249,4 +257,273 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
         assert durable.status == "queued"
         assert durable.current_node == "angular_update"
         assert [item.command_id for item in commands] == ["npm-ci-bootstrap"]
+    g07_package = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g07-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert g07_package["plan_version"] == 1
+    engine.dispose()
+
+
+def _scoped_sessions(tmp_path: Path, artifacts: Path, workspace: Path):
+    engine, seed = _session(tmp_path)
+    run = seed.get(MigrationRunModel, "run-1")
+    run.run_root = str(tmp_path)
+    run.artifact_root = str(artifacts)
+    run.workspace_aliases = {
+        "BASELINE_SANDBOX": str(tmp_path),
+        "STAGE_SANDBOX": str(tmp_path),
+    }
+    stage_plan = seed.get(StageExecutionPlanModel, "stage-plan-1")
+    stage_plan.stage_plan = {
+        "stage_id": "stage-1",
+        "plan_version": 1,
+        "source_family": "angular-18.x",
+        "source_exact": "18.2.0",
+        "target_family": "angular-19.x",
+        "target_exact": "19.2.0",
+        "target_cli_exact": "19.2.0",
+        "execution_profile_id": "profile-1",
+    }
+    seed.add(
+        StageWorkspaceBindingModel(
+            id="binding-1",
+            run_id="run-1",
+            stage_id="stage-1",
+            alias="STAGE_WORKSPACE_1",
+            workspace_path=str(workspace),
+            workspace_fingerprint=StageSandboxCopier.fingerprint(workspace),
+            active=True,
+            created_at=NOW,
+        )
+    )
+    continuation = _create(TransformationContinuationService(), seed)
+    seed.commit()
+    continuation_id = continuation.id
+    seed.close()
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def scope():
+        session = sessions()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    return engine, scope, continuation_id
+
+
+def test_g08_package_binds_actual_plan_version(tmp_path: Path):
+    artifacts = tmp_path / "artifacts" / "run-1"
+    artifacts.mkdir(parents=True)
+    workspace = tmp_path / "ws08"
+    (workspace / "node_modules" / "@angular" / "core").mkdir(parents=True)
+    (workspace / "node_modules" / "@angular" / "cli").mkdir(parents=True)
+    (workspace / "package.json").write_text(
+        json.dumps(
+            {
+                "dependencies": {"@angular/core": "19.2.0"},
+                "devDependencies": {"@angular/cli": "19.2.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/@angular/core": {"version": "19.2.0"},
+                    "node_modules/@angular/cli": {"version": "19.2.0"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "node_modules" / "@angular" / "core" / "package.json").write_text(
+        json.dumps({"version": "19.2.0"}), encoding="utf-8"
+    )
+    (workspace / "node_modules" / "@angular" / "cli" / "package.json").write_text(
+        json.dumps({"version": "19.2.0"}), encoding="utf-8"
+    )
+    checkpoint = tmp_path / "ckpt08"
+    checkpoint.mkdir()
+    engine, scope, continuation_id = _scoped_sessions(tmp_path, artifacts, workspace)
+    with scope() as session:
+        continuation = session.get(TransformationContinuationModel, continuation_id)
+        angular_execution = CommandExecutionModel(
+            id="exec-angular",
+            run_id="run-1",
+            stage_id="stage-1",
+            idempotency_key="exec-angular",
+            request_payload_hash="sha256:angular",
+            executable="npx",
+            status="succeeded",
+            requested_at=NOW,
+            started_at=NOW,
+            finished_at=NOW,
+            exit_code=0,
+            command_id="x2",
+            checkpoint_id="checkpoint-08",
+            runtime_checksum="sha256:runtime",
+        )
+        version_execution = CommandExecutionModel(
+            id="exec-version",
+            run_id="run-1",
+            stage_id="stage-1",
+            idempotency_key="exec-version",
+            request_payload_hash="sha256:version",
+            executable="npx",
+            status="succeeded",
+            requested_at=NOW,
+            started_at=NOW,
+            finished_at=NOW,
+            exit_code=0,
+            command_id="x3",
+            runtime_checksum="sha256:runtime",
+        )
+        session.add_all(
+            [
+                StageCheckpointModel(
+                    id="checkpoint-08",
+                    run_id="run-1",
+                    stage_id="stage-1",
+                    kind="pre_angular_update",
+                    sequence=1,
+                    workspace_alias="STAGE_WORKSPACE_1",
+                    workspace_path=str(checkpoint),
+                    workspace_fingerprint="sha256:checkpoint",
+                    state_version=1,
+                    created_at=NOW,
+                ),
+                StageStepModel(
+                    id="step-angular",
+                    run_id="run-1",
+                    stage_id="stage-1",
+                    name="angular_update-0",
+                    status="PASSED",
+                    component_type="command",
+                    execution_id="exec-angular",
+                    completed_at=NOW,
+                    state_version=1,
+                    updated_at=NOW,
+                ),
+                StageStepModel(
+                    id="step-version",
+                    run_id="run-1",
+                    stage_id="stage-1",
+                    name="target_version_check-0",
+                    status="PASSED",
+                    component_type="command",
+                    execution_id="exec-version",
+                    completed_at=NOW,
+                    state_version=1,
+                    updated_at=NOW,
+                ),
+                angular_execution,
+                version_execution,
+                CommandLogChunkModel(
+                    id="chunk-1",
+                    execution_id="exec-version",
+                    run_id="run-1",
+                    sequence=1,
+                    stream="stdout",
+                    text="Angular: 19.2.0\nAngular CLI: 19.2.0\n",
+                    byte_count=32,
+                    character_count=32,
+                    created_at=NOW,
+                ),
+            ]
+        )
+        continuation.status = "running"
+        continuation.current_node = "version_verify"
+        continuation.worker_id = "worker-1"
+    stage_service = TransformerStageService(scope=scope, now_provider=lambda: NOW)
+    workflow = TransformerWorkflow(
+        TransformerOrchestrator(scope=scope, stage_service=stage_service)
+    )
+    workflow.invoke(continuation_id, "worker-1")
+
+    with scope() as session:
+        durable = session.get(TransformationContinuationModel, continuation_id)
+        gate = session.query(StageGatePackageModel).one()
+        assert durable.status == "waiting_gate"
+        assert durable.current_node == "wait_g08"
+        assert gate.gate_id == "G08"
+        assert gate.plan_version == 1
+    g08_package = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g08-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert g08_package["plan_version"] == 1
+    engine.dispose()
+
+
+def test_g12_package_binds_actual_plan_version_and_stage_plan_checksum(tmp_path: Path):
+    artifacts = tmp_path / "artifacts" / "run-1"
+    artifacts.mkdir(parents=True)
+    workspace = tmp_path / "ws12"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src" / "app.ts").write_text("old", encoding="utf-8")
+    engine, scope, continuation_id = _scoped_sessions(tmp_path, artifacts, workspace)
+    with scope() as session:
+        continuation = session.get(TransformationContinuationModel, continuation_id)
+        continuation.status = "running"
+        continuation.current_node = "create_g12"
+        continuation.worker_id = "worker-1"
+        session.add(
+            StageGatePackageModel(
+                id="gate-g09",
+                run_id="run-1",
+                stage_id="stage-1",
+                gate_id="G09",
+                gate_version=1,
+                status="approved",
+                package_artifact_id="artifact-g09",
+                package_checksum="sha256:g09",
+                artifact_set_checksum="sha256:g09-set",
+                plan_id="plan-1",
+                plan_version=1,
+                stage_plan_id="stage-plan-1",
+                stage_plan_checksum="sha256:stage-plan",
+                workspace_fingerprint=StageSandboxCopier.fingerprint(workspace),
+                expected_state_version=1,
+                created_at=NOW,
+            )
+        )
+    flow = TransformerSealingFlow(
+        scope=scope,
+        stage_service=TransformerStageService(scope=scope, now_provider=lambda: NOW),
+        gate_service=StageGateService(),
+    )
+    flow.create_g12(continuation_id, "worker-1")
+
+    with scope() as session:
+        durable = session.get(TransformationContinuationModel, continuation_id)
+        gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == "run-1",
+                StageGatePackageModel.gate_id == "G12",
+            )
+            .order_by(StageGatePackageModel.gate_version.desc())
+            .limit(1)
+        )
+        assert durable.status == "waiting_gate"
+        assert durable.current_node == "wait_g12"
+        assert gate.gate_id == "G12"
+        assert gate.plan_version == 1
+    g12_package = json.loads(
+        (artifacts / "04_workflow_state" / "stages" / "stage-1" / "gates" / "g12-package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert g12_package["plan_version"] == 1
+    assert g12_package["stage_plan_checksum"] == "sha256:stage-plan"
     engine.dispose()

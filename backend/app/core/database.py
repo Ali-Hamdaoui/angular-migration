@@ -24,6 +24,7 @@ TRANSFORMER_TABLES = (
     "stage_prompt_requests",
     "stage_gate_packages",
     "stage_gate_decisions",
+    "stage_reconstruction_records",
 )
 
 
