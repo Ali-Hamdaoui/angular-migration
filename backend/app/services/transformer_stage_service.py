@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
@@ -23,6 +24,7 @@ from app.repositories.models import (
     MigrationRunModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
+    StageReconstructionRecordModel,
     StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
@@ -98,8 +100,18 @@ class TransformerStageService:
                 dict(run.workspace_aliases or {}),
                 run.artifact_root,
             )
+            durable = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run.id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            expected_fingerprint = durable.workspace_fingerprint if durable is not None else None
         try:
-            preparation = self._stage_execution._prepare_workspace(validated)
+            preparation = self._stage_execution._prepare_workspace(
+                validated, expected_fingerprint=expected_fingerprint
+            )
             artifacts = self._stage_execution._write_preparation_artifacts(validated, preparation)
         except StageExecutionError as error:
             raise TransformerStageError(error.code, error.message) from error
@@ -446,6 +458,127 @@ class TransformerStageService:
         shutil.rmtree(quarantine)
         return StageSandboxCopier.fingerprint(workspace)
 
+    def begin_reconstruction(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        checkpoint: StageCheckpointModel,
+        reason: str,
+        execution_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> None:
+        """Record governed reconstruction intent before the filesystem swap.
+
+        Verifies the durable binding still agrees with the immutable source
+        checkpoint; on disagreement the reconstruction is refused and the
+        FINGERPRINT_MISMATCH event is committed durably.  Otherwise the
+        STARTED event is emitted in the caller's transaction (the tx that
+        records intent).  The caller must then swap the workspace and write
+        the ledger row + binding in one authoritative transaction.
+        """
+        transitions = StateTransitionService(session)
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+        )
+        if binding is not None and binding.workspace_fingerprint != checkpoint.workspace_fingerprint:
+            transitions.append_audit_event(
+                run_id=continuation.run_id,
+                idempotency_key=(
+                    f"{continuation.current_stage_id}:reconstruct:{reason}:{checkpoint.id}:mismatch"
+                ),
+                event_type=WorkflowEventType.STAGE_WORKSPACE_FINGERPRINT_MISMATCH,
+                actor="transformer",
+                reason="workspace binding fingerprint no longer matches the reconstruction checkpoint",
+                occurred_at=self._now(),
+                payload={
+                    "stage_id": continuation.current_stage_id,
+                    "checkpoint_id": checkpoint.id,
+                    "binding_workspace_fingerprint": binding.workspace_fingerprint,
+                    "checkpoint_workspace_fingerprint": checkpoint.workspace_fingerprint,
+                    "reason": reason,
+                },
+            )
+            session.commit()
+            raise TransformerStageError(
+                "WORKSPACE_FINGERPRINT_MISMATCH",
+                "Durable workspace binding no longer matches the reconstruction checkpoint",
+            )
+        transitions.append_audit_event(
+            run_id=continuation.run_id,
+            idempotency_key=(
+                f"{continuation.current_stage_id}:reconstruct:{reason}:{checkpoint.id}:started"
+            ),
+            event_type=WorkflowEventType.STAGE_WORKSPACE_RECONSTRUCTION_STARTED,
+            actor="transformer",
+            reason=f"workspace reconstruction started ({reason})",
+            occurred_at=self._now(),
+            payload={
+                "stage_id": continuation.current_stage_id,
+                "checkpoint_id": checkpoint.id,
+                "checkpoint_fingerprint": checkpoint.workspace_fingerprint,
+                "reason": reason,
+                "execution_id": execution_id,
+                "attempt_id": attempt_id,
+            },
+        )
+
+    def record_reconstruction(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        checkpoint: StageCheckpointModel,
+        reason: str,
+        restored_fingerprint: str,
+        execution_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> StageReconstructionRecordModel:
+        """Write the durable ledger row and the RECONSTRUCTED event.
+
+        Must be called in the same transaction as the authoritative binding /
+        checkpoint state change so the binding is never updated while the
+        ledger row is absent.
+        """
+        record = StageReconstructionRecordModel(
+            id=f"reconstruction-{uuid4().hex[:12]}",
+            run_id=continuation.run_id,
+            stage_id=continuation.current_stage_id,
+            checkpoint_id=checkpoint.id,
+            reason=reason,
+            source_workspace_fingerprint=checkpoint.workspace_fingerprint,
+            restored_workspace_fingerprint=restored_fingerprint,
+            created_from_execution_id=execution_id,
+            attempt_id=attempt_id,
+            state_version=continuation.state_version,
+            created_at=self._now(),
+        )
+        session.add(record)
+        StateTransitionService(session).append_audit_event(
+            run_id=continuation.run_id,
+            idempotency_key=f"{record.id}:reconstructed",
+            event_type=WorkflowEventType.STAGE_WORKSPACE_RECONSTRUCTED,
+            actor="transformer",
+            reason=f"workspace reconstructed from immutable checkpoint ({reason})",
+            occurred_at=self._now(),
+            payload={
+                "stage_id": continuation.current_stage_id,
+                "checkpoint_id": checkpoint.id,
+                "source_workspace_fingerprint": checkpoint.workspace_fingerprint,
+                "restored_workspace_fingerprint": restored_fingerprint,
+                "reason": reason,
+                "execution_id": execution_id,
+                "attempt_id": attempt_id,
+                "ledger_record_id": record.id,
+            },
+        )
+        session.flush()
+        return record
+
     def _queue_group(
         self,
         session,
@@ -663,31 +796,43 @@ class TransformerStageService:
         manifest_checksum,
         execution_id=None,
     ):
-        latest = session.scalar(
-            select(StageCheckpointModel)
-            .where(StageCheckpointModel.stage_id == continuation.current_stage_id)
-            .order_by(StageCheckpointModel.sequence.desc())
+        for _attempt in range(2):
+            latest = session.scalar(
+                select(StageCheckpointModel)
+                .where(StageCheckpointModel.stage_id == continuation.current_stage_id)
+                .order_by(StageCheckpointModel.sequence.desc())
+            )
+            checkpoint = StageCheckpointModel(
+                id=f"checkpoint-{uuid4().hex[:12]}",
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                kind=kind,
+                sequence=(latest.sequence if latest else 0) + 1,
+                source_checkpoint_id=latest.id if latest else None,
+                workspace_alias=preparation.workspace_alias,
+                workspace_path=preparation.workspace_path,
+                workspace_fingerprint=preparation.fingerprint,
+                manifest_artifact_id=manifest_artifact_id,
+                manifest_checksum=manifest_checksum,
+                created_from_execution_id=execution_id,
+                safe_for_resume=True,
+                sealed=False,
+                state_version=continuation.state_version,
+                created_at=self._now(),
+            )
+            try:
+                with session.begin_nested():
+                    session.add(checkpoint)
+                    session.flush()
+                return checkpoint
+            except IntegrityError as error:
+                detail = str(getattr(error, "orig", "") or error)
+                if "stage_checkpoints" not in detail:
+                    raise
+        raise TransformerStageError(
+            "CHECKPOINT_SEQUENCE_CONFLICT",
+            "Concurrent checkpoint creation for the same stage exceeded the retry budget",
         )
-        checkpoint = StageCheckpointModel(
-            id=f"checkpoint-{uuid4().hex[:12]}",
-            run_id=continuation.run_id,
-            stage_id=continuation.current_stage_id,
-            kind=kind,
-            sequence=(latest.sequence if latest else 0) + 1,
-            source_checkpoint_id=latest.id if latest else None,
-            workspace_alias=preparation.workspace_alias,
-            workspace_path=preparation.workspace_path,
-            workspace_fingerprint=preparation.fingerprint,
-            manifest_artifact_id=manifest_artifact_id,
-            manifest_checksum=manifest_checksum,
-            created_from_execution_id=execution_id,
-            safe_for_resume=True,
-            sealed=False,
-            state_version=continuation.state_version,
-            created_at=self._now(),
-        )
-        session.add(checkpoint)
-        return checkpoint
 
     def _advance(self, continuation, node: str) -> None:
         continuation.current_node = node

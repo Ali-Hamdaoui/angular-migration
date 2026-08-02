@@ -296,7 +296,15 @@ class TransformationContinuationModel(Base):
 
 class StageCheckpointModel(Base):
     __tablename__ = "stage_checkpoints"
-    __table_args__ = (UniqueConstraint("stage_id", "sequence", name="uq_stage_checkpoint_sequence"),)
+    __table_args__ = (
+        UniqueConstraint("stage_id", "sequence", name="uq_stage_checkpoint_sequence"),
+        Index(
+            "uq_stage_checkpoint_sealed",
+            "stage_id",
+            unique=True,
+            sqlite_where=text("sealed = 1"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
@@ -312,6 +320,30 @@ class StageCheckpointModel(Base):
     created_from_execution_id: Mapped[str | None] = mapped_column(ForeignKey("command_executions.id"))
     safe_for_resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sealed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StageReconstructionRecordModel(Base):
+    """Durable governed ledger entry for one workspace reconstruction.
+
+    Every reconstruction of a stage workspace is recorded here in the same
+    transaction as the authoritative binding change: the immutable source
+    checkpoint (id + fingerprint), the route/reason that drove the
+    reconstruction, and the restored fingerprint it produced.
+    """
+
+    __tablename__ = "stage_reconstruction_records"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
+    stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False, index=True)
+    checkpoint_id: Mapped[str | None] = mapped_column(ForeignKey("stage_checkpoints.id"), index=True)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    restored_workspace_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_from_execution_id: Mapped[str | None] = mapped_column(ForeignKey("command_executions.id"))
+    attempt_id: Mapped[str | None] = mapped_column(ForeignKey("repair_attempts.id"))
     state_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

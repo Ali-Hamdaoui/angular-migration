@@ -28,7 +28,11 @@ from app.repositories.session import session_scope
 from app.services.planning_review_application_service import PlanRevisionService, PlanningReviewApplicationError
 from app.services.command_executor_service import CommandExecutorService
 from app.services.command_registry_service import CommandPolicyEngineService, CommandRegistryService
-from app.services.stage_preparation_application_service import StagePreparationApplicationService, StagePreparationResult
+from app.services.stage_preparation_application_service import (
+    StagePreparationApplicationService,
+    StagePreparationError,
+    StagePreparationResult,
+)
 from app.state.transition_service import StateTransitionService, TransitionRequest
 
 
@@ -163,9 +167,19 @@ class StageExecutionApplicationService:
         validated = self._validate(session, run.id, stage_id, request, actor)
         return validated.plan, validated.stage, session.scalar(select(G06ApprovalModel).where(G06ApprovalModel.run_id == run.id, G06ApprovalModel.gate_id == "G06").order_by(G06ApprovalModel.state_version.desc(), G06ApprovalModel.created_at.desc())), validated.artifact_set_checksum
 
-    def _prepare_workspace(self, validated: _ValidatedStageStart) -> StagePreparationResult:
+    def _prepare_workspace(
+        self,
+        validated: _ValidatedStageStart,
+        expected_fingerprint: str | None = None,
+    ) -> StagePreparationResult:
         try:
-            return self._preparation.prepare(validated.aliases, validated.stage_id)
+            return self._preparation.prepare(
+                validated.aliases,
+                validated.stage_id,
+                expected_fingerprint=expected_fingerprint,
+            )
+        except StagePreparationError as error:
+            raise StageExecutionError(error.code, error.message, 409) from error
         except Exception as error:
             raise StageExecutionError("STAGE_PREPARATION_FAILED", "Stage workspace preparation failed; no stage was marked successful.", 409) from error
 

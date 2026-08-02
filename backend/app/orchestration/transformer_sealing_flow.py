@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
@@ -143,60 +144,76 @@ class TransformerSealingFlow:
         except (StageSealingError, OSError, ValueError) as error:
             self._fail(continuation_id, worker_id, error)
             return
-        with self._scope() as session:
-            continuation = self._owned(session, continuation_id, worker_id)
-            existing = session.scalar(
-                select(StageCheckpointModel).where(
-                    StageCheckpointModel.stage_id == continuation.current_stage_id,
-                    StageCheckpointModel.sealed.is_(True),
+        try:
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                existing = session.scalar(
+                    select(StageCheckpointModel).where(
+                        StageCheckpointModel.stage_id == continuation.current_stage_id,
+                        StageCheckpointModel.sealed.is_(True),
+                    )
                 )
-            )
-            if existing is None:
-                for artifact in (output, seal):
-                    self._stage.register_artifact(session, artifact, continuation)
-                sequence = (
-                    session.scalar(
-                        select(func.max(StageCheckpointModel.sequence)).where(
-                            StageCheckpointModel.stage_id == continuation.current_stage_id
+                if existing is None:
+                    for artifact in (output, seal):
+                        self._stage.register_artifact(session, artifact, continuation)
+                    sequence = (
+                        session.scalar(
+                            select(func.max(StageCheckpointModel.sequence)).where(
+                                StageCheckpointModel.stage_id == continuation.current_stage_id
+                            )
+                        )
+                        or 0
+                    ) + 1
+                    session.add(
+                        StageCheckpointModel(
+                            id=f"seal-{continuation.current_stage_id}",
+                            run_id=continuation.run_id,
+                            stage_id=continuation.current_stage_id,
+                            kind="sealed_output",
+                            sequence=sequence,
+                            workspace_alias="SEALED_STAGE_" + continuation.current_stage_id.upper(),
+                            workspace_path=str(target),
+                            workspace_fingerprint=fingerprint,
+                            manifest_artifact_id=seal.ref.artifact_id,
+                            manifest_checksum=chain_hash,
+                            safe_for_resume=True,
+                            sealed=True,
+                            state_version=continuation.state_version,
+                            created_at=datetime.now(UTC),
                         )
                     )
-                    or 0
-                ) + 1
-                session.add(
-                    StageCheckpointModel(
-                        id=f"seal-{continuation.current_stage_id}",
+                    stage = session.get(MigrationStageModel, continuation.current_stage_id)
+                    stage.status = "sealed"
+                    stage.completed_at = datetime.now(UTC)
+                    StateTransitionService(session).append_audit_event(
                         run_id=continuation.run_id,
-                        stage_id=continuation.current_stage_id,
-                        kind="sealed_output",
-                        sequence=sequence,
-                        workspace_alias="SEALED_STAGE_" + continuation.current_stage_id.upper(),
-                        workspace_path=str(target),
-                        workspace_fingerprint=fingerprint,
-                        manifest_artifact_id=seal.ref.artifact_id,
-                        manifest_checksum=chain_hash,
-                        safe_for_resume=True,
-                        sealed=True,
-                        state_version=continuation.state_version,
-                        created_at=datetime.now(UTC),
+                        idempotency_key=f"{continuation.current_stage_id}:sealed",
+                        event_type=WorkflowEventType.STAGE_SEALED,
+                        actor="transformer",
+                        reason="stage output sealed with chain-bound evidence",
+                        occurred_at=datetime.now(UTC),
+                        payload={
+                            "stage_id": continuation.current_stage_id,
+                            "chain_hash": chain_hash,
+                            "workspace_fingerprint": fingerprint,
+                        },
+                    )
+                self._queue(continuation, "materialize_next_stage")
+        except IntegrityError:
+            # A concurrent worker sealed the same stage between our read and
+            # insert (or the deterministic seal-{stage_id} id collided);
+            # reuse the committed seal row deterministically.
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                existing = session.scalar(
+                    select(StageCheckpointModel).where(
+                        StageCheckpointModel.stage_id == continuation.current_stage_id,
+                        StageCheckpointModel.sealed.is_(True),
                     )
                 )
-                stage = session.get(MigrationStageModel, continuation.current_stage_id)
-                stage.status = "sealed"
-                stage.completed_at = datetime.now(UTC)
-                StateTransitionService(session).append_audit_event(
-                    run_id=continuation.run_id,
-                    idempotency_key=f"{continuation.current_stage_id}:sealed",
-                    event_type=WorkflowEventType.STAGE_SEALED,
-                    actor="transformer",
-                    reason="stage output sealed with chain-bound evidence",
-                    occurred_at=datetime.now(UTC),
-                    payload={
-                        "stage_id": continuation.current_stage_id,
-                        "chain_hash": chain_hash,
-                        "workspace_fingerprint": fingerprint,
-                    },
-                )
-            self._queue(continuation, "materialize_next_stage")
+                if existing is None:
+                    raise
+                self._queue(continuation, "materialize_next_stage")
 
     def materialize(self, continuation_id: str, worker_id: str) -> None:
         try:
