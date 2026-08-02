@@ -113,6 +113,10 @@ def test_transformer_schema_upgrades_and_downgrades_from_current_head(tmp_path):
         "last_verified_fingerprint",
         "last_verified_at",
     }.issubset({column["name"] for column in schema.get_columns("stage_workspace_bindings")})
+    assert {
+        "parent_review_artifact_id",
+        "parent_review_checksum",
+    }.issubset({column["name"] for column in schema.get_columns("repair_attempts")})
     engine.dispose()
 
     command.downgrade(config, "20260729_35")

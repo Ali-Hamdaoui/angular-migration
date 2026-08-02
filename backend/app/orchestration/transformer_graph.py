@@ -1044,7 +1044,14 @@ class TransformerOrchestrator:
             if review["decision"] == "accept":
                 self._queue(continuation, "create_g10")
                 return
-            if review["decision"] == "request_changes" and attempt.attempt_number < 3:
+            if review["decision"] == "request_changes":
+                if attempt.attempt_number >= 3:
+                    self._block(
+                        continuation,
+                        "REPAIR_LOOP_EXHAUSTED",
+                        "Repair revision loop exhausted at the governed attempt limit",
+                    )
+                    return
                 if attempt.status not in {"request_changes", "review_accepted"}:
                     self._block(
                         continuation,
@@ -1066,6 +1073,13 @@ class TransformerOrchestrator:
                             "Repair attempt parent lineage is invalid",
                         )
                         return
+                if not self._review_requested_changes(session, continuation, attempt):
+                    self._block(
+                        continuation,
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "Repair parent review did not verifiably request changes",
+                    )
+                    return
                 next_attempt = RepairAttemptModel(
                     id=f"repair-{continuation.current_stage_id}-{attempt.attempt_number + 1}",
                     run_id=attempt.run_id,
@@ -1073,7 +1087,7 @@ class TransformerOrchestrator:
                     attempt_number=attempt.attempt_number + 1,
                     status="evidence_frozen",
                     risk_level="unknown",
-                    diagnosis=attempt.diagnosis,
+                    diagnosis=f"request_changes revision; parent={attempt.id}",
                     checkpoint_id=attempt.checkpoint_id,
                     failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
                     failure_evidence_checksum=attempt.failure_evidence_checksum,
@@ -1084,6 +1098,8 @@ class TransformerOrchestrator:
                     pre_fingerprint=attempt.pre_fingerprint,
                     failure_fingerprint=attempt.failure_fingerprint,
                     parent_attempt_id=attempt.id,
+                    parent_review_artifact_id=attempt.review_artifact_id,
+                    parent_review_checksum=attempt.review_checksum,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -1095,6 +1111,50 @@ class TransformerOrchestrator:
                 "REPAIR_REVIEW_REJECTED",
                 "Repair reviewer rejected the candidate",
             )
+
+    @staticmethod
+    def _review_requested_changes(session, continuation, attempt) -> bool:
+        """Verify the attempt's PERSISTED review artifact decided request_changes.
+
+        Deep parent-lineage check (D2.2): the review artifact must exist, its
+        metadata/checksum binding must match the attempt row, the stored
+        artifact must be byte-identical (same id + checksum) with an
+        attempt-bound envelope, and its content decision must be
+        ``request_changes``. Any deviation fails closed so a child attempt is
+        never spawned from an unverified or tampered parent review.
+        """
+        if not attempt.review_artifact_id or not attempt.review_checksum:
+            return False
+        run = session.get(MigrationRunModel, continuation.run_id)
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + attempt.review_artifact_id)
+        if (
+            run is None
+            or metadata is None
+            or metadata.run_id != continuation.run_id
+            or metadata.stage_id != continuation.current_stage_id
+            or metadata.checksum != attempt.review_checksum
+        ):
+            return False
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            ).read_artifact(continuation.run_id, metadata.relative_path)
+            if (
+                stored.ref.artifact_id != attempt.review_artifact_id
+                or stored.ref.checksum != attempt.review_checksum
+            ):
+                return False
+            payload = json.loads(stored.content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError):
+            return False
+        envelope = stored.envelope
+        return (
+            envelope is not None
+            and envelope.run_id == continuation.run_id
+            and envelope.stage_id == continuation.current_stage_id
+            and envelope.attempt_id == attempt.id
+            and payload.get("decision") == "request_changes"
+        )
 
     def _create_repair_gate(
         self, continuation_id: str, worker_id: str, gate_id: str
@@ -1146,6 +1206,9 @@ class TransformerOrchestrator:
                 "repair_attempt_id": attempt.id,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
                 "review_artifact_id": attempt.review_artifact_id,
+                "parent_attempt_id": attempt.parent_attempt_id,
+                "parent_review_artifact_id": attempt.parent_review_artifact_id,
+                "parent_review_checksum": attempt.parent_review_checksum,
                 "proposer_invocation_id": attempt.proposer_invocation_id,
                 "reviewer_invocation_id": attempt.reviewer_invocation_id,
                 "workspace_binding_id": binding.id,

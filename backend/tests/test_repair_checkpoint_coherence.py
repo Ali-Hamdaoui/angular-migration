@@ -550,6 +550,31 @@ def _seed_review(factory, tmp_path: Path, *, attempt_status: str, checkpoint_id:
         created_by="repair-failure-evidence",
         created_at=NOW,
     )
+    review = store.write_text_artifact(
+        "run-1",
+        "05_repairs/attempt-repair-1/review.json",
+        json.dumps(
+            {
+                "decision": {
+                    "request_changes": "request_changes",
+                    "rejected": "reject",
+                    "review_accepted": "accept",
+                }.get(attempt_status, "request_changes"),
+                "findings": [],
+                "policy_checks": ["paths"],
+                "risk_assessment": "low",
+                "required_validation_targets": ["build"],
+                "limitations": [],
+                "proposal_checksum": "sha256:proposal",
+            },
+            sort_keys=True,
+        ),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id="repair-1",
+        created_by="repair-review",
+        created_at=NOW,
+    )
     session = factory()
     run = MigrationRunModel(
         id="run-1",
@@ -634,6 +659,8 @@ def _seed_review(factory, tmp_path: Path, *, attempt_status: str, checkpoint_id:
         proposal_checksum="sha256:proposal",
         proposer_invocation_id="repair-1:proposer",
         reviewer_invocation_id="repair-1:reviewer",
+        review_artifact_id=review.ref.artifact_id,
+        review_checksum=review.ref.checksum,
         pre_fingerprint=StageSandboxCopier.fingerprint(workspace),
         failure_fingerprint="fingerprint-failure",
         created_at=NOW,
@@ -648,6 +675,19 @@ def _seed_review(factory, tmp_path: Path, *, attempt_status: str, checkpoint_id:
             artifact_type=failure.ref.artifact_type.value,
             relative_path=failure.ref.relative_path,
             checksum=failure.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + review.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=review.ref.artifact_type.value,
+            relative_path=review.ref.relative_path,
+            checksum=review.ref.checksum,
             created_at=NOW,
             finalized_at=NOW,
             immutable=True,
@@ -671,11 +711,16 @@ def test_child_attempt_requires_valid_request_changes_parent(tmp_path: Path):
         RepairAttemptModel.attempt_number
     ).all()
     assert [attempt.attempt_number for attempt in attempts] == [1, 2]
+    parent = attempts[0]
     child = attempts[1]
     assert child.id == "repair-stage-1-2"
     assert child.parent_attempt_id == "repair-1"
     assert child.checkpoint_id == "ckpt-pre"
     assert child.status == "evidence_frozen"
+    assert child.parent_review_artifact_id == parent.review_artifact_id
+    assert child.parent_review_checksum == parent.review_checksum
+    assert child.diagnosis != parent.diagnosis
+    assert "checkpoint=ckpt-pre" not in (child.diagnosis or "")
     continuation = session.get(TransformationContinuationModel, "cont-1")
     assert continuation.status == "queued"
     assert continuation.current_node == "propose_repair"
@@ -686,6 +731,40 @@ def test_child_attempt_requires_valid_request_changes_parent(tmp_path: Path):
 def test_child_attempt_rejects_non_request_changes_parent(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _seed_review(factory, tmp_path, attempt_status="rejected")
+
+    _orchestrator(factory, repair_service=_RequestChangesReviewer()).advance(
+        "cont-1", "worker-1"
+    )
+
+    session = factory()
+    attempts = session.query(RepairAttemptModel).all()
+    assert len(attempts) == 1
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "REPAIR_PARENT_LINEAGE_INVALID"
+    session.close()
+    engine.dispose()
+
+
+def test_child_attempt_rejects_tampered_parent_review_artifact(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_review(factory, tmp_path, attempt_status="request_changes")
+    session = factory()
+    attempt = session.get(RepairAttemptModel, "repair-1")
+    metadata = session.get(ArtifactMetadataModel, "metadata-" + attempt.review_artifact_id)
+    artifact_file = (tmp_path / "artifacts" / metadata.relative_path).resolve()
+    sidecar_file = artifact_file.with_name(artifact_file.name + ".meta.json")
+    tampered = json.loads(artifact_file.read_text(encoding="utf-8"))
+    tampered["decision"] = "accept"
+    new_bytes = json.dumps(tampered, sort_keys=True).encode("utf-8")
+    new_checksum = "sha256:" + hashlib.sha256(new_bytes).hexdigest()
+    artifact_file.write_bytes(new_bytes)
+    sidecar = json.loads(sidecar_file.read_text(encoding="utf-8"))
+    sidecar["content_hash"] = new_checksum
+    sidecar["checksum"] = new_checksum
+    sidecar_file.write_text(json.dumps(sidecar, indent=2, sort_keys=True), encoding="utf-8")
+    session.commit()
+    session.close()
 
     _orchestrator(factory, repair_service=_RequestChangesReviewer()).advance(
         "cont-1", "worker-1"

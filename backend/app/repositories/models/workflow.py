@@ -719,6 +719,8 @@ class RepairAttemptModel(Base):
     validation_summary_checksum: Mapped[str | None] = mapped_column(String(128))
     failure_fingerprint: Mapped[str | None] = mapped_column(String(128), index=True)
     parent_attempt_id: Mapped[str | None] = mapped_column(ForeignKey("repair_attempts.id"))
+    parent_review_artifact_id: Mapped[str | None] = mapped_column(String(128))
+    parent_review_checksum: Mapped[str | None] = mapped_column(String(128))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

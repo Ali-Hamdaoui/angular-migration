@@ -1253,3 +1253,64 @@ def test_recover_completed_failed_returns_none_and_uncertain_transport_raises(
         service._recover_completed(context, role="proposer")
     assert raised.value.code == "REPAIR_INVOCATION_UNCERTAIN"
     engine.dispose()
+
+
+def test_child_attempt_authority_snapshot_binds_parent_review_lineage(tmp_path: Path):
+    """A child attempt's authority snapshot durably carries the parent review refs.
+
+    RED until the fix: parent_review_artifact_id/parent_review_checksum are not
+    part of the context or the authority snapshot, and a tampered parent review
+    reference is not detected by the fresh-authority re-read.
+    """
+    engine, factory = _database(tmp_path)
+    store, attempt_id, app_ts, _artifacts = _seed_service(factory, tmp_path)
+    proposal = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/proposal.json",
+        json.dumps(_proposal(app_ts), sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-proposal",
+        created_at=NOW,
+    )
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    attempt.proposal_artifact_id = proposal.ref.artifact_id
+    attempt.proposal_checksum = proposal.ref.checksum
+    attempt.proposer_invocation_id = f"{attempt_id}:proposer"
+    attempt.parent_attempt_id = "repair-parent"
+    attempt.parent_review_artifact_id = "artifact-parent-review"
+    attempt.parent_review_checksum = "sha256:parent-review"
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + proposal.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=proposal.ref.artifact_type.value,
+            relative_path=proposal.ref.relative_path,
+            checksum=proposal.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.commit()
+    session.close()
+
+    service = RepairApplicationService(scope=_scope(factory))
+    context = service._attempt_context(attempt_id, include_proposal=True)
+    assert context["parent_review_artifact_id"] == "artifact-parent-review"
+    assert context["parent_review_checksum"] == "sha256:parent-review"
+    assert context["authority_snapshot"]["parent_review_artifact_id"] == "artifact-parent-review"
+    assert context["authority_snapshot"]["parent_review_checksum"] == "sha256:parent-review"
+
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    attempt.parent_review_checksum = "sha256:tampered"
+    session.commit()
+    session.close()
+    with pytest.raises(RepairApplicationError) as raised:
+        service._assert_fresh_authority(context, role="reviewer", include_proposal=True)
+    assert raised.value.code == "REPAIR_REVIEW_STALE"
+    engine.dispose()
