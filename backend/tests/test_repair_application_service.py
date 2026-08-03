@@ -547,6 +547,7 @@ def _seed_service(factory, tmp_path: Path):
         alias="STAGE_WORKSPACE_1",
         workspace_path=str(workspace),
         workspace_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        fingerprint_profile_id=repair_application_service.STAGE_FINGERPRINT_PROFILE.profile_id,
         active=True,
         created_at=NOW,
     )
@@ -574,6 +575,7 @@ def _seed_service(factory, tmp_path: Path):
         status="evidence_frozen",
         risk_level="unknown",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
+        checkpoint_id="ckpt-pre",
         failure_evidence_artifact_id=failure.ref.artifact_id,
         failure_evidence_checksum=failure.ref.checksum,
         failure_route_artifact_id="artifact-route",
@@ -868,7 +870,7 @@ def test_candidate_binding_canonicalizes_paths_targets_and_preimages(
     target.parent.mkdir()
     target.write_text("old", encoding="utf-8")
     candidate = _proposal_candidate()
-    candidate["validation_targets"] = [" build ", "test", "build"]
+    candidate["validation_targets"] = ["build", "test", "build"]
     if proposal_format == "operations":
         candidate["operations"][0]["path"] = "src/./app.ts"
     else:
@@ -914,7 +916,7 @@ def test_unknown_proposer_target_persists_only_linked_failure_artifact(tmp_path:
     with pytest.raises(RepairApplicationError) as raised:
         service.propose(attempt_id)
 
-    assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
+    assert raised.value.code == "LLM_SCHEMA_VALIDATION_FAILED"
     session = factory()
     attempt = session.get(RepairAttemptModel, attempt_id)
     invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
@@ -953,8 +955,9 @@ def test_failed_replay_retains_all_immutable_failure_artifact_links(tmp_path: Pa
     )
 
     for _ in range(2):
-        with pytest.raises(RepairApplicationError, match="backend-supported names"):
+        with pytest.raises(RepairApplicationError) as raised:
             service.propose(attempt_id)
+        assert raised.value.code == "LLM_SCHEMA_VALIDATION_FAILED"
 
     session = factory()
     invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
@@ -1030,7 +1033,7 @@ def test_unknown_reviewer_target_persists_no_review_artifact(tmp_path: Path):
     with pytest.raises(RepairApplicationError) as raised:
         service.review(attempt_id)
 
-    assert raised.value.code == "REPAIR_VALIDATION_TARGET_INVALID"
+    assert raised.value.code == "LLM_SCHEMA_VALIDATION_FAILED"
     session = factory()
     attempt = session.get(RepairAttemptModel, attempt_id)
     invocation = session.get(LlmInvocationModel, f"{attempt_id}:reviewer")

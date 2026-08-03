@@ -314,6 +314,10 @@ def test_workspace_fingerprint_excludes_only_root_lockfile(tmp_path: Path):
     nested.write_text("nested-second", encoding="utf-8")
     assert workspace_excluding_root_lockfile_fingerprint(tmp_path) != initial
 
+    before_empty_directory = workspace_excluding_root_lockfile_fingerprint(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    assert workspace_excluding_root_lockfile_fingerprint(tmp_path) != before_empty_directory
+
 
 def test_queue_is_single_and_records_explicit_pre_command_checksums(tmp_path: Path):
     engine, factory, _workspace = _seed(tmp_path)
@@ -463,6 +467,12 @@ def test_binding_cas_miss_is_rejected(tmp_path: Path):
         _runner().advance(session, continuation, next_node="repair_revalidate")
 
     assert error.value.code == "LOCKFILE_GENERATION_BINDING_STALE"
+    assert session.scalar(
+        __import__("sqlalchemy").select(ArtifactMetadataModel).where(
+            ArtifactMetadataModel.owner_reference
+            == "exec-lock:lockfile-generation-verification"
+        )
+    ) is None
     session.close()
     engine.dispose()
 

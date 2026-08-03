@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,10 +50,14 @@ def workspace_excluding_root_lockfile_fingerprint(workspace: Path) -> str:
     root = workspace.resolve(strict=True)
     entries = []
     for item in root.rglob("*"):
-        if not item.is_file():
-            continue
         relative = item.relative_to(root).as_posix()
-        if relative != "package-lock.json":
+        if relative == "package-lock.json":
+            continue
+        if item.is_symlink():
+            entries.append((relative, b"symlink:" + os.readlink(item).encode()))
+        elif item.is_dir():
+            entries.append((relative + "/", b"directory"))
+        elif item.is_file():
             entries.append((relative, item.read_bytes()))
     return STAGE_FINGERPRINT_PROFILE.fingerprint_manifest(entries)
 
@@ -301,33 +306,6 @@ class LockfileGenerationRunner:
         stored = self._write_or_recover_verification(run, continuation, execution, payload)
         metadata_id = "metadata-" + stored.ref.artifact_id
         metadata = session.get(ArtifactMetadataModel, metadata_id)
-        if metadata is None:
-            metadata = ArtifactMetadataModel(
-                id=metadata_id,
-                run_id=continuation.run_id,
-                stage_id=continuation.current_stage_id,
-                artifact_type=stored.ref.artifact_type.value,
-                relative_path=stored.ref.relative_path,
-                checksum=stored.ref.checksum,
-                schema_version=stored.envelope.schema_version,
-                created_at=stored.ref.created_at,
-                execution_id=execution.id,
-                owner_reference=f"{execution.id}:lockfile-generation-verification",
-                mime_type=stored.envelope.content_type,
-                size_bytes=len(stored.content.encode("utf-8")),
-                finalized_at=stored.ref.created_at,
-                immutable=True,
-                redacted=False,
-                truncated=False,
-                correlation_id=execution.correlation_id,
-                safe_metadata={
-                    "stage_step_id": step.id,
-                    "binding_id": binding.id,
-                    "pre_binding_fingerprint": expected_binding,
-                    "post_binding_fingerprint": post_binding,
-                },
-            )
-            session.add(metadata)
         cas = session.execute(
             update(StageWorkspaceBindingModel)
             .where(
@@ -350,6 +328,34 @@ class LockfileGenerationRunner:
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_BINDING_STALE",
                 "The active workspace binding changed before lockfile verification committed",
+            )
+        if metadata is None:
+            session.add(
+                ArtifactMetadataModel(
+                    id=metadata_id,
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                    artifact_type=stored.ref.artifact_type.value,
+                    relative_path=stored.ref.relative_path,
+                    checksum=stored.ref.checksum,
+                    schema_version=stored.envelope.schema_version,
+                    created_at=stored.ref.created_at,
+                    execution_id=execution.id,
+                    owner_reference=f"{execution.id}:lockfile-generation-verification",
+                    mime_type=stored.envelope.content_type,
+                    size_bytes=len(stored.content.encode("utf-8")),
+                    finalized_at=stored.ref.created_at,
+                    immutable=True,
+                    redacted=False,
+                    truncated=False,
+                    correlation_id=execution.correlation_id,
+                    safe_metadata={
+                        "stage_step_id": step.id,
+                        "binding_id": binding.id,
+                        "pre_binding_fingerprint": expected_binding,
+                        "post_binding_fingerprint": post_binding,
+                    },
+                )
             )
         artifact_id = stored.ref.artifact_id
         execution.end_fingerprint = end
