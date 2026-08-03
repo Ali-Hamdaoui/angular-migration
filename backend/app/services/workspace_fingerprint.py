@@ -123,6 +123,10 @@ def _legacy_path_order_key(entry: tuple[str, bytes]) -> tuple[str, str]:
     return (entry[0].casefold(), entry[0])
 
 
+def _raw_path_order_key(entry: tuple[str, bytes]) -> str:
+    return entry[0]
+
+
 def _encode_stream(entries: Iterable[tuple[str, bytes]], *, sort_key: Callable[[tuple[str, bytes]], object]) -> str:
     digest = hashlib.sha256()
     for relative_path, content in sorted(entries, key=sort_key):
@@ -158,12 +162,17 @@ def encode_fingerprint_manifest(entries: Iterable[tuple[str, bytes]]) -> str:
     return _encode_stream(entries, sort_key=_legacy_path_order_key)
 
 
-def workspace_fingerprint_v1(root: Path, *, exclude: frozenset[str] = frozenset()) -> str:
+def workspace_fingerprint_v1(
+    root: Path,
+    *,
+    exclude: frozenset[str] = frozenset(),
+    path_order: str = "casefold",
+) -> str:
     """Fingerprint a workspace tree with the canonical v1 algorithm.
 
     Entries are ordered by ``(relative_posix_path.casefold(),
-    relative_posix_path)``, reproducing the legacy Windows ``sorted(Path)``
-    ordering deterministically on every platform.
+    relative_posix_path)`` by default.  ``path_order="raw"`` reproduces the
+    historical pre-casefold implementation.
     """
     root = Path(root).resolve(strict=True)
     entries: list[tuple[str, bytes]] = []
@@ -174,7 +183,8 @@ def workspace_fingerprint_v1(root: Path, *, exclude: frozenset[str] = frozenset(
         if exclude and any(part in exclude for part in relative.parts):
             continue
         entries.append((relative.as_posix(), item.read_bytes()))
-    return _encode_stream(entries, sort_key=_legacy_path_order_key)
+    sort_key = _raw_path_order_key if path_order == "raw" else _legacy_path_order_key
+    return _encode_stream(entries, sort_key=sort_key)
 
 
 @dataclass(frozen=True)
@@ -184,9 +194,12 @@ class WorkspaceFingerprintProfile:
     version: str = WORKSPACE_FINGERPRINT_VERSION
     excluded_names: frozenset[str] = frozenset()
     profile_id: str | None = None
+    path_order: str = "casefold"
 
     def fingerprint(self, root: Path) -> str:
-        return workspace_fingerprint_v1(root, exclude=self.excluded_names)
+        return workspace_fingerprint_v1(
+            root, exclude=self.excluded_names, path_order=self.path_order
+        )
 
     def fingerprint_stream(self, entries: Iterable[tuple[str, bytes]]) -> str:
         return encode_fingerprint(entries)
@@ -207,6 +220,11 @@ SOURCE_CONFIG_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
     excluded_names=STAGE_VOLATILE_NAMES,
     profile_id=WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID,
 )
+LEGACY_STAGE_RAW_ORDER_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
+    excluded_names=frozenset(),
+    profile_id="legacy:workspace-fingerprint-v1:stage:raw-path-order",
+    path_order="raw",
+)
 
 #: Supported legacy fingerprint profiles, in deterministic identification order.
 #:
@@ -224,4 +242,5 @@ SOURCE_CONFIG_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
 SUPPORTED_LEGACY_FINGERPRINT_PROFILES: tuple[WorkspaceFingerprintProfile, ...] = (
     SOURCE_CONFIG_FINGERPRINT_PROFILE,
     STAGE_FINGERPRINT_PROFILE,
+    LEGACY_STAGE_RAW_ORDER_FINGERPRINT_PROFILE,
 )
