@@ -98,7 +98,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 WORKSPACE_FINGERPRINT_VERSION = "workspace-fingerprint-v1"
 
@@ -125,6 +125,11 @@ def _legacy_path_order_key(entry: tuple[str, bytes]) -> tuple[str, str]:
 
 def _raw_path_order_key(entry: tuple[str, bytes]) -> str:
     return entry[0]
+
+
+def _windows_path_order_key(entry: tuple[str, bytes]) -> tuple[str, ...]:
+    """Reproduce pre-56893 ``sorted(WindowsPath)`` component ordering."""
+    return tuple(part.casefold() for part in PurePosixPath(entry[0]).parts)
 
 
 def _encode_stream(entries: Iterable[tuple[str, bytes]], *, sort_key: Callable[[tuple[str, bytes]], object]) -> str:
@@ -172,7 +177,8 @@ def workspace_fingerprint_v1(
 
     Entries are ordered by ``(relative_posix_path.casefold(),
     relative_posix_path)`` by default.  ``path_order="raw"`` reproduces the
-    historical pre-casefold implementation.
+    raw POSIX implementation introduced by 56893cf; ``path_order="windows"``
+    reproduces the earlier native ``sorted(WindowsPath)`` implementation.
     """
     root = Path(root).resolve(strict=True)
     entries: list[tuple[str, bytes]] = []
@@ -183,7 +189,13 @@ def workspace_fingerprint_v1(
         if exclude and any(part in exclude for part in relative.parts):
             continue
         entries.append((relative.as_posix(), item.read_bytes()))
-    sort_key = _raw_path_order_key if path_order == "raw" else _legacy_path_order_key
+    sort_key = (
+        _raw_path_order_key
+        if path_order == "raw"
+        else _windows_path_order_key
+        if path_order == "windows"
+        else _legacy_path_order_key
+    )
     return _encode_stream(entries, sort_key=sort_key)
 
 
@@ -225,6 +237,11 @@ LEGACY_STAGE_RAW_ORDER_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
     profile_id="legacy:workspace-fingerprint-v1:stage:raw-path-order",
     path_order="raw",
 )
+LEGACY_STAGE_WINDOWS_PATH_ORDER_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
+    excluded_names=frozenset(),
+    profile_id="legacy:workspace-fingerprint-v1:stage:windows-path-order",
+    path_order="windows",
+)
 
 #: Supported legacy fingerprint profiles, in deterministic identification order.
 #:
@@ -243,4 +260,5 @@ SUPPORTED_LEGACY_FINGERPRINT_PROFILES: tuple[WorkspaceFingerprintProfile, ...] =
     SOURCE_CONFIG_FINGERPRINT_PROFILE,
     STAGE_FINGERPRINT_PROFILE,
     LEGACY_STAGE_RAW_ORDER_FINGERPRINT_PROFILE,
+    LEGACY_STAGE_WINDOWS_PATH_ORDER_FINGERPRINT_PROFILE,
 )
