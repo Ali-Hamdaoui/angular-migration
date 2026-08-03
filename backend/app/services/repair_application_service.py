@@ -1047,7 +1047,8 @@ class RepairApplicationService:
         checkpoints — returns ``(None, None)`` and the caller fails closed.
         When the attempt is already bound to a checkpoint, ONLY that
         checkpoint is eligible (the bound checkpoint either verifies or the
-        recovery fails closed).
+        recovery fails closed). References to other checkpoint kinds remain
+        provenance and do not participate in authority selection.
         """
         diagnostic = diagnostic if diagnostic is not None else {}
         diagnosis_references = re.findall(
@@ -1067,9 +1068,8 @@ class RepairApplicationService:
                 },
             }
         )
-        has_checkpoint_reference = "checkpoint=" in (attempt.diagnosis or "") or bool(
-            evidence_references
-        )
+        referenced_ids = set(diagnosis_references) | evidence_references
+        has_checkpoint_reference = "checkpoint=" in (attempt.diagnosis or "") or bool(referenced_ids)
         if "checkpoint=" in (attempt.diagnosis or "") and len(diagnosis_references) != 1:
             diagnostic.update(
                 {
@@ -1078,24 +1078,63 @@ class RepairApplicationService:
                 }
             )
             return None, None
-        referenced_ids = set(diagnosis_references) | evidence_references
-        if has_checkpoint_reference and len(referenced_ids) != 1:
-            diagnostic.update(
-                {
-                    "reason": "CHECKPOINT_REFERENCE_CONFLICT",
-                    "referenced_id_count": len(referenced_ids),
-                }
-            )
-            return None, None
-        if attempt.checkpoint_id is not None:
-            if has_checkpoint_reference and referenced_ids != {attempt.checkpoint_id}:
+        reference_checkpoints = {}
+        reference_diagnostics = []
+        for checkpoint_id in sorted(referenced_ids):
+            checkpoint = session.get(StageCheckpointModel, checkpoint_id)
+            sources = []
+            if checkpoint_id in diagnosis_references:
+                sources.append("diagnosis")
+            if checkpoint_id in evidence_references:
+                sources.append("failure_evidence")
+            reference = {
+                "checkpoint_id": checkpoint_id,
+                "sources": sources,
+                "kind": checkpoint.kind if checkpoint is not None else None,
+                "safe_for_resume": (
+                    bool(checkpoint.safe_for_resume) if checkpoint is not None else None
+                ),
+            }
+            if (
+                checkpoint is None
+                or checkpoint.run_id != attempt.run_id
+                or checkpoint.stage_id != attempt.stage_id
+            ):
+                reference["validation"] = "wrong_run_stage_or_missing"
+                reference_diagnostics.append(reference)
                 diagnostic.update(
                     {
                         "reason": "CHECKPOINT_REFERENCE_CONFLICT",
-                        "attempt_checkpoint_id": attempt.checkpoint_id,
+                        "reference_checkpoints": reference_diagnostics,
                     }
                 )
                 return None, None
+            reference["validation"] = "same_run_stage"
+            reference_checkpoints[checkpoint_id] = checkpoint
+            reference_diagnostics.append(reference)
+        diagnostic["reference_checkpoints"] = reference_diagnostics
+
+        authority_reference_ids = {
+            checkpoint_id
+            for checkpoint_id, checkpoint in reference_checkpoints.items()
+            if checkpoint.kind == "pre_repair" and checkpoint.safe_for_resume
+        }
+        unsafe_authority_reference_ids = {
+            checkpoint_id
+            for checkpoint_id, checkpoint in reference_checkpoints.items()
+            if checkpoint.kind == "pre_repair" and not checkpoint.safe_for_resume
+        }
+        diagnostic.update(
+            {
+                "authority_reference_ids": sorted(authority_reference_ids),
+                "provenance_reference_ids": sorted(
+                    set(reference_checkpoints) - authority_reference_ids
+                ),
+            }
+        )
+
+        bound = None
+        if attempt.checkpoint_id is not None:
             bound = session.get(StageCheckpointModel, attempt.checkpoint_id)
             if bound is None or bound.run_id != attempt.run_id or bound.stage_id != attempt.stage_id:
                 diagnostic.update(
@@ -1105,29 +1144,34 @@ class RepairApplicationService:
                         "checkpoint_lookup": "missing_or_wrong_run_stage",
                     }
                 )
-            checkpoints = (
-                [bound]
-                if bound is not None
-                and bound.run_id == attempt.run_id
-                and bound.stage_id == attempt.stage_id
-                else []
+                return None, None
+            if bound.kind == "pre_repair" and bound.safe_for_resume:
+                authority_reference_ids.add(bound.id)
+            elif bound.kind == "pre_repair":
+                unsafe_authority_reference_ids.add(bound.id)
+        diagnostic["authority_reference_ids"] = sorted(authority_reference_ids)
+
+        if unsafe_authority_reference_ids:
+            diagnostic.update(
+                {
+                    "reason": "NO_ELIGIBLE_PRE_REPAIR_CHECKPOINT",
+                    "unsafe_authority_reference_ids": sorted(unsafe_authority_reference_ids),
+                }
             )
-        elif has_checkpoint_reference:
-            referenced = session.get(StageCheckpointModel, next(iter(referenced_ids)))
-            if referenced is None or referenced.run_id != attempt.run_id or referenced.stage_id != attempt.stage_id:
-                diagnostic.update(
-                    {
-                        "reason": "CHECKPOINT_REFERENCE_CONFLICT",
-                        "checkpoint_lookup": "missing_or_wrong_run_stage",
-                    }
-                )
-            checkpoints = (
-                [referenced]
-                if referenced is not None
-                and referenced.run_id == attempt.run_id
-                and referenced.stage_id == attempt.stage_id
-                else []
+            return None, None
+        if len(authority_reference_ids) > 1:
+            diagnostic.update(
+                {
+                    "reason": "CHECKPOINT_REFERENCE_CONFLICT",
+                    "authority_reference_ids": sorted(authority_reference_ids),
+                }
             )
+            return None, None
+
+        if bound is not None:
+            checkpoints = [bound]
+        elif authority_reference_ids:
+            checkpoints = [reference_checkpoints[next(iter(authority_reference_ids))]]
         else:
             checkpoints = session.scalars(
                 select(StageCheckpointModel).where(
