@@ -193,7 +193,7 @@ describe("TransformationPanel", () => {
   });
 
   it("projects validation failure, classification, repair review, and G10 state", async () => {
-    vi.mocked(requestRepairRevision).mockResolvedValue({});
+    vi.mocked(requestRepairRevision).mockResolvedValue({ attempt_id: "repair-2", status: "evidence_frozen", idempotent_replay: false });
     vi.mocked(getTransformation).mockResolvedValue({
       ...projection,
       status: "waiting_gate",
@@ -265,7 +265,7 @@ describe("TransformationPanel", () => {
         limitations: [],
       },
     });
-    vi.mocked(requestRepairRevision).mockResolvedValue({});
+    vi.mocked(requestRepairRevision).mockResolvedValue({ attempt_id: "repair-2", status: "evidence_frozen", idempotent_replay: false });
     renderPanel();
 
     expect(await screen.findByRole("heading", { name: "Repair revision required" })).toBeInTheDocument();
@@ -287,6 +287,94 @@ describe("TransformationPanel", () => {
     ));
     expect(screen.getByRole("button", { name: "Reject repair" })).toBeInTheDocument();
     expect(rejectRepair).not.toHaveBeenCalled();
+  });
+
+  it("submits a repair revision once, shows the returned child attempt id, and clears the instruction", async () => {
+    const baseChecksum = `sha256:${"4".repeat(64)}`;
+    vi.mocked(getTransformation).mockResolvedValue({
+      ...projection,
+      status: "waiting_repair_revision",
+      current_node: "review_repair",
+      active_gate: null,
+      active_gate_package_checksum: null,
+      repair_attempt_id: "repair-1",
+      repair_attempt_number: 1,
+      repair_status: "request_changes",
+      repair_proposal_id: "proposal-1",
+      repair_base_checksum: baseChecksum,
+      repair_review: {
+        decision: "request_changes",
+        findings: ["Handle the null response"],
+        policy_checks: ["paths"],
+        risk_assessment: "Low risk",
+        required_validation_targets: ["build"],
+        limitations: [],
+      },
+    });
+    let resolveRevision!: (value: { attempt_id: string; status: string; idempotent_replay: boolean }) => void;
+    vi.mocked(requestRepairRevision).mockImplementation(() => new Promise((resolve) => { resolveRevision = resolve; }));
+    renderPanel();
+
+    fireEvent.change(await screen.findByLabelText("Exact revision instruction"), {
+      target: { value: "Update package.json to align with Angular 19" },
+    });
+    const button = screen.getByRole("button", { name: "Request changes" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(requestRepairRevision).toHaveBeenCalledTimes(1);
+
+    resolveRevision({ attempt_id: "repair-2", status: "evidence_frozen", idempotent_replay: false });
+    expect(await screen.findByText(/child attempt repair-2/)).toBeInTheDocument();
+    expect(screen.getByText(/status: evidence_frozen/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Exact revision instruction")).toHaveValue("");
+  });
+
+  it("shows the backend error code and message and preserves the instruction after a failed revision", async () => {
+    const baseChecksum = `sha256:${"5".repeat(64)}`;
+    vi.mocked(getTransformation).mockResolvedValue({
+      ...projection,
+      status: "waiting_repair_revision",
+      current_node: "review_repair",
+      active_gate: null,
+      active_gate_package_checksum: null,
+      repair_attempt_id: "repair-1",
+      repair_attempt_number: 1,
+      repair_status: "request_changes",
+      repair_proposal_id: "proposal-1",
+      repair_base_checksum: baseChecksum,
+      repair_review: {
+        decision: "request_changes",
+        findings: ["Handle the null response"],
+        policy_checks: ["paths"],
+        risk_assessment: "Low risk",
+        required_validation_targets: ["build"],
+        limitations: [],
+      },
+    });
+    vi.mocked(requestRepairRevision).mockRejectedValue(new ApiClientError(
+      "rejected",
+      422,
+      "POST",
+      "/revisions",
+      JSON.stringify({
+        error_code: "validation_error",
+        message: "Request validation failed.",
+        correlation_id: "corr-1",
+        details: {},
+      }),
+    ));
+    renderPanel();
+
+    fireEvent.change(await screen.findByLabelText("Exact revision instruction"), {
+      target: { value: "Keep package.json but fix the lockfile alignment" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("validation_error");
+    expect(alert).toHaveTextContent("Request validation failed.");
+    expect(screen.getByLabelText("Exact revision instruction")).toHaveValue("Keep package.json but fix the lockfile alignment");
+    expect(getTransformation).toHaveBeenCalledTimes(1);
   });
 
   it("projects sealed route continuation and full completion", async () => {

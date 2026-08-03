@@ -52,6 +52,22 @@ function conflictMessage(error: ApiClientError) {
   return `Authoritative state changed (${code}). Latest state has been reloaded.`;
 }
 
+function backendErrorMessage(error: ApiClientError) {
+  try {
+    const body = JSON.parse(error.responseBody ?? "{}") as {
+      error?: { code?: string; message?: string };
+      error_code?: string;
+      message?: string;
+    };
+    return {
+      code: body.error?.code ?? body.error_code ?? "BACKEND_ERROR",
+      message: body.error?.message ?? body.message ?? error.message,
+    };
+  } catch {
+    return { code: "BACKEND_ERROR", message: error.message };
+  }
+}
+
 export function TransformationPanel({
   runId,
   workflowEvents,
@@ -72,6 +88,11 @@ export function TransformationPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [revisionInstruction, setRevisionInstruction] = useState("");
+  const [revisionAccepted, setRevisionAccepted] = useState<{
+    attempt_id: string;
+    status: string;
+    idempotent_replay: boolean;
+  } | null>(null);
   const submittingRef = useRef(false);
   const actionRequired = projection?.status === "waiting_prompt"
     || projection?.status === "waiting_repair_revision"
@@ -163,8 +184,15 @@ export function TransformationPanel({
             maxLength={4000}
             rows={4}
             disabled={submitting}
-            placeholder="Describe the required revision without patches or filesystem paths"
+            placeholder="Describe the required revision; repository-relative file names are allowed (no raw patches, host paths, or sandbox paths)"
           />
+          {revisionAccepted
+            ? <p className={styles.success} role="status">
+                Revision accepted — child attempt {revisionAccepted.attempt_id} created (status: {revisionAccepted.status}).
+              </p>
+            : submitting
+              ? <p className={styles.note} role="status">Submitting revision…</p>
+              : null}
           {projection.status === "waiting_repair_revision" ? <div className={styles.actions}>
             <button type="button" disabled={submitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>Request changes</button>
             <button type="button" disabled={submitting} onClick={() => void rejectReviewedRepair()}>Reject repair</button>
@@ -229,21 +257,27 @@ export function TransformationPanel({
   }
 
   async function mutate(action: (key: string) => Promise<unknown>, fallback: string) {
-    if (submittingRef.current) return;
+    if (submittingRef.current) return undefined;
     submittingRef.current = true;
     setSubmitting(true);
     setActionError(null);
+    setRevisionAccepted(null);
     const key = crypto.randomUUID();
     try {
-      await action(key);
+      const result = await action(key);
       await refreshAll();
+      return result;
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
         await Promise.allSettled([refresh(), Promise.resolve(refreshAuthoritativeState())]);
         setActionError(conflictMessage(error));
+      } else if (error instanceof ApiClientError) {
+        const { code, message } = backendErrorMessage(error);
+        setActionError(`${code}: ${message}`);
       } else {
         setActionError(error instanceof Error ? error.message : fallback);
       }
+      return undefined;
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -292,14 +326,22 @@ export function TransformationPanel({
   function reviseRepair() {
     if (!current.repair_attempt_id || !current.repair_proposal_id || !current.repair_base_checksum || !revisionInstruction.trim()) return;
     return mutate(async (key) => {
-      await requestRepairRevision(runId, current.repair_attempt_id!, {
+      const result = await requestRepairRevision(runId, current.repair_attempt_id!, {
         attempt_id: current.repair_attempt_id!,
         proposal_id: current.repair_proposal_id!,
         base_checksum: current.repair_base_checksum!,
         instruction: revisionInstruction,
         idempotency_key: key,
       });
+      if (result.attempt_id) {
+        setRevisionAccepted({
+          attempt_id: result.attempt_id,
+          status: result.status,
+          idempotent_replay: result.idempotent_replay,
+        });
+      }
       setRevisionInstruction("");
+      return result;
     }, "Repair revision request failed.");
   }
 

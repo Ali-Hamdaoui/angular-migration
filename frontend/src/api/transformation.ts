@@ -67,12 +67,18 @@ type RepairDecisionBody = {
   idempotency_key: string;
 };
 
+export type RepairRevisionResult = {
+  attempt_id: string;
+  status: string;
+  idempotent_replay: boolean;
+};
+
 export function requestRepairRevision(
   runId: string,
   attemptId: string,
   body: RepairDecisionBody & { instruction: string },
 ) {
-  return apiClient.post(
+  return apiClient.post<RepairRevisionResult>(
     `/api/v1/runs/${encodeURIComponent(runId)}/transformation/repairs/${encodeURIComponent(attemptId)}/revisions`,
     body,
   );

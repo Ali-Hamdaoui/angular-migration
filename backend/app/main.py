@@ -7,6 +7,7 @@ import asyncio
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
@@ -100,13 +101,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         error_code="validation_error",
         message="Request validation failed.",
-        details={"errors": exc.errors()},
+        details={"errors": jsonable_encoder(exc.errors())},
     )
 
 
 @app.exception_handler(ValidationError)
 async def domain_validation_exception_handler(request: Request, exc: ValidationError):
-    return error_response(request, status_code=422, error_code="DOMAIN_VALIDATION_FAILED", message="Domain validation failed.", details={"errors": exc.errors()})
+    return error_response(request, status_code=422, error_code="DOMAIN_VALIDATION_FAILED", message="Domain validation failed.", details={"errors": jsonable_encoder(exc.errors())})
 
 
 @app.exception_handler(IntegrityError)

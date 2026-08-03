@@ -8,6 +8,25 @@ from pydantic import Field, field_validator
 
 from app.domain.contracts import ContractModel
 
+# Rejects only unsafe path disclosure or input. Repository-relative filenames
+# and paths (package.json, angular.json, src/app/app.ts) that describe intended
+# changes are allowed. Tokens are whitespace-delimited and trailing prose
+# punctuation is stripped before matching.
+_UNSAFE_PATH_TOKEN = re.compile(
+    r"(?:"
+    r"^[\\/]{2}"                                      # UNC / network share
+    r"|^/[^/]"                                        # absolute POSIX path
+    r"|^[A-Za-z]:[\\/]"                               # Windows drive path
+    r"|^file://"                                      # file URL
+    r"|(?:^|[/\\])\.\.(?=[\\/]|$)"                    # parent traversal
+    r"|(?:^|[/\\])(?:baseline-sandbox|stage-sandboxes|repair-sandboxes"
+    r"|final-assurance-sandbox|migrated-app|source-snapshot"
+    r"|delivery-candidate|\.migration-factory|04_workflow_state|05_repairs)"
+    r"(?:$|[/\\])"                                    # platform sandbox/runtime paths
+    r")",
+    re.IGNORECASE,
+)
+
 
 class TransformationStatus(str, Enum):
     QUEUED = "queued"
@@ -156,13 +175,10 @@ class RepairRevisionRequest(RepairDecisionRequest):
             r"(?m)^-[^-].*\n\+[^+]", value
         ):
             raise ValueError("raw patches are forbidden")
-        if (
-            "\\" in value
-            or re.search(r"(?:^|\s)(?:[A-Za-z]:/|/|\.\.?/|[^\s]+/[^\s]+)", value)
-            or re.search(
-                r"(?<![\w.-])(?:\.[A-Za-z][\w-]*|[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9_.-]*)(?![\w.-])",
-                value,
-            )
-        ):
+        tokens = (
+            token.lstrip(" \t\r\n\"'`([{").rstrip(" \t\r\n\"'`)]}.,;:!?")
+            for token in re.split(r"\s+", value)
+        )
+        if any(_UNSAFE_PATH_TOKEN.search(token) for token in tokens if token):
             raise ValueError("filesystem paths are forbidden")
         return value
