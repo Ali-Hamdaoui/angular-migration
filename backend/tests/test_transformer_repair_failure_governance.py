@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 from pydantic import SecretStr
@@ -41,6 +41,7 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.lockfile_generation_runner import LockfileGenerationError
 from app.services.repair_application_service import (
     RepairApplicationService,
     RepairProposal,
@@ -50,6 +51,7 @@ from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
@@ -310,6 +312,7 @@ def _seed(
         alias="STAGE_WORKSPACE_1",
         workspace_path=str(workspace),
         workspace_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        fingerprint_profile_id=STAGE_FINGERPRINT_PROFILE.profile_id,
         active=True,
         created_at=NOW,
     )
@@ -343,6 +346,7 @@ def _seed(
         status="proposed" if proposed else "evidence_frozen",
         risk_level="low" if proposed else "unknown",
         diagnosis="repairable_source; checkpoint=ckpt-pre",
+        checkpoint_id="ckpt-pre",
         failure_evidence_artifact_id=failure.ref.artifact_id,
         failure_evidence_checksum=failure.ref.checksum,
         failure_route_artifact_id="artifact-route",
@@ -1131,6 +1135,49 @@ def test_apply_rejects_continuation_mutation_after_durable_claim():
         TransformerOrchestrator._claim_current_continuation_for_apply(
             Session(), "cont-1", "stage-1", expected_state_version=8
         )
+
+
+def test_dependency_change_routes_to_lockfile_generation_before_revalidation():
+    dependency = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "dependency_change", "path": "package.json"}],
+    }
+    ordinary = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "replace_text", "path": "src/app.ts"}],
+    }
+
+    assert TransformerOrchestrator._post_apply_node(dependency) == "lockfile_generation"
+    assert TransformerOrchestrator._post_apply_node(ordinary) == "repair_revalidate"
+
+
+def test_lockfile_generation_failure_blocks_with_precise_reason():
+    continuation = SimpleNamespace()
+
+    @contextmanager
+    def scope():
+        yield SimpleNamespace()
+
+    orchestrator = TransformerOrchestrator.__new__(TransformerOrchestrator)
+    orchestrator._scope = scope
+    orchestrator._owned = lambda _session, _continuation_id, _worker_id: continuation
+    orchestrator._lockfiles = SimpleNamespace(
+        advance=MagicMock(
+            side_effect=LockfileGenerationError(
+                "LOCKFILE_GENERATION_LOCKFILE_INVALID", "invalid generated lockfile"
+            )
+        )
+    )
+    orchestrator._block = MagicMock()
+
+    orchestrator._lockfile_generation("cont-1", "worker-1")
+
+    orchestrator._block.assert_called_once_with(
+        ANY,
+        continuation,
+        "LOCKFILE_GENERATION_LOCKFILE_INVALID",
+        "invalid generated lockfile",
+    )
 
 
 def _reviewed_attempt_with_transport(factory, tmp_path: Path):

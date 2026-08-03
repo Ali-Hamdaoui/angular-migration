@@ -58,6 +58,10 @@ from app.services.angular_transformation_evidence_service import (
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.lockfile_generation_runner import (
+    LockfileGenerationError,
+    LockfileGenerationRunner,
+)
 from app.services.patch_apply_service import PatchApplyService, workspace_apply_lock
 from app.services.prompt_explanation_service import PromptExplanationService
 from app.services.repair_application_service import (
@@ -101,6 +105,7 @@ class TransformerOrchestrator:
         failure_evidence=None,
         repair_service=None,
         patch_service=None,
+        lockfile_runner=None,
         sealing_flow=None,
     ) -> None:
         self._scope = scope
@@ -114,6 +119,9 @@ class TransformerOrchestrator:
         self._failures = failure_evidence or FailureEvidenceService()
         self._repairs = repair_service or RepairApplicationService(scope=scope)
         self._patches = patch_service or PatchApplyService()
+        self._lockfiles = lockfile_runner or LockfileGenerationRunner(
+            stage_service=self._stage
+        )
         self._sealing_flow = sealing_flow or TransformerSealingFlow(
             scope=scope,
             stage_service=self._stage,
@@ -187,6 +195,8 @@ class TransformerOrchestrator:
             self._create_repair_gate(continuation_id, worker_id, "G10")
         elif node == "apply_repair":
             self._apply_repair(continuation_id, worker_id)
+        elif node == "lockfile_generation":
+            self._lockfile_generation(continuation_id, worker_id)
         elif node == "repair_revalidate":
             self._start_revalidation(continuation_id, worker_id)
         elif node == "create_g11":
@@ -1930,17 +1940,46 @@ class TransformerOrchestrator:
             binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = fingerprint
             binding.last_verified_at = datetime.now(UTC)
-            for step in session.query(StageStepModel).filter(
-                StageStepModel.stage_id == continuation.current_stage_id,
+            post_apply_node = self._post_apply_node(proposal)
+            reset_groups = (
                 StageStepModel.name.like("final_install-%")
                 | StageStepModel.name.like("builds-%")
                 | StageStepModel.name.like("tests-%")
-                | StageStepModel.name.like("lint-%"),
+                | StageStepModel.name.like("lint-%")
+            )
+            if post_apply_node == "lockfile_generation":
+                reset_groups = reset_groups | StageStepModel.name.like(
+                    "lockfile_generation-%"
+                )
+            for step in session.query(StageStepModel).filter(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                reset_groups,
             ):
                 step.status = "PENDING"
                 step.execution_id = None
                 step.completed_at = None
-            self._queue(continuation, "repair_revalidate")
+            self._queue(continuation, post_apply_node)
+
+    @staticmethod
+    def _post_apply_node(proposal: dict[str, object]) -> str:
+        return (
+            "lockfile_generation"
+            if any(
+                item.get("operation") == "dependency_change"
+                for item in proposal.get("operations") or []
+            )
+            else "repair_revalidate"
+        )
+
+    def _lockfile_generation(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            try:
+                self._lockfiles.advance(
+                    session, continuation, next_node="repair_revalidate"
+                )
+            except LockfileGenerationError as error:
+                self._block(session, continuation, error.code, error.message)
 
     @staticmethod
     def _claim_current_continuation_for_apply(
