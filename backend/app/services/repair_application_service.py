@@ -945,10 +945,9 @@ class RepairApplicationService:
         For every stage checkpoint (ascending sequence) the supported legacy
         profiles are evaluated in fixed order against the checkpoint's stored
         fingerprint (check 1).  A checkpoint qualifies only when exactly one
-        legacy profile reproduces its stored hash, the live workspace matches
-        the checkpoint under the current canonical profile (check 2), and the
-        attempt's recorded pre-fingerprint agrees with either the checkpoint
-        or the replaced binding fingerprint when explicitly referenced. Exactly one
+        legacy profile reproduces its stored hash and the live workspace
+        matches the checkpoint under the current canonical profile (check 2).
+        Exactly one
         qualifying (checkpoint, profile) pair is accepted; anything else —
         unknown or ambiguous legacy profile, or no/several matching
         checkpoints — returns ``(None, None)`` and the caller fails closed.
@@ -1004,11 +1003,6 @@ class RepairApplicationService:
         matches = []
         for checkpoint in checkpoints:
             if checkpoint.kind != "pre_repair" or not checkpoint.safe_for_resume:
-                continue
-            allowed_pre_fingerprints = {None, checkpoint.workspace_fingerprint}
-            if has_checkpoint_reference and binding_fingerprint is not None:
-                allowed_pre_fingerprints.add(binding_fingerprint)
-            if attempt.pre_fingerprint not in allowed_pre_fingerprints:
                 continue
             try:
                 checkpoint_root = Path(checkpoint.workspace_path).resolve(strict=True)
