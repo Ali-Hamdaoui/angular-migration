@@ -274,6 +274,13 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
         description="Final clean install after lockfile verification",
     ),
+    "npm-lockfile-generate": TransformationCommandDefinition(
+        command_id="npm-lockfile-generate", template_id="tpl-npm-lockfile-generate", executable="npm",
+        argument_patterns=("install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"),
+        executable_aliases=("npm.cmd",), timeout_seconds=3600,
+        allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
+        description="Regenerate the approved npm lockfile without lifecycle scripts",
+    ),
     "npm-script-build-production": TransformationCommandDefinition(
         command_id="npm-script-build-production", template_id="tpl-npm-script-build-production", executable="npm",
         argument_patterns=("run", "{build_script}", "--", "--configuration", "{build_configuration}"),

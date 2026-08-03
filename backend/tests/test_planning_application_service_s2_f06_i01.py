@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.domain.command import DEFAULT_COMMAND_TEMPLATES
 from app.domain.planning import PlanGenerationRequest
 from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService
 
@@ -40,6 +41,27 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
         for commands in result.first_stage_plan.commands.values()
         for command in commands
     } == {"sha256:" + "4" * 64}
+
+
+def test_generates_checksum_bound_lockfile_generation_authority():
+    result = PlanningApplicationService().generate(request())
+
+    reference = result.first_stage_plan.commands["lockfile_generation"][0]
+    assert reference.command_id == "npm-lockfile-generate"
+    assert reference.template_id == "tpl-npm-lockfile-generate"
+    assert reference.executable == "npm"
+    assert reference.arguments == (
+        "install",
+        "--package-lock-only",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+    )
+    assert reference.shell is False
+    assert reference.runtime_profile_checksum == "sha256:" + "4" * 64
+    assert "npm-lockfile-generate" in {
+        template.command_id for template in DEFAULT_COMMAND_TEMPLATES
+    }
 
 
 def test_run_scopes_stage_instance_ids_for_repeated_catalogue_route():

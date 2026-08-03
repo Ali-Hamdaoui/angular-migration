@@ -174,7 +174,7 @@ class StageExecutionPlan(ContractModel):
 
     @model_validator(mode="after")
     def validate_commands(self) -> "StageExecutionPlan":
-        required = {"bootstrap_install", "angular_update", "target_version_check", "final_install", "builds", "tests", "lint"}
+        required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "builds", "tests", "lint"}
         if set(self.commands) != required:
             raise ValueError("stage plan commands must contain the complete standard command set")
         if any(not refs for name, refs in self.commands.items() if name != "lint"):

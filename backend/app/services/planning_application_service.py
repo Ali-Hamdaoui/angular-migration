@@ -81,6 +81,7 @@ class StageExecutionPlanService:
             "bootstrap_install": (self._command("npm-ci-bootstrap", request),),
             "angular_update": (self._command("angular-update-exact", request, {"target_cli_exact": target_cli_exact, "target_exact": target_exact}),),
             "target_version_check": (self._command("angular-version-verify", request),),
+            "lockfile_generation": (self._command("npm-lockfile-generate", request),),
             "final_install": (self._command("npm-ci-final", request),),
             "builds": (self._command("npm-script-build-production", request, {"build_script": request.resolved_scripts["build"], "build_configuration": "production"}),),
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
