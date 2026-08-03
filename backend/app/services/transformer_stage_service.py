@@ -392,6 +392,21 @@ class TransformerStageService:
             attempt_key="target",
         )
 
+    def queue_lockfile_generation(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        attempt_key: str,
+    ):
+        return self._queue_group(
+            session,
+            continuation,
+            group="lockfile_generation",
+            next_node="lockfile_generation",
+            attempt_key=attempt_key,
+        )
+
     def snapshot_workspace(self, workspace_path: str, stage_root: str, stage_id: str) -> StagePreparationResult:
         workspace = Path(workspace_path).resolve(strict=True)
         root = Path(stage_root).resolve(strict=True)
