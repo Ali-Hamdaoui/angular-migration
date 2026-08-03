@@ -36,6 +36,7 @@ from app.llm_gateway import (
 )
 from app.repositories.models import (
     ArtifactMetadataModel,
+    CommandExecutionModel,
     LlmInvocationModel,
     MigrationRunModel,
     RepairAttemptModel,
@@ -774,9 +775,9 @@ class RepairApplicationService:
         checkpoint) the state is left untouched and REPAIR_WORKSPACE_STALE is
         raised.  A current-profile binding keeps the normal stale-workspace
         check unchanged.  A legacy binding whose stored hash already equals
-        the live workspace completes the same lineage + checkpoint binding
-        when a checkpoint is identifiable, and is otherwise only profile-
-        stamped — never failing.  The method is idempotent and
+        the live workspace still requires an identifiable safe checkpoint;
+        missing or invalid checkpoint authority remains blocked.  The method
+        is idempotent and
         concurrency-safe: a losing concurrent worker observes the committed
         migration and returns without writing anything.
         """
@@ -821,6 +822,7 @@ class RepairApplicationService:
             workspace_path = binding.workspace_path
             stored_fingerprint = binding.workspace_fingerprint
             profile_id = binding.fingerprint_profile_id
+            checkpoint_id = attempt.checkpoint_id
         try:
             live_fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(Path(workspace_path))
         except OSError as error:
@@ -828,7 +830,12 @@ class RepairApplicationService:
         if profile_id is not None:
             if live_fingerprint != stored_fingerprint:
                 raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
-            return {"recovered": False, "checkpoint_id": None}
+            if checkpoint_id is None:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair checkpoint authority is missing",
+                )
+            return {"recovered": False, "checkpoint_id": checkpoint_id}
         with self._scope() as session:
             attempt = session.get(RepairAttemptModel, attempt_id)
             if attempt is None:
@@ -852,48 +859,87 @@ class RepairApplicationService:
                 ) from error
             if live_fingerprint == stored_fingerprint:
                 checkpoint, legacy_profile = self._identify_legacy_checkpoint(
-                    session, attempt, run_root, live_fingerprint
+                    session, attempt, run_root, live_fingerprint, stored_fingerprint
                 )
                 if checkpoint is None:
-                    self._stamp_binding_profile(session, attempt, binding, stored_fingerprint)
-                    return {"recovered": False, "checkpoint_id": None}
+                    raise RepairApplicationError(
+                        "REPAIR_WORKSPACE_STALE",
+                        "Repair checkpoint authority could not be validated",
+                    )
                 return self._commit_authority_recovery(
                     session, attempt, binding, checkpoint, legacy_profile, live_fingerprint
                 )
             checkpoint, legacy_profile = self._identify_legacy_checkpoint(
-                session, attempt, run_root, live_fingerprint
+                session, attempt, run_root, live_fingerprint, stored_fingerprint
             )
             if checkpoint is None:
-                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
-            if attempt.pre_fingerprint not in (None, checkpoint.workspace_fingerprint):
                 raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
             return self._commit_authority_recovery(
                 session, attempt, binding, checkpoint, legacy_profile, live_fingerprint
             )
 
     @staticmethod
-    def _stamp_binding_profile(session, attempt, binding, live_fingerprint: str) -> None:
-        """Stamp a legacy binding whose stored hash already matches the live workspace.
-
-        The stored value is already current-profile correct, so only the
-        profile identity is persisted.  Never fails: a concurrent worker may
-        win the stamp, and losing is idempotent.
-        """
-        session.execute(
-            update(StageWorkspaceBindingModel)
-            .where(
-                StageWorkspaceBindingModel.id == binding.id,
-                StageWorkspaceBindingModel.run_id == attempt.run_id,
-                StageWorkspaceBindingModel.stage_id == attempt.stage_id,
-                StageWorkspaceBindingModel.active.is_(True),
-                StageWorkspaceBindingModel.fingerprint_profile_id.is_(None),
-                StageWorkspaceBindingModel.workspace_fingerprint == live_fingerprint,
-            )
-            .values(fingerprint_profile_id=STAGE_FINGERPRINT_PROFILE.profile_id)
+    def _immutable_checkpoint_references(session, attempt) -> set[str]:
+        if not attempt.failure_evidence_artifact_id or not attempt.failure_evidence_checksum:
+            return set()
+        metadata = session.get(
+            ArtifactMetadataModel,
+            f"metadata-{attempt.failure_evidence_artifact_id}",
         )
+        run = session.get(MigrationRunModel, attempt.run_id)
+        if (
+            metadata is None
+            or run is None
+            or metadata.run_id != attempt.run_id
+            or metadata.stage_id != attempt.stage_id
+            or metadata.artifact_type != ArtifactType.JSON.value
+            or not metadata.immutable
+            or metadata.checksum != attempt.failure_evidence_checksum
+            or not run.artifact_root
+        ):
+            return set()
+        try:
+            artifact = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            ).read_artifact(attempt.run_id, metadata.relative_path)
+            if (
+                artifact.ref.artifact_id != attempt.failure_evidence_artifact_id
+                or artifact.ref.artifact_type != ArtifactType.JSON
+                or artifact.ref.checksum != attempt.failure_evidence_checksum
+            ):
+                return set()
+            evidence = json.loads(artifact.content)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError):
+            return set()
+        if not isinstance(evidence, dict):
+            return set()
+        if (
+            evidence.get("schema_version") != "transformer-failure-evidence-v1"
+            or evidence.get("run_id") != attempt.run_id
+            or evidence.get("stage_id") != attempt.stage_id
+        ):
+            return set()
+        references = set()
+        checkpoint_id = evidence.get("checkpoint_id")
+        if isinstance(checkpoint_id, str) and checkpoint_id:
+            references.add(checkpoint_id)
+        execution_id = evidence.get("execution_id")
+        if isinstance(execution_id, str) and execution_id:
+            execution = session.get(CommandExecutionModel, execution_id)
+            if (
+                execution is not None
+                and execution.run_id == attempt.run_id
+                and execution.stage_id == attempt.stage_id
+                and execution.checkpoint_id
+            ):
+                references.add(execution.checkpoint_id)
+        return references
 
     @staticmethod
-    def _identify_legacy_checkpoint(session, attempt, run_root, live_fingerprint):
+    def _identify_legacy_checkpoint(
+        session, attempt, run_root, live_fingerprint, binding_fingerprint=None
+    ):
         """Deterministically identify the attempt's historical pre-repair checkpoint.
 
         For every stage checkpoint (ascending sequence) the supported legacy
@@ -901,7 +947,8 @@ class RepairApplicationService:
         fingerprint (check 1).  A checkpoint qualifies only when exactly one
         legacy profile reproduces its stored hash, the live workspace matches
         the checkpoint under the current canonical profile (check 2), and the
-        attempt's recorded pre-fingerprint agrees when present.  Exactly one
+        attempt's recorded pre-fingerprint agrees with either the checkpoint
+        or the replaced binding fingerprint when explicitly referenced. Exactly one
         qualifying (checkpoint, profile) pair is accepted; anything else —
         unknown or ambiguous legacy profile, or no/several matching
         checkpoints — returns ``(None, None)`` and the caller fails closed.
@@ -909,13 +956,38 @@ class RepairApplicationService:
         checkpoint is eligible (the bound checkpoint either verifies or the
         recovery fails closed).
         """
+        diagnosis_references = re.findall(
+            r"(?:^|[;\s])checkpoint=([^\s;]+)", attempt.diagnosis or ""
+        )
+        evidence_references = RepairApplicationService._immutable_checkpoint_references(
+            session, attempt
+        )
+        has_checkpoint_reference = "checkpoint=" in (attempt.diagnosis or "") or bool(
+            evidence_references
+        )
+        if "checkpoint=" in (attempt.diagnosis or "") and len(diagnosis_references) != 1:
+            return None, None
+        referenced_ids = set(diagnosis_references) | evidence_references
+        if has_checkpoint_reference and len(referenced_ids) != 1:
+            return None, None
         if attempt.checkpoint_id is not None:
+            if has_checkpoint_reference and referenced_ids != {attempt.checkpoint_id}:
+                return None, None
             bound = session.get(StageCheckpointModel, attempt.checkpoint_id)
             checkpoints = (
                 [bound]
                 if bound is not None
                 and bound.run_id == attempt.run_id
                 and bound.stage_id == attempt.stage_id
+                else []
+            )
+        elif has_checkpoint_reference:
+            referenced = session.get(StageCheckpointModel, next(iter(referenced_ids)))
+            checkpoints = (
+                [referenced]
+                if referenced is not None
+                and referenced.run_id == attempt.run_id
+                and referenced.stage_id == attempt.stage_id
                 else []
             )
         else:
@@ -931,7 +1003,12 @@ class RepairApplicationService:
             return None, None
         matches = []
         for checkpoint in checkpoints:
-            if attempt.pre_fingerprint not in (None, checkpoint.workspace_fingerprint):
+            if checkpoint.kind != "pre_repair" or not checkpoint.safe_for_resume:
+                continue
+            allowed_pre_fingerprints = {None, checkpoint.workspace_fingerprint}
+            if has_checkpoint_reference and binding_fingerprint is not None:
+                allowed_pre_fingerprints.add(binding_fingerprint)
+            if attempt.pre_fingerprint not in allowed_pre_fingerprints:
                 continue
             try:
                 checkpoint_root = Path(checkpoint.workspace_path).resolve(strict=True)
