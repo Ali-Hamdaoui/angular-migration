@@ -16,6 +16,7 @@ from app.repositories.models import (
     CommandExecutionModel,
     MigrationRunModel,
     RepairAttemptModel,
+    StageReconstructionRecordModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageStepModel,
@@ -285,6 +286,206 @@ def test_classify_failure_repairable_commits_exactly_three_metadata_rows_once(
     assert len(route_files) == 1
     route = json.loads((artifacts / route_files[0]).read_text(encoding="utf-8"))
     assert route["route"] == "repairable_source"
+    engine.dispose()
+
+
+def test_classify_failure_repairable_restores_pre_update_checkpoint_before_repair(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    workspace, _artifacts = _seed(factory, tmp_path)
+    checkpoint_workspace = tmp_path / "pre-angular-update"
+    checkpoint_workspace.mkdir()
+    (checkpoint_workspace / "package.json").write_text(
+        '{"name":"before-update"}', encoding="utf-8"
+    )
+    checkpoint_fingerprint = StageSandboxCopier.fingerprint(checkpoint_workspace)
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    binding.workspace_fingerprint = checkpoint_fingerprint
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-pre",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_angular_update",
+            sequence=1,
+            workspace_alias="STAGE_SANDBOX",
+            workspace_path=str(checkpoint_workspace),
+            workspace_fingerprint=checkpoint_fingerprint,
+            safe_for_resume=True,
+            sealed=True,
+            state_version=1,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    (workspace / "package.json").write_text(
+        '{"name":"after-failed-update"}', encoding="utf-8"
+    )
+    orchestrator = _orchestrator(factory)
+    orchestrator._classify_failure("cont-1", "worker-1")
+
+    assert StageSandboxCopier.fingerprint(workspace) == checkpoint_fingerprint
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    attempt = (
+        session.query(RepairAttemptModel)
+        .order_by(RepairAttemptModel.attempt_number.desc())
+        .first()
+    )
+    assert attempt is not None
+    assert binding.workspace_fingerprint == checkpoint_fingerprint
+    assert attempt.pre_fingerprint == checkpoint_fingerprint
+    checkpoint = session.get(StageCheckpointModel, attempt.checkpoint_id)
+    assert checkpoint.workspace_fingerprint == checkpoint_fingerprint
+    session.close()
+    engine.dispose()
+
+
+def test_repair_replay_checkpoint_lookup_is_run_scoped(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    workspace, _artifacts = _seed(factory, tmp_path)
+    checkpoint_workspace = tmp_path / "pre-angular-update"
+    checkpoint_workspace.mkdir()
+    (checkpoint_workspace / "package.json").write_text(
+        '{"name":"before-update"}', encoding="utf-8"
+    )
+    checkpoint_fingerprint = StageSandboxCopier.fingerprint(checkpoint_workspace)
+    session = factory()
+    session.get(StageWorkspaceBindingModel, "binding-1").workspace_fingerprint = checkpoint_fingerprint
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-pre",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_angular_update",
+            sequence=1,
+            workspace_alias="STAGE_SANDBOX",
+            workspace_path=str(checkpoint_workspace),
+            workspace_fingerprint=checkpoint_fingerprint,
+            safe_for_resume=True,
+            sealed=True,
+            state_version=1,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+    (workspace / "package.json").write_text(
+        '{"name":"after-failed-update"}', encoding="utf-8"
+    )
+    service = _RecordingFailureEvidence()
+    orchestrator = _orchestrator(factory, failure_service=service)
+    orchestrator._classify_failure("cont-1", "worker-1")
+    session = factory()
+    same_run_checkpoint = (
+        session.query(StageCheckpointModel)
+        .filter_by(run_id="run-1", stage_id="stage-1", kind="pre_repair")
+        .one()
+    )
+    same_run_checkpoint_id = same_run_checkpoint.id
+    session.close()
+
+    service.enable_replay()
+    original_collect = service.collect
+
+    def collect_without_prior(session, continuation, *, prior_fingerprints=None):
+        evidence = original_collect(session, continuation, prior_fingerprints=[])
+        evidence["failure_fingerprint"] = "sha256:replayed-without-prior"
+        return evidence
+
+    service.collect = collect_without_prior
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "running"
+    continuation.worker_id = "worker-2"
+    continuation.current_node = "classify_failure"
+    continuation.lease_expires_at = NOW + timedelta(seconds=120)
+    continuation.state_version += 1
+    session.commit()
+    session.close()
+
+    orchestrator = _orchestrator(factory, failure_service=service)
+    session = factory()
+    reconstruction_count = session.query(StageReconstructionRecordModel).count()
+    session.close()
+    restore = MagicMock(side_effect=AssertionError("replay must reuse pre-repair checkpoint"))
+    orchestrator._restore_angular_update_checkpoint = restore
+    orchestrator._classify_failure("cont-1", "worker-2")
+
+    session = factory()
+    attempt = (
+        session.query(RepairAttemptModel)
+        .order_by(RepairAttemptModel.attempt_number.desc())
+        .first()
+    )
+    assert attempt is not None
+    assert attempt.checkpoint_id == same_run_checkpoint_id
+    checkpoint = session.get(StageCheckpointModel, attempt.checkpoint_id)
+    assert checkpoint.run_id == "run-1"
+    restore.assert_not_called()
+    assert session.query(StageReconstructionRecordModel).count() == reconstruction_count
+    session.close()
+    engine.dispose()
+
+
+def test_angular_failure_checkpoint_lookup_is_run_scoped(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path, angular=False)
+    session = factory()
+    foreign_checkpoint = StageCheckpointModel(
+        id="foreign-angular-checkpoint",
+        run_id="foreign-run",
+        stage_id="stage-1",
+        kind="pre_angular_update",
+        sequence=1,
+        workspace_alias="STAGE_SANDBOX",
+        workspace_path=str(tmp_path / "workspace"),
+        workspace_fingerprint="foreign",
+        safe_for_resume=True,
+        sealed=True,
+        state_version=1,
+        created_at=NOW,
+    )
+    session.add_all(
+        [
+            foreign_checkpoint,
+            CommandExecutionModel(
+                id="foreign-angular-execution",
+                run_id="foreign-run",
+                stage_id="stage-1",
+                command_id="angular-update-exact",
+                status="failed",
+                failure_code="COMMAND_EXIT_NONZERO",
+                failure_message="foreign failure",
+                executable="npx",
+                arguments=[],
+                requested_at=NOW,
+                state_version=1,
+                attempt_number=1,
+                operation_kind="mutating",
+                checkpoint_id=foreign_checkpoint.id,
+            ),
+            StageStepModel(
+                id="foreign-angular-step",
+                run_id="foreign-run",
+                stage_id="stage-1",
+                name="angular_update-0",
+                status="FAILED",
+                component_type="command",
+                execution_id="foreign-angular-execution",
+                state_version=1,
+                updated_at=NOW,
+            ),
+        ]
+    )
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert not TransformerOrchestrator._is_angular_update_failure(session, continuation)
+    assert TransformerOrchestrator._angular_update_reconstruction_checkpoint(session, continuation) is None
+    session.close()
     engine.dispose()
 
 

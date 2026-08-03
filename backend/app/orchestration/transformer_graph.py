@@ -802,16 +802,31 @@ class TransformerOrchestrator:
                 reuse_checkpoint = session.scalar(
                     select(StageCheckpointModel)
                     .where(
+                        StageCheckpointModel.run_id == continuation.run_id,
                         StageCheckpointModel.stage_id == continuation.current_stage_id,
                         StageCheckpointModel.kind == "pre_repair",
                     )
                     .order_by(StageCheckpointModel.sequence.desc())
                     .limit(1)
                 )
+        route = self._failures.classify(evidence)
+        if (
+            route.value == "repairable_source"
+            and (replayed is None or reuse_checkpoint is None)
+        ):
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                if (
+                    self._is_angular_update_failure(session, continuation)
+                    and self._angular_update_reconstruction_checkpoint(session, continuation) is not None
+                ):
+                    # Restore before freezing failure/context evidence so the
+                    # attempt, binding, and pre-repair checkpoint share one
+                    # authoritative workspace fingerprint.
+                    self._restore_angular_update_checkpoint(session, continuation)
         evidence["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
             Path(str(evidence["workspace_path"]))
         )
-        route = self._failures.classify(evidence)
         attempt_artifacts: list[StoredArtifact] = []
         if replayed is None:
             failure, route_artifact = self._failures.write(evidence, route)
@@ -2230,6 +2245,7 @@ class TransformerOrchestrator:
     def _is_angular_update_failure(session, continuation) -> bool:
         step = session.scalar(
             select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
                 StageStepModel.stage_id == continuation.current_stage_id,
                 StageStepModel.name == "angular_update-0",
                 StageStepModel.status == "FAILED",
@@ -2248,6 +2264,7 @@ class TransformerOrchestrator:
         """
         step = session.scalar(
             select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
                 StageStepModel.stage_id == continuation.current_stage_id,
                 StageStepModel.name == "angular_update-0",
             )
