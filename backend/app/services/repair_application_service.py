@@ -22,8 +22,13 @@ from app.artifact_store import (
     StoredArtifact,
 )
 from app.core.config import get_settings
+from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.contracts import AgentKind, ArtifactType
-from app.domain.planning import SUPPORTED_VALIDATION_TARGETS, ValidationTarget
+from app.domain.planning import (
+    CommandTemplateReference,
+    SUPPORTED_VALIDATION_TARGETS,
+    ValidationTarget,
+)
 from app.llm_gateway import (
     AzureGatewayError,
     AzureOpenAILLMGateway,
@@ -501,6 +506,11 @@ class RepairApplicationService:
                     "REPAIR_DIFF_INVALID", "Unified diff header pair has no file path"
                 )
             paths.append(new_path or old_path)
+            if (new_path or old_path) == "package.json":
+                raise RepairApplicationError(
+                    "REPAIR_DEPENDENCY_OPERATION_REQUIRED",
+                    "package.json changes require the controlled dependency operation",
+                )
             index += 2
             while index < len(lines):
                 if lines[index].startswith("diff --git "):
@@ -649,10 +659,7 @@ class RepairApplicationService:
                     "package.json changes require the controlled dependency operation",
                 )
             if operation.operation == "dependency_change":
-                raise RepairApplicationError(
-                    "REPAIR_DEPENDENCY_COMMAND_MISSING",
-                    "The accepted stage plan has no registered lockfile-generation command",
-                )
+                self._require_lockfile_generation_authority(context)
             if operation.operation in {"replace_text", "dependency_change"} and (
                 operation.old_text is None or operation.new_text is None
             ):
@@ -664,6 +671,38 @@ class RepairApplicationService:
                 "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
             )
         return proposal.model_dump(mode="json")
+
+    @staticmethod
+    def _require_lockfile_generation_authority(context: dict[str, object]) -> None:
+        commands = context.get("stage_plan_commands")
+        references = commands.get("lockfile_generation") if isinstance(commands, dict) else None
+        try:
+            reference = CommandTemplateReference.model_validate(references[0])
+        except (IndexError, KeyError, TypeError, ValidationError):
+            reference = None
+        definition = TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"]
+        if (
+            not isinstance(references, (list, tuple))
+            or len(references) != 1
+            or reference is None
+            or reference.command_id != definition.command_id
+            or reference.template_id != definition.template_id
+            or reference.template_version != 1
+            or reference.parameter_bindings
+            or reference.executable != definition.executable
+            or reference.arguments != definition.arguments
+            or reference.shell is not False
+            or reference.working_directory_alias != context.get("workspace_binding_alias")
+            or reference.timeout_seconds != definition.timeout_seconds
+            or reference.network_profile != definition.network_profile
+            or reference.runtime_profile_checksum is None
+            or reference.cancellation_policy != "terminate_process_tree"
+            or reference.conditional is not False
+        ):
+            raise RepairApplicationError(
+                "STAGE_PLAN_COMMAND_AUTHORITY_MISSING",
+                "The accepted stage plan lacks exact npm-lockfile-generate authority",
+            )
 
     def _attempt_context(
         self, attempt_id: str, *, include_proposal: bool = False, validate_context_pack: bool = True
@@ -728,7 +767,9 @@ class RepairApplicationService:
                 "stage_plan_id": stage_plan.id if stage_plan else (continuation.stage_plan_id if continuation else None),
                 "stage_plan_checksum": stage_plan.checksum if stage_plan else (continuation.stage_plan_checksum if continuation else None),
                 "stage_plan_state_version": stage_plan.state_version if stage_plan else None,
+                "stage_plan_commands": dict((stage_plan.stage_plan or {}).get("commands") or {}),
                 "workspace_binding_id": binding.id,
+                "workspace_binding_alias": binding.alias,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
             }
             if not attempt.failure_evidence_artifact_id or not attempt.failure_evidence_checksum:

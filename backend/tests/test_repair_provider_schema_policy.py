@@ -250,5 +250,9 @@ def test_v2_repair_candidate_registry_and_prompt_versions_exist():
         prompts.get("repair_reviewer_candidate_v2").version
         == "prompt-repair-reviewer-candidate-v2"
     )
+    proposer_policy = prompts.get("repair_proposer_candidate_v2").system_policy
+    assert 'package.json change must use proposal_format "operations"' in proposer_policy
+    assert 'operation "dependency_change"' in proposer_policy
+    assert "Never patch package-lock.json or npm-shrinkwrap.json directly" in proposer_policy
     assert ("repair_proposer_candidate_v2", repair_application_service.LlmTaskType.REPAIR_DIAGNOSIS) in PRODUCTION_LLM_POLICY_TUPLES
     assert ("repair_reviewer_candidate_v2", repair_application_service.LlmTaskType.REPAIR_REVIEW) in PRODUCTION_LLM_POLICY_TUPLES

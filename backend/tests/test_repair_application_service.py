@@ -102,6 +102,34 @@ def _review_candidate():
     }
 
 
+def _lockfile_generation_commands():
+    return {
+        "lockfile_generation": [
+            {
+                "command_id": "npm-lockfile-generate",
+                "template_id": "tpl-npm-lockfile-generate",
+                "template_version": 1,
+                "parameter_bindings": {},
+                "executable": "npm",
+                "arguments": [
+                    "install",
+                    "--package-lock-only",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                ],
+                "shell": False,
+                "working_directory_alias": "STAGE_WORKSPACE_1",
+                "timeout_seconds": 3600,
+                "network_profile": "approved-registries-only",
+                "runtime_profile_checksum": "sha256:" + "4" * 64,
+                "cancellation_policy": "terminate_process_tree",
+                "conditional": False,
+            }
+        ]
+    }
+
+
 def test_proposal_semantics_bind_preimage_and_safe_path(tmp_path: Path):
     target = tmp_path / "src" / "app.ts"
     target.parent.mkdir()
@@ -119,6 +147,62 @@ def test_proposal_semantics_bind_preimage_and_safe_path(tmp_path: Path):
     escaped["touched_files"] = ["../outside.ts"]
     with pytest.raises(RepairApplicationError, match="outside policy"):
         service.validate_proposal(escaped, context)
+
+
+def test_dependency_change_requires_exact_stage_plan_authority(tmp_path: Path):
+    package = tmp_path / "package.json"
+    package.write_text('{"dependencies":{"x":"1.0.0"}}', encoding="utf-8")
+    proposal = _proposal(package)
+    proposal["operations"][0].update(
+        {
+            "operation": "dependency_change",
+            "path": "package.json",
+            "old_text": '"x":"1.0.0"',
+            "new_text": '"x":"2.0.0"',
+        }
+    )
+    proposal["touched_files"] = ["package.json"]
+    context = {
+        "workspace_path": str(tmp_path),
+        "workspace_binding_alias": "STAGE_WORKSPACE_1",
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+        "stage_plan_commands": {},
+    }
+    service = RepairApplicationService(scope=None)
+
+    with pytest.raises(RepairApplicationError) as error:
+        service.validate_proposal(proposal, context)
+    assert error.value.code == "STAGE_PLAN_COMMAND_AUTHORITY_MISSING"
+
+    context["stage_plan_commands"] = _lockfile_generation_commands()
+    assert service.validate_proposal(proposal, context)["operations"][0]["operation"] == (
+        "dependency_change"
+    )
+
+
+def test_unified_diff_cannot_modify_package_json(tmp_path: Path):
+    (tmp_path / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
+    candidate = _proposal_candidate()
+    candidate.update(
+        {
+            "proposal_format": "unified_diff",
+            "operations": [],
+            "unified_diff": (
+                "--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n"
+                "-{\"name\":\"fixture\"}\n+{\"name\":\"updated\"}\n"
+            ),
+        }
+    )
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    with pytest.raises(RepairApplicationError) as error:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+    assert error.value.code == "REPAIR_DEPENDENCY_OPERATION_REQUIRED"
 
 
 def test_reviewer_candidate_schema_cannot_author_candidate_content():
