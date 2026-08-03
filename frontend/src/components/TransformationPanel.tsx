@@ -9,6 +9,8 @@ import {
   cancelTransformation,
   decideTransformationGate,
   decideTransformationPrompt,
+  rejectRepair,
+  requestRepairRevision,
   restartTransformation,
 } from "@/api/transformation";
 import {
@@ -69,8 +71,10 @@ export function TransformationPanel({
   const { projection, status, refresh } = useTransformation(runId, refreshKey);
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [revisionInstruction, setRevisionInstruction] = useState("");
   const submittingRef = useRef(false);
   const actionRequired = projection?.status === "waiting_prompt"
+    || projection?.status === "waiting_repair_revision"
     || (projection?.status === "waiting_gate" && /^G(?:0[7-9]|1[0-2])$/.test(projection.active_gate ?? ""));
 
   useEffect(() => {
@@ -127,7 +131,7 @@ export function TransformationPanel({
         <div className={styles.cardHeader}>
           <div>
             <h3 id="transform-current-action">
-              {projection.active_gate ? `${projection.active_gate} approval` : projection.status === "waiting_prompt" ? "CLI prompt decision" : "No human action requested"}
+              {projection.status === "waiting_prompt" ? "CLI prompt decision" : projection.status === "waiting_repair_revision" ? "Repair revision required" : projection.status === "waiting_gate" && projection.active_gate ? `${projection.active_gate} approval` : "No human action requested"}
             </h3>
             <p className={styles.note}>Backend state: {projection.status} / {projection.current_node}</p>
           </div>
@@ -140,6 +144,9 @@ export function TransformationPanel({
               <button type="button" disabled={submitting} onClick={() => void decideGate("approve")}>
                 Approve {projection.active_gate}
               </button>
+              {projection.active_gate === "G10" ? <button type="button" disabled={submitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
+                Request changes
+              </button> : null}
               <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
                 Reject {projection.active_gate}
               </button>
@@ -147,6 +154,22 @@ export function TransformationPanel({
           : projection.status === "waiting_gate"
             ? <p className={styles.alert} role="alert">The active gate lacks the backend package checksum or workspace fingerprint required for a safe decision.</p>
             : null}
+        {(projection.status === "waiting_repair_revision" || (projection.status === "waiting_gate" && projection.active_gate === "G10")) ? <>
+          <label htmlFor="repair-revision-instruction">Exact revision instruction</label>
+          <textarea
+            id="repair-revision-instruction"
+            value={revisionInstruction}
+            onChange={(event) => setRevisionInstruction(event.target.value)}
+            maxLength={4000}
+            rows={4}
+            disabled={submitting}
+            placeholder="Describe the required revision without patches or filesystem paths"
+          />
+          {projection.status === "waiting_repair_revision" ? <div className={styles.actions}>
+            <button type="button" disabled={submitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>Request changes</button>
+            <button type="button" disabled={submitting} onClick={() => void rejectReviewedRepair()}>Reject repair</button>
+          </div> : null}
+        </> : null}
       </section>
 
       <LogsAndDiagnostics projection={projection} workflowEvents={workflowEvents} />
@@ -264,5 +287,29 @@ export function TransformationPanel({
       idempotency_key: key,
       correlation_id: key,
     }), "Restart failed.");
+  }
+
+  function reviseRepair() {
+    if (!current.repair_attempt_id || !current.repair_proposal_id || !current.repair_base_checksum || !revisionInstruction.trim()) return;
+    return mutate(async (key) => {
+      await requestRepairRevision(runId, current.repair_attempt_id!, {
+        attempt_id: current.repair_attempt_id!,
+        proposal_id: current.repair_proposal_id!,
+        base_checksum: current.repair_base_checksum!,
+        instruction: revisionInstruction,
+        idempotency_key: key,
+      });
+      setRevisionInstruction("");
+    }, "Repair revision request failed.");
+  }
+
+  function rejectReviewedRepair() {
+    if (!current.repair_attempt_id || !current.repair_proposal_id || !current.repair_base_checksum) return;
+    return mutate((key) => rejectRepair(runId, current.repair_attempt_id!, {
+      attempt_id: current.repair_attempt_id!,
+      proposal_id: current.repair_proposal_id!,
+      base_checksum: current.repair_base_checksum!,
+      idempotency_key: key,
+    }), "Repair rejection failed.");
   }
 }

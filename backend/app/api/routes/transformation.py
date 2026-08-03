@@ -9,13 +9,17 @@ from sqlalchemy import select
 from app.api.authentication import authenticated_actor, authorize_run
 from app.api.errors import error_response
 from app.domain.transformation import (
+    RepairDecisionRequest,
+    RepairRevisionRequest,
     StageGateDecisionRequest,
     TransformationCancelRequest,
     TransformationRestartRequest,
 )
 from app.repositories.models import (
+    ArtifactMetadataModel,
     CommandExecutionModel,
     MigrationStageModel,
+    MigrationRunModel,
     RepairAttemptModel,
     LlmInvocationModel,
     StageCheckpointModel,
@@ -33,12 +37,32 @@ from app.services.transformation_continuation_service import (
 )
 from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.command_executor_service import CommandExecutorService
+from app.services.repair_application_service import RepairApplicationError, RepairApplicationService
+from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_prompt_service import TransformerPromptError, TransformerPromptService
 from app.services.transformer_stage_service import TransformerStageService
 from app.domain.transformation import PromptDecisionRequest
 
 router = APIRouter(prefix="/runs", tags=["transformation"])
+
+
+def _artifact_content(session, run_id: str, artifact_id: str | None):
+    if not artifact_id:
+        return None
+    run = session.get(MigrationRunModel, run_id)
+    metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+    if run is None or metadata is None or metadata.run_id != run_id:
+        return None
+    try:
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(run_id, metadata.relative_path)
+    except (ArtifactNotFoundError, ArtifactStoreError, OSError):
+        return None
+    if stored.ref.artifact_id != artifact_id or stored.ref.checksum != metadata.checksum:
+        return None
+    return stored.content
 
 
 def _projection(session, continuation: TransformationContinuationModel) -> dict[str, object]:
@@ -94,6 +118,35 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         .order_by(RepairAttemptModel.attempt_number.desc())
         .limit(1)
     )
+    safe_diff = None
+    proposal = None
+    review = None
+    if repair is not None:
+        proposal_content = _artifact_content(session, continuation.run_id, repair.proposal_artifact_id)
+        review_content = _artifact_content(session, continuation.run_id, repair.review_artifact_id)
+        diff_metadata = session.scalar(
+            select(ArtifactMetadataModel)
+            .where(
+                ArtifactMetadataModel.run_id == continuation.run_id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.relative_path.like(
+                    f"05_repairs/attempt-{repair.id}/candidate%.diff"
+                ),
+            )
+            .order_by(ArtifactMetadataModel.created_at.desc())
+            .limit(1)
+        )
+        safe_diff = _artifact_content(
+            session,
+            continuation.run_id,
+            diff_metadata.id.removeprefix("metadata-") if diff_metadata else None,
+        )
+        try:
+            proposal = json.loads(proposal_content) if proposal_content else None
+            review = json.loads(review_content) if review_content else None
+        except (TypeError, ValueError):
+            proposal = None
+            review = None
     latest_seal = session.scalar(
         select(StageCheckpointModel)
         .where(
@@ -137,10 +190,16 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             else None
         ),
         "repair_attempt_id": repair.id if repair else None,
+        "repair_attempt_number": repair.attempt_number if repair else None,
         "repair_status": repair.status if repair else None,
         "repair_risk_level": repair.risk_level if repair else None,
         "repair_proposal_checksum": repair.proposal_checksum if repair else None,
         "repair_review_checksum": repair.review_checksum if repair else None,
+        "repair_proposal_id": repair.proposal_artifact_id if repair else None,
+        "repair_base_checksum": repair.proposal_checksum if repair else None,
+        "repair_safe_diff": safe_diff,
+        "repair_review": review,
+        "repair_rationale": proposal.get("rationale", []) if proposal else [],
         "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
         "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
         "route_stages": [
@@ -181,6 +240,91 @@ def get_transformation(
                 message="Transformer continuation has not been created",
             )
         return _projection(session, continuation)
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/revisions")
+def request_repair_revision(
+    run_id: str,
+    attempt_id: str,
+    body: RepairRevisionRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    if body.attempt_id != attempt_id:
+        return error_response(
+            request,
+            status_code=409,
+            error_code="REPAIR_ATTEMPT_MISMATCH",
+            message="Repair attempt path and payload do not match",
+        )
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).request_revision(
+            attempt_id=body.attempt_id,
+            proposal_id=body.proposal_id,
+            base_checksum=body.base_checksum,
+            instruction=body.instruction,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/reject")
+def reject_repair(
+    run_id: str,
+    attempt_id: str,
+    body: RepairDecisionRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    if body.attempt_id != attempt_id:
+        return error_response(
+            request,
+            status_code=409,
+            error_code="REPAIR_ATTEMPT_MISMATCH",
+            message="Repair attempt path and payload do not match",
+        )
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).reject(
+            attempt_id=body.attempt_id,
+            proposal_id=body.proposal_id,
+            base_checksum=body.base_checksum,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
 
 
 @router.post("/{run_id}/transformation/prompts/{prompt_id}/decision")

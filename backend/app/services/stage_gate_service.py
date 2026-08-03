@@ -395,6 +395,8 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
+        parent_proposal_payload = None
+        parent_review_payload = None
         if attempt.parent_attempt_id is not None:
             parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
             if (
@@ -402,6 +404,8 @@ class StageGateService:
                 or parent.run_id != attempt.run_id
                 or parent.stage_id != attempt.stage_id
                 or parent.attempt_number >= attempt.attempt_number
+                or not parent.proposal_artifact_id
+                or not parent.proposal_checksum
                 or not parent.review_artifact_id
                 or not parent.review_checksum
             ):
@@ -421,11 +425,18 @@ class StageGateService:
             parent_metadata = session.get(
                 ArtifactMetadataModel, "metadata-" + str(parent.review_artifact_id)
             )
+            parent_proposal_metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + str(parent.proposal_artifact_id)
+            )
             if (
                 parent_metadata is None
+                or parent_proposal_metadata is None
                 or parent_metadata.run_id != continuation.run_id
+                or parent_proposal_metadata.run_id != continuation.run_id
                 or parent_metadata.stage_id != continuation.current_stage_id
+                or parent_proposal_metadata.stage_id != continuation.current_stage_id
                 or parent_metadata.checksum != parent.review_checksum
+                or parent_proposal_metadata.checksum != parent.proposal_checksum
             ):
                 raise StageGateError(
                     "REPAIR_PARENT_LINEAGE_INVALID",
@@ -435,31 +446,42 @@ class StageGateService:
                 stored_parent_review = store.read_artifact(
                     continuation.run_id, parent_metadata.relative_path
                 )
+                stored_parent_proposal = store.read_artifact(
+                    continuation.run_id, parent_proposal_metadata.relative_path
+                )
                 if (
                     stored_parent_review.ref.artifact_id != parent.review_artifact_id
                     or stored_parent_review.ref.checksum != parent.review_checksum
+                    or stored_parent_proposal.ref.artifact_id != parent.proposal_artifact_id
+                    or stored_parent_proposal.ref.checksum != parent.proposal_checksum
                 ):
                     raise StageGateError(
                         "REPAIR_PARENT_LINEAGE_INVALID",
                         "G10 parent review artifact identity changed",
                     )
                 parent_review_payload = json.loads(stored_parent_review.content)
+                parent_proposal_payload = json.loads(stored_parent_proposal.content)
             except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
                 raise StageGateError(
                     "REPAIR_PARENT_LINEAGE_INVALID",
                     "G10 parent review artifact cannot be verified",
                 ) from error
             parent_envelope = stored_parent_review.envelope
+            parent_proposal_envelope = stored_parent_proposal.envelope
             if (
                 parent_envelope is None
+                or parent_proposal_envelope is None
                 or parent_envelope.run_id != continuation.run_id
+                or parent_proposal_envelope.run_id != continuation.run_id
                 or parent_envelope.stage_id != continuation.current_stage_id
+                or parent_proposal_envelope.stage_id != continuation.current_stage_id
                 or parent_envelope.attempt_id != parent.id
-                or parent_review_payload.get("decision") != "request_changes"
+                or parent_proposal_envelope.attempt_id != parent.id
+                or parent_review_payload.get("decision") not in {"request_changes", "accept"}
             ):
                 raise StageGateError(
                     "REPAIR_PARENT_LINEAGE_INVALID",
-                    "G10 parent review lineage is not a request_changes revision",
+                    "G10 parent review lineage is not revisable",
                 )
         elif (
             package.get("parent_attempt_id") is not None
@@ -556,6 +578,21 @@ class StageGateService:
                 normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
                 if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in SUPPORTED_VALIDATION_TARGETS for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
+            elif role == "context_pack" and attempt.parent_attempt_id is not None:
+                revision = payload.get("human_revision")
+                if (
+                    not isinstance(revision, dict)
+                    or not str(revision.get("instruction") or "").strip()
+                    or revision.get("parent_attempt_id") != attempt.parent_attempt_id
+                    or revision.get("parent_proposal_id") != parent.proposal_artifact_id
+                    or revision.get("parent_proposal_checksum") != parent.proposal_checksum
+                    or revision.get("previous_proposal") != parent_proposal_payload
+                    or revision.get("reviewer_output") != parent_review_payload
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 human revision context is incomplete or stale",
+                    )
             elif role == "review":
                 if payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
                     raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")

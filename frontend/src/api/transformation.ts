@@ -59,3 +59,32 @@ export function restartTransformation(
     body,
   );
 }
+
+type RepairDecisionBody = {
+  attempt_id: string;
+  proposal_id: string;
+  base_checksum: string;
+  idempotency_key: string;
+};
+
+export function requestRepairRevision(
+  runId: string,
+  attemptId: string,
+  body: RepairDecisionBody & { instruction: string },
+) {
+  return apiClient.post(
+    `/api/v1/runs/${encodeURIComponent(runId)}/transformation/repairs/${encodeURIComponent(attemptId)}/revisions`,
+    body,
+  );
+}
+
+export function rejectRepair(
+  runId: string,
+  attemptId: string,
+  body: RepairDecisionBody,
+) {
+  return apiClient.post(
+    `/api/v1/runs/${encodeURIComponent(runId)}/transformation/repairs/${encodeURIComponent(attemptId)}/reject`,
+    body,
+  );
+}

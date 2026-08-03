@@ -25,10 +25,23 @@ export type TransformationProjection = {
     source: string;
   } | null;
   repair_attempt_id: string | null;
+  repair_attempt_number: number | null;
   repair_status: string | null;
   repair_risk_level: string | null;
   repair_proposal_checksum: string | null;
   repair_review_checksum: string | null;
+  repair_proposal_id: string | null;
+  repair_base_checksum: string | null;
+  repair_safe_diff: string | null;
+  repair_review: {
+    decision: "accept" | "request_changes" | "reject";
+    findings: string[];
+    policy_checks: string[];
+    risk_assessment: string;
+    required_validation_targets: string[];
+    limitations: string[];
+  } | null;
+  repair_rationale: string[];
   repair_apply_checksum: string | null;
   repair_validation_checksum: string | null;
   route_stages: Array<{

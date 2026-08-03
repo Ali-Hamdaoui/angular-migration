@@ -256,6 +256,7 @@ class TransformationContinuationService:
             TransformationStatus.WAITING_GATE.value,
             TransformationStatus.WAITING_PROMPT.value,
             TransformationStatus.WAITING_RETRY.value,
+            TransformationStatus.WAITING_REPAIR_REVISION.value,
             TransformationStatus.BLOCKED.value,
         }:
             raise TransformationContinuationError("TRANSFORMATION_STATUS_INVALID", "Invalid continuation wait status")

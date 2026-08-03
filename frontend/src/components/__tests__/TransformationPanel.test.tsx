@@ -5,6 +5,8 @@ import {
   decideTransformationGate,
   decideTransformationPrompt,
   getTransformation,
+  rejectRepair,
+  requestRepairRevision,
 } from "@/api/transformation";
 
 vi.mock("@/api/transformation", () => ({
@@ -12,6 +14,8 @@ vi.mock("@/api/transformation", () => ({
   decideTransformationGate: vi.fn(),
   decideTransformationPrompt: vi.fn(),
   cancelTransformation: vi.fn(),
+  requestRepairRevision: vi.fn(),
+  rejectRepair: vi.fn(),
   restartTransformation: vi.fn(),
 }));
 vi.mock("@/components/LogViewer", () => ({
@@ -40,10 +44,16 @@ const projection = {
   active_prompt_options: [],
   active_prompt_explanation: null,
   repair_attempt_id: null,
+  repair_attempt_number: null,
   repair_status: null,
   repair_risk_level: null,
   repair_proposal_checksum: null,
   repair_review_checksum: null,
+  repair_proposal_id: null,
+  repair_base_checksum: null,
+  repair_safe_diff: null,
+  repair_review: null,
+  repair_rationale: [],
   repair_apply_checksum: null,
   repair_validation_checksum: null,
   route_stages: [{ stage_id: "stage-1", source_version: "18.x", target_version: "19.x", status: "preparing" }],
@@ -183,6 +193,7 @@ describe("TransformationPanel", () => {
   });
 
   it("projects validation failure, classification, repair review, and G10 state", async () => {
+    vi.mocked(requestRepairRevision).mockResolvedValue({});
     vi.mocked(getTransformation).mockResolvedValue({
       ...projection,
       status: "waiting_gate",
@@ -192,6 +203,18 @@ describe("TransformationPanel", () => {
       repair_risk_level: "medium",
       repair_proposal_checksum: "sha256:proposal",
       repair_review_checksum: "sha256:review",
+      repair_proposal_id: "proposal-1",
+      repair_base_checksum: `sha256:${"1".repeat(64)}`,
+      repair_safe_diff: "--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      repair_review: {
+        decision: "accept",
+        findings: ["Scoped change"],
+        policy_checks: ["paths"],
+        risk_assessment: "Medium risk",
+        required_validation_targets: ["build"],
+        limitations: ["Manual smoke check"],
+      },
+      repair_rationale: ["Fix the failed transform"],
     });
     renderPanel({ workflowEvents: [
       event("STAGE_VALIDATION_FAILED", 1),
@@ -205,6 +228,65 @@ describe("TransformationPanel", () => {
     expect(screen.getByText("sha256:proposal")).toBeInTheDocument();
     expect(screen.getByText("sha256:review")).toBeInTheDocument();
     expect(screen.getByText("g10 created")).toBeInTheDocument();
+    expect(screen.getByLabelText("Unified diff viewer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve G10" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request changes" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject G10" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Exact revision instruction"), {
+      target: { value: "Keep the accepted shape but handle empty values" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(requestRepairRevision).toHaveBeenCalledWith(
+      "run-1",
+      "repair-1",
+      expect.objectContaining({ instruction: "Keep the accepted shape but handle empty values" }),
+    ));
+  });
+
+  it("submits an exact human instruction for a reviewer-requested revision", async () => {
+    const baseChecksum = `sha256:${"2".repeat(64)}`;
+    vi.mocked(getTransformation).mockResolvedValue({
+      ...projection,
+      status: "waiting_repair_revision",
+      current_node: "review_repair",
+      active_gate: null,
+      active_gate_package_checksum: null,
+      repair_attempt_id: "repair-1",
+      repair_attempt_number: 1,
+      repair_status: "request_changes",
+      repair_proposal_id: "proposal-1",
+      repair_base_checksum: baseChecksum,
+      repair_review: {
+        decision: "request_changes",
+        findings: ["Handle the null response"],
+        policy_checks: ["paths"],
+        risk_assessment: "Low risk",
+        required_validation_targets: ["build"],
+        limitations: [],
+      },
+    });
+    vi.mocked(requestRepairRevision).mockResolvedValue({});
+    renderPanel();
+
+    expect(await screen.findByRole("heading", { name: "Repair revision required" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Exact revision instruction"), {
+      target: { value: "Handle the null response before rendering" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+
+    await waitFor(() => expect(requestRepairRevision).toHaveBeenCalledWith(
+      "run-1",
+      "repair-1",
+      expect.objectContaining({
+        attempt_id: "repair-1",
+        proposal_id: "proposal-1",
+        base_checksum: baseChecksum,
+        instruction: "Handle the null response before rendering",
+      }),
+    ));
+    expect(screen.getByRole("button", { name: "Reject repair" })).toBeInTheDocument();
+    expect(rejectRepair).not.toHaveBeenCalled();
   });
 
   it("projects sealed route continuation and full completion", async () => {

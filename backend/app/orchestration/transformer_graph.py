@@ -1164,70 +1164,23 @@ class TransformerOrchestrator:
                 self._queue(continuation, "create_g10")
                 return
             if review["decision"] == "request_changes":
-                if attempt.attempt_number >= 3:
-                    self._block(
-                        session,
-                        continuation,
-                        "REPAIR_LOOP_EXHAUSTED",
-                        "Repair revision loop exhausted at the governed attempt limit",
-                    )
-                    return
-                if attempt.status not in {"request_changes", "review_accepted"}:
-                    self._block(
-                        session,
-                        continuation,
-                        "REPAIR_PARENT_LINEAGE_INVALID",
-                        "Repair child attempt requires an accepted request_changes parent",
-                    )
-                    return
-                if attempt.parent_attempt_id is not None:
-                    ancestor = session.get(RepairAttemptModel, attempt.parent_attempt_id)
-                    if (
-                        ancestor is None
-                        or ancestor.run_id != attempt.run_id
-                        or ancestor.stage_id != attempt.stage_id
-                        or ancestor.attempt_number >= attempt.attempt_number
-                    ):
-                        self._block(
-                            session,
-                            continuation,
-                            "REPAIR_PARENT_LINEAGE_INVALID",
-                            "Repair attempt parent lineage is invalid",
-                        )
-                        return
-                if not self._review_requested_changes(session, continuation, attempt):
-                    self._block(
-                        session,
-                        continuation,
-                        "REPAIR_PARENT_LINEAGE_INVALID",
-                        "Repair parent review did not verifiably request changes",
-                    )
-                    return
-                next_attempt = RepairAttemptModel(
-                    id=f"repair-{continuation.current_stage_id}-{attempt.attempt_number + 1}",
-                    run_id=attempt.run_id,
-                    stage_id=attempt.stage_id,
-                    attempt_number=attempt.attempt_number + 1,
-                    status="evidence_frozen",
-                    risk_level="unknown",
-                    diagnosis=f"request_changes revision; parent={attempt.id}",
-                    checkpoint_id=attempt.checkpoint_id,
-                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
-                    failure_evidence_checksum=attempt.failure_evidence_checksum,
-                    failure_route_artifact_id=attempt.failure_route_artifact_id,
-                    failure_route_checksum=attempt.failure_route_checksum,
-                    context_pack_artifact_id=attempt.context_pack_artifact_id,
-                    context_pack_checksum=attempt.context_pack_checksum,
-                    pre_fingerprint=attempt.pre_fingerprint,
-                    failure_fingerprint=attempt.failure_fingerprint,
-                    parent_attempt_id=attempt.id,
-                    parent_review_artifact_id=attempt.review_artifact_id,
-                    parent_review_checksum=attempt.review_checksum,
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
+                expected_state_version = continuation.state_version
+                continuation.status = "waiting_repair_revision"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+                    key=f"wait:repair-revision:{attempt.id}",
+                    reason="repair reviewer requested human-guided revision",
+                    payload={
+                        "attempt_id": attempt.id,
+                        "expected_state_version": expected_state_version,
+                    },
                 )
-                session.add(next_attempt)
-                self._queue(continuation, "propose_repair")
                 return
             self._block(
                 session,
@@ -1235,50 +1188,6 @@ class TransformerOrchestrator:
                 "REPAIR_REVIEW_REJECTED",
                 "Repair reviewer rejected the candidate",
             )
-
-    @staticmethod
-    def _review_requested_changes(session, continuation, attempt) -> bool:
-        """Verify the attempt's PERSISTED review artifact decided request_changes.
-
-        Deep parent-lineage check (D2.2): the review artifact must exist, its
-        metadata/checksum binding must match the attempt row, the stored
-        artifact must be byte-identical (same id + checksum) with an
-        attempt-bound envelope, and its content decision must be
-        ``request_changes``. Any deviation fails closed so a child attempt is
-        never spawned from an unverified or tampered parent review.
-        """
-        if not attempt.review_artifact_id or not attempt.review_checksum:
-            return False
-        run = session.get(MigrationRunModel, continuation.run_id)
-        metadata = session.get(ArtifactMetadataModel, "metadata-" + attempt.review_artifact_id)
-        if (
-            run is None
-            or metadata is None
-            or metadata.run_id != continuation.run_id
-            or metadata.stage_id != continuation.current_stage_id
-            or metadata.checksum != attempt.review_checksum
-        ):
-            return False
-        try:
-            stored = LocalFilesystemArtifactStore(
-                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
-            ).read_artifact(continuation.run_id, metadata.relative_path)
-            if (
-                stored.ref.artifact_id != attempt.review_artifact_id
-                or stored.ref.checksum != attempt.review_checksum
-            ):
-                return False
-            payload = json.loads(stored.content)
-        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError):
-            return False
-        envelope = stored.envelope
-        return (
-            envelope is not None
-            and envelope.run_id == continuation.run_id
-            and envelope.stage_id == continuation.current_stage_id
-            and envelope.attempt_id == attempt.id
-            and payload.get("decision") == "request_changes"
-        )
 
     def _create_repair_gate(
         self, continuation_id: str, worker_id: str, gate_id: str

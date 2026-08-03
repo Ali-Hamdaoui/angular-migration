@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
+import re
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.domain.contracts import ContractModel
 
@@ -15,6 +16,7 @@ class TransformationStatus(str, Enum):
     WAITING_GATE = "waiting_gate"
     WAITING_PROMPT = "waiting_prompt"
     WAITING_RETRY = "waiting_retry"
+    WAITING_REPAIR_REVISION = "waiting_repair_revision"
     CANCELLING = "cancelling"
     CANCELLED = "cancelled"
     BLOCKED = "blocked"
@@ -133,3 +135,34 @@ class PromptDecisionRequest(ContractModel):
     selected_option_id: str = Field(min_length=1)
     comment: str | None = None
     correlation_id: str = Field(min_length=1, max_length=128)
+
+
+class RepairDecisionRequest(ContractModel):
+    attempt_id: str = Field(min_length=1, max_length=64)
+    proposal_id: str = Field(min_length=1, max_length=128)
+    base_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class RepairRevisionRequest(RepairDecisionRequest):
+    instruction: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("instruction")
+    @classmethod
+    def plain_text_only(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("instruction must not be blank")
+        if re.search(r"(?m)^\s*(?:diff --git|--- |\+\+\+ |@@ )", value) or re.search(
+            r"(?m)^-[^-].*\n\+[^+]", value
+        ):
+            raise ValueError("raw patches are forbidden")
+        if (
+            "\\" in value
+            or re.search(r"(?:^|\s)(?:[A-Za-z]:/|/|\.\.?/|[^\s]+/[^\s]+)", value)
+            or re.search(
+                r"(?<![\w.-])(?:\.[A-Za-z][\w-]*|[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9_.-]*)(?![\w.-])",
+                value,
+            )
+        ):
+            raise ValueError("filesystem paths are forbidden")
+        return value

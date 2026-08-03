@@ -3,6 +3,7 @@ import type { TransformationProjection } from "@/types/transformation";
 import { getBackendBaseUrl } from "@/api/client";
 import { TRANSFORMATION_EVENT_TYPES } from "@/hooks/useAuthoritativeRun";
 import { LiveCommandLogViewer } from "@/components/LogViewer";
+import { UnifiedDiffViewer } from "@/components/UnifiedDiffViewer";
 import styles from "./TransformationPanel.module.css";
 
 type SharedProps = {
@@ -155,6 +156,7 @@ export function ValidationEvidence({ projection, workflowEvents, artifacts }: Sh
 }
 
 export function RepairEvidence({ projection, workflowEvents, artifacts }: SharedProps) {
+  const review = projection.repair_review;
   return <section className={styles.card} aria-labelledby="transform-repair">
     <span className={styles.eyebrow}>08 / Governed repair</span>
     <h3 id="transform-repair">Proposal, review, and revalidation</h3>
@@ -168,6 +170,14 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
       <div><dt>Apply ledger</dt><dd>{projection.repair_apply_checksum ?? "not applied"}</dd></div>
       <div><dt>G11 revalidation</dt><dd>{projection.repair_validation_checksum ?? "pending"}</dd></div>
     </dl>
+    {projection.repair_rationale.length > 0 ? <><h4>Proposer rationale</h4><ul>{projection.repair_rationale.map((item) => <li key={item}>{item}</li>)}</ul></> : null}
+    {projection.repair_safe_diff ? <><h4>Candidate diff</h4><UnifiedDiffViewer content={projection.repair_safe_diff} /></> : null}
+    {review ? <>
+      <h4>Reviewer {review.decision.replaceAll("_", " ")}</h4>
+      <p>{review.risk_assessment}</p>
+      {review.findings.length > 0 ? <ul>{review.findings.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.note}>No reviewer findings.</p>}
+      {review.limitations.length > 0 ? <><h4>Risks and limitations</h4><ul>{review.limitations.map((item) => <li key={item}>{item}</li>)}</ul></> : null}
+    </> : null}
     <EvidenceLinks
       artifacts={artifacts}
       matches={(path) => path.includes("05_repairs/")}

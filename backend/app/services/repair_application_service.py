@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+from difflib import unified_diff
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -23,7 +24,7 @@ from app.artifact_store import (
 )
 from app.core.config import get_settings
 from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
-from app.domain.contracts import AgentKind, ArtifactType
+from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
 from app.domain.planning import (
     CommandTemplateReference,
     SUPPORTED_VALIDATION_TARGETS,
@@ -49,12 +50,15 @@ from app.repositories.models import (
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
+    StageGatePackageModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     UsageCostRecordModel,
+    WorkflowEventModel,
 )
 from app.services.failure_evidence_service import FailureEvidenceService, validate_context_pack
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.transformation_continuation_service import append_continuation_event
 from app.services.workspace_fingerprint import (
     STAGE_FINGERPRINT_PROFILE,
     SUPPORTED_LEGACY_FINGERPRINT_PROFILES,
@@ -331,6 +335,21 @@ class RepairApplicationService:
             raise
         stored = self._write(context, "proposal", proposal)
         try:
+            safe_diff = self._write_safe_diff(context, proposal, stored.ref.checksum)
+        except (ArtifactStoreError, OSError, UnicodeError) as cause:
+            self._remove_uncommitted_artifact(stored)
+            error = RepairApplicationError(
+                "REPAIR_DIFF_ARTIFACT_FAILED", "Safe repair diff could not be persisted"
+            )
+            self._persist_failure(
+                context,
+                LlmRole.REPAIR_PROPOSER,
+                error,
+                failure_stage_override="artifact_persistence",
+                response=response,
+            )
+            raise error from cause
+        try:
             self._persist_call(
                 context,
                 response,
@@ -338,9 +357,11 @@ class RepairApplicationService:
                 role="proposer",
                 schema_name=self.proposer_schema,
                 summary=proposal,
+                additional_stored=(safe_diff,),
             )
         except RepairApplicationError as error:
             self._remove_uncommitted_artifact(stored)
+            self._remove_uncommitted_artifact(safe_diff)
             self._persist_failure(
                 context, LlmRole.REPAIR_PROPOSER, error,
                 failure_stage_override="authority_check", response=response,
@@ -351,6 +372,12 @@ class RepairApplicationService:
     def review(self, attempt_id: str) -> dict[str, object]:
         self.recover_legacy_fingerprint_authority(attempt_id)
         context = self._attempt_context(attempt_id, include_proposal=True)
+        if context.get("parent_attempt_id"):
+            independent_context = json.loads(str(context["segments"][1]))
+            independent_context.pop("human_revision", None)
+            context["segments"][1] = json.dumps(
+                independent_context, sort_keys=True, indent=2
+            )
         recovered = self._recover_completed(
             context,
             role="reviewer",
@@ -435,6 +462,340 @@ class RepairApplicationService:
             )
             raise
         return review
+
+    def request_revision(
+        self,
+        *,
+        attempt_id: str,
+        proposal_id: str,
+        base_checksum: str,
+        instruction: str,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        request_checksum = self._request_checksum(
+            {
+                "attempt_id": attempt_id,
+                "proposal_id": proposal_id,
+                "base_checksum": base_checksum,
+                "instruction": instruction,
+                "actor": actor,
+            }
+        )
+        replay = self._revision_replay(attempt_id, idempotency_key, request_checksum)
+        if replay is not None:
+            return replay
+        context = self._attempt_context(
+            attempt_id, include_proposal=True, include_review=True
+        )
+        if (
+            context["proposal_artifact_id"] != proposal_id
+            or context["proposal_checksum"] != base_checksum
+        ):
+            raise RepairApplicationError(
+                "REPAIR_PROPOSAL_STALE", "Repair proposal binding changed"
+            )
+        try:
+            proposal = RepairProposal.model_validate_json(
+                str(context["segments"][2])
+            ).model_dump(mode="json")
+            review = RepairReview.model_validate_json(
+                str(context["segments"][3])
+            ).model_dump(mode="json")
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Repair proposal or review artifact is invalid",
+            ) from error
+        if review["proposal_checksum"] != base_checksum:
+            raise RepairApplicationError(
+                "REPAIR_REVIEW_STALE", "Repair review proposal binding changed"
+            )
+        if review.get("decision") not in {"accept", "request_changes"}:
+            raise RepairApplicationError(
+                "REPAIR_REVISION_NOT_ALLOWED",
+                "Only an accepted or request-changes review can be revised",
+            )
+        child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
+        revision_context = json.loads(str(context["segments"][1]))
+        revision_context["human_revision"] = {
+            "instruction": instruction,
+            "parent_attempt_id": attempt_id,
+            "parent_proposal_id": proposal_id,
+            "parent_proposal_checksum": base_checksum,
+            "previous_proposal": proposal,
+            "reviewer_output": review,
+        }
+        stored = self._write_revision_context(
+            context,
+            child_id=child_id,
+            payload=revision_context,
+            instruction=instruction,
+        )
+        try:
+            with self._scope() as session:
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == context["run_id"],
+                    )
+                )
+                existing = self._revision_event(session, continuation, idempotency_key)
+                if existing is not None:
+                    if (existing.payload or {}).get("request_checksum") != request_checksum:
+                        raise RepairApplicationError(
+                            "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                            "Revision key has a different payload",
+                        )
+                    self._remove_uncommitted_artifact(stored)
+                    return self._revision_result(session, existing)
+                latest = session.scalar(
+                    select(RepairAttemptModel)
+                    .where(
+                        RepairAttemptModel.run_id == context["run_id"],
+                        RepairAttemptModel.stage_id == context["stage_id"],
+                    )
+                    .order_by(RepairAttemptModel.attempt_number.desc())
+                    .limit(1)
+                )
+                if attempt is None or continuation is None or latest is None:
+                    raise RepairApplicationError(
+                        "REPAIR_AUTHORITY_MISSING", "Repair revision authority is missing"
+                    )
+                if latest.id != attempt.id:
+                    raise RepairApplicationError(
+                        "REPAIR_ATTEMPT_SUPERSEDED",
+                        "Superseded repair attempts cannot be revised",
+                    )
+                if (
+                    attempt.proposal_artifact_id != proposal_id
+                    or attempt.proposal_checksum != base_checksum
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_PROPOSAL_STALE", "Repair proposal binding changed"
+                    )
+                if attempt.attempt_number >= continuation.max_attempts:
+                    raise RepairApplicationError(
+                        "REPAIR_LOOP_EXHAUSTED",
+                        "Repair revision limit has been reached",
+                    )
+                binding = session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == attempt.run_id,
+                        StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                try:
+                    live_fingerprint = (
+                        StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                        if binding is not None
+                        else None
+                    )
+                except OSError as error:
+                    raise RepairApplicationError(
+                        "REPAIR_WORKSPACE_STALE", "Repair workspace is unavailable"
+                    ) from error
+                if binding is None or live_fingerprint != attempt.pre_fingerprint:
+                    raise RepairApplicationError(
+                        "REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed"
+                    )
+                pending_g10 = session.scalar(
+                    select(StageGatePackageModel).where(
+                        StageGatePackageModel.run_id == attempt.run_id,
+                        StageGatePackageModel.stage_id == attempt.stage_id,
+                        StageGatePackageModel.gate_id == "G10",
+                        StageGatePackageModel.status == "pending",
+                    )
+                )
+                reviewer_revision = (
+                    attempt.status == "request_changes"
+                    and review["decision"] == "request_changes"
+                    and continuation.current_stage_id == attempt.stage_id
+                    and continuation.status == "waiting_repair_revision"
+                    and continuation.current_node == "review_repair"
+                )
+                accepted_revision = (
+                    attempt.status == "waiting_g10"
+                    and review["decision"] == "accept"
+                    and continuation.current_stage_id == attempt.stage_id
+                    and continuation.status == "waiting_gate"
+                    and continuation.current_node == "wait_g10"
+                    and pending_g10 is not None
+                    and attempt.g10_gate_package_id == pending_g10.id
+                )
+                if not reviewer_revision and not accepted_revision:
+                    raise RepairApplicationError(
+                        "REPAIR_REVISION_NOT_ALLOWED",
+                        "Repair attempt is not in its live human revision state",
+                    )
+                if accepted_revision:
+                    pending_g10.status = "stale"
+                    pending_g10.stale_at = self._now()
+                self._register_artifact_metadata(session, context, stored)
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=attempt.run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    status="evidence_frozen",
+                    risk_level="unknown",
+                    diagnosis=f"human revision; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=stored.ref.artifact_id,
+                    context_pack_checksum=stored.ref.checksum,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    parent_review_artifact_id=attempt.review_artifact_id,
+                    parent_review_checksum=attempt.review_checksum,
+                    created_at=self._now(),
+                    updated_at=self._now(),
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.updated_at = self._now()
+                expected_state_version = continuation.state_version
+                continuation.status = "queued"
+                continuation.current_node = "propose_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = self._now()
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=self._revision_event_key(idempotency_key),
+                    reason="human repair revision requested",
+                    actor=actor,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "request_checksum": request_checksum,
+                        "expected_state_version": expected_state_version,
+                    },
+                )
+                return {
+                    "attempt_id": child.id,
+                    "status": child.status,
+                    "idempotent_replay": False,
+                }
+        except IntegrityError:
+            self._remove_uncommitted_artifact(stored)
+            replay = self._revision_replay(attempt_id, idempotency_key, request_checksum)
+            if replay is not None:
+                return replay
+            raise RepairApplicationError(
+                "REPAIR_REVISION_CONFLICT", "Concurrent repair revision could not be resolved"
+            )
+        except RepairApplicationError:
+            self._remove_uncommitted_artifact(stored)
+            raise
+
+    def reject(
+        self,
+        *,
+        attempt_id: str,
+        proposal_id: str,
+        base_checksum: str,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        request_checksum = self._request_checksum(
+            {
+                "attempt_id": attempt_id,
+                "proposal_id": proposal_id,
+                "base_checksum": base_checksum,
+                "actor": actor,
+            }
+        )
+        with self._scope() as session:
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            if attempt is None:
+                raise RepairApplicationError(
+                    "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt is missing"
+                )
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == attempt.run_id,
+                )
+            )
+            existing = self._revision_event(session, continuation, idempotency_key, reject=True)
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH", "Rejection key has a different payload"
+                    )
+                return {
+                    "attempt_id": attempt_id,
+                    "status": "rejected",
+                    "idempotent_replay": True,
+                }
+            latest = session.scalar(
+                select(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.run_id == attempt.run_id,
+                    RepairAttemptModel.stage_id == attempt.stage_id,
+                )
+                .order_by(RepairAttemptModel.attempt_number.desc())
+                .limit(1)
+            )
+            if continuation is None or latest is None:
+                raise RepairApplicationError(
+                    "REPAIR_AUTHORITY_MISSING", "Repair rejection authority is missing"
+                )
+            if latest.id != attempt.id:
+                raise RepairApplicationError(
+                    "REPAIR_ATTEMPT_SUPERSEDED",
+                    "Superseded repair attempts cannot be rejected",
+                )
+            if (
+                attempt.status != "request_changes"
+                or attempt.proposal_artifact_id != proposal_id
+                or attempt.proposal_checksum != base_checksum
+                or continuation.current_stage_id != attempt.stage_id
+                or continuation.status != "waiting_repair_revision"
+                or continuation.current_node != "review_repair"
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_REJECTION_NOT_ALLOWED",
+                    "Repair attempt is not waiting for rejection",
+                )
+            expected_state_version = continuation.state_version
+            attempt.status = "rejected"
+            attempt.updated_at = self._now()
+            continuation.status = "blocked"
+            continuation.last_error_code = "REPAIR_HUMAN_REJECTED"
+            continuation.last_error_message = "Repair candidate rejected by the operator"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.state_version += 1
+            continuation.updated_at = self._now()
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_BLOCKED,
+                key=self._revision_event_key(idempotency_key, reject=True),
+                reason=continuation.last_error_message,
+                actor=actor,
+                payload={
+                    "attempt_id": attempt.id,
+                    "request_checksum": request_checksum,
+                    "expected_state_version": expected_state_version,
+                },
+            )
+            return {
+                "attempt_id": attempt.id,
+                "status": attempt.status,
+                "idempotent_replay": False,
+            }
 
     def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairProposalCandidate.model_validate(value)
@@ -705,7 +1066,12 @@ class RepairApplicationService:
             )
 
     def _attempt_context(
-        self, attempt_id: str, *, include_proposal: bool = False, validate_context_pack: bool = True
+        self,
+        attempt_id: str,
+        *,
+        include_proposal: bool = False,
+        include_review: bool = False,
+        validate_context_pack: bool = True,
     ):
         with self._scope() as session:
             attempt = session.scalar(select(RepairAttemptModel).where(RepairAttemptModel.id == attempt_id))
@@ -753,6 +1119,8 @@ class RepairApplicationService:
                 "context_pack_artifact_id": attempt.context_pack_artifact_id,
                 "proposal_checksum": attempt.proposal_checksum,
                 "proposal_artifact_id": attempt.proposal_artifact_id,
+                "review_checksum": attempt.review_checksum,
+                "review_artifact_id": attempt.review_artifact_id,
                 "proposer_invocation_id": attempt.proposer_invocation_id,
                 "reviewer_invocation_id": attempt.reviewer_invocation_id,
                 "failure_evidence_artifact_id": attempt.failure_evidence_artifact_id,
@@ -781,6 +1149,10 @@ class RepairApplicationService:
                 if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
                     raise RepairApplicationError("REPAIR_PROPOSAL_MISSING", "Repair proposal is missing")
                 artifact_ids.append(attempt.proposal_artifact_id)
+            if include_review:
+                if not attempt.review_artifact_id or not attempt.review_checksum:
+                    raise RepairApplicationError("REPAIR_REVIEW_MISSING", "Repair review is missing")
+                artifact_ids.append(attempt.review_artifact_id)
             metadata = {
                 item.id.removeprefix("metadata-"): item
                 for item in session.query(ArtifactMetadataModel)
@@ -798,6 +1170,8 @@ class RepairApplicationService:
             }
             if include_proposal:
                 expected_checksums[attempt.proposal_artifact_id] = attempt.proposal_checksum
+            if include_review:
+                expected_checksums[attempt.review_artifact_id] = attempt.review_checksum
             for artifact_id, expected in expected_checksums.items():
 
                 if metadata[artifact_id].checksum != expected:
@@ -806,7 +1180,10 @@ class RepairApplicationService:
         store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
         artifacts = [store.read_artifact(str(context["run_id"]), metadata[artifact_id].relative_path) for artifact_id in artifact_ids]
         for artifact in artifacts:
-            pre_attempt = artifact.ref.artifact_id != context.get("proposal_artifact_id")
+            pre_attempt = artifact.ref.artifact_id not in {
+                context.get("proposal_artifact_id"),
+                context.get("review_artifact_id"),
+            }
             self._validate_artifact_envelope(
                 artifact,
                 expected_run_id=context["run_id"],
@@ -826,8 +1203,13 @@ class RepairApplicationService:
             raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
         context["segments"] = [artifact.content for artifact in artifacts]
         if include_proposal:
-            context["proposal_checksum"] = artifacts[-1].ref.checksum
-            context["proposal_artifact_id"] = artifacts[-1].ref.artifact_id
+            proposal_artifact = next(
+                artifact
+                for artifact in artifacts
+                if artifact.ref.artifact_id == context["proposal_artifact_id"]
+            )
+            context["proposal_checksum"] = proposal_artifact.ref.checksum
+            context["proposal_artifact_id"] = proposal_artifact.ref.artifact_id
             context["authority_snapshot"] = self._authority_snapshot(context)
         context["authority_snapshot"] = self._authority_snapshot(context)
         return context
@@ -2326,6 +2708,150 @@ class RepairApplicationService:
             )
         )
 
+    @staticmethod
+    def _request_checksum(value: object) -> str:
+        return "sha256:" + hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _revision_event_key(idempotency_key: str, *, reject: bool = False) -> str:
+        prefix = "repair-reject:" if reject else "repair-revision:"
+        return prefix + hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+    def _revision_event(self, session, continuation, idempotency_key: str, *, reject=False):
+        if continuation is None:
+            return None
+        key = f"{continuation.id}:{self._revision_event_key(idempotency_key, reject=reject)}"
+        return session.scalar(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.idempotency_key == key,
+            )
+        )
+
+    @staticmethod
+    def _revision_result(session, event) -> dict[str, object]:
+        child_id = str((event.payload or {}).get("child_attempt_id") or "")
+        child = session.get(RepairAttemptModel, child_id)
+        if child is None:
+            raise RepairApplicationError(
+                "REPAIR_REVISION_REPLAY_INVALID", "Revision replay child is missing"
+            )
+        return {
+            "attempt_id": child.id,
+            "status": child.status,
+            "idempotent_replay": True,
+        }
+
+    def _revision_replay(
+        self, attempt_id: str, idempotency_key: str, request_checksum: str
+    ) -> dict[str, object] | None:
+        with self._scope() as session:
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            if attempt is None:
+                raise RepairApplicationError(
+                    "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt is missing"
+                )
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == attempt.run_id,
+                )
+            )
+            event = self._revision_event(session, continuation, idempotency_key)
+            if event is None:
+                return None
+            if (event.payload or {}).get("request_checksum") != request_checksum:
+                raise RepairApplicationError(
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH", "Revision key has a different payload"
+                )
+            return self._revision_result(session, event)
+
+    def _write_revision_context(
+        self,
+        context: dict[str, object],
+        *,
+        child_id: str,
+        payload: dict[str, object],
+        instruction: str,
+    ) -> StoredArtifact:
+        root = Path(str(context["artifact_root"]))
+        self._last_artifact_root = root
+        return LocalFilesystemArtifactStore(root.parent, fixed_run_root=root).write_text_artifact(
+            str(context["run_id"]),
+            f"05_repairs/attempt-{child_id}/revision-context.json",
+            json.dumps(payload, sort_keys=True, indent=2),
+            ArtifactType.JSON,
+            stage_id=str(context["stage_id"]),
+            attempt_id=child_id,
+            created_by="repair-human-revision",
+            created_at=self._now(),
+            input_hashes={
+                "proposal": str(context["proposal_checksum"]),
+                "review": str(context["review_checksum"]),
+                "instruction": self._request_checksum(instruction),
+            },
+            policy_version="repair-human-revision-v1",
+        )
+
+    def _write_safe_diff(
+        self,
+        context: dict[str, object],
+        proposal: dict[str, object],
+        proposal_checksum: str,
+    ) -> StoredArtifact:
+        root = Path(str(context["artifact_root"]))
+        self._last_artifact_root = root
+        content = self._render_safe_diff(proposal, Path(str(context["workspace_path"])))
+        return LocalFilesystemArtifactStore(root.parent, fixed_run_root=root).write_text_artifact(
+            str(context["run_id"]),
+            f"05_repairs/attempt-{context['attempt_id']}/candidate.diff",
+            content,
+            ArtifactType.DIFF,
+            stage_id=str(context["stage_id"]),
+            attempt_id=str(context["attempt_id"]),
+            created_by="repair-proposer-safe-diff",
+            created_at=self._now(),
+            input_hashes={"proposal": proposal_checksum},
+            policy_version="repair-safe-diff-v1",
+        )
+
+    @staticmethod
+    def _render_safe_diff(proposal: dict[str, object], workspace: Path) -> str:
+        if proposal["proposal_format"] == "unified_diff":
+            return str(proposal["unified_diff"])
+        rendered: list[str] = []
+        for operation in proposal["operations"]:
+            path = str(operation["path"])
+            action = str(operation["operation"])
+            target = workspace / path
+            before = "" if action == "create_text_file" else target.read_text(encoding="utf-8")
+            if action == "create_text_file":
+                after = str(operation["content"])
+            elif action == "delete_text_file":
+                after = ""
+            else:
+                after = before.replace(
+                    str(operation["old_text"]), str(operation["new_text"]), 1
+                )
+            diff = "".join(
+                unified_diff(
+                    before.splitlines(keepends=True),
+                    after.splitlines(keepends=True),
+                    fromfile="/dev/null" if action == "create_text_file" else f"a/{path}",
+                    tofile="/dev/null" if action == "delete_text_file" else f"b/{path}",
+                    lineterm="\n",
+                )
+            )
+            if not diff and action in {"create_text_file", "delete_text_file"}:
+                diff = (
+                    f"--- {'/dev/null' if action == 'create_text_file' else f'a/{path}'}\n"
+                    f"+++ {'/dev/null' if action == 'delete_text_file' else f'b/{path}'}\n"
+                )
+            if diff:
+                rendered.append(diff if diff.endswith("\n") else diff + "\n")
+        return "".join(rendered)
+
     def _write(self, context, kind, value):
         root = Path(str(context["artifact_root"]))
         self._last_artifact_root = root
@@ -2345,7 +2871,17 @@ class RepairApplicationService:
             policy_version=f"repair-{kind}-v1",
         )
 
-    def _persist_call(self, context, response, stored, *, role, schema_name, summary):
+    def _persist_call(
+        self,
+        context,
+        response,
+        stored,
+        *,
+        role,
+        schema_name,
+        summary,
+        additional_stored=(),
+    ):
         with self._scope() as session:
             attempt = session.scalar(
                 select(RepairAttemptModel).where(
@@ -2520,8 +3056,22 @@ class RepairApplicationService:
             invocation.schema_version = context["schema_version"]
             invocation.pricing_version = response.pricing_version or get_settings().llm_pricing_version
             invocation.redacted_summary = json.dumps(summary, sort_keys=True)
-            invocation.artifact_ids = list(dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id]))
-            invocation.artifact_checksums = {**(invocation.artifact_checksums or {}), stored.ref.artifact_id: stored.ref.checksum}
+            persisted_artifacts = (stored, *additional_stored)
+            invocation.artifact_ids = list(
+                dict.fromkeys(
+                    [
+                        *(invocation.artifact_ids or []),
+                        *(item.ref.artifact_id for item in persisted_artifacts),
+                    ]
+                )
+            )
+            invocation.artifact_checksums = {
+                **(invocation.artifact_checksums or {}),
+                **{
+                    item.ref.artifact_id: item.ref.checksum
+                    for item in persisted_artifacts
+                },
+            }
             invocation.retries = (invocation.retries or 0) + (response.usage.retry_count or 0)
             if response.provider_request_id and not invocation.provider_request_id:
                 invocation.provider_request_id = response.provider_request_id
@@ -2551,6 +3101,8 @@ class RepairApplicationService:
                 )
             )
             self._register_artifact_metadata(session, context, stored)
+            for item in additional_stored:
+                self._register_artifact_metadata(session, context, item)
             if role == "proposer":
                 attempt.proposal_artifact_id = stored.ref.artifact_id
                 attempt.proposal_checksum = stored.ref.checksum
