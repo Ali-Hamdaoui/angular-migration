@@ -23,7 +23,7 @@ from app.artifact_store import (
 )
 from app.core.config import get_settings
 from app.domain.contracts import AgentKind, ArtifactType
-from app.domain.planning import SUPPORTED_VALIDATION_TARGETS
+from app.domain.planning import SUPPORTED_VALIDATION_TARGETS, ValidationTarget
 from app.llm_gateway import (
     AzureGatewayError,
     AzureOpenAILLMGateway,
@@ -225,7 +225,7 @@ class RepairProposalCandidate(BaseModel):
     unified_diff: str | None = Field(default=None, max_length=100_000)
     rationale: list[str] = Field(min_length=1, max_length=16)
     risk_level: Literal["low", "medium", "high"]
-    validation_targets: list[str] = Field(min_length=1, max_length=16)
+    validation_targets: list[ValidationTarget] = Field(min_length=1, max_length=16)
     limitations: list[str] = Field(max_length=16)
 
 
@@ -243,7 +243,7 @@ class RepairReviewCandidate(BaseModel):
     findings: list[str] = Field(max_length=32)
     policy_checks: list[str] = Field(min_length=1, max_length=32)
     risk_assessment: str = Field(min_length=1, max_length=2000)
-    required_validation_targets: list[str] = Field(min_length=1, max_length=16)
+    required_validation_targets: list[ValidationTarget] = Field(min_length=1, max_length=16)
     limitations: list[str] = Field(max_length=16)
 
 
@@ -573,10 +573,20 @@ class RepairApplicationService:
 
     def _normalize_validation_targets(self, values: list[str]) -> list[str]:
         normalized = list(dict.fromkeys(value.strip().lower() for value in values))
-        if any(value not in self.supported_validation_targets for value in normalized):
+        rejected = [
+            _bounded_text(value, 64)
+            for value in normalized
+            if value not in self.supported_validation_targets
+        ][:16]
+        if rejected:
+            logger.warning(
+                "repair validation targets rejected",
+                extra={"rejected_validation_targets": rejected},
+            )
             raise RepairApplicationError(
                 "REPAIR_VALIDATION_TARGET_INVALID",
-                "Repair validation targets must use backend-supported names",
+                "Repair validation targets must use backend-supported names; "
+                f"rejected_targets={','.join(rejected)}",
             )
         return normalized
 

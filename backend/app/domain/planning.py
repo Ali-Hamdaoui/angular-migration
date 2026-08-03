@@ -9,6 +9,7 @@ than shell strings.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 import hashlib
 import json
 import re
@@ -34,15 +35,21 @@ APPROVED_BUILDERS = frozenset({
     "@angular-devkit/build-angular:server",
 })
 
+class ValidationTarget(str, Enum):
+    BUILD = "build"
+    TEST = "test"
+    LINT = "lint"
+
+
 # Authoritative validation-target registry.  Every consumer (proposal binding,
 # G10 lineage, affected-check selection, the full validation set) resolves
 # through these constants so the supported-target set can never diverge.
 VALIDATION_TARGET_GROUPS = MappingProxyType({
-    "build": "builds",
-    "test": "tests",
-    "lint": "lint",
+    ValidationTarget.BUILD.value: "builds",
+    ValidationTarget.TEST.value: "tests",
+    ValidationTarget.LINT.value: "lint",
 })
-SUPPORTED_VALIDATION_TARGETS = frozenset(VALIDATION_TARGET_GROUPS)
+SUPPORTED_VALIDATION_TARGETS = frozenset(target.value for target in ValidationTarget)
 
 
 class PlanArtifactInput(ContractModel):
