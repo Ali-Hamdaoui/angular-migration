@@ -100,6 +100,9 @@ _NODE_ACTION_LABELS = {
 }
 
 
+_TERMINAL_COMMAND_STATUSES = frozenset({"succeeded", "failed", "timed_out", "cancelled", "interrupted"})
+
+
 def _next_backend_action(continuation) -> str | None:
     if continuation.status == "waiting_command":
         return "Command in flight"
@@ -144,15 +147,12 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
     )
     if command is None and continuation.waiting_execution_id:
         waited = session.get(CommandExecutionModel, continuation.waiting_execution_id)
-        if waited is not None and waited.run_id == continuation.run_id:
+        if (
+            waited is not None
+            and waited.run_id == continuation.run_id
+            and waited.status not in _TERMINAL_COMMAND_STATUSES
+        ):
             command = waited
-    if command is None:
-        command = session.scalar(
-            select(CommandExecutionModel)
-            .where(CommandExecutionModel.run_id == continuation.run_id)
-            .order_by(CommandExecutionModel.requested_at.desc())
-            .limit(1)
-        )
     gate = session.scalar(
         select(StageGatePackageModel)
         .where(

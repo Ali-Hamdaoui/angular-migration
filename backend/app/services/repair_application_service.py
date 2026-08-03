@@ -130,14 +130,16 @@ def _normalized_newlines(text: str) -> str:
 
 
 def _dominant_newline(text: str) -> str:
+    """Return the dominant line ending of raw file text (CRLF or LF).
+
+    CRLF wins when CRLF line endings outnumber LF-only line endings;
+    otherwise LF. ``text`` must be read without universal-newline
+    translation (``open(..., newline="")``) so CRLF survives into it;
+    otherwise the dominant style is undetectable.
+    """
     crlf = text.count("\r\n")
     lf = text.count("\n") - crlf
-    cr = text.count("\r") - crlf
-    if crlf > 0 and crlf >= lf and crlf >= cr:
-        return "\r\n"
-    if cr > 0 and cr >= lf:
-        return "\r"
-    return "\n"
+    return "\r\n" if crlf > lf else "\n"
 
 
 def replace_text_once(target_text: str, old_text: str, new_text: str) -> str:
@@ -145,11 +147,19 @@ def replace_text_once(target_text: str, old_text: str, new_text: str) -> str:
 
     Shared by the safe-diff renderer, proposal validation, and the apply
     preparer so the diff the operator approves and the mutation the apply
-    performs can never disagree. Matching is newline-insensitive (a CRLF
-    preimage matches an LF file and vice versa); the output re-emits the
-    target's dominant newline style. Requires exactly one unique preimage:
-    missing (count==0) and ambiguous (count>1) preimages, empty preimages,
-    and no-op replacements all fail closed.
+    performs can never disagree. Matching is newline-insensitive: the target
+    and the preimage are compared after canonicalizing ``\\r\\n`` (and legacy
+    ``\\r``) to ``\\n``, so a CRLF preimage matches an LF file and vice versa,
+    and a literal ``\\r\\n`` preimage matches a CRLF file exactly once. The
+    output re-emits the target's dominant newline style (CRLF when CRLF line
+    endings outnumber LF-only line endings, else LF) so the file's original
+    line-ending convention survives the rewrite. Callers must pass
+    ``target_text`` read without universal-newline translation
+    (``open(..., "r", encoding="utf-8", newline="")``); otherwise CRLF is
+    translated away before it can be detected and a CRLF file would be
+    flattened to LF. Requires exactly one unique preimage: missing
+    (count==0) and ambiguous (count>1) preimages, empty preimages, and
+    no-op replacements all fail closed.
     """
     if not old_text:
         raise RepairApplicationError(
@@ -177,11 +187,8 @@ def replace_text_once(target_text: str, old_text: str, new_text: str) -> str:
         raise RepairApplicationError(
             "REPAIR_REPLACEMENT_NOOP", "Replacement produced no change"
         )
-    style = _dominant_newline(target_text)
-    if style == "\r\n":
+    if _dominant_newline(target_text) == "\r\n":
         return normalized_after.replace("\n", "\r\n")
-    if style == "\r":
-        return normalized_after.replace("\n", "\r")
     return normalized_after
 
 
@@ -2899,7 +2906,11 @@ class RepairApplicationService:
             path = str(operation["path"])
             action = str(operation["operation"])
             target = workspace / path
-            before = "" if action == "create_text_file" else target.read_text(encoding="utf-8")
+            if action == "create_text_file":
+                before = ""
+            else:
+                with target.open("r", encoding="utf-8", newline="") as handle:
+                    before = handle.read()
             if action == "create_text_file":
                 after = str(operation["content"])
             elif action == "delete_text_file":

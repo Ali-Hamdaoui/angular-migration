@@ -187,7 +187,7 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
       <div><dt>Apply ledger</dt><dd>{projection.repair_apply_checksum ?? "not applied"}</dd></div>
       <div><dt>G11 revalidation</dt><dd>{projection.repair_validation_checksum ?? "pending"}</dd></div>
     </dl>
-    <p className={styles.note}>The backend applies the repair, retries ng update, verifies the Angular version, then continues validation.</p>
+    <p className={styles.note}>When the repair targets the failed ng update, the backend applies the repair, retries ng update, verifies the Angular version, then continues validation.</p>
     {projection.repair_proposal_operations && projection.repair_proposal_operations.length > 0 ? <>
       <h4>Proposed mutation</h4>
       <ul className={styles.artifactList}>

@@ -352,7 +352,8 @@ class PatchApplyService:
             actual = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
             if actual != item["preimage_sha256"]:
                 raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed")
-            current = target.read_text(encoding="utf-8")
+            with target.open("r", encoding="utf-8", newline="") as handle:
+                current = handle.read()
             if action == "delete_text_file":
                 changes.append({"path": item["path"], "action": "delete", "content": "", "preimage_sha256": actual})
             elif action in {"replace_text", "dependency_change"}:
@@ -389,7 +390,8 @@ class PatchApplyService:
                 raise RepairApplicationError("REPAIR_PATH_ESCAPE", "Unified diff path escapes workspace")
             target = (workspace / relative).resolve(strict=True)
             target.relative_to(workspace)
-            original = target.read_text(encoding="utf-8").splitlines(keepends=True)
+            with target.open("r", encoding="utf-8", newline="") as handle:
+                original = handle.read().splitlines(keepends=True)
             output = []
             source_cursor = 0
             index += 1
