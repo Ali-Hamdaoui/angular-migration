@@ -73,6 +73,7 @@ class TransformationNode(str, Enum):
     CREATE_G10 = "create_g10"
     WAIT_G10 = "wait_g10"
     APPLY_REPAIR = "apply_repair"
+    ANGULAR_UPDATE_RETRY = "angular_update_retry"
     REPAIR_REVALIDATE = "repair_revalidate"
     CREATE_G11 = "create_g11"
     WAIT_G11 = "wait_g11"
@@ -123,6 +124,24 @@ class TransformationProjection(ContractModel):
     active_prompt_id: str | None = None
     last_error_code: str | None = None
     cancel_requested_at: datetime | None = None
+    repair_attempt_id: str | None = None
+    repair_attempt_number: int | None = None
+    repair_parent_attempt_id: str | None = None
+    repair_status: str | None = None
+    repair_risk_level: str | None = None
+    repair_proposal_checksum: str | None = None
+    repair_review_checksum: str | None = None
+    repair_diff_artifact_id: str | None = None
+    repair_diff_checksum: str | None = None
+    repair_proposal_operations: list[dict[str, str]] = Field(default_factory=list)
+    repair_safe_diff: str | None = None
+    repair_review: dict[str, object] | None = None
+    repair_rationale: list[str] = Field(default_factory=list)
+    repair_apply_checksum: str | None = None
+    repair_validation_checksum: str | None = None
+    next_backend_action: str | None = None
+    angular_update_retry_attempt: int | None = None
+    angular_update_retry_status: str | None = None
 
 
 class TransformationCancelRequest(ContractModel):

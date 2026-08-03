@@ -195,6 +195,8 @@ class TransformerOrchestrator:
             self._create_repair_gate(continuation_id, worker_id, "G10")
         elif node == "apply_repair":
             self._apply_repair(continuation_id, worker_id)
+        elif node == "angular_update_retry":
+            self._angular_update_retry(continuation_id, worker_id)
         elif node == "lockfile_generation":
             self._lockfile_generation(continuation_id, worker_id)
         elif node == "repair_revalidate":
@@ -1289,6 +1291,45 @@ class TransformerOrchestrator:
                 review = json.loads(
                     store.read_artifact(continuation.run_id, review_metadata.relative_path).content
                 )
+                diff_metadata = session.scalar(
+                    select(ArtifactMetadataModel).where(
+                        ArtifactMetadataModel.run_id == continuation.run_id,
+                        ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                        ArtifactMetadataModel.relative_path.like(
+                            f"05_repairs/attempt-{attempt.id}/candidate%.diff"
+                        ),
+                    )
+                    .order_by(ArtifactMetadataModel.created_at.desc())
+                    .limit(1)
+                )
+                if diff_metadata is None:
+                    raise TransformerStageError(
+                        "REPAIR_DIFF_MISSING",
+                        "Repair candidate diff artifact is missing",
+                    )
+                diff_artifact = store.read_artifact(continuation.run_id, diff_metadata.relative_path)
+                diff_artifact_id = diff_metadata.id.removeprefix("metadata-")
+                if (
+                    diff_artifact.ref.artifact_id != diff_artifact_id
+                    or diff_artifact.ref.checksum != diff_metadata.checksum
+                    or diff_artifact.envelope is None
+                    or diff_artifact.envelope.run_id != continuation.run_id
+                    or diff_artifact.envelope.stage_id != continuation.current_stage_id
+                    or diff_artifact.envelope.attempt_id != attempt.id
+                    or diff_artifact.envelope.input_hashes.get("proposal")
+                    != attempt.proposal_checksum
+                ):
+                    raise TransformerStageError(
+                        "REPAIR_DIFF_MISMATCH",
+                        "Repair candidate diff artifact does not belong to this attempt",
+                    )
+                if not diff_artifact.content.strip():
+                    raise TransformerStageError(
+                        "REPAIR_DIFF_EMPTY",
+                        "Repair candidate diff artifact is empty",
+                    )
+                payload["diff_artifact_id"] = diff_artifact_id
+                payload["diff_checksum"] = diff_metadata.checksum
                 stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
                 plan_value = stage_plan.stage_plan if stage_plan is not None else {}
                 policy = plan_value.get("validation_policy") or {}
@@ -1865,6 +1906,8 @@ class TransformerOrchestrator:
             binding.last_verified_fingerprint = fingerprint
             binding.last_verified_at = datetime.now(UTC)
             post_apply_node = self._post_apply_node(proposal)
+            if self._angular_update_retry_eligible(session, continuation):
+                post_apply_node = "angular_update_retry"
             reset_groups = (
                 StageStepModel.name.like("final_install-%")
                 | StageStepModel.name.like("builds-%")
@@ -2160,7 +2203,79 @@ class TransformerOrchestrator:
                 StageStepModel.status == "FAILED",
             )
         )
-        return step is not None
+        if step is None or not step.execution_id:
+            return False
+        execution = session.get(CommandExecutionModel, step.execution_id)
+        return (
+            execution is not None
+            and execution.command_id == "angular-update-exact"
+        )
+
+    @staticmethod
+    def _angular_update_retry_eligible(session, continuation) -> bool:
+        """True when the failed angular_update-0 may be retried after a repair.
+
+        Requires the exact failed command (angular-update-exact), a terminal
+        execution bound to the step, and no CLI prompt lineage: prompt-driven
+        failures already have their own reconstruction flow and must never be
+        replayed as a governed retry on the post-repair workspace.
+        """
+        if not TransformerOrchestrator._is_angular_update_failure(session, continuation):
+            return False
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        execution = (
+            session.get(CommandExecutionModel, step.execution_id)
+            if step is not None and step.execution_id
+            else None
+        )
+        return (
+            execution is not None
+            and execution.prompt_request_id is None
+            and execution.status in ("failed", "interrupted")
+        )
+
+    def _angular_update_retry(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == continuation.run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "angular_update-0",
+                )
+            )
+            execution = (
+                session.get(CommandExecutionModel, step.execution_id)
+                if step is not None and step.execution_id
+                else None
+            )
+            if (
+                execution is None
+                or not self._angular_update_retry_eligible(session, continuation)
+            ):
+                self._block(
+                    session,
+                    continuation,
+                    "ANGULAR_UPDATE_RETRY_INVALID",
+                    "Failed angular update command is not eligible for the governed post-repair retry",
+                )
+                return
+            try:
+                self._stage.queue_angular_update_retry(
+                    session,
+                    continuation,
+                    failed_execution_id=execution.id,
+                    idempotency_key=f"{execution.id}:retry:post-repair:{attempt.id}",
+                )
+            except TransformerStageError as error:
+                self._block(session, continuation, error.code, error.message)
 
     @staticmethod
     def _angular_update_reconstruction_checkpoint(session, continuation):

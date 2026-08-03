@@ -124,6 +124,67 @@ def _bounded_text(value: object, limit: int = 240) -> str | None:
     return str(value).replace("\r", " ").replace("\n", " ")[:limit]
 
 
+def _normalized_newlines(text: str) -> str:
+    """Normalize CRLF/CR/LF to LF so line endings never block text matching."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _dominant_newline(text: str) -> str:
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    cr = text.count("\r") - crlf
+    if crlf > 0 and crlf >= lf and crlf >= cr:
+        return "\r\n"
+    if cr > 0 and cr >= lf:
+        return "\r"
+    return "\n"
+
+
+def replace_text_once(target_text: str, old_text: str, new_text: str) -> str:
+    """Deterministic single-preimage text replacement for repair render/apply.
+
+    Shared by the safe-diff renderer, proposal validation, and the apply
+    preparer so the diff the operator approves and the mutation the apply
+    performs can never disagree. Matching is newline-insensitive (a CRLF
+    preimage matches an LF file and vice versa); the output re-emits the
+    target's dominant newline style. Requires exactly one unique preimage:
+    missing (count==0) and ambiguous (count>1) preimages, empty preimages,
+    and no-op replacements all fail closed.
+    """
+    if not old_text:
+        raise RepairApplicationError(
+            "REPAIR_REPLACEMENT_INVALID", "Replacement preimage must not be empty"
+        )
+    normalized_target = _normalized_newlines(target_text)
+    normalized_old = _normalized_newlines(old_text)
+    if normalized_old == _normalized_newlines(new_text):
+        raise RepairApplicationError(
+            "REPAIR_REPLACEMENT_NOOP", "Replacement preimage and replacement text are identical"
+        )
+    count = normalized_target.count(normalized_old)
+    if count == 0:
+        raise RepairApplicationError(
+            "REPAIR_REPLACEMENT_MISSING",
+            "Replacement preimage must occur exactly once; found zero matches",
+        )
+    if count > 1:
+        raise RepairApplicationError(
+            "REPAIR_REPLACEMENT_AMBIGUOUS",
+            "Replacement preimage must occur exactly once; found multiple matches",
+        )
+    normalized_after = normalized_target.replace(normalized_old, _normalized_newlines(new_text), 1)
+    if normalized_after == normalized_target:
+        raise RepairApplicationError(
+            "REPAIR_REPLACEMENT_NOOP", "Replacement produced no change"
+        )
+    style = _dominant_newline(target_text)
+    if style == "\r\n":
+        return normalized_after.replace("\n", "\r\n")
+    if style == "\r":
+        return normalized_after.replace("\n", "\r")
+    return normalized_after
+
+
 def _legacy_recovery_error(
     reason: str,
     *,
@@ -1027,10 +1088,23 @@ class RepairApplicationService:
                 raise RepairApplicationError(
                     "REPAIR_OPERATION_INVALID", "replace_text needs old_text and new_text"
                 )
+            if operation.operation in {"replace_text", "dependency_change"}:
+                replace_text_once(
+                    target.read_text(encoding="utf-8"),
+                    str(operation.old_text),
+                    str(operation.new_text),
+                )
         if proposal.operations and sorted(operation_paths) != sorted(normalized):
             raise RepairApplicationError(
                 "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
             )
+        if proposal.proposal_format == "operations" and proposal.operations:
+            rendered = self._render_safe_diff(proposal.model_dump(mode="json"), workspace)
+            if not rendered:
+                raise RepairApplicationError(
+                    "REPAIR_EMPTY_DIFF",
+                    "Proposed operations claim changes but render an empty diff",
+                )
         return proposal.model_dump(mode="json")
 
     @staticmethod
@@ -2831,8 +2905,10 @@ class RepairApplicationService:
             elif action == "delete_text_file":
                 after = ""
             else:
-                after = before.replace(
-                    str(operation["old_text"]), str(operation["new_text"]), 1
+                after = replace_text_once(
+                    before,
+                    str(operation["old_text"]),
+                    str(operation["new_text"]),
                 )
             diff = "".join(
                 unified_diff(

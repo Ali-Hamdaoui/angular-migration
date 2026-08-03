@@ -23,28 +23,40 @@ function eventName(event: WorkflowEventDto | undefined, empty: string) {
   return event?.event_type.replaceAll("_", " ").toLowerCase() ?? empty;
 }
 
+function attemptIdFromPath(path: string): string | null {
+  const match = /attempt-([^/]+)\//.exec(path);
+  return match ? match[1] : null;
+}
+
 function EvidenceLinks({
   artifacts,
   matches,
   empty,
+  activeAttemptId = null,
 }: {
   artifacts: ArtifactRefDto[];
   matches: (path: string) => boolean;
   empty: string;
+  activeAttemptId?: string | null;
 }) {
   const visible = artifacts.filter((artifact) => matches(artifact.relative_path));
   if (visible.length === 0) return <p className={styles.note}>{empty}</p>;
   return <ul className={styles.artifactList}>
-    {visible.map((artifact) => <li key={artifact.artifact_id}>
-      <a
-        href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`}
-        target="_blank"
-        rel="noreferrer"
-      >
-        {artifact.relative_path}
-      </a>
-      <code>{artifact.checksum}</code>
-    </li>)}
+    {visible.map((artifact) => {
+      const attemptId = attemptIdFromPath(artifact.relative_path);
+      const historical = activeAttemptId !== null && attemptId !== null && attemptId !== activeAttemptId;
+      return <li key={artifact.artifact_id}>
+        <a
+          href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {artifact.relative_path}
+        </a>
+        <code>{artifact.checksum}</code>
+        {historical ? <small className={styles.historical}>historical attempt artifact</small> : null}
+      </li>;
+    })}
   </ul>;
 }
 
@@ -157,21 +169,43 @@ export function ValidationEvidence({ projection, workflowEvents, artifacts }: Sh
 
 export function RepairEvidence({ projection, workflowEvents, artifacts }: SharedProps) {
   const review = projection.repair_review;
+  const diffAvailable = Boolean(projection.repair_safe_diff && projection.repair_safe_diff.trim());
+  const g10Waiting = projection.status === "waiting_gate" && projection.active_gate === "G10";
   return <section className={styles.card} aria-labelledby="transform-repair">
     <span className={styles.eyebrow}>08 / Governed repair</span>
     <h3 id="transform-repair">Proposal, review, and revalidation</h3>
     <dl className={styles.metadata}>
       <div><dt>Attempt</dt><dd>{projection.repair_attempt_id ?? "none"}</dd></div>
+      <div><dt>Attempt number</dt><dd>{projection.repair_attempt_number ?? "not available"}</dd></div>
+      <div><dt>Parent attempt</dt><dd>{projection.repair_parent_attempt_id ?? "none"}</dd></div>
       <div><dt>Status</dt><dd>{projection.repair_status ?? "not required"}</dd></div>
       <div><dt>Risk</dt><dd>{projection.repair_risk_level ?? "not available"}</dd></div>
-      <div><dt>Proposal</dt><dd>{projection.repair_proposal_checksum ?? "pending"}</dd></div>
-      <div><dt>Reviewer</dt><dd>{projection.repair_review_checksum ?? "pending"}</dd></div>
+      <div><dt>Proposer</dt><dd>{projection.repair_proposal_checksum ? "proposed" : "pending"}</dd></div>
+      <div><dt>Reviewer</dt><dd>{review ? review.decision.replaceAll("_", " ") : (projection.repair_review_checksum ? "reviewed" : "pending")}</dd></div>
       <div><dt>G10</dt><dd>{eventName(latest(workflowEvents, (type) => type.startsWith("G10_")), "not created")}</dd></div>
+      <div><dt>Diff checksum</dt><dd>{projection.repair_diff_checksum ?? "unavailable"}</dd></div>
       <div><dt>Apply ledger</dt><dd>{projection.repair_apply_checksum ?? "not applied"}</dd></div>
       <div><dt>G11 revalidation</dt><dd>{projection.repair_validation_checksum ?? "pending"}</dd></div>
     </dl>
+    <p className={styles.note}>The backend applies the repair, retries ng update, verifies the Angular version, then continues validation.</p>
+    {projection.repair_proposal_operations && projection.repair_proposal_operations.length > 0 ? <>
+      <h4>Proposed mutation</h4>
+      <ul className={styles.artifactList}>
+        {projection.repair_proposal_operations.map((item, index) => <li key={`${index}-${item.path}`}>
+          <code>{item.operation ?? "unknown"}</code>
+          <code>{item.path ?? "unknown path"}</code>
+        </li>)}
+      </ul>
+    </> : null}
     {projection.repair_rationale.length > 0 ? <><h4>Proposer rationale</h4><ul>{projection.repair_rationale.map((item) => <li key={item}>{item}</li>)}</ul></> : null}
-    {projection.repair_safe_diff ? <><h4>Candidate diff</h4><UnifiedDiffViewer content={projection.repair_safe_diff} /></> : null}
+    {diffAvailable
+      ? <><h4>Candidate diff</h4><UnifiedDiffViewer content={projection.repair_safe_diff!} /></>
+      : projection.repair_attempt_id
+        ? <div className={styles.alert} role="alert">
+            <p>Candidate diff is empty or unavailable — G10 approval disabled.</p>
+            {g10Waiting ? <p>The backend cannot bind an empty diff into the G10 package; the repair proposal must be revised before approval.</p> : null}
+          </div>
+        : null}
     {review ? <>
       <h4>Reviewer {review.decision.replaceAll("_", " ")}</h4>
       <p>{review.risk_assessment}</p>
@@ -182,6 +216,7 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
       artifacts={artifacts}
       matches={(path) => path.includes("05_repairs/")}
       empty="No governed repair artifacts are available."
+      activeAttemptId={projection.repair_attempt_id}
     />
   </section>;
 }

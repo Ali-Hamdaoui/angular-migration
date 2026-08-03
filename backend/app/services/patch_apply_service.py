@@ -30,6 +30,7 @@ from app.domain.contracts import ArtifactType
 from app.services.repair_application_service import (
     RepairApplicationError,
     _unified_diff_header_path,
+    replace_text_once,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
@@ -355,17 +356,12 @@ class PatchApplyService:
             if action == "delete_text_file":
                 changes.append({"path": item["path"], "action": "delete", "content": "", "preimage_sha256": actual})
             elif action in {"replace_text", "dependency_change"}:
-                old = item["old_text"]
-                if current.count(old) != 1:
-                    raise RepairApplicationError(
-                        "REPAIR_REPLACEMENT_AMBIGUOUS",
-                        "Replacement preimage must occur exactly once",
-                    )
+                content = replace_text_once(current, item["old_text"], item["new_text"])
                 changes.append(
                     {
                         "path": item["path"],
                         "action": "write",
-                        "content": current.replace(old, item["new_text"], 1),
+                        "content": content,
                         "preimage_sha256": actual,
                     }
                 )

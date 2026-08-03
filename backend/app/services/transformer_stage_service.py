@@ -383,6 +383,85 @@ class TransformerStageService:
             prompt_id=prompt_id,
         )
 
+    def queue_angular_update_retry(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        failed_execution_id: str,
+        idempotency_key: str,
+    ):
+        """Queue one governed successor for the failed angular update command.
+
+        The successor reuses the failed execution's approved authorization,
+        plan/runtime profile, command identity, and reconstruction checkpoint
+        (``CommandExecutorService.queue_retry_execution`` authority); the
+        terminal failed row is never mutated or replayed. The workspace must
+        be the governed post-repair workspace: its live fingerprint must equal
+        the durable binding, which the apply already updated to the
+        post-repair fingerprint.
+        """
+        failed = session.get(CommandExecutionModel, failed_execution_id)
+        if (
+            failed is None
+            or failed.run_id != continuation.run_id
+            or failed.stage_id != continuation.current_stage_id
+        ):
+            raise TransformerStageError(
+                "ANGULAR_UPDATE_RETRY_INVALID",
+                "Failed angular update execution does not belong to this run and stage",
+            )
+        binding = self._binding(session, continuation)
+        live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+        if live != binding.workspace_fingerprint:
+            raise TransformerStageError(
+                "ANGULAR_UPDATE_RETRY_REQUIRES_RECOVERY",
+                "Post-repair workspace is not the governed workspace fingerprint",
+            )
+        try:
+            result = self._command_executor.queue_retry_execution(
+                session,
+                failed_execution_id,
+                idempotency_key=idempotency_key,
+                workspace_recovered=True,
+            )
+        except CommandExecutorError as error:
+            raise TransformerStageError(error.code, error.message) from error
+        successor = session.get(CommandExecutionModel, result.execution_id)
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        if step is not None:
+            step.execution_id = successor.id
+            step.attempt_id = successor.id
+            step.status = "RUNNING"
+            step.updated_at = self._now()
+        expected_state_version = continuation.state_version
+        continuation.status = "waiting_command"
+        continuation.current_node = "handle_prompt"
+        continuation.worker_id = None
+        continuation.lease_expires_at = None
+        continuation.waiting_execution_id = successor.id
+        continuation.state_version += 1
+        continuation.updated_at = self._now()
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"wait:waiting_command:{expected_state_version}",
+            reason="governed angular update retry queued after repair apply",
+            payload={
+                "execution_id": successor.id,
+                "parent_execution_id": failed_execution_id,
+                "expected_state_version": expected_state_version,
+            },
+        )
+        return result
+
     def queue_version_check(self, session, continuation: TransformationContinuationModel):
         return self._queue_group(
             session,

@@ -35,6 +35,24 @@
   text-transform: uppercase;
 }
 
+.banner {
+  border: 1px solid #55a7ff;
+  border-left: 4px solid #55a7ff;
+  border-radius: .4rem;
+  background: #102b48;
+  color: #d8e8fb;
+  padding: .7rem .9rem;
+  font-weight: 700;
+}
+
+.historical {
+  color: #8a7d5c;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

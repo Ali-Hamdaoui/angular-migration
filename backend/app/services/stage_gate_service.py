@@ -317,7 +317,7 @@ class StageGateService:
         package_checksum: str,
         artifact_set_checksum: str | None = None,
     ) -> None:
-        """Verify the G10 envelope and its four inner artifacts by ROLE.
+        """Verify the G10 envelope and its role artifacts.
 
         Role authority contract (never weakened):
 
@@ -327,6 +327,10 @@ class StageGateService:
           non-NULL id must still equal the current attempt.
         - ``proposal`` and ``review`` are ATTEMPT-BOUND roles: their envelope
           ``attempt_id`` must be the exact RepairAttempt id (NULL is rejected).
+        - The candidate.diff artifact (``diff_artifact_id`` / ``diff_checksum``)
+          is ATTEMPT-BOUND and proposal-bound (its envelope ``input_hashes``
+          must reference the attempt's proposal checksum); it must exist, be
+          non-empty, and its checksum must match the package binding.
         - Every role still requires the exact run id, stage id, artifact
           identity, and checksum.
         - The four role artifact ids must be distinct: a single artifact id may
@@ -492,6 +496,38 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 package carries a parent review reference without a parent attempt",
             )
+        diff_metadata = session.scalar(
+            select(ArtifactMetadataModel).where(
+                ArtifactMetadataModel.run_id == continuation.run_id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.relative_path.like(
+                    f"05_repairs/attempt-{attempt.id}/candidate%.diff"
+                ),
+            )
+            .order_by(ArtifactMetadataModel.created_at.desc())
+            .limit(1)
+        )
+        if diff_metadata is None:
+            raise StageGateError("G10_LINEAGE_STALE", "G10 candidate diff artifact is missing")
+        try:
+            stored_diff = store.read_artifact(continuation.run_id, diff_metadata.relative_path)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError) as error:
+            raise StageGateError(
+                "G10_LINEAGE_STALE", "G10 candidate diff artifact cannot be verified"
+            ) from error
+        diff_artifact_id = diff_metadata.id.removeprefix("metadata-")
+        if (
+            stored_diff.ref.artifact_id != diff_artifact_id
+            or stored_diff.ref.checksum != diff_metadata.checksum
+            or stored_diff.envelope is None
+            or stored_diff.envelope.run_id != continuation.run_id
+            or stored_diff.envelope.stage_id != continuation.current_stage_id
+            or stored_diff.envelope.attempt_id != attempt.id
+            or stored_diff.envelope.input_hashes.get("proposal") != attempt.proposal_checksum
+        ):
+            raise StageGateError("G10_LINEAGE_STALE", "G10 candidate diff binding is invalid")
+        if not stored_diff.content.strip():
+            raise StageGateError("G10_LINEAGE_STALE", "G10 candidate diff is empty")
         plan = session.get(MigrationPlanModel, continuation.plan_id)
         if plan is None or plan.run_id != continuation.run_id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package plan binding is missing")
@@ -509,6 +545,8 @@ class StageGateService:
             "stage_plan_checksum": stage_plan.checksum,
             "risk_level": attempt.risk_level,
             "validation_targets": attempt.validation_targets,
+            "diff_artifact_id": diff_artifact_id,
+            "diff_checksum": diff_metadata.checksum,
         }
         if any(package.get(key) != value for key, value in expected.items()):
             raise StageGateError("G10_LINEAGE_STALE", "G10 inner lineage does not match authoritative state")

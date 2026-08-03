@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getTransformation } from "@/api/transformation";
 import { ApiClientError } from "@/api/client";
 import type { TransformationProjection } from "@/types/transformation";
@@ -8,16 +8,29 @@ import type { TransformationProjection } from "@/types/transformation";
 export function useTransformation(runId: string, refreshKey = 0) {
   const [projection, setProjection] = useState<TransformationProjection | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "empty" | "failed">("loading");
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const loadedRef = useRef(false);
+
   const refresh = useCallback(async () => {
-    setStatus("loading");
+    if (!loadedRef.current) setStatus("loading");
     try {
       setProjection(await getTransformation(runId));
+      loadedRef.current = true;
       setStatus("ready");
+      setRefreshError(null);
     } catch (error) {
-      setProjection(null);
-      setStatus(error instanceof ApiClientError && error.status === 404 ? "empty" : "failed");
+      if (!loadedRef.current) {
+        setProjection(null);
+        setStatus(error instanceof ApiClientError && error.status === 404 ? "empty" : "failed");
+      } else {
+        setRefreshError(
+          error instanceof ApiClientError && error.status === 404
+            ? "Transformer state is no longer available."
+            : "Background refresh failed; showing the last authoritative state.",
+        );
+      }
     }
   }, [runId]);
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);
-  return { projection, status, refresh };
+  return { projection, status, refresh, refreshError };
 }

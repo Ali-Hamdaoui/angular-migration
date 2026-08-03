@@ -26,12 +26,16 @@ export type TransformationProjection = {
   } | null;
   repair_attempt_id: string | null;
   repair_attempt_number: number | null;
+  repair_parent_attempt_id?: string | null;
   repair_status: string | null;
   repair_risk_level: string | null;
   repair_proposal_checksum: string | null;
   repair_review_checksum: string | null;
   repair_proposal_id: string | null;
   repair_base_checksum: string | null;
+  repair_diff_artifact_id?: string | null;
+  repair_diff_checksum?: string | null;
+  repair_proposal_operations?: Array<{ operation: string | null; path: string | null }>;
   repair_safe_diff: string | null;
   repair_review: {
     decision: "accept" | "request_changes" | "reject";
@@ -44,6 +48,9 @@ export type TransformationProjection = {
   repair_rationale: string[];
   repair_apply_checksum: string | null;
   repair_validation_checksum: string | null;
+  next_backend_action?: string | null;
+  angular_update_retry_attempt?: number | null;
+  angular_update_retry_status?: string | null;
   route_stages: Array<{
     stage_id: string;
     source_version: string | null;

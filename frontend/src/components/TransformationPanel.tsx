@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactRefDto, WorkflowEventDto } from "@/types/generated/api";
+import type { TransformationProjection } from "@/types/transformation";
 import { ApiClientError } from "@/api/client";
 import { useTransformation } from "@/hooks/useTransformation";
 import { TRANSFORMATION_EVENT_TYPES } from "@/hooks/useAuthoritativeRun";
@@ -68,6 +69,39 @@ function backendErrorMessage(error: ApiClientError) {
   }
 }
 
+const inFlightCommandStatuses = new Set(["queued", "pending", "running"]);
+
+function bannerLabel(
+  projection: TransformationProjection,
+  submitting: boolean,
+  revisionAccepted: boolean,
+): string | null {
+  if (submitting) return "Revision submitting";
+  if (revisionAccepted) return "Revision accepted; child attempt created";
+  const { status, current_node, repair_status, active_gate, last_error_code } = projection;
+  if (status === "completed") return "Completed";
+  if (status === "blocked" || status === "failed") {
+    return last_error_code ? `Blocked — ${last_error_code}` : "Blocked";
+  }
+  if (status === "waiting_repair_revision" || repair_status === "request_changes") return "Human revision required";
+  if (status === "waiting_gate" && active_gate === "G10") return "Waiting for G10 approval";
+  if (status === "waiting_gate" && active_gate) return `Waiting for ${active_gate} approval`;
+  if (current_node === "propose_repair") return "Running repair proposal";
+  if (current_node === "review_repair") return "Reviewing proposal";
+  if (current_node === "apply_repair" || repair_status === "applying") return "Applying approved repair";
+  if (current_node === "angular_update_retry") return "Retrying Angular migration";
+  if (
+    current_node === "handle_prompt"
+    && projection.angular_update_retry_status
+    && inFlightCommandStatuses.has(projection.angular_update_retry_status)
+  ) {
+    return "Retrying Angular migration";
+  }
+  if (current_node === "target_inspection" || current_node === "version_verify") return "Verifying target Angular version";
+  if (status === "waiting_command") return "Command in flight";
+  return null;
+}
+
 export function TransformationPanel({
   runId,
   workflowEvents,
@@ -84,9 +118,10 @@ export function TransformationPanel({
     ).at(-1)?.sequence ?? 0,
     [workflowEvents],
   );
-  const { projection, status, refresh } = useTransformation(runId, refreshKey);
+  const { projection, status, refresh, refreshError } = useTransformation(runId, refreshKey);
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [revisionSubmitting, setRevisionSubmitting] = useState(false);
   const [revisionInstruction, setRevisionInstruction] = useState("");
   const [revisionAccepted, setRevisionAccepted] = useState<{
     attempt_id: string;
@@ -102,7 +137,7 @@ export function TransformationPanel({
     if (status !== "loading") onActionRequiredChange?.(Boolean(actionRequired));
   }, [actionRequired, onActionRequiredChange, status]);
 
-  if (status === "loading") {
+  if (status === "loading" && !projection) {
     return <section className={styles.empty} aria-label="Transformer status" role="status">
       <p>Loading authoritative Transformer state…</p>
     </section>;
@@ -131,15 +166,21 @@ export function TransformationPanel({
 
   const current = projection;
   const shared = { projection: current, workflowEvents, artifacts };
+  const banner = bannerLabel(current, revisionSubmitting, revisionAccepted !== null);
+  const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
   return <div className={styles.screen} aria-label="Transformer status">
     <section className={styles.hero}>
       <div>
         <span className={styles.eyebrow}>Durable Transformer / backend truth</span>
         <h3>{projection.source_version ?? "source"} → {projection.target_version ?? "target"}</h3>
         <p>Current step: <code>{projection.current_node}</code></p>
+        {projection.next_backend_action ? <p>Next backend action: {projection.next_backend_action}</p> : null}
       </div>
       <span className={styles.status}>{projection.status}</span>
     </section>
+
+    {banner ? <div className={styles.banner} role="status" aria-live="polite">{banner}</div> : null}
+    {refreshError ? <p className={styles.note} role="status">{refreshError}</p> : null}
 
     {actionError ? <p className={styles.alert} role="alert">{actionError}</p> : null}
 
@@ -162,7 +203,12 @@ export function TransformationPanel({
           && projection.active_gate_package_checksum
           && projection.workspace_fingerprint
           ? <div className={styles.actions}>
-              <button type="button" disabled={submitting} onClick={() => void decideGate("approve")}>
+              <button
+                type="button"
+                disabled={submitting || (projection.active_gate === "G10" && !diffAvailable)}
+                title={projection.active_gate === "G10" && !diffAvailable ? "Candidate diff is empty or unavailable — G10 approval disabled" : undefined}
+                onClick={() => void decideGate("approve")}
+              >
                 Approve {projection.active_gate}
               </button>
               {projection.active_gate === "G10" ? <button type="button" disabled={submitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
@@ -323,26 +369,31 @@ export function TransformationPanel({
     }), "Restart failed.");
   }
 
-  function reviseRepair() {
+  async function reviseRepair() {
     if (!current.repair_attempt_id || !current.repair_proposal_id || !current.repair_base_checksum || !revisionInstruction.trim()) return;
-    return mutate(async (key) => {
-      const result = await requestRepairRevision(runId, current.repair_attempt_id!, {
-        attempt_id: current.repair_attempt_id!,
-        proposal_id: current.repair_proposal_id!,
-        base_checksum: current.repair_base_checksum!,
-        instruction: revisionInstruction,
-        idempotency_key: key,
-      });
-      if (result.attempt_id) {
-        setRevisionAccepted({
-          attempt_id: result.attempt_id,
-          status: result.status,
-          idempotent_replay: result.idempotent_replay,
+    setRevisionSubmitting(true);
+    try {
+      return await mutate(async (key) => {
+        const result = await requestRepairRevision(runId, current.repair_attempt_id!, {
+          attempt_id: current.repair_attempt_id!,
+          proposal_id: current.repair_proposal_id!,
+          base_checksum: current.repair_base_checksum!,
+          instruction: revisionInstruction,
+          idempotency_key: key,
         });
-      }
-      setRevisionInstruction("");
-      return result;
-    }, "Repair revision request failed.");
+        if (result.attempt_id) {
+          setRevisionAccepted({
+            attempt_id: result.attempt_id,
+            status: result.status,
+            idempotent_replay: result.idempotent_replay,
+          });
+        }
+        setRevisionInstruction("");
+        return result;
+      }, "Repair revision request failed.");
+    } finally {
+      setRevisionSubmitting(false);
+    }
   }
 
   function rejectReviewedRepair() {

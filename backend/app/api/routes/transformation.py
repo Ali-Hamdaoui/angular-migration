@@ -26,6 +26,7 @@ from app.repositories.models import (
     StageGateDecisionModel,
     StageGatePackageModel,
     StagePromptRequestModel,
+    StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     WorkflowEventModel,
@@ -65,6 +66,58 @@ def _artifact_content(session, run_id: str, artifact_id: str | None):
     return stored.content
 
 
+_NODE_ACTION_LABELS = {
+    "validate_g06": "Accepting G06 stage approval",
+    "prepare_workspace": "Preparing the governed stage workspace",
+    "resolve_runtime": "Resolving the runtime profile",
+    "dependency_preflight": "Running dependency preflight",
+    "collect_known_decisions": "Collecting known stage decisions",
+    "create_g07": "Preparing G07 stage approval",
+    "bootstrap_install": "Running bootstrap install",
+    "verify_bootstrap": "Verifying bootstrap install",
+    "angular_update": "Running Angular migration update",
+    "handle_prompt": "Handling Angular CLI prompt",
+    "target_inspection": "Verifying target Angular version",
+    "version_verify": "Verifying target Angular version",
+    "final_install": "Running final install",
+    "build": "Running build validation",
+    "test": "Running test validation",
+    "aggregate_validation": "Aggregating validation evidence",
+    "classify_failure": "Classifying failure evidence",
+    "propose_repair": "Running repair proposal",
+    "review_repair": "Reviewing proposal",
+    "create_g10": "Preparing G10 repair approval",
+    "apply_repair": "Applying approved repair",
+    "angular_update_retry": "Retrying Angular migration",
+    "lockfile_generation": "Regenerating the npm lockfile",
+    "repair_revalidate": "Revalidating after repair",
+    "create_g11": "Preparing G11 revalidation approval",
+    "create_g09": "Preparing G09 validation approval",
+    "create_g12": "Preparing G12 approval",
+    "seal_stage": "Sealing the stage",
+    "materialize_next_stage": "Materializing the next stage",
+    "complete_run": "Completing the migration run",
+}
+
+
+def _next_backend_action(continuation) -> str | None:
+    if continuation.status == "waiting_command":
+        return "Command in flight"
+    if continuation.status == "waiting_gate":
+        return "Waiting for human gate approval"
+    if continuation.status == "waiting_prompt":
+        return "Waiting for CLI prompt decision"
+    if continuation.status == "waiting_repair_revision":
+        return "Waiting for human revision instruction"
+    if continuation.status == "waiting_retry":
+        return "Waiting for the governed retry window"
+    if continuation.status == "blocked" or continuation.status == "failed":
+        return "Blocked"
+    if continuation.status == "completed":
+        return "Completed"
+    return _NODE_ACTION_LABELS.get(continuation.current_node)
+
+
 def _projection(session, continuation: TransformationContinuationModel) -> dict[str, object]:
     stage = session.get(MigrationStageModel, continuation.current_stage_id)
     route_stages = list(
@@ -82,10 +135,24 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
     )
     command = session.scalar(
         select(CommandExecutionModel)
-        .where(CommandExecutionModel.run_id == continuation.run_id)
+        .where(
+            CommandExecutionModel.run_id == continuation.run_id,
+            CommandExecutionModel.status.in_(("queued", "pending", "running")),
+        )
         .order_by(CommandExecutionModel.requested_at.desc())
         .limit(1)
     )
+    if command is None and continuation.waiting_execution_id:
+        waited = session.get(CommandExecutionModel, continuation.waiting_execution_id)
+        if waited is not None and waited.run_id == continuation.run_id:
+            command = waited
+    if command is None:
+        command = session.scalar(
+            select(CommandExecutionModel)
+            .where(CommandExecutionModel.run_id == continuation.run_id)
+            .order_by(CommandExecutionModel.requested_at.desc())
+            .limit(1)
+        )
     gate = session.scalar(
         select(StageGatePackageModel)
         .where(
@@ -121,6 +188,8 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
     safe_diff = None
     proposal = None
     review = None
+    diff_metadata = None
+    retry_execution = None
     if repair is not None:
         proposal_content = _artifact_content(session, continuation.run_id, repair.proposal_artifact_id)
         review_content = _artifact_content(session, continuation.run_id, repair.review_artifact_id)
@@ -147,6 +216,18 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         except (TypeError, ValueError):
             proposal = None
             review = None
+        angular_step = session.scalar(
+            select(StageStepModel)
+            .where(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        retry_execution = (
+            session.get(CommandExecutionModel, angular_step.execution_id)
+            if angular_step is not None and angular_step.execution_id
+            else None
+        )
     latest_seal = session.scalar(
         select(StageCheckpointModel)
         .where(
@@ -191,17 +272,36 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         ),
         "repair_attempt_id": repair.id if repair else None,
         "repair_attempt_number": repair.attempt_number if repair else None,
+        "repair_parent_attempt_id": repair.parent_attempt_id if repair else None,
         "repair_status": repair.status if repair else None,
         "repair_risk_level": repair.risk_level if repair else None,
         "repair_proposal_checksum": repair.proposal_checksum if repair else None,
         "repair_review_checksum": repair.review_checksum if repair else None,
         "repair_proposal_id": repair.proposal_artifact_id if repair else None,
         "repair_base_checksum": repair.proposal_checksum if repair else None,
+        "repair_diff_artifact_id": (
+            diff_metadata.id.removeprefix("metadata-") if diff_metadata else None
+        ),
+        "repair_diff_checksum": diff_metadata.checksum if diff_metadata else None,
+        "repair_proposal_operations": [
+            {"operation": item.get("operation"), "path": item.get("path")}
+            for item in (proposal.get("operations") or []) if proposal
+        ],
         "repair_safe_diff": safe_diff,
         "repair_review": review,
         "repair_rationale": proposal.get("rationale", []) if proposal else [],
         "repair_apply_checksum": repair.apply_ledger_checksum if repair else None,
         "repair_validation_checksum": repair.validation_summary_checksum if repair else None,
+        "next_backend_action": _next_backend_action(continuation),
+        "angular_update_retry_attempt": (
+            retry_execution.attempt_number if retry_execution else None
+        ),
+        "angular_update_retry_status": (
+            retry_execution.status
+            if retry_execution is not None
+            and retry_execution.parent_execution_id is not None
+            else None
+        ),
         "route_stages": [
             {
                 "stage_id": item.id,
