@@ -47,6 +47,62 @@ def test_operations_apply_atomically_with_preimage_and_ledger(tmp_path: Path):
     assert fingerprint == StageSandboxCopier.fingerprint(workspace)
 
 
+def test_dependency_change_applies_as_an_explicit_text_replacement(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    artifacts = tmp_path / "artifacts" / "run-1"
+    package = workspace / "package.json"
+    package.parent.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    package.write_text('{"dependencies":{"x":"1.0.0"}}', encoding="utf-8")
+    proposal = {
+        "proposal_format": "operations",
+        "operations": [
+            {
+                "operation": "dependency_change",
+                "path": "package.json",
+                "preimage_sha256": "sha256:" + hashlib.sha256(package.read_bytes()).hexdigest(),
+                "old_text": '"x":"1.0.0"',
+                "new_text": '"x":"2.0.0"',
+            }
+        ],
+        "unified_diff": None,
+    }
+
+    PatchApplyService().apply(
+        proposal=proposal,
+        workspace_path=str(workspace),
+        expected_fingerprint=StageSandboxCopier.fingerprint(workspace),
+        run_id="run-1",
+        stage_id="stage-1",
+        artifact_root=str(artifacts),
+        attempt_id="repair-1",
+    )
+
+    assert json.loads(package.read_text(encoding="utf-8"))["dependencies"]["x"] == "2.0.0"
+
+
+def test_unknown_operation_is_rejected(tmp_path: Path):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir(parents=True)
+    target.write_text("old", encoding="utf-8")
+
+    with pytest.raises(RepairApplicationError) as error:
+        PatchApplyService()._prepare_operations(
+            [
+                {
+                    "operation": "unknown",
+                    "path": "src/app.ts",
+                    "preimage_sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+                    "old_text": "old",
+                    "new_text": "new",
+                }
+            ],
+            tmp_path,
+        )
+
+    assert error.value.code == "REPAIR_OPERATION_INVALID"
+
+
 def test_unified_diff_apply_accepts_header_like_hunk_content(tmp_path: Path):
     workspace = tmp_path / "workspace"
     artifacts = tmp_path / "artifacts" / "run-1"

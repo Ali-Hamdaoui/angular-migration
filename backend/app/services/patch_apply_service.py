@@ -354,7 +354,7 @@ class PatchApplyService:
             current = target.read_text(encoding="utf-8")
             if action == "delete_text_file":
                 changes.append({"path": item["path"], "action": "delete", "content": "", "preimage_sha256": actual})
-            else:
+            elif action in {"replace_text", "dependency_change"}:
                 old = item["old_text"]
                 if current.count(old) != 1:
                     raise RepairApplicationError(
@@ -368,6 +368,10 @@ class PatchApplyService:
                         "content": current.replace(old, item["new_text"], 1),
                         "preimage_sha256": actual,
                     }
+                )
+            else:
+                raise RepairApplicationError(
+                    "REPAIR_OPERATION_INVALID", "Repair operation is unsupported"
                 )
         return changes
 
