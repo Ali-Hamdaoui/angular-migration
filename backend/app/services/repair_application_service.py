@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -84,6 +85,9 @@ class RepairLlmError(RepairApplicationError):
         self.failure_subtype = failure_subtype
 
 
+logger = logging.getLogger(__name__)
+
+
 _GATEWAY_FAILURE_CODES = {
     LlmFailureCode.TRANSPORT: "LLM_TRANSPORT_FAILED",
     LlmFailureCode.PROTOCOL: "LLM_PROTOCOL_FAILED",
@@ -109,6 +113,36 @@ def _bounded_text(value: object, limit: int = 240) -> str | None:
     if value is None:
         return None
     return str(value).replace("\r", " ").replace("\n", " ")[:limit]
+
+
+def _legacy_recovery_error(
+    reason: str,
+    *,
+    code: str = "REPAIR_WORKSPACE_STALE",
+    details: dict[str, object] | None = None,
+    cause: BaseException | None = None,
+) -> RepairApplicationError:
+    payload = {"reason": reason, "transaction_rollback": True, **(details or {})}
+    message = "Legacy fingerprint recovery diagnostic: " + json.dumps(
+        payload, sort_keys=True, default=str
+    )
+    logger.warning("legacy fingerprint recovery blocked", extra={"diagnostic": payload})
+    error = RepairApplicationError(code, message)
+    error.diagnostic = payload
+    if cause is not None:
+        error.__cause__ = cause
+    return error
+
+
+def _integrity_diagnostic(error: IntegrityError) -> dict[str, object]:
+    original = error.orig
+    return {
+        "exception_type": type(error).__name__,
+        "original_exception_type": type(original).__name__,
+        "constraint_name": _bounded_text(getattr(getattr(original, "diag", None), "constraint_name", None)),
+        "sqlite_error_name": _bounded_text(getattr(original, "sqlite_errorname", None)),
+        "original_message": _bounded_text(original),
+    }
 
 
 def _invocation_key(attempt_id: str, role) -> str:
@@ -783,7 +817,30 @@ class RepairApplicationService:
         """
         try:
             return self._recover_legacy_fingerprint_authority_once(attempt_id)
-        except IntegrityError:
+        except RepairApplicationError as error:
+            if getattr(error, "diagnostic", None) is not None:
+                logger.warning(
+                    "legacy fingerprint recovery transaction rolled back",
+                    extra={
+                        "diagnostic": {
+                            "reason": "TRANSACTION_ROLLBACK",
+                            "error_code": error.code,
+                            "error_message": _bounded_text(error.message, 1000),
+                        }
+                    },
+                )
+            raise
+        except IntegrityError as error:
+            integrity = _integrity_diagnostic(error)
+            logger.exception(
+                "legacy fingerprint recovery transaction rolled back",
+                extra={
+                    "diagnostic": {
+                        "reason": "TRANSACTION_ROLLBACK",
+                        **integrity,
+                    }
+                },
+            )
             with self._scope() as session:
                 attempt = session.get(RepairAttemptModel, attempt_id)
                 binding = (
@@ -798,7 +855,20 @@ class RepairApplicationService:
                     else None
                 )
                 if attempt is None or binding is None or binding.fingerprint_profile_id is None:
-                    raise
+                    reason = (
+                        "RECOVERY_LINEAGE_CONFLICT"
+                        if "uq_repair_fingerprint_recovery" in json.dumps(integrity)
+                        else "TRANSACTION_ROLLBACK"
+                    )
+                    raise _legacy_recovery_error(
+                        reason,
+                        details={
+                            "attempt_id": attempt_id,
+                            "binding_profile_id": binding.fingerprint_profile_id if binding else None,
+                            **integrity,
+                        },
+                        cause=error,
+                    )
                 return {"recovered": False, "checkpoint_id": attempt.checkpoint_id}
 
     def _recover_legacy_fingerprint_authority_once(self, attempt_id: str) -> dict[str, object]:
@@ -853,27 +923,46 @@ class RepairApplicationService:
                 workspace_root = Path(workspace_path).resolve(strict=True)
                 workspace_root.relative_to(Path(run_root).resolve(strict=True))
             except (OSError, ValueError) as error:
-                raise RepairApplicationError(
-                    "REPAIR_WORKSPACE_STALE",
-                    "Repair workspace escapes the authoritative run root",
-                ) from error
+                raise _legacy_recovery_error(
+                    "CHECKPOINT_PATH_INVALID",
+                    details={
+                        "path_validation": "binding_workspace_outside_run_root",
+                        "exception_type": type(error).__name__,
+                    },
+                    cause=error,
+                )
             if live_fingerprint == stored_fingerprint:
+                diagnostic = {}
                 checkpoint, legacy_profile = self._identify_legacy_checkpoint(
-                    session, attempt, run_root, live_fingerprint, stored_fingerprint
+                    session,
+                    attempt,
+                    run_root,
+                    live_fingerprint,
+                    stored_fingerprint,
+                    diagnostic,
                 )
                 if checkpoint is None:
-                    raise RepairApplicationError(
-                        "REPAIR_WORKSPACE_STALE",
-                        "Repair checkpoint authority could not be validated",
+                    raise _legacy_recovery_error(
+                        diagnostic.pop("reason", "NO_ELIGIBLE_PRE_REPAIR_CHECKPOINT"),
+                        details=diagnostic,
                     )
                 return self._commit_authority_recovery(
                     session, attempt, binding, checkpoint, legacy_profile, live_fingerprint
                 )
+            diagnostic = {}
             checkpoint, legacy_profile = self._identify_legacy_checkpoint(
-                session, attempt, run_root, live_fingerprint, stored_fingerprint
+                session,
+                attempt,
+                run_root,
+                live_fingerprint,
+                stored_fingerprint,
+                diagnostic,
             )
             if checkpoint is None:
-                raise RepairApplicationError("REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed")
+                raise _legacy_recovery_error(
+                    diagnostic.pop("reason", "CANONICAL_FINGERPRINT_MISMATCH"),
+                    details=diagnostic,
+                )
             return self._commit_authority_recovery(
                 session, attempt, binding, checkpoint, legacy_profile, live_fingerprint
             )
@@ -938,7 +1027,12 @@ class RepairApplicationService:
 
     @staticmethod
     def _identify_legacy_checkpoint(
-        session, attempt, run_root, live_fingerprint, binding_fingerprint=None
+        session,
+        attempt,
+        run_root,
+        live_fingerprint,
+        binding_fingerprint=None,
+        diagnostic=None,
     ):
         """Deterministically identify the attempt's historical pre-repair checkpoint.
 
@@ -955,24 +1049,62 @@ class RepairApplicationService:
         checkpoint is eligible (the bound checkpoint either verifies or the
         recovery fails closed).
         """
+        diagnostic = diagnostic if diagnostic is not None else {}
         diagnosis_references = re.findall(
             r"(?:^|[;\s])checkpoint=([^\s;]+)", attempt.diagnosis or ""
         )
         evidence_references = RepairApplicationService._immutable_checkpoint_references(
             session, attempt
         )
+        diagnostic.update(
+            {
+                "referenced_checkpoint_ids": sorted(
+                    set(diagnosis_references) | evidence_references
+                ),
+                "reference_sources": {
+                    "diagnosis": diagnosis_references,
+                    "failure_evidence": sorted(evidence_references),
+                },
+            }
+        )
         has_checkpoint_reference = "checkpoint=" in (attempt.diagnosis or "") or bool(
             evidence_references
         )
         if "checkpoint=" in (attempt.diagnosis or "") and len(diagnosis_references) != 1:
+            diagnostic.update(
+                {
+                    "reason": "CHECKPOINT_REFERENCE_CONFLICT",
+                    "diagnosis_reference_count": len(diagnosis_references),
+                }
+            )
             return None, None
         referenced_ids = set(diagnosis_references) | evidence_references
         if has_checkpoint_reference and len(referenced_ids) != 1:
+            diagnostic.update(
+                {
+                    "reason": "CHECKPOINT_REFERENCE_CONFLICT",
+                    "referenced_id_count": len(referenced_ids),
+                }
+            )
             return None, None
         if attempt.checkpoint_id is not None:
             if has_checkpoint_reference and referenced_ids != {attempt.checkpoint_id}:
+                diagnostic.update(
+                    {
+                        "reason": "CHECKPOINT_REFERENCE_CONFLICT",
+                        "attempt_checkpoint_id": attempt.checkpoint_id,
+                    }
+                )
                 return None, None
             bound = session.get(StageCheckpointModel, attempt.checkpoint_id)
+            if bound is None or bound.run_id != attempt.run_id or bound.stage_id != attempt.stage_id:
+                diagnostic.update(
+                    {
+                        "reason": "CHECKPOINT_REFERENCE_CONFLICT",
+                        "attempt_checkpoint_id": attempt.checkpoint_id,
+                        "checkpoint_lookup": "missing_or_wrong_run_stage",
+                    }
+                )
             checkpoints = (
                 [bound]
                 if bound is not None
@@ -982,6 +1114,13 @@ class RepairApplicationService:
             )
         elif has_checkpoint_reference:
             referenced = session.get(StageCheckpointModel, next(iter(referenced_ids)))
+            if referenced is None or referenced.run_id != attempt.run_id or referenced.stage_id != attempt.stage_id:
+                diagnostic.update(
+                    {
+                        "reason": "CHECKPOINT_REFERENCE_CONFLICT",
+                        "checkpoint_lookup": "missing_or_wrong_run_stage",
+                    }
+                )
             checkpoints = (
                 [referenced]
                 if referenced is not None
@@ -996,18 +1135,46 @@ class RepairApplicationService:
                     StageCheckpointModel.stage_id == attempt.stage_id,
                 ).order_by(StageCheckpointModel.sequence)
             ).all()
+        diagnostic["checkpoint_count"] = len(checkpoints)
         try:
             run_root_resolved = Path(run_root).resolve(strict=True)
-        except OSError:
+        except OSError as error:
+            diagnostic.update(
+                {
+                    "reason": "CHECKPOINT_PATH_INVALID",
+                    "path_validation": "run_root_invalid",
+                    "exception_type": type(error).__name__,
+                    "candidate_diagnostics": [],
+                    "qualifying_candidate_count": 0,
+                }
+            )
             return None, None
         matches = []
+        candidate_diagnostics = []
         for checkpoint in checkpoints:
+            candidate = {
+                "checkpoint_id": checkpoint.id,
+                "kind": checkpoint.kind,
+                "safe_for_resume": bool(checkpoint.safe_for_resume),
+                "stored_legacy_fingerprint": checkpoint.workspace_fingerprint,
+            }
             if checkpoint.kind != "pre_repair" or not checkpoint.safe_for_resume:
+                candidate["rejection_reason"] = "NO_ELIGIBLE_PRE_REPAIR_CHECKPOINT"
+                candidate_diagnostics.append(candidate)
                 continue
             try:
                 checkpoint_root = Path(checkpoint.workspace_path).resolve(strict=True)
                 checkpoint_root.relative_to(run_root_resolved)
-            except (OSError, ValueError):
+                candidate["path_validation"] = "valid"
+            except (OSError, ValueError) as error:
+                candidate.update(
+                    {
+                        "path_validation": "invalid",
+                        "exception_type": type(error).__name__,
+                        "rejection_reason": "CHECKPOINT_PATH_INVALID",
+                    }
+                )
+                candidate_diagnostics.append(candidate)
                 continue
             try:
                 legacy_matches = [
@@ -1016,14 +1183,55 @@ class RepairApplicationService:
                     if profile.fingerprint(checkpoint_root) == checkpoint.workspace_fingerprint
                 ]
                 current_fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(checkpoint_root)
-            except OSError:
+            except OSError as error:
+                candidate.update(
+                    {
+                        "path_validation": "fingerprint_unavailable",
+                        "exception_type": type(error).__name__,
+                        "rejection_reason": "CHECKPOINT_PATH_INVALID",
+                    }
+                )
+                candidate_diagnostics.append(candidate)
                 continue
+            candidate.update(
+                {
+                    "legacy_profile_match_count": len(legacy_matches),
+                    "legacy_profile_match_ids": [profile.profile_id for profile in legacy_matches],
+                    "checkpoint_current_profile_fingerprint": current_fingerprint,
+                    "live_current_profile_fingerprint": live_fingerprint,
+                }
+            )
             if len(legacy_matches) != 1:
+                candidate["rejection_reason"] = (
+                    "LEGACY_PROFILE_NO_MATCH" if not legacy_matches else "LEGACY_PROFILE_AMBIGUOUS"
+                )
+                candidate_diagnostics.append(candidate)
                 continue
             if current_fingerprint != live_fingerprint:
+                candidate["rejection_reason"] = "CANONICAL_FINGERPRINT_MISMATCH"
+                candidate_diagnostics.append(candidate)
                 continue
             matches.append((checkpoint, legacy_matches[0]))
+            candidate["rejection_reason"] = "QUALIFIED"
+            candidate_diagnostics.append(candidate)
+        diagnostic.update(
+            {
+                "candidate_diagnostics": candidate_diagnostics,
+                "qualifying_candidate_count": len(matches),
+            }
+        )
         if len(matches) != 1:
+            rejection_reasons = {
+                item.get("rejection_reason")
+                for item in candidate_diagnostics
+                if item.get("rejection_reason") not in {None, "QUALIFIED"}
+            }
+            if diagnostic.get("reason") == "CHECKPOINT_REFERENCE_CONFLICT":
+                pass
+            elif len(rejection_reasons) == 1 and not matches:
+                diagnostic["reason"] = next(iter(rejection_reasons))
+            else:
+                diagnostic["reason"] = "NO_ELIGIBLE_PRE_REPAIR_CHECKPOINT"
             return None, None
         return matches[0]
 
@@ -1064,7 +1272,46 @@ class RepairApplicationService:
             )
         )
         if binding_claim.rowcount != 1:
-            return {"recovered": False, "checkpoint_id": None}
+            session.expire_all()
+            actual_binding = session.get(StageWorkspaceBindingModel, binding.id)
+            actual_attempt = session.get(RepairAttemptModel, attempt.id)
+            details = {
+                "rowcount": binding_claim.rowcount,
+                "expected": {
+                    "id": binding.id,
+                    "run_id": attempt.run_id,
+                    "stage_id": attempt.stage_id,
+                    "active": True,
+                    "fingerprint_profile_id": None,
+                    "workspace_fingerprint": replaced_binding_fingerprint,
+                },
+                "actual_binding": (
+                    {
+                        "id": actual_binding.id,
+                        "run_id": actual_binding.run_id,
+                        "stage_id": actual_binding.stage_id,
+                        "active": actual_binding.active,
+                        "fingerprint_profile_id": actual_binding.fingerprint_profile_id,
+                        "workspace_fingerprint": actual_binding.workspace_fingerprint,
+                    }
+                    if actual_binding is not None
+                    else None
+                ),
+                "actual_attempt": (
+                    {
+                        "checkpoint_id": actual_attempt.checkpoint_id,
+                        "state_version": actual_attempt.state_version,
+                    }
+                    if actual_attempt is not None
+                    else None
+                ),
+            }
+            if actual_binding is not None and actual_binding.fingerprint_profile_id is not None:
+                return {
+                    "recovered": False,
+                    "checkpoint_id": actual_attempt.checkpoint_id if actual_attempt else None,
+                }
+            raise _legacy_recovery_error("BINDING_CAS_MISS", details=details)
         if attempt.checkpoint_id is None:
             attempt_claim = session.execute(
                 update(RepairAttemptModel)
@@ -1084,13 +1331,37 @@ class RepairApplicationService:
                 )
             )
             if attempt_claim.rowcount != 1:
-                raise RepairApplicationError(
-                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
-                    "Repair attempt changed during authority recovery",
+                session.expire_all()
+                actual_attempt = session.get(RepairAttemptModel, attempt.id)
+                raise _legacy_recovery_error(
+                    "ATTEMPT_CAS_MISS",
+                    code="REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    details={
+                        "rowcount": attempt_claim.rowcount,
+                        "expected": {
+                            "id": attempt.id,
+                            "run_id": attempt.run_id,
+                            "stage_id": attempt.stage_id,
+                            "checkpoint_id": None,
+                            "state_version": attempt.state_version,
+                        },
+                        "actual": (
+                            {
+                                "checkpoint_id": actual_attempt.checkpoint_id,
+                                "state_version": actual_attempt.state_version,
+                            }
+                            if actual_attempt is not None
+                            else None
+                        ),
+                    },
                 )
         elif attempt.checkpoint_id != checkpoint.id:
-            raise RepairApplicationError(
-                "REPAIR_WORKSPACE_STALE", "Repair attempt binds a different checkpoint"
+            raise _legacy_recovery_error(
+                "CHECKPOINT_REFERENCE_CONFLICT",
+                details={
+                    "attempt_checkpoint_id": attempt.checkpoint_id,
+                    "candidate_checkpoint_id": checkpoint.id,
+                },
             )
         existing_lineage = session.scalar(
             select(RepairFingerprintRecoveryModel).where(
