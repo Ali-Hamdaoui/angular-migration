@@ -42,14 +42,26 @@ class PathValidationService:
         rules: list[PathRuleResult] = []
         repo = self._settings.platform_repository_root.resolve()
         target_roots = tuple(root.expanduser().resolve(strict=False) for root in self._settings.allowed_target_roots)
+        source_roots = tuple(root.expanduser().resolve(strict=False) for root in self._settings.allowed_source_roots)
+        source_absolute = is_portable_absolute_path(request.source_path)
+        parent_absolute = is_portable_absolute_path(request.target_parent_path or request.target_output_path or "")
+        self._rule(rules, blockers, "SOURCE_PATH_NOT_ABSOLUTE", source_absolute, "Source path must be absolute.")
+        self._rule(rules, blockers, "TARGET_PARENT_NOT_ABSOLUTE", parent_absolute, "Target parent path must be absolute.")
         self._rule(rules, blockers, "SOURCE_PATH_NOT_FOUND", source.exists(), "Source path must exist.")
         self._rule(rules, blockers, "SOURCE_PATH_NOT_DIRECTORY", source.is_dir(), "Source path must be a directory.")
+        self._rule(rules, blockers, "SOURCE_PATH_NOT_READABLE", source.is_dir() and os.access(source, os.R_OK), "Source path must be readable.")
+        self._rule(rules, blockers, "TARGET_PARENT_NOT_DIRECTORY", not parent.exists() or parent.is_dir(), "Target parent must be a directory or safely creatable.")
         self._rule(rules, blockers, "SOURCE_PATH_INSIDE_PLATFORM_REPOSITORY", not self._is_relative_to(source, repo), "Source must be external to the platform repository.")
         self._rule(rules, blockers, "TARGET_PARENT_INSIDE_PLATFORM_REPOSITORY", not self._is_relative_to(parent, repo), "Target parent must be external to the platform repository.")
-        self._rule(rules, blockers, "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS", self._is_under_any_root(parent, target_roots), "Target parent must be inside an allowed target root.")
-        self._rule(rules, blockers, "OUTPUT_ROOT_OUTSIDE_ALLOWED_ROOTS", self._is_under_any_root(output, target_roots), "Output root must be inside an allowed target root.")
+        if source_roots and not self._is_under_any_root(source, source_roots):
+            self._warning(rules, warnings, "SOURCE_OUTSIDE_ALLOWED_ROOTS", "Source is outside configured source roots; this is advisory for external paths.")
+        if target_roots and not self._is_under_any_root(parent, target_roots):
+            self._warning(rules, warnings, "TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS", "Target parent is outside configured target roots; this is advisory for external paths.")
+            self._warning(rules, warnings, "OUTPUT_ROOT_OUTSIDE_ALLOWED_ROOTS", "Generated output is outside configured target roots; this is advisory for external paths.")
         self._rule(rules, blockers, "OUTPUT_ROOT_INSIDE_PLATFORM_REPOSITORY", not self._is_relative_to(output, repo), "Output root must be external to the platform repository.")
         self._rule(rules, blockers, "SOURCE_TARGET_EQUAL", source != parent, "Source and target parent must differ.")
+        self._rule(rules, blockers, "TARGET_PARENT_INSIDE_SOURCE", not self._is_relative_to(parent, source), "Target parent must not be inside the source project.")
+        self._rule(rules, blockers, "SOURCE_INSIDE_TARGET_PARENT", not self._is_relative_to(source, parent), "Source project must not be inside the target parent.")
         self._rule(rules, blockers, "OUTPUT_ROOT_INSIDE_SOURCE", not self._is_relative_to(output, source), "Output root must not be inside source.")
         self._rule(rules, blockers, "SOURCE_INSIDE_OUTPUT_ROOT", not self._is_relative_to(source, output), "Source must not be inside output root.")
         self._rule(rules, blockers, "UNSAFE_REPARSE_POINT", not self._has_reparse_point(raw_source) and not self._has_reparse_point(raw_parent), "Reparse points are not accepted for external intake.")
@@ -118,3 +130,8 @@ class PathValidationService:
     def _rule(rules: list[PathRuleResult], blockers: list[str], code: str, passed: bool, message: str) -> None:
         rules.append(PathRuleResult(code=code, status="passed" if passed else "blocked", message=message))
         if not passed: blockers.append(code)
+
+    @staticmethod
+    def _warning(rules: list[PathRuleResult], warnings: list[str], code: str, message: str) -> None:
+        rules.append(PathRuleResult(code=code, status="warning", message=message))
+        warnings.append(code)

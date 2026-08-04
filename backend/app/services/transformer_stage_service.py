@@ -117,6 +117,19 @@ class TransformerStageService:
             artifacts = self._stage_execution._write_preparation_artifacts(validated, preparation)
         except StageExecutionError as error:
             raise TransformerStageError(error.code, error.message) from error
+        try:
+            pre_bootstrap_snapshot = self.snapshot_workspace(
+                preparation.workspace_path,
+                validated.aliases['STAGE_SANDBOX'],
+                validated.stage_id,
+            )
+        except TransformerStageError:
+            raise
+        except Exception as error:
+            raise TransformerStageError(
+                'PRE_BOOTSTRAP_CHECKPOINT_MISSING',
+                'The immutable pre_bootstrap checkpoint could not be created.',
+            ) from error
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             run = session.get(MigrationRunModel, continuation.run_id)
@@ -156,7 +169,7 @@ class TransformerStageService:
             input_checkpoint = self._checkpoint(
                 session,
                 continuation,
-                preparation,
+                pre_bootstrap_snapshot,
                 "pre_bootstrap",
                 artifacts[-1].ref.artifact_id,
                 artifacts[-1].ref.checksum,
@@ -357,12 +370,26 @@ class TransformerStageService:
             )
 
     def queue_bootstrap(self, session, continuation: TransformationContinuationModel):
+        binding = self._binding(session, continuation)
+        checkpoint = session.get(StageCheckpointModel, binding.source_checkpoint_id)
+        if (
+            checkpoint is None
+            or checkpoint.run_id != continuation.run_id
+            or checkpoint.stage_id != continuation.current_stage_id
+            or checkpoint.kind != 'pre_bootstrap'
+            or self.authoritative_checkpoint_fingerprint(session, checkpoint) is None
+        ):
+            raise TransformerStageError(
+                'PRE_BOOTSTRAP_CHECKPOINT_MISSING',
+                'Bootstrap cannot start without the authoritative pre_bootstrap checkpoint.',
+            )
         return self._queue_group(
             session,
             continuation,
             group="bootstrap_install",
             next_node="verify_bootstrap",
             attempt_key="initial",
+            checkpoint_id=checkpoint.id,
         )
 
     def queue_angular_update(
@@ -523,6 +550,83 @@ class TransformerStageService:
             snapshot,
             kind,
             f"snapshot:{continuation.current_stage_id}:{kind}",
+            snapshot.fingerprint,
+        )
+
+    def persist_post_repair_checkpoint(
+        self,
+        session,
+        continuation,
+        snapshot: StagePreparationResult,
+        *,
+        attempt_id: str,
+        proposal_artifact_id: str,
+        proposal_checksum: str,
+        apply_ledger_artifact_id: str,
+        apply_ledger_checksum: str,
+        post_fingerprint: str,
+    ) -> StageCheckpointModel:
+        if (
+            snapshot.fingerprint != post_fingerprint
+            or not proposal_artifact_id
+            or not proposal_checksum
+            or not apply_ledger_artifact_id
+            or not apply_ledger_checksum
+        ):
+            raise TransformerStageError(
+                "POST_REPAIR_LINEAGE_MISMATCH",
+                "Post-repair snapshot fingerprint does not match the Apply result",
+            )
+        binding = self._binding(session, continuation)
+        if binding.workspace_fingerprint != post_fingerprint:
+            raise TransformerStageError(
+                "POST_REPAIR_LINEAGE_MISMATCH",
+                "Post-repair checkpoint is not bound to the active workspace fingerprint",
+            )
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None:
+            raise TransformerStageError(
+                "POST_REPAIR_LINEAGE_MISMATCH",
+                "Post-repair checkpoint run binding is missing",
+            )
+        payload = {
+            "kind": "post_repair",
+            "run_id": continuation.run_id,
+            "stage_id": continuation.current_stage_id,
+            "attempt_id": attempt_id,
+            "proposal_artifact_id": proposal_artifact_id,
+            "proposal_checksum": proposal_checksum,
+            "apply_ledger_artifact_id": apply_ledger_artifact_id,
+            "apply_ledger_checksum": apply_ledger_checksum,
+            "post_fingerprint": post_fingerprint,
+            "workspace_fingerprint": snapshot.fingerprint,
+        }
+        root = Path(run.artifact_root)
+        store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
+        manifest = store.write_text_artifact(
+            continuation.run_id,
+            f"04_workflow_state/stages/{continuation.current_stage_id}/checkpoints/post-repair-{attempt_id}.json",
+            json.dumps(payload, sort_keys=True, indent=2),
+            ArtifactType.JSON,
+            stage_id=continuation.current_stage_id,
+            attempt_id=attempt_id,
+            created_by="transformer",
+            created_at=self._now(),
+            input_hashes={
+                "proposal": proposal_checksum,
+                "apply_ledger": apply_ledger_checksum,
+                "post_fingerprint": post_fingerprint,
+            },
+            policy_version="transformer-post-repair-checkpoint-v1",
+        )
+        self.register_artifact(session, manifest, continuation)
+        return self._checkpoint(
+            session,
+            continuation,
+            snapshot,
+            "post_repair",
+            manifest.ref.artifact_id,
+            manifest.ref.checksum,
             snapshot.fingerprint,
         )
 
@@ -779,6 +883,192 @@ class TransformerStageService:
         )
         return result
 
+    def _bootstrap_checkpoint(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        execution: CommandExecutionModel,
+    ) -> tuple[StageWorkspaceBindingModel, StageCheckpointModel, str, Path]:
+        binding = self._binding(session, continuation)
+        checkpoint_id = execution.checkpoint_id or binding.source_checkpoint_id
+        checkpoint = session.get(StageCheckpointModel, checkpoint_id)
+        if (
+            checkpoint is None
+            or checkpoint.run_id != continuation.run_id
+            or checkpoint.stage_id != continuation.current_stage_id
+            or checkpoint.kind != 'pre_bootstrap'
+            or checkpoint.workspace_alias != binding.alias
+            or not checkpoint.safe_for_resume
+        ):
+            raise TransformerStageError(
+                'PRE_BOOTSTRAP_CHECKPOINT_MISSING',
+                'The authoritative pre_bootstrap checkpoint is missing or invalid.',
+            )
+        if execution.checkpoint_id is not None and binding.source_checkpoint_id != checkpoint.id:
+            raise TransformerStageError(
+                'PRE_BOOTSTRAP_CHECKPOINT_MISSING',
+                'Bootstrap execution and workspace binding reference different checkpoints.',
+            )
+        try:
+            workspace = Path(binding.workspace_path).resolve(strict=True)
+            checkpoint_path = Path(checkpoint.workspace_path).resolve(strict=True)
+        except OSError as error:
+            raise TransformerStageError(
+                'PRE_BOOTSTRAP_CHECKPOINT_MISSING',
+                'The authoritative pre_bootstrap workspace is unavailable.',
+            ) from error
+        if checkpoint_path != workspace:
+            expected = self.authoritative_checkpoint_fingerprint(session, checkpoint)
+            if expected is None:
+                raise TransformerStageError(
+                    'BOOTSTRAP_RECONSTRUCTION_FINGERPRINT_MISMATCH',
+                    'The pre_bootstrap checkpoint fingerprint is not authoritative.',
+                )
+        else:
+            # Legacy rows stored the active workspace as the checkpoint path.
+            # The persisted checkpoint fingerprint remains the authority; a
+            # baseline copy is validated against it only if reconstruction is
+            # actually needed.
+            expected = checkpoint.workspace_fingerprint
+        return binding, checkpoint, expected, checkpoint_path
+
+    def _legacy_bootstrap_source(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        checkpoint: StageCheckpointModel,
+    ) -> tuple[Path, Path]:
+        run = session.get(MigrationRunModel, continuation.run_id)
+        aliases = dict(run.workspace_aliases or {}) if run is not None else {}
+        baseline = aliases.get('BASELINE_SANDBOX')
+        stage_root = aliases.get('STAGE_SANDBOX')
+        if not baseline or not stage_root:
+            raise TransformerStageError(
+                'PRE_BOOTSTRAP_CHECKPOINT_MISSING',
+                'The legacy pre_bootstrap checkpoint has no safe reconstruction source.',
+            )
+        candidate = None
+        try:
+            stage_root_path = Path(stage_root).resolve(strict=True)
+            candidate = stage_root_path / (
+                f'.{continuation.current_stage_id}.bootstrap-source-{uuid4().hex[:12]}'
+            )
+            report = StageSandboxCopier().copy(
+                Path(baseline), candidate, registered_root=stage_root_path
+            )
+        except Exception as error:
+            if candidate is not None:
+                shutil.rmtree(candidate, ignore_errors=True)
+            raise TransformerStageError(
+                'BOOTSTRAP_RECONSTRUCTION_FAILED',
+                'The legacy pre_bootstrap workspace could not be reconstructed safely.',
+            ) from error
+        if report.fingerprint != checkpoint.workspace_fingerprint:
+            shutil.rmtree(candidate, ignore_errors=True)
+            raise TransformerStageError(
+                'BOOTSTRAP_RECONSTRUCTION_FINGERPRINT_MISMATCH',
+                'The safe reconstruction source does not match the pre_bootstrap checkpoint.',
+            )
+        return candidate, candidate
+
+    def _bootstrap_recovery(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        execution: CommandExecutionModel,
+    ) -> None:
+        binding, checkpoint, expected, checkpoint_path = self._bootstrap_checkpoint(
+            session, continuation, execution
+        )
+        workspace = Path(binding.workspace_path).resolve(strict=True)
+        try:
+            live = StageSandboxCopier.fingerprint(workspace)
+        except OSError as error:
+            raise TransformerStageError(
+                'BOOTSTRAP_RECONSTRUCTION_FAILED',
+                'The failed bootstrap workspace is unavailable for recovery.',
+            ) from error
+        if live != expected:
+            source = checkpoint_path
+            temporary_source = None
+            if checkpoint_path == workspace:
+                source, temporary_source = self._legacy_bootstrap_source(
+                    session, continuation, checkpoint
+                )
+            try:
+                self.begin_reconstruction(
+                    session,
+                    continuation,
+                    checkpoint=checkpoint,
+                    reason='bootstrap_retry_recovery',
+                    execution_id=execution.id,
+                )
+            except TransformerStageError as error:
+                if temporary_source is not None:
+                    shutil.rmtree(temporary_source, ignore_errors=True)
+                code = (
+                    'BOOTSTRAP_RECONSTRUCTION_FINGERPRINT_MISMATCH'
+                    if error.code == 'WORKSPACE_FINGERPRINT_MISMATCH'
+                    else 'BOOTSTRAP_RECONSTRUCTION_FAILED'
+                )
+                raise TransformerStageError(
+                    code,
+                    'Bootstrap recovery could not establish reconstruction intent.',
+                ) from error
+            session.commit()
+            try:
+                restored = self.reconstruct_workspace(
+                    str(source),
+                    binding.workspace_path,
+                    str(Path(binding.workspace_path).resolve().parent),
+                    expected,
+                )
+            except TransformerStageError as error:
+                code = (
+                    'BOOTSTRAP_RECONSTRUCTION_FINGERPRINT_MISMATCH'
+                    if error.code == 'CHECKPOINT_INTEGRITY_FAILED'
+                    else 'BOOTSTRAP_RECONSTRUCTION_FAILED'
+                )
+                raise TransformerStageError(
+                    code,
+                    'Bootstrap recovery could not reconstruct the pre_bootstrap workspace.',
+                ) from error
+            except Exception as error:
+                raise TransformerStageError(
+                    'BOOTSTRAP_RECONSTRUCTION_FAILED',
+                    'Bootstrap recovery could not reconstruct the pre_bootstrap workspace.',
+                ) from error
+            finally:
+                if temporary_source is not None:
+                    shutil.rmtree(temporary_source, ignore_errors=True)
+            try:
+                reconstructed_fingerprint = StageSandboxCopier.fingerprint(workspace)
+            except OSError as error:
+                raise TransformerStageError(
+                    'BOOTSTRAP_RECONSTRUCTION_FINGERPRINT_MISMATCH',
+                    'The reconstructed bootstrap workspace is unavailable for verification.',
+                ) from error
+            if restored != expected or reconstructed_fingerprint != expected:
+                raise TransformerStageError(
+                    'BOOTSTRAP_RECONSTRUCTION_FINGERPRINT_MISMATCH',
+                    'Reconstructed bootstrap workspace does not match the pre_bootstrap checkpoint.',
+                )
+            self.record_reconstruction(
+                session,
+                continuation,
+                checkpoint=checkpoint,
+                reason='bootstrap_retry_recovery',
+                restored_fingerprint=restored,
+                execution_id=execution.id,
+            )
+
+        binding.workspace_fingerprint = expected
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+        binding.last_verified_fingerprint = expected
+        binding.last_verified_at = self._now()
+        session.flush()
+        session.commit()
+
     def verify_bootstrap(self, session, continuation: TransformationContinuationModel) -> str:
         step = session.scalar(
             select(StageStepModel).where(
@@ -800,24 +1090,18 @@ class TransformerStageService:
                 )
             )
         ):
-            workspace_recovered = False
-            if execution.process_id is not None or execution.exit_code is not None:
-                binding = self._binding(session, continuation)
-                current_fingerprint = StageSandboxCopier.fingerprint(
-                    Path(binding.workspace_path)
+            if execution.parent_execution_id is not None or (execution.attempt_number or 1) > 1:
+                raise TransformerStageError(
+                    execution.failure_code or 'BOOTSTRAP_INSTALL_FAILED',
+                    execution.failure_message or 'Bootstrap retry failed.',
                 )
-                if current_fingerprint != binding.workspace_fingerprint:
-                    raise TransformerStageError(
-                        "BOOTSTRAP_RETRY_REQUIRES_RECOVERY",
-                        "Failed bootstrap changed the workspace; reconstruct from the safe checkpoint before retry.",
-                    )
-                workspace_recovered = True
+            self._bootstrap_recovery(session, continuation, execution)
             try:
                 retry = self._command_executor.queue_retry_execution(
                     session,
                     execution.id,
                     idempotency_key=f"{execution.id}:retry:1",
-                    workspace_recovered=workspace_recovered,
+                    workspace_recovered=True,
                 )
             except CommandExecutorError as error:
                 raise TransformerStageError(error.code, error.message) from error

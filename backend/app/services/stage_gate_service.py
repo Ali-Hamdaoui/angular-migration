@@ -330,6 +330,7 @@ class StageGateService:
         package_artifact_id: str,
         package_checksum: str,
         artifact_set_checksum: str | None = None,
+        expected_workspace_fingerprint: str | None = None,
     ) -> bool:
         """Verify the G10 envelope and its role artifacts.
 
@@ -411,7 +412,7 @@ class StageGateService:
             )
         )
         if attempt is None or binding is None or stage_plan is None or attempt.status not in {
-            "review_accepted", "request_changes", "waiting_g10", "applying"
+            "review_accepted", "request_changes", "waiting_g10", "applying", "applied"
         }:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
@@ -558,7 +559,7 @@ class StageGateService:
             "review_checksum": attempt.review_checksum,
             "proposer_invocation_id": attempt.proposer_invocation_id,
             "reviewer_invocation_id": attempt.reviewer_invocation_id,
-            "workspace_fingerprint": binding.workspace_fingerprint,
+            "workspace_fingerprint": expected_workspace_fingerprint or binding.workspace_fingerprint,
             "stage_plan_checksum": stage_plan.checksum,
             "risk_level": attempt.risk_level,
             "validation_targets": attempt.validation_targets,
