@@ -67,20 +67,20 @@ describe("AuthoritativeRunDashboard", () => {
     baselineInstallationShouldThrow = false;
   });
 
-  it("always exposes and mounts the dedicated Transformation destination", () => {
+  it("always exposes and mounts the dedicated Migration execution destination", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
 
-    expect(screen.getByRole("button", { name: "Transformation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Migration execution" })).toBeInTheDocument();
     expect(screen.getByLabelText("mock-transformation-panel")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Transformation" }));
-    expect(screen.getByRole("heading", { name: "Transformation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Migration execution" }));
+    expect(screen.getByRole("heading", { name: "Migration execution" })).toBeInTheDocument();
     expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
   });
 
-  it("highlights and opens Transformation when its authoritative projection requires action", () => {
+  it("highlights and opens Migration execution when its authoritative projection requires action", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
     fireEvent.click(screen.getByText("Require Transformer action"));
-    expect(screen.getByRole("button", { name: /Transformation/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: /Migration execution/ })).toHaveAttribute("aria-current", "page");
     expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
   });
 
@@ -89,7 +89,7 @@ describe("AuthoritativeRunDashboard", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "MIGRATION_PLAN_CREATED" }] }} />);
     expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Planning & G06" }));
+    fireEvent.click(screen.getByRole("button", { name: "Migration plan" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Planning review is temporarily unavailable");
     consoleError.mockRestore();
   });
@@ -100,7 +100,7 @@ describe("AuthoritativeRunDashboard", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "BASELINE_WORKSPACE_READY" }] }} />);
     expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByText("Baseline installation is temporarily unavailable")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Transformation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Migration execution" })).toBeInTheDocument();
     consoleError.mockRestore();
   });
 
@@ -110,14 +110,14 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByText("Live · authoritative state")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
-    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toHaveTextContent("pending");
-    fireEvent.click(screen.getByRole("button", { name: "Files & Artifacts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Migration preparation" }));
+    expect(screen.getByRole("listitem", { name: "Read source application: pending" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Read source application: pending" })).toHaveTextContent("pending");
+    fireEvent.click(screen.getByRole("button", { name: "Evidence files" }));
     expect(screen.getByText("00_job_setup/create_run_request.json")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "00_job_setup/create_run_request.json" })).toHaveAttribute("href", expect.stringContaining("artifact-create-request"));
     expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
-    expect(screen.queryByRole("listitem", { name: /G03 readiness/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("listitem", { name: /Baseline approval/ })).not.toBeInTheDocument();
   });
 
   it("renders the complete baseline timeline only after qualification evidence is authoritative", () => {
@@ -137,14 +137,14 @@ describe("AuthoritativeRunDashboard", () => {
     events.push({ event_id: "event-install-output-after-success", run_id: initialState.run_id, stage_id: null, event_type: "COMMAND_OUTPUT_CHUNK", occurred_at: "2026-07-15T10:20:00Z", sequence: 99, payload: { chunk: "late buffered output" } });
 
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+    fireEvent.click(screen.getByRole("button", { name: "Migration preparation" }));
 
-    expect(screen.getByRole("listitem", { name: "Source intake: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Dependency installation: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Build: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Tests: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Lint: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "G03 readiness: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Read source application: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Install dependencies: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Build baseline: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Run baseline tests: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Run baseline lint: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Baseline approval: completed" })).toBeInTheDocument();
   });
 
   it("does not attribute a qualification blocker to completed validation stages", () => {
@@ -156,12 +156,12 @@ describe("AuthoritativeRunDashboard", () => {
       occurred_at: `2026-07-15T12:${String(index).padStart(2, "0")}:00Z`, sequence: index + 2, payload: {},
     }));
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+    fireEvent.click(screen.getByRole("button", { name: "Migration preparation" }));
 
-    expect(screen.getByRole("listitem", { name: "Build: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Tests: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Lint: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Baseline qualification: blocked" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Build baseline: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Run baseline tests: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Run baseline lint: completed" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Review baseline results: blocked" })).toBeInTheDocument();
   });
 
   it("reveals each next review surface from its prerequisite event", () => {
@@ -180,8 +180,8 @@ describe("AuthoritativeRunDashboard", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "DISCOVERY_COMPLETED" }] }} />);
     expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page");
     expect(document.querySelector("[aria-labelledby='pipeline-navigation-item']")).toHaveAttribute("hidden");
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
-    expect(screen.getByRole("button", { name: "Pipeline" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("button", { name: "Migration preparation" }));
+    expect(screen.getByRole("button", { name: "Migration preparation" })).toHaveAttribute("aria-current", "page");
     expect(document.querySelector("[aria-labelledby='overview-navigation-item']")).toHaveAttribute("hidden");
   });
 
@@ -200,10 +200,10 @@ describe("AuthoritativeRunDashboard", () => {
       { ...initialState.workflow_events[0], event_id: "install", event_type: "BASELINE_INSTALL_SUCCEEDED", sequence: 3 },
     ];
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+    fireEvent.click(screen.getByRole("button", { name: "Migration preparation" }));
     expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
     expect(screen.getByRole("button", { name: "Qualify baseline" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Source snapshot/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Create source snapshot/ }));
     expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
     expect(screen.getByLabelText("G03 review")).toHaveAttribute("hidden");
   });
@@ -218,7 +218,7 @@ describe("AuthoritativeRunDashboard", () => {
     render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, status: "SOURCE_VALIDATED", approval_status: "pending", workflow_events: [event] }} />);
     expect(screen.getByRole("button", { name: "Open G02 review" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open G02 review" }));
-    expect(screen.getByRole("listitem", { name: "Source review & G02: action required" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Source approval: action required" })).toBeInTheDocument();
     expect(screen.getByLabelText("G02 source integrity review")).toBeInTheDocument();
   });
 });

@@ -42,9 +42,9 @@ describe("BaselineParityPanel", () => {
     expect(screen.queryByText("super-secret-token")).not.toBeInTheDocument();
   });
 
-  it("shows an integrity warning when G03 exists without S1-F13 evidence", async () => {
+  it("shows an integrity warning when G03 exists without baseline reference evidence", async () => {
     render(<BaselineParityPanel runId="run-1" stateVersion={9} connectionStatus="open" workflowEvents={[{ event_type: "G03_CREATED" }]} />);
-    expect(await screen.findByText("Required S1-F13 evidence is missing. The current G03 package is not valid for approval.")).toBeInTheDocument();
+    expect(await screen.findByText("Required baseline reference evidence is missing. The current G03 package is not valid for approval.")).toBeInTheDocument();
     expect(screen.getByText("integrity error")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Capture baseline parity" })).not.toBeInTheDocument();
   });

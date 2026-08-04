@@ -1,6 +1,6 @@
 # Frontend
 
-This workspace contains the Next.js Control Tower UI. It renders backend-owned
+This workspace contains the Next.js Angular Migration Control Tower UI. It renders backend-owned
 migration state only: it does not infer workflow transitions, execute migration
 commands, mutate sandboxes, or approve gates without a backend request.
 
@@ -20,7 +20,7 @@ owns workflow transitions or migration execution.
 
 ## ExecutionProfile review
 
-The authoritative run dashboard includes the S1-F09 runtime review panel. It loads the persisted source-compatible Node/npm/npx resolution, displays exact versions and sanitized executable paths, requires backend-confirmed selection when multiple candidates exist, and renders blocked, stale, reconnecting, and failure states. The browser never executes commands or advances workflow state locally.
+The authoritative run dashboard includes the compatible runtime review panel. It loads the persisted source-compatible Node/npm/npx resolution, displays exact versions and sanitized executable paths, requires backend-confirmed selection when multiple candidates exist, and renders blocked, stale, reconnecting, and failure states. The browser never executes commands or advances workflow state locally.
 ## API client
 
 All frontend HTTP calls go through `src/api/client.ts`; endpoint-specific calls

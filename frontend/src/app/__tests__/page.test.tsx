@@ -37,11 +37,11 @@ describe("HomePage authoritative run restoration", () => {
     expect(window.localStorage.getItem("amfa.activeRunId")).toBe("run-url");
   });
 
-  it("clears an invalid run and returns to Prepare external migration", async () => {
+  it("clears an invalid run and returns to the landing page", async () => {
     setUrl("/?run_id=run-missing"); window.localStorage.setItem("amfa.activeRunId", "run-missing"); vi.mocked(getAuthoritativeRunState).mockRejectedValue(new ApiClientError("missing", 404));
     render(<HomePage />);
     expect(await screen.findByRole("alert")).toHaveTextContent("requested migration run was not found");
-    expect(screen.getByRole("heading", { name: "Control Tower" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Angular Migration Control Tower" })).toBeInTheDocument();
     expect(window.localStorage.getItem("amfa.activeRunId")).toBeNull(); expect(window.location.search).toBe("");
   });
 

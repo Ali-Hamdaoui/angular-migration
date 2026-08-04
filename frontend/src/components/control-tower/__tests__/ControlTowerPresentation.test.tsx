@@ -9,11 +9,11 @@ const run = (workflow_events: AuthoritativeRunStateDto["workflow_events"]): Auth
 describe("control tower presentation state", () => {
   it("opens only the selected current stage and keeps logs collapsed", () => {
     render(<PipelineSection state={run([event("SOURCE_INTAKE_STARTED", 1)])} retryError={null} retrying={false} onRetry={() => undefined} />);
-    expect(screen.getByRole("button", { name: /Source intake/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Read source application/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.queryByRole("heading", { name: "Command output" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Source snapshot/ }));
-    expect(screen.getByRole("button", { name: /Source intake/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: /Source snapshot/ })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: /Create source snapshot/ }));
+    expect(screen.getByRole("button", { name: /Read source application/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Create source snapshot/ })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("filters and reverses events without changing the source array", () => {
