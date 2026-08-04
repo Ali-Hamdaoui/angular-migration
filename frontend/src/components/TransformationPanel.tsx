@@ -123,6 +123,7 @@ export function TransformationPanel({
   const [submitting, setSubmitting] = useState(false);
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
   const [revisionInstruction, setRevisionInstruction] = useState("");
+  const [overrideComment, setOverrideComment] = useState("");
   const [revisionAccepted, setRevisionAccepted] = useState<{
     attempt_id: string;
     status: string;
@@ -174,6 +175,9 @@ export function TransformationPanel({
   const shared = { projection: current, workflowEvents, artifacts };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
+  const reviewerOverrideRequired = current.status === "waiting_gate"
+    && current.active_gate === "G10"
+    && current.repair_review?.decision === "request_changes";
   return <div className={styles.screen} aria-label="Transformer status">
     <section className={styles.hero}>
       <div>
@@ -204,6 +208,10 @@ export function TransformationPanel({
             <p className={styles.note}>Backend state: {projection.status} / {projection.current_node}</p>
           </div>
         </div>
+        {reviewerOverrideRequired ? <div className={styles.alert} role="alert">
+          <strong>Reviewer raised unresolved concerns.</strong>
+          <p>Review the findings, policy checks, limitations, validation targets, and exact candidate diff before approving.</p>
+        </div> : null}
         {revisionAccepted
           ? <p className={styles.success} role="status">
               Revision accepted — child attempt {revisionAccepted.attempt_id} created (status: {revisionAccepted.status}).
@@ -216,11 +224,11 @@ export function TransformationPanel({
           ? <div className={styles.actions}>
               <button
                 type="button"
-                disabled={submitting || (projection.active_gate === "G10" && !diffAvailable)}
+                disabled={submitting || (projection.active_gate === "G10" && !diffAvailable) || (reviewerOverrideRequired && !overrideComment.trim())}
                 title={projection.active_gate === "G10" && !diffAvailable ? "Candidate diff is empty or unavailable — G10 approval disabled" : undefined}
                 onClick={() => void decideGate("approve")}
               >
-                Approve {projection.active_gate}
+                {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : `Approve ${projection.active_gate}`}
               </button>
               {projection.active_gate === "G10" ? <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
                 Request changes
@@ -232,6 +240,18 @@ export function TransformationPanel({
           : projection.status === "waiting_gate"
             ? <p className={styles.alert} role="alert">The active gate lacks the backend package checksum or workspace fingerprint required for a safe decision.</p>
             : null}
+        {reviewerOverrideRequired ? <>
+          <label htmlFor="repair-override-comment">Override comment (required)</label>
+          <textarea
+            id="repair-override-comment"
+            value={overrideComment}
+            onChange={(event) => setOverrideComment(event.target.value)}
+            maxLength={4000}
+            rows={3}
+            disabled={submitting}
+            placeholder="Explain why you approve despite the Reviewer concerns"
+          />
+        </> : null}
         {(projection.status === "waiting_repair_revision" || (projection.status === "waiting_gate" && projection.active_gate === "G10")) ? <>
           <label htmlFor="repair-revision-instruction">Exact revision instruction</label>
           <textarea
@@ -295,7 +315,7 @@ export function TransformationPanel({
             Cancel Transformer
           </button>
         : null}
-      {["blocked", "waiting_retry"].includes(projection.status)
+      {["blocked", "waiting_retry", "waiting_repair_revision"].includes(projection.status)
         ? <button type="button" disabled={submitting} onClick={() => void restart()}>
             Restart from durable state
           </button>
@@ -337,12 +357,16 @@ export function TransformationPanel({
 
   function decideGate(decision: "approve" | "reject") {
     if (!current.active_gate || !current.active_gate_package_checksum || !current.workspace_fingerprint) return;
+    if (decision === "approve" && reviewerOverrideRequired) {
+      if (!overrideComment.trim() || !window.confirm("Approve this repair despite the Reviewer's unresolved concerns?")) return;
+    }
     return mutate((key) => decideTransformationGate(runId, current.active_gate!, {
       expected_state_version: current.state_version,
       idempotency_key: key,
       package_checksum: current.active_gate_package_checksum!,
       workspace_fingerprint: current.workspace_fingerprint!,
       decision,
+      comment: reviewerOverrideRequired && decision === "approve" ? overrideComment.trim() : undefined,
       correlation_id: key,
     }), "Gate decision failed.");
   }

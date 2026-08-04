@@ -182,6 +182,7 @@ class StageGateService:
             if existing.request_checksum != checksum:
                 raise StageGateError("IDEMPOTENCY_PAYLOAD_MISMATCH", "Decision key has a different payload")
             return existing
+        review_override_required = False
         package = session.scalar(
             select(StageGatePackageModel)
             .where(
@@ -204,13 +205,22 @@ class StageGateService:
             package.stale_at = now or datetime.now(UTC)
             raise StageGateError("STALE_GATE_BINDING", "Gate package is bound to a stale plan version")
         if gate_id == StageGateId.G10.value:
-            self._validate_repair_lineage(
+            review_override_required = self._validate_repair_lineage(
                 session,
                 continuation,
                 package.package_artifact_id,
                 package.package_checksum,
                 artifact_set_checksum=package.artifact_set_checksum,
             )
+            if (
+                review_override_required
+                and request.decision == "approve"
+                and not (request.comment and request.comment.strip())
+            ):
+                raise StageGateError(
+                    "G10_OVERRIDE_COMMENT_REQUIRED",
+                    "Approval despite Reviewer concerns requires an override comment",
+                )
         if (
             continuation.state_version != request.expected_state_version
             or package.expected_state_version != request.expected_state_version
@@ -242,7 +252,11 @@ class StageGateService:
             package_checksum=request.package_checksum,
             workspace_fingerprint=request.workspace_fingerprint,
             accepted=accepted,
-            reason_code=None if accepted else request.decision.upper(),
+            reason_code=(
+                "REVIEW_OVERRIDE_REQUIRED"
+                if gate_id == StageGateId.G10.value and review_override_required and accepted
+                else None if accepted else request.decision.upper()
+            ),
             created_at=decided_at,
         )
         session.add(decision)
@@ -316,7 +330,7 @@ class StageGateService:
         package_artifact_id: str,
         package_checksum: str,
         artifact_set_checksum: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Verify the G10 envelope and its role artifacts.
 
         Role authority contract (never weakened):
@@ -370,6 +384,9 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package artifact cannot be verified") from error
         if package.get("gate_id") != StageGateId.G10.value or package.get("run_id") != continuation.run_id or package.get("stage_id") != continuation.current_stage_id:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package scope is invalid")
+        review_override_required = package.get("review_override_required")
+        if not isinstance(review_override_required, bool):
+            raise StageGateError("G10_LINEAGE_STALE", "G10 review override binding is missing")
         attempt = session.scalar(
             select(RepairAttemptModel).where(
                 RepairAttemptModel.id == package.get("repair_attempt_id"),
@@ -394,7 +411,7 @@ class StageGateService:
             )
         )
         if attempt is None or binding is None or stage_plan is None or attempt.status not in {
-            "review_accepted", "waiting_g10", "applying"
+            "review_accepted", "request_changes", "waiting_g10", "applying"
         }:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:
@@ -632,7 +649,12 @@ class StageGateService:
                         "G10 human revision context is incomplete or stale",
                     )
             elif role == "review":
-                if payload.get("proposal_checksum") != attempt.proposal_checksum or payload.get("decision") != "accept":
+                decision = payload.get("decision")
+                if (
+                    payload.get("proposal_checksum") != attempt.proposal_checksum
+                    or decision not in {"accept", "request_changes"}
+                    or (decision == "request_changes") != review_override_required
+                ):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
         for invocation_id, role, artifact_id, checksum in (
             (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
@@ -659,3 +681,4 @@ class StageGateService:
                 for field in ("request_checksum", "prompt_version", "schema_version")
             ):
                 raise StageGateError("G10_LINEAGE_STALE", "G10 invocation provenance is stale")
+        return bool(package.get("review_override_required"))

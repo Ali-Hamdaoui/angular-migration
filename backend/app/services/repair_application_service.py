@@ -111,6 +111,24 @@ _GATEWAY_FAILURE_CODES = {
     LlmFailureCode.CANCELLATION: "LLM_CANCELLED",
 }
 
+_DEPENDENCY_SECTIONS = frozenset(
+    {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
+)
+_SEMANTIC_RETRY_CODES = frozenset(
+    {"REPAIR_REPLACEMENT_MISSING", "REPAIR_REPLACEMENT_AMBIGUOUS", "REPAIR_PREIMAGE_STALE"}
+)
+_PROPOSER_GROUNDING_INSTRUCTIONS = (
+    "CURRENT_WORKSPACE_FILES are the only valid preimage authority. "
+    "PREVIOUS_PROPOSAL is reference-only and has not been applied. "
+    "Generate the revised proposal directly from the current authoritative workspace state. "
+    "Never use previous_proposal.new_text as old_text unless that exact value exists in "
+    "CURRENT_WORKSPACE_FILES."
+)
+_SEMANTIC_RETRY_FEEDBACK = (
+    "The candidate does not match the current authoritative workspace. "
+    "The previous proposal was not applied. "
+    "Regenerate using the exact current file content."
+)
 _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -210,6 +228,10 @@ def _legacy_recovery_error(
         error.__cause__ = cause
     return error
 
+def _context_invocation_key(context: dict[str, object], role) -> str:
+    return str(context.get("invocation_key") or _invocation_key(str(context["attempt_id"]), role))
+
+
 
 def _integrity_diagnostic(error: IntegrityError) -> dict[str, object]:
     original = error.orig
@@ -288,6 +310,9 @@ class RepairOperationCandidate(BaseModel):
     old_text: str | None = None
     new_text: str | None = None
     content: str | None = None
+    section: str | None = Field(default=None, min_length=1, max_length=64)
+    package: str | None = Field(default=None, min_length=1, max_length=256)
+    new_version: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class RepairOperation(RepairOperationCandidate):
@@ -351,91 +376,114 @@ class RepairApplicationService:
     def propose(self, attempt_id: str) -> dict[str, object]:
         self.recover_legacy_fingerprint_authority(attempt_id)
         self._recover_legacy_context_pack(attempt_id)
-        context = self._attempt_context(attempt_id)
-        recovered = self._recover_completed(
-            context,
-            role="proposer",
-            schema_name=self.proposer_schema,
-            task_type=LlmTaskType.REPAIR_DIAGNOSIS,
-            schema=RepairProposalCandidate,
-        )
-        if recovered is not None:
-            return recovered
-        context = self._start_invocation(
-            context,
-            role=LlmRole.REPAIR_PROPOSER,
-            task_type=LlmTaskType.REPAIR_DIAGNOSIS,
-            schema_name=self.proposer_schema,
-            schema=RepairProposalCandidate,
-        )
-        if "_recovered_result" in context:
-            return context["_recovered_result"]
-        try:
-            output, response = self._call(
+        semantic_retry_count = 0
+        retry_of_invocation_key = None
+        while True:
+            context = self._attempt_context(attempt_id)
+            if not semantic_retry_count and context.get("proposer_invocation_id"):
+                context["invocation_key"] = str(context["proposer_invocation_id"])
+                if ":semantic-retry-" in context["invocation_key"]:
+                    semantic_retry_count = 1
+            if semantic_retry_count:
+                context["semantic_retry_count"] = semantic_retry_count
+                context["retry_of_invocation_key"] = retry_of_invocation_key
+                context["invocation_key"] = (
+                    f"{attempt_id}:proposer:semantic-retry-{semantic_retry_count}"
+                )
+                context["segments"].append(_SEMANTIC_RETRY_FEEDBACK)
+            recovered = self._recover_completed(
                 context,
-                role=LlmRole.REPAIR_PROPOSER,
-                task=LlmTaskType.REPAIR_DIAGNOSIS,
-                schema_name=self.proposer_schema,
-                schema=RepairProposalCandidate,
-                policy=(
-                    "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
-                    "lockfile edits, path escapes, secrets, or policy bypasses."
-                ),
-            )
-        except RepairLlmError:
-            raise
-        except RepairApplicationError as error:
-            self._persist_failure(
-                context, LlmRole.REPAIR_PROPOSER, error, failure_stage_override="local"
-            )
-            raise
-        try:
-            context = self._assert_fresh_authority(context, role="proposer")
-            proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
-        except RepairApplicationError as error:
-            self._persist_failure(
-                context,
-                LlmRole.REPAIR_PROPOSER,
-                error,
-                failure_stage_override="repair_semantics",
-                response=response,
-            )
-            raise
-        stored = self._write(context, "proposal", proposal)
-        try:
-            safe_diff = self._write_safe_diff(context, proposal, stored.ref.checksum)
-        except (ArtifactStoreError, OSError, UnicodeError) as cause:
-            self._remove_uncommitted_artifact(stored)
-            error = RepairApplicationError(
-                "REPAIR_DIFF_ARTIFACT_FAILED", "Safe repair diff could not be persisted"
-            )
-            self._persist_failure(
-                context,
-                LlmRole.REPAIR_PROPOSER,
-                error,
-                failure_stage_override="artifact_persistence",
-                response=response,
-            )
-            raise error from cause
-        try:
-            self._persist_call(
-                context,
-                response,
-                stored,
                 role="proposer",
                 schema_name=self.proposer_schema,
-                summary=proposal,
-                additional_stored=(safe_diff,),
+                task_type=LlmTaskType.REPAIR_DIAGNOSIS,
+                schema=RepairProposalCandidate,
             )
-        except RepairApplicationError as error:
-            self._remove_uncommitted_artifact(stored)
-            self._remove_uncommitted_artifact(safe_diff)
-            self._persist_failure(
-                context, LlmRole.REPAIR_PROPOSER, error,
-                failure_stage_override="authority_check", response=response,
+            if recovered is not None:
+                return recovered
+            context = self._start_invocation(
+                context,
+                role=LlmRole.REPAIR_PROPOSER,
+                task_type=LlmTaskType.REPAIR_DIAGNOSIS,
+                schema_name=self.proposer_schema,
+                schema=RepairProposalCandidate,
             )
-            raise
-        return proposal
+            if "_recovered_result" in context:
+                return context["_recovered_result"]
+            try:
+                output, response = self._call(
+                    context,
+                    role=LlmRole.REPAIR_PROPOSER,
+                    task=LlmTaskType.REPAIR_DIAGNOSIS,
+                    schema_name=self.proposer_schema,
+                    schema=RepairProposalCandidate,
+                    policy=(
+                        "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
+                        "lockfile edits, path escapes, secrets, or policy bypasses. "
+                        + _PROPOSER_GROUNDING_INSTRUCTIONS
+                    ),
+                )
+            except RepairLlmError:
+                raise
+            except RepairApplicationError as error:
+                self._persist_failure(
+                    context, LlmRole.REPAIR_PROPOSER, error, failure_stage_override="local"
+                )
+                raise
+            try:
+                context = self._assert_fresh_authority(context, role="proposer")
+                proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
+            except RepairApplicationError as error:
+                self._persist_failure(
+                    context,
+                    LlmRole.REPAIR_PROPOSER,
+                    error,
+                    failure_stage_override="repair_semantics",
+                    response=response,
+                    rejected_candidate=output,
+                )
+                if error.code in _SEMANTIC_RETRY_CODES and semantic_retry_count == 0:
+                    retry_of_invocation_key = _context_invocation_key(context, LlmRole.REPAIR_PROPOSER)
+                    semantic_retry_count = 1
+                    continue
+                raise
+            stored = self._write(context, "proposal", proposal)
+            try:
+                safe_diff = self._write_safe_diff(context, proposal, stored.ref.checksum)
+            except (ArtifactStoreError, OSError, UnicodeError) as cause:
+                self._remove_uncommitted_artifact(stored)
+                error = RepairApplicationError(
+                    "REPAIR_DIFF_ARTIFACT_FAILED", "Safe repair diff could not be persisted"
+                )
+                self._persist_failure(
+                    context,
+                    LlmRole.REPAIR_PROPOSER,
+                    error,
+                    failure_stage_override="artifact_persistence",
+                    response=response,
+                )
+                raise error from cause
+            try:
+                self._persist_call(
+                    context,
+                    response,
+                    stored,
+                    role="proposer",
+                    schema_name=self.proposer_schema,
+                    summary=proposal,
+                    additional_stored=(safe_diff,),
+                )
+            except RepairApplicationError as error:
+                self._remove_uncommitted_artifact(stored)
+                self._remove_uncommitted_artifact(safe_diff)
+                self._persist_failure(
+                    context,
+                    LlmRole.REPAIR_PROPOSER,
+                    error,
+                    failure_stage_override="authority_check",
+                    response=response,
+                )
+                raise
+            return proposal
 
     def review(self, attempt_id: str) -> dict[str, object]:
         self.recover_legacy_fingerprint_authority(attempt_id)
@@ -593,6 +641,7 @@ class RepairApplicationService:
             "parent_proposal_checksum": base_checksum,
             "previous_proposal": proposal,
             "reviewer_output": review,
+            "grounding_instructions": _PROPOSER_GROUNDING_INSTRUCTIONS,
         }
         stored = self._write_revision_context(
             context,
@@ -692,12 +741,21 @@ class RepairApplicationService:
                     and pending_g10 is not None
                     and attempt.g10_gate_package_id == pending_g10.id
                 )
-                if not reviewer_revision and not accepted_revision:
+                g10_override_revision = (
+                    attempt.status == "waiting_g10"
+                    and review["decision"] == "request_changes"
+                    and continuation.current_stage_id == attempt.stage_id
+                    and continuation.status == "waiting_gate"
+                    and continuation.current_node == "wait_g10"
+                    and pending_g10 is not None
+                    and attempt.g10_gate_package_id == pending_g10.id
+                )
+                if not reviewer_revision and not accepted_revision and not g10_override_revision:
                     raise RepairApplicationError(
                         "REPAIR_REVISION_NOT_ALLOWED",
                         "Repair attempt is not in its live human revision state",
                     )
-                if accepted_revision:
+                if accepted_revision or g10_override_revision:
                     pending_g10.status = "stale"
                     pending_g10.stale_at = self._now()
                 self._register_artifact_metadata(session, context, stored)
@@ -865,6 +923,71 @@ class RepairApplicationService:
                 "idempotent_replay": False,
             }
 
+    @staticmethod
+    def _json_object_without_duplicates(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON object key")
+            value[key] = item
+        return value
+
+    def _normalize_dependency_operation(self, operation: dict[str, object], target: Path):
+        fields = [operation.get(name) for name in ("section", "package", "new_version")]
+        if not any(field is not None for field in fields):
+            return operation
+        if not all(isinstance(field, str) and field.strip() for field in fields):
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_INTENT_INVALID",
+                "Dependency changes require section, package, and new_version",
+            )
+        section, package, new_version = (str(field) for field in fields)
+        if section not in _DEPENDENCY_SECTIONS:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_SECTION_INVALID",
+                "Dependency changes must target a supported package section",
+            )
+        try:
+            with target.open("r", encoding="utf-8", newline="") as handle:
+                raw = handle.read()
+            document = json.loads(raw, object_pairs_hook=self._json_object_without_duplicates)
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_INVALID", "Authoritative package.json is invalid"
+            ) from error
+        if not isinstance(document, dict):
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_INVALID", "Authoritative package.json must be an object"
+            )
+        matches = [
+            (name, document[name][package])
+            for name in _DEPENDENCY_SECTIONS
+            if isinstance(document.get(name), dict) and package in document[name]
+        ]
+        if not matches:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_MISSING",
+                "The requested package is missing from authoritative package.json",
+            )
+        if len(matches) != 1 or matches[0][0] != section:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS",
+                "The requested package has ambiguous dependency entries",
+            )
+        if not isinstance(matches[0][1], str):
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_VERSION_INVALID",
+                "The authoritative dependency value is not a version string",
+            )
+        document[section][package] = new_version
+        newline = _dominant_newline(raw)
+        canonical = json.dumps(document, ensure_ascii=False, indent=2).replace("\n", newline)
+        if raw.endswith(("\n", "\r")):
+            canonical += newline
+        operation["old_text"] = raw
+        operation["new_text"] = canonical
+        return operation
+
     def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairProposalCandidate.model_validate(value)
         if candidate.proposal_format == "operations":
@@ -882,10 +1005,12 @@ class RepairApplicationService:
             bound = operation.model_dump(mode="json")
             relative = self._safe_path(operation.path, workspace)
             bound["path"] = relative
+            target = workspace / relative
+            if operation.operation == "dependency_change":
+                bound = self._normalize_dependency_operation(bound, target)
             if operation.operation == "create_text_file":
                 bound["preimage_sha256"] = None
             else:
-                target = workspace / relative
                 bound["preimage_sha256"] = (
                     "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
                     if target.is_file() and not target.is_symlink()
@@ -2208,6 +2333,9 @@ class RepairApplicationService:
             prompt_version=context.get("prompt_version"),
             schema_version=context.get("schema_version"),
             invocation_id=context.get("invocation_id"),
+            invocation_key=context.get("invocation_key"),
+            semantic_retry_count=context.get("semantic_retry_count"),
+            retry_of_invocation_key=context.get("retry_of_invocation_key"),
             invocation_state_version=context.get("invocation_state_version"),
             authority_snapshot=context["authority_snapshot"],
             invocation_owner_state=context.get("invocation_owner_state"),
@@ -2229,7 +2357,7 @@ class RepairApplicationService:
             self._mark_transport_started(context, role)
             response = gateway.complete(
                 LlmRequest(
-                    request_id=f"{context['attempt_id']}:{role.value}",
+                    request_id=_context_invocation_key(context, role),
                     run_id=str(context["run_id"]),
                     stage_id=str(context["stage_id"]),
                     agent_kind=AgentKind.REPAIR,
@@ -2262,7 +2390,7 @@ class RepairApplicationService:
             raise translated from exc
 
     def _recover_completed(self, context, *, role: str, schema_name=None, task_type=None, schema=None):
-        invocation_key = f"{context['attempt_id']}:{role}"
+        invocation_key = _context_invocation_key(context, role)
         artifact_field = "proposal_artifact_id" if role == "proposer" else "review_artifact_id"
         with self._scope() as session:
             invocation = (
@@ -2425,7 +2553,8 @@ class RepairApplicationService:
     def _start_invocation(
         self, context, *, role: LlmRole, task_type: LlmTaskType, schema_name: str, schema
     ) -> dict[str, object]:
-        invocation_id = _invocation_key(str(context["attempt_id"]), role)
+        base_invocation_id = _invocation_key(str(context["attempt_id"]), role)
+        invocation_id = _context_invocation_key(context, role)
         now = self._now()
         prompt_version = self._prompt_version(schema_name, task_type)
         schema_version = get_settings().llm_schema_registry_version
@@ -2438,14 +2567,71 @@ class RepairApplicationService:
             "schema:"
             + hashlib.sha256(json.dumps(schema.model_json_schema(), sort_keys=True).encode()).hexdigest(),
         ]
+        if context.get("retry_of_invocation_key"):
+            input_hashes.extend([
+                "retry_of:" + str(context["retry_of_invocation_key"]),
+                "semantic_retry_count:" + str(context.get("semantic_retry_count") or 0),
+            ])
         try:
             with self._scope() as session:
+                if not context.get("semantic_retry_count"):
+                    prior_retry_id = f"{base_invocation_id}:semantic-retry-1"
+                    prior_retry = session.scalar(
+                        select(LlmInvocationModel).where(
+                            LlmInvocationModel.run_id == context["run_id"],
+                            LlmInvocationModel.idempotency_key == prior_retry_id,
+                        )
+                    )
+                    if prior_retry is not None:
+                        if prior_retry.status == "failed":
+                            raise RepairApplicationError(
+                                "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                                "Repair semantic correction retry has already failed",
+                            )
+                        if prior_retry.status == "in_progress" and prior_retry.transport_started:
+                            raise RepairApplicationError(
+                                "REPAIR_INVOCATION_UNCERTAIN",
+                                "Repair semantic correction retry outcome is uncertain",
+                            )
+                        context.update(
+                            invocation_key=prior_retry_id,
+                            semantic_retry_count=1,
+                            retry_of_invocation_key=base_invocation_id,
+                        )
+                        context["segments"].append(_SEMANTIC_RETRY_FEEDBACK)
+                        invocation_id = prior_retry_id
+                        input_hashes.extend([
+                            "retry_of:" + base_invocation_id,
+                            "semantic_retry_count:1",
+                        ])
                 existing = session.scalar(
                     select(LlmInvocationModel).where(
                         LlmInvocationModel.run_id == context["run_id"],
                         LlmInvocationModel.idempotency_key == invocation_id,
                     )
                 )
+                if (
+                    existing is not None
+                    and existing.status == "failed"
+                    and existing.request_checksum != request_checksum
+                    and not context.get("semantic_retry_count")
+                ):
+                    invocation_id = (
+                        f"{base_invocation_id}:prompt-revision-"
+                        f"{hashlib.sha256(prompt_version.encode()).hexdigest()[:12]}"
+                    )
+                    context["retry_of_invocation_key"] = base_invocation_id
+                    input_hashes.extend([
+                        "retry_of:" + base_invocation_id,
+                        "prompt_revision:" + prompt_version,
+                    ])
+                    existing = session.scalar(
+                        select(LlmInvocationModel).where(
+                            LlmInvocationModel.run_id == context["run_id"],
+                            LlmInvocationModel.idempotency_key == invocation_id,
+                        )
+                    )
+                context["invocation_key"] = invocation_id
                 if existing is None:
                     session.add(LlmInvocationModel(
                         id=invocation_id,
@@ -2471,7 +2657,7 @@ class RepairApplicationService:
                         artifact_checksums={},
                         state_version=1,
                         event_sequence=0,
-                        retries=0,
+                        retries=int(context.get("semantic_retry_count") or 0),
                         transport_started=False,
                         started_at=now,
                         completed_at=None,
@@ -2574,6 +2760,28 @@ class RepairApplicationService:
                     .filter_by(run_id=context["run_id"], idempotency_key=invocation_id)
                     .one_or_none()
                 )
+                if (
+                    existing is not None
+                    and existing.status == "failed"
+                    and existing.request_checksum != request_checksum
+                    and not context.get("semantic_retry_count")
+                ):
+                    invocation_id = (
+                        f"{base_invocation_id}:prompt-revision-"
+                        f"{hashlib.sha256(prompt_version.encode()).hexdigest()[:12]}"
+                    )
+                    context["retry_of_invocation_key"] = base_invocation_id
+                    input_hashes.extend([
+                        "retry_of:" + base_invocation_id,
+                        "prompt_revision:" + prompt_version,
+                    ])
+                    existing = session.scalar(
+                        select(LlmInvocationModel).where(
+                            LlmInvocationModel.run_id == context["run_id"],
+                            LlmInvocationModel.idempotency_key == invocation_id,
+                        )
+                    )
+                context["invocation_key"] = invocation_id
                 if existing is None:
                     raise
                 if existing.status == "in_progress" and existing.transport_started:
@@ -2662,7 +2870,7 @@ class RepairApplicationService:
             invocation = session.scalar(
                 select(LlmInvocationModel).where(
                     LlmInvocationModel.run_id == context["run_id"],
-                    LlmInvocationModel.idempotency_key == _invocation_key(str(context["attempt_id"]), role),
+                    LlmInvocationModel.idempotency_key == _context_invocation_key(context, role),
                     LlmInvocationModel.status == "in_progress",
                     LlmInvocationModel.state_version == context.get("invocation_state_version"),
                     LlmInvocationModel.transport_started.is_not(True),
@@ -2688,6 +2896,7 @@ class RepairApplicationService:
         *,
         failure_stage_override=None,
         response=None,
+        rejected_candidate=None,
     ) -> None:
         kind = "propose-error" if role == LlmRole.REPAIR_PROPOSER else "review-error"
         cause = error.__cause__ if isinstance(error.__cause__, AzureGatewayError) else None
@@ -2724,23 +2933,48 @@ class RepairApplicationService:
                 "retries": retries,
             },
         )
+        rejected_stored = None
+        if rejected_candidate is not None and role == LlmRole.REPAIR_PROPOSER:
+            parsed_candidate = RepairProposalCandidate.model_validate(rejected_candidate).model_dump(mode="json")
+            rejected_stored = self._write(
+                context,
+                "rejected-proposer-candidate",
+                {
+                    "attempt_id": context["attempt_id"],
+                    "candidate": parsed_candidate,
+                    "prompt_version": context.get("prompt_version"),
+                    "schema_version": context.get("schema_version"),
+                    "candidate_checksum": self._request_checksum(parsed_candidate),
+                    "context_checksum": context.get("context_pack_checksum"),
+                    "semantic_failure_code": error.code,
+                    "semantic_failure_message": _bounded_text(error.message, 512),
+                    "provider_request_id": _bounded_text(request_id, 256),
+                },
+            )
         now = self._now()
         with self._scope() as session:
             invocation = session.scalar(
                 select(LlmInvocationModel).where(
                     LlmInvocationModel.run_id == context["run_id"],
-                    LlmInvocationModel.idempotency_key == _invocation_key(str(context["attempt_id"]), role),
+                    LlmInvocationModel.idempotency_key == _context_invocation_key(context, role),
                 )
             )
             if invocation is None:
                 self._remove_uncommitted_artifact(stored)
+                if rejected_stored is not None:
+                    self._remove_uncommitted_artifact(rejected_stored)
                 return
             expected_state = context.get("invocation_state_version")
             if expected_state is None or invocation.state_version != expected_state or invocation.status != "in_progress":
                 self._remove_uncommitted_artifact(stored)
+                if rejected_stored is not None:
+                    self._remove_uncommitted_artifact(rejected_stored)
                 return
             artifact_ids = list(dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id]))
             artifact_checksums = {**(invocation.artifact_checksums or {}), stored.ref.artifact_id: stored.ref.checksum}
+            if rejected_stored is not None:
+                artifact_ids.append(rejected_stored.ref.artifact_id)
+                artifact_checksums[rejected_stored.ref.artifact_id] = rejected_stored.ref.checksum
             changed = session.execute(
                 update(LlmInvocationModel)
                 .where(
@@ -2771,8 +3005,12 @@ class RepairApplicationService:
             )
             if changed.rowcount != 1:
                 self._remove_uncommitted_artifact(stored)
+                if rejected_stored is not None:
+                    self._remove_uncommitted_artifact(rejected_stored)
                 return
             self._register_artifact_metadata(session, context, stored)
+            if rejected_stored is not None:
+                self._register_artifact_metadata(session, context, rejected_stored)
             return transport_started and not response_received
     def _register_artifact_metadata(self, session, context, stored) -> None:
         session.add(
@@ -3051,7 +3289,7 @@ class RepairApplicationService:
                     "REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE",
                     "Run state changed before success persistence",
                 )
-            invocation_id = _invocation_key(attempt.id, role)
+            invocation_id = _context_invocation_key(context, role)
             continuation_claim = None
             if continuation is not None:
                 continuation_claim = session.execute(update(TransformationContinuationModel).where(
@@ -3106,7 +3344,7 @@ class RepairApplicationService:
             attempt_claim = session.execute(update(RepairAttemptModel).where(*attempt_predicates).values(**attempt_values))
             if attempt_claim.rowcount != 1:
                 raise RepairApplicationError("REPAIR_REVIEW_STALE" if role == "reviewer" else "REPAIR_PROPOSAL_STALE", "Repair attempt changed before success persistence")
-            invocation_id = _invocation_key(attempt.id, role)
+            invocation_id = _context_invocation_key(context, role)
             now = self._now()
             invocation = session.scalar(
                 select(LlmInvocationModel).where(

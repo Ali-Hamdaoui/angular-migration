@@ -24,6 +24,7 @@ export function decideTransformationGate(
     package_checksum: string;
     workspace_fingerprint: string;
     decision: "approve" | "reject";
+    comment?: string | null;
     correlation_id: string;
   },
 ) {

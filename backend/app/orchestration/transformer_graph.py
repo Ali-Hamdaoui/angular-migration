@@ -1138,7 +1138,19 @@ class TransformerOrchestrator:
     def _review_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
-            attempt_id = self._latest_repair(session, continuation).id
+            attempt = self._latest_repair(session, continuation)
+            if attempt.status == "request_changes":
+                if not attempt.review_artifact_id or not attempt.review_checksum:
+                    self._block(
+                        session,
+                        continuation,
+                        "REPAIR_REVIEW_MISSING",
+                        "Persisted request-changes review is missing",
+                    )
+                    return
+                self._queue(continuation, "create_g10")
+                return
+            attempt_id = attempt.id
         try:
             review = self._repairs.review(attempt_id)
         except (ArtifactNotFoundError, ArtifactStoreError) as error:
@@ -1166,23 +1178,7 @@ class TransformerOrchestrator:
                 self._queue(continuation, "create_g10")
                 return
             if review["decision"] == "request_changes":
-                expected_state_version = continuation.state_version
-                continuation.status = "waiting_repair_revision"
-                continuation.worker_id = None
-                continuation.lease_expires_at = None
-                continuation.state_version += 1
-                continuation.updated_at = datetime.now(UTC)
-                append_continuation_event(
-                    session,
-                    continuation,
-                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
-                    key=f"wait:repair-revision:{attempt.id}",
-                    reason="repair reviewer requested human-guided revision",
-                    payload={
-                        "attempt_id": attempt.id,
-                        "expected_state_version": expected_state_version,
-                    },
-                )
+                self._queue(continuation, "create_g10")
                 return
             self._block(
                 session,
@@ -1291,6 +1287,12 @@ class TransformerOrchestrator:
                 review = json.loads(
                     store.read_artifact(continuation.run_id, review_metadata.relative_path).content
                 )
+                if review.get("decision") not in {"accept", "request_changes"}:
+                    raise TransformerStageError(
+                        "REPAIR_REVIEW_INVALID",
+                        "Repair review decision is not eligible for G10",
+                    )
+                payload["review_override_required"] = review["decision"] == "request_changes"
                 diff_metadata = session.scalar(
                     select(ArtifactMetadataModel).where(
                         ArtifactMetadataModel.run_id == continuation.run_id,

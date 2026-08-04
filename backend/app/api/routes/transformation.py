@@ -153,13 +153,25 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
             and waited.status not in _TERMINAL_COMMAND_STATUSES
         ):
             command = waited
+    active_gate_id = (
+        continuation.current_node.removeprefix("wait_").upper()
+        if continuation.status == "waiting_gate" and continuation.current_node.startswith("wait_")
+        else None
+    )
+    gate_query = select(StageGatePackageModel).where(
+        StageGatePackageModel.run_id == continuation.run_id,
+        StageGatePackageModel.stage_id == continuation.current_stage_id,
+        StageGatePackageModel.status.in_(("pending", "approved", "rejected")),
+    )
+    if active_gate_id is not None:
+        gate_query = gate_query.where(StageGatePackageModel.gate_id == active_gate_id)
     gate = session.scalar(
-        select(StageGatePackageModel)
-        .where(
-            StageGatePackageModel.stage_id == continuation.current_stage_id,
-            StageGatePackageModel.status.in_(("pending", "approved", "rejected")),
+        gate_query
+        .order_by(
+            StageGatePackageModel.gate_version.desc()
+            if active_gate_id is not None
+            else StageGatePackageModel.created_at.desc()
         )
-        .order_by(StageGatePackageModel.gate_version.desc())
         .limit(1)
     )
     prompt = session.scalar(
