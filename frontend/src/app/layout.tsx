@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { PRODUCT_DESCRIPTION, PRODUCT_NAME } from "@/content/uiCopy";
 
 export const metadata: Metadata = {
-  title: "AI Frontend Migration Factory",
-  description: "Control Tower for backend-owned migration workflow state."
+  title: PRODUCT_NAME,
+  description: PRODUCT_DESCRIPTION
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

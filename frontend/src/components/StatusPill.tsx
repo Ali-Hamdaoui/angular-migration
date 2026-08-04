@@ -1,5 +1,6 @@
 import styles from "./ControlTowerShell.module.css";
+import { formatStatusLabel } from "@/lib/presentationLabels";
 
 export function StatusPill({ value }: { value: string }) {
-  return <span className={styles.status}>{value.replaceAll("_", " ")}</span>;
+  return <span className={styles.status}>{formatStatusLabel(value)}</span>;
 }

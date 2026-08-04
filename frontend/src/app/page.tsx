@@ -6,6 +6,7 @@ import { ApiClientError } from "@/api/client";
 import { getAuthoritativeRunState } from "@/api/runs";
 import { EnvironmentDiagnosticsPanel } from "@/components/EnvironmentDiagnosticsPanel";
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
+import { LANDING_ACTION, LANDING_TAGLINE, PRODUCT_NAME } from "@/content/uiCopy";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 
 export const ACTIVE_RUN_STORAGE_KEY = "amfa.activeRunId";
@@ -24,7 +25,7 @@ function writeRunUrl(runId: string | null) {
 }
 
 function preparePage(notice?: string) {
-  return <main className="landing"><p className="eyebrow">AI Frontend Migration Factory</p><h1>Control Tower</h1>{notice ? <p role="alert">{notice}</p> : null}<p>Review backend-owned migration state and prepare an authoritative external migration run.</p><Link className="button" href="/migrations/new">Prepare migration</Link><EnvironmentDiagnosticsPanel /></main>;
+  return <main className="landing"><p className="eyebrow">{PRODUCT_NAME}</p><h1>{PRODUCT_NAME}</h1>{notice ? <p role="alert">{notice}</p> : null}<p>{LANDING_TAGLINE}</p><Link className="button" href="/migrations/new">{LANDING_ACTION}</Link><EnvironmentDiagnosticsPanel /></main>;
 }
 
 export default function HomePage() {
