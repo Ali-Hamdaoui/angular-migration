@@ -138,16 +138,16 @@ export function TransformationPanel({
   }, [actionRequired, onActionRequiredChange, status]);
 
   if (status === "loading" && !projection) {
-    return <section className={styles.empty} aria-label="Transformer status" role="status">
-      <p>Loading authoritative Transformer state…</p>
+    return <section className={styles.empty} aria-label="Migration execution status" role="status">
+      <p>Loading migration execution status…</p>
     </section>;
   }
   if (status === "empty") {
     const g06 = workflowEvents.filter((event) => event.event_type.startsWith("G06_")).at(-1);
-    return <section className={styles.empty} aria-label="Transformer status">
-      <span className={styles.eyebrow}>Transformation prerequisite</span>
-      <h3>Transformer continuation has not been created</h3>
-      <p>Accept G06 in Planning to create the durable Transformer continuation. This screen remains available while Planning is pending, rejected, stale, or unavailable.</p>
+    return <section className={styles.empty} aria-label="Migration execution status">
+      <span className={styles.eyebrow}>Migration execution prerequisite</span>
+      <h3>Migration execution is not ready</h3>
+      <p>Approve the migration plan before starting migration execution. This screen remains available while Planning is pending, rejected, stale, or unavailable.</p>
       <dl className={styles.metadata}>
         <div><dt>Run status</dt><dd>{authoritativeStatus}</dd></div>
         <div><dt>Run phase</dt><dd>{authoritativePhase}</dd></div>
@@ -158,15 +158,15 @@ export function TransformationPanel({
   }
   if (status === "failed" || !projection) {
     const loadFailure = loadError ? backendErrorMessage(loadError) : null;
-    return <section className={styles.empty} aria-label="Transformer status">
-      <h3>Transformer state unavailable</h3>
+    return <section className={styles.empty} aria-label="Migration execution status">
+      <h3>Migration execution status is unavailable</h3>
       <p role="alert">The backend projection could not be loaded. The frontend has not inferred a workflow result.</p>
       {loadFailure
         ? <p className={styles.alert} role="alert">
             Backend error {loadFailure.code} (HTTP {loadError?.status}): {loadFailure.message}
           </p>
         : null}
-      <button type="button" onClick={() => void refresh()}>Retry Transformer state</button>
+      <button type="button" onClick={() => void refresh()}>Retry execution status</button>
     </section>;
   }
 
@@ -174,10 +174,10 @@ export function TransformationPanel({
   const shared = { projection: current, workflowEvents, artifacts };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
-  return <div className={styles.screen} aria-label="Transformer status">
+  return <div className={styles.screen} aria-label="Migration execution status">
     <section className={styles.hero}>
       <div>
-        <span className={styles.eyebrow}>Durable Transformer / backend truth</span>
+        <span className={styles.eyebrow}>Migration execution</span>
         <h3>{projection.source_version ?? "source"} → {projection.target_version ?? "target"}</h3>
         <p>Current step: <code>{projection.current_node}</code></p>
         {projection.next_backend_action ? <p>Next backend action: {projection.next_backend_action}</p> : null}
@@ -292,7 +292,7 @@ export function TransformationPanel({
     <div className={styles.actions}>
       {!terminalStatuses.has(projection.status)
         ? <button className={styles.danger} type="button" disabled={submitting} onClick={() => void cancel()}>
-            Cancel Transformer
+            Cancel migration execution
           </button>
         : null}
       {["blocked", "waiting_retry"].includes(projection.status)

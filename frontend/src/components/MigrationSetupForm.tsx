@@ -182,11 +182,11 @@ export function MigrationSetupForm() {
   return (
     <main className={styles.page}>
       <section className={styles.panel}>
-        <p className={styles.kicker}>Control Tower</p>
-        <h1>Prepare external migration</h1><p>The original application remains unchanged. Validation previews and reserves the external output root; run-owned files are created only after an approved migration run begins.</p>
+        <p className={styles.kicker}>New migration</p>
+        <h1>Set up Angular migration</h1><p>The original application remains unchanged. Validation previews and reserves the output folder; migration files are created only after an approved migration run begins.</p>
         <form ref={formRef} onSubmit={startMigration}>
           <label>
-            Source path
+            Source application folder
             <input
               name="sourcePath"
               required
@@ -197,7 +197,7 @@ export function MigrationSetupForm() {
             />
           </label>
           <label>
-            External target-parent path
+            Output folder
             <input
               name="targetParentPath"
               required
@@ -206,9 +206,10 @@ export function MigrationSetupForm() {
               onInput={(event) => invalidatePreflight({ ...readLiveInputs(), targetParentPath: event.currentTarget.value })}
               onChange={(event) => invalidatePreflight({ ...readLiveInputs(), targetParentPath: event.currentTarget.value })}
             />
+            <small>The migrated application and migration workspace will be created inside the selected output location only after approval.</small>
           </label>
           <label>
-            Target Angular family
+            Target Angular version
             <select
               name="targetAngularFamily"
               defaultValue={initialInputs.targetAngularFamily}
@@ -218,29 +219,29 @@ export function MigrationSetupForm() {
             </select>
           </label>
           <label>
-            Migration mode
+            Migration strategy
             <select
               name="migrationMode"
               defaultValue={initialInputs.migrationMode}
               onChange={(event) => invalidatePreflight({ ...readLiveInputs(), migrationMode: event.target.value })}
             >
-              <option value="strict-functional-parity">Strict functional parity</option>
+              <option value="strict-functional-parity">Preserve current behavior</option>
             </select>
           </label>
           <div className={styles.actions}>
             <button type="button" onClick={runPreflight} disabled={isValidating}>
-              {isValidating ? "Validating" : "Validate"}
+              {isValidating ? "Validating" : "Validate paths"}
             </button>
             <button type="submit" disabled={!startEnabled || isStarting}>
-              {isStarting ? "Starting" : "Start"}
+              {isStarting ? "Starting" : "Start migration"}
             </button>
           </div>
         </form>
         {pathValidation && !preflight ? (
-          <section className={styles.result} aria-label="Path validation result">
-            <h2>Path validation</h2>
+          <section className={styles.result} aria-label="Path check result">
+            <h2>Path check</h2>
             <div><strong>{pathValidation.snapshot.status}</strong><span>{pathValidation.snapshot.checksum}</span></div>
-            {pathValidation.snapshot.blockers.length > 0 ? <p>Blockers: {pathValidation.snapshot.blockers.join(", ")}</p> : null}
+            {pathValidation.snapshot.blockers.length > 0 ? <p>Blocking issues: {pathValidation.snapshot.blockers.join(", ")}</p> : null}
             {pathValidation.snapshot.warnings.length > 0 ? <p>Warnings: {pathValidation.snapshot.warnings.join(", ")}</p> : null}
             <p>{outputRootLabel}: {pathValidation.snapshot.resolved_output_root}</p>
             <p>Future migrated app (created after G14): {pathValidation.snapshot.resolved_output_root}\migrated-app</p>
@@ -249,13 +250,13 @@ export function MigrationSetupForm() {
           </section>
         ) : null}
         {preflight ? (
-          <section className={styles.result} aria-label="Preflight result">
+          <section className={styles.result} aria-label="Migration readiness result">
             <div><strong>{preflight.snapshot.status}</strong><span>{preflight.snapshot.input_checksum}</span></div>
-            <p>Latest authoritative validation: {preflight.snapshot.preflight_id}</p>
-            {preflight.snapshot.blockers.length > 0 ? <p>Blockers: {preflight.snapshot.blockers.join(", ")}</p> : null}
+            <p>Validation ID: {preflight.snapshot.preflight_id}</p>
+            {preflight.snapshot.blockers.length > 0 ? <p>Blocking issues: {preflight.snapshot.blockers.join(", ")}</p> : null}
             {preflight.snapshot.warnings.length > 0 ? <p>Warnings: {preflight.snapshot.warnings.join(", ")}</p> : null}
             <p>{outputRootLabel}: {preflight.snapshot.resolved_output_root || pathValidation?.snapshot.resolved_output_root}</p>
-            {artifactHref ? <a href={artifactHref}>Open preflight artifact</a> : null}
+            {artifactHref ? <a href={artifactHref}>Open validation evidence</a> : null}
           </section>
         ) : null}
         {validationStage ? <p role="status">Validating {validationStage}…</p> : null}

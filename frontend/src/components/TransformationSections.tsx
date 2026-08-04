@@ -110,7 +110,7 @@ export function LogsAndDiagnostics({ projection, workflowEvents }: Omit<SharedPr
           executionId={projection.active_command_id}
           executionStatus={projection.active_command_status ?? undefined}
         />
-      : <p className={styles.note}>No Transformer command is currently projected.</p>}
+      : <p className={styles.note}>No migration command is currently active.</p>}
     {diagnostic ? <>
       <p className={styles.event}>Latest workflow evidence: {diagnostic.event_type}</p>
       {Object.keys(diagnostic.payload).length > 0
