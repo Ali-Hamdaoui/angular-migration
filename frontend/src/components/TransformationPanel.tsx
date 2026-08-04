@@ -74,21 +74,21 @@ const inFlightCommandStatuses = new Set(["queued", "pending", "running"]);
 function bannerLabel(
   projection: TransformationProjection,
   submitting: boolean,
-  revisionAccepted: boolean,
 ): string | null {
   if (submitting) return "Revision submitting";
-  if (revisionAccepted) return "Revision accepted; child attempt created";
   const { status, current_node, repair_status, active_gate, last_error_code } = projection;
   if (status === "completed") return "Completed";
-  if (status === "blocked" || status === "failed") {
+  if (status === "failed") return last_error_code ? `Failed: ${last_error_code}` : "Failed";
+  if (status === "blocked") {
     return last_error_code ? `Blocked — ${last_error_code}` : "Blocked";
   }
   if (status === "waiting_repair_revision" || repair_status === "request_changes") return "Human revision required";
-  if (status === "waiting_gate" && active_gate === "G10") return "Waiting for G10 approval";
-  if (status === "waiting_gate" && active_gate) return `Waiting for ${active_gate} approval`;
-  if (current_node === "propose_repair") return "Running repair proposal";
-  if (current_node === "review_repair") return "Reviewing proposal";
+  if (status === "waiting_gate" && active_gate === "G10") return "Waiting for G10 decision";
+  if (status === "waiting_gate" && active_gate) return `Waiting for ${active_gate} decision`;
+  if (current_node === "propose_repair") return "Waiting for Main LLM";
+  if (current_node === "review_repair") return "Waiting for Reviewer";
   if (current_node === "apply_repair" || repair_status === "applying") return "Applying approved repair";
+  if (["build", "test", "final_install", "repair_revalidate", "aggregate_validation"].includes(current_node)) return "Validating repair";
   if (current_node === "angular_update_retry") return "Retrying Angular migration";
   if (
     current_node === "handle_prompt"
@@ -172,7 +172,7 @@ export function TransformationPanel({
 
   const current = projection;
   const shared = { projection: current, workflowEvents, artifacts };
-  const banner = bannerLabel(current, revisionSubmitting, revisionAccepted !== null);
+  const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
   return <div className={styles.screen} aria-label="Transformer status">
     <section className={styles.hero}>
@@ -204,6 +204,11 @@ export function TransformationPanel({
             <p className={styles.note}>Backend state: {projection.status} / {projection.current_node}</p>
           </div>
         </div>
+        {revisionAccepted
+          ? <p className={styles.success} role="status">
+              Revision accepted — child attempt {revisionAccepted.attempt_id} created (status: {revisionAccepted.status}).
+            </p>
+          : null}
         {projection.status === "waiting_gate"
           && projection.active_gate
           && projection.active_gate_package_checksum
@@ -217,7 +222,7 @@ export function TransformationPanel({
               >
                 Approve {projection.active_gate}
               </button>
-              {projection.active_gate === "G10" ? <button type="button" disabled={submitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
+              {projection.active_gate === "G10" ? <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
                 Request changes
               </button> : null}
               <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
@@ -235,18 +240,12 @@ export function TransformationPanel({
             onChange={(event) => setRevisionInstruction(event.target.value)}
             maxLength={4000}
             rows={4}
-            disabled={submitting}
+            disabled={submitting || revisionSubmitting}
             placeholder="Describe the required revision; repository-relative file names are allowed (no raw patches, host paths, or sandbox paths)"
           />
-          {revisionAccepted
-            ? <p className={styles.success} role="status">
-                Revision accepted — child attempt {revisionAccepted.attempt_id} created (status: {revisionAccepted.status}).
-              </p>
-            : submitting
-              ? <p className={styles.note} role="status">Submitting revision…</p>
-              : null}
+          {submitting ? <p className={styles.note} role="status">Submitting revision…</p> : null}
           {projection.status === "waiting_repair_revision" ? <div className={styles.actions}>
-            <button type="button" disabled={submitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>Request changes</button>
+            <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>Request changes</button>
             <button type="button" disabled={submitting} onClick={() => void rejectReviewedRepair()}>Reject repair</button>
           </div> : null}
         </> : null}
@@ -296,7 +295,7 @@ export function TransformationPanel({
             Cancel Transformer
           </button>
         : null}
-      {["blocked", "failed", "waiting_retry"].includes(projection.status)
+      {["blocked", "waiting_retry"].includes(projection.status)
         ? <button type="button" disabled={submitting} onClick={() => void restart()}>
             Restart from durable state
           </button>

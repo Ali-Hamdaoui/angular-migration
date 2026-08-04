@@ -171,47 +171,85 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
   const review = projection.repair_review;
   const diffAvailable = Boolean(projection.repair_safe_diff && projection.repair_safe_diff.trim());
   const g10Waiting = projection.status === "waiting_gate" && projection.active_gate === "G10";
+  const reviewerVerdict = review?.decision === "accept"
+    ? "Accepted"
+    : review?.decision === "request_changes"
+      ? "Changes requested"
+      : review?.decision === "reject"
+        ? "Rejected"
+        : null;
   return <section className={styles.card} aria-labelledby="transform-repair">
     <span className={styles.eyebrow}>08 / Governed repair</span>
-    <h3 id="transform-repair">Proposal, review, and revalidation</h3>
+    <h3 id="transform-repair">G10 repair review</h3>
     <dl className={styles.metadata}>
-      <div><dt>Attempt</dt><dd>{projection.repair_attempt_id ?? "none"}</dd></div>
-      <div><dt>Attempt number</dt><dd>{projection.repair_attempt_number ?? "not available"}</dd></div>
-      <div><dt>Parent attempt</dt><dd>{projection.repair_parent_attempt_id ?? "none"}</dd></div>
       <div><dt>Status</dt><dd>{projection.repair_status ?? "not required"}</dd></div>
-      <div><dt>Risk</dt><dd>{projection.repair_risk_level ?? "not available"}</dd></div>
-      <div><dt>Proposer</dt><dd>{projection.repair_proposal_checksum ? "proposed" : "pending"}</dd></div>
-      <div><dt>Reviewer</dt><dd>{review ? review.decision.replaceAll("_", " ") : (projection.repair_review_checksum ? "reviewed" : "pending")}</dd></div>
       <div><dt>G10</dt><dd>{eventName(latest(workflowEvents, (type) => type.startsWith("G10_")), "not created")}</dd></div>
-      <div><dt>Diff checksum</dt><dd>{projection.repair_diff_checksum ?? "unavailable"}</dd></div>
       <div><dt>Apply ledger</dt><dd>{projection.repair_apply_checksum ?? "not applied"}</dd></div>
       <div><dt>G11 revalidation</dt><dd>{projection.repair_validation_checksum ?? "pending"}</dd></div>
     </dl>
-    <p className={styles.note}>When the repair targets the failed ng update, the backend applies the repair, retries ng update, verifies the Angular version, then continues validation.</p>
+    <p className={styles.note}>Main LLM authors the proposal. Independent Reviewer evaluates it. Frontend submits only your decision; backend applies and validates the persisted proposal.</p>
+    <section className={styles.repairSection} aria-labelledby="transform-repair-proposal">
+      <h4 id="transform-repair-proposal">Main LLM proposal</h4>
+      <dl className={styles.metadata}>
+        <div><dt>Attempt ID</dt><dd>{projection.repair_attempt_id ?? "none"}</dd></div>
+        <div><dt>Attempt number</dt><dd>{projection.repair_attempt_number ?? "not available"}</dd></div>
+        <div><dt>Parent attempt</dt><dd>{projection.repair_parent_attempt_id ?? "none"}</dd></div>
+        <div><dt>Risk level</dt><dd>{projection.repair_risk_level ?? "not available"}</dd></div>
+        <div><dt>Proposal checksum</dt><dd>{projection.repair_proposal_checksum ?? "unavailable"}</dd></div>
+      </dl>
+    <h4>Proposed changed files</h4>
     {projection.repair_proposal_operations && projection.repair_proposal_operations.length > 0 ? <>
-      <h4>Proposed mutation</h4>
       <ul className={styles.artifactList}>
         {projection.repair_proposal_operations.map((item, index) => <li key={`${index}-${item.path}`}>
-          <code>{item.operation ?? "unknown"}</code>
-          <code>{item.path ?? "unknown path"}</code>
+          <code>Operation: {item.operation ?? "unavailable"}</code>
+          <code>File: {item.path ?? "unavailable"}</code>
         </li>)}
       </ul>
-    </> : null}
-    {projection.repair_rationale.length > 0 ? <><h4>Proposer rationale</h4><ul>{projection.repair_rationale.map((item) => <li key={item}>{item}</li>)}</ul></> : null}
+    </> : <p className={styles.note}>No proposed changed files are available.</p>}
+    <h4>Rationale</h4>
+    {projection.repair_rationale.length > 0
+      ? <ul>{projection.repair_rationale.map((item) => <li key={item}>{item}</li>)}</ul>
+      : <p className={styles.note}>No proposal rationale is available.</p>}
+    </section>
+    <section className={styles.repairSection} aria-labelledby="transform-repair-diff">
+      <h4 id="transform-repair-diff">Exact candidate diff</h4>
+      <dl className={styles.metadata}>
+        <div><dt>Diff checksum</dt><dd>{projection.repair_diff_checksum ?? "unavailable"}</dd></div>
+      </dl>
     {diffAvailable
-      ? <><h4>Candidate diff</h4><UnifiedDiffViewer content={projection.repair_safe_diff!} /></>
+      ? <UnifiedDiffViewer content={projection.repair_safe_diff!} />
       : projection.repair_attempt_id
         ? <div className={styles.alert} role="alert">
             <p>Candidate diff is empty or unavailable — G10 approval disabled.</p>
             {g10Waiting ? <p>The backend cannot bind an empty diff into the G10 package; the repair proposal must be revised before approval.</p> : null}
           </div>
         : null}
-    {review ? <>
-      <h4>Reviewer {review.decision.replaceAll("_", " ")}</h4>
-      <p>{review.risk_assessment}</p>
-      {review.findings.length > 0 ? <ul>{review.findings.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.note}>No reviewer findings.</p>}
-      {review.limitations.length > 0 ? <><h4>Risks and limitations</h4><ul>{review.limitations.map((item) => <li key={item}>{item}</li>)}</ul></> : null}
-    </> : null}
+    {!diffAvailable && !projection.repair_attempt_id ? <p className={styles.note}>No repair candidate diff is available.</p> : null}
+    </section>
+    <section className={styles.repairSection} aria-labelledby="transform-repair-review">
+      <h4 id="transform-repair-review">Independent Reviewer</h4>
+      {review ? <>
+      <dl className={styles.metadata}>
+        <div><dt>Verdict</dt><dd>{reviewerVerdict}</dd></div>
+        <div><dt>Risk assessment</dt><dd>{review.risk_assessment || "not available"}</dd></div>
+        <div><dt>Review checksum</dt><dd>{projection.repair_review_checksum ?? "unavailable"}</dd></div>
+      </dl>
+      <h4>Findings</h4>
+      {review.findings.length > 0 ? <ul>{review.findings.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.note}>No Reviewer findings.</p>}
+      <h4>Policy checks</h4>
+      {review.policy_checks.length > 0 ? <ul>{review.policy_checks.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.note}>No policy checks reported.</p>}
+      <h4>Limitations</h4>
+      {review.limitations.length > 0 ? <ul>{review.limitations.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.note}>No Reviewer limitations reported.</p>}
+      </> : <p className={styles.note}>Reviewer result is not available yet.</p>}
+    </section>
+    <section className={styles.repairSection} aria-labelledby="transform-repair-validation-targets">
+      <h4 id="transform-repair-validation-targets">Validation expected after Apply</h4>
+      {review
+        ? review.required_validation_targets.length > 0
+          ? <ul>{review.required_validation_targets.map((target) => <li key={target}>{target}</li>)}</ul>
+          : <p className={styles.note}>No validation targets returned.</p>
+        : <p className={styles.note}>Validation targets are not available until Reviewer result is returned.</p>}
+    </section>
     <EvidenceLinks
       artifacts={artifacts}
       matches={(path) => path.includes("05_repairs/")}
