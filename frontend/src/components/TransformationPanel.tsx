@@ -118,7 +118,7 @@ export function TransformationPanel({
     ).at(-1)?.sequence ?? 0,
     [workflowEvents],
   );
-  const { projection, status, refresh, refreshError } = useTransformation(runId, refreshKey);
+  const { projection, status, refresh, refreshError, loadError } = useTransformation(runId, refreshKey);
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
@@ -157,9 +157,15 @@ export function TransformationPanel({
     </section>;
   }
   if (status === "failed" || !projection) {
+    const loadFailure = loadError ? backendErrorMessage(loadError) : null;
     return <section className={styles.empty} aria-label="Transformer status">
       <h3>Transformer state unavailable</h3>
       <p role="alert">The backend projection could not be loaded. The frontend has not inferred a workflow result.</p>
+      {loadFailure
+        ? <p className={styles.alert} role="alert">
+            Backend error {loadFailure.code} (HTTP {loadError?.status}): {loadFailure.message}
+          </p>
+        : null}
       <button type="button" onClick={() => void refresh()}>Retry Transformer state</button>
     </section>;
   }

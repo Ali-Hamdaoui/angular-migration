@@ -9,6 +9,7 @@ export function useTransformation(runId: string, refreshKey = 0) {
   const [projection, setProjection] = useState<TransformationProjection | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "empty" | "failed">("loading");
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ApiClientError | null>(null);
   const loadedRef = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -18,10 +19,12 @@ export function useTransformation(runId: string, refreshKey = 0) {
       loadedRef.current = true;
       setStatus("ready");
       setRefreshError(null);
+      setLoadError(null);
     } catch (error) {
       if (!loadedRef.current) {
         setProjection(null);
         setStatus(error instanceof ApiClientError && error.status === 404 ? "empty" : "failed");
+        setLoadError(error instanceof ApiClientError ? error : null);
       } else {
         setRefreshError(
           error instanceof ApiClientError && error.status === 404
@@ -32,5 +35,5 @@ export function useTransformation(runId: string, refreshKey = 0) {
     }
   }, [runId]);
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);
-  return { projection, status, refresh, refreshError };
+  return { projection, status, refresh, refreshError, loadError };
 }

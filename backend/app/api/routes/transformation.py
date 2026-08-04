@@ -285,7 +285,7 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
         "repair_diff_checksum": diff_metadata.checksum if diff_metadata else None,
         "repair_proposal_operations": [
             {"operation": item.get("operation"), "path": item.get("path")}
-            for item in (proposal.get("operations") or []) if proposal
+            for item in (proposal.get("operations") if proposal else [])
         ],
         "repair_safe_diff": safe_diff,
         "repair_review": review,
