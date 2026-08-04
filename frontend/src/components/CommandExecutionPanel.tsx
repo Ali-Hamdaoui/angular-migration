@@ -121,7 +121,7 @@ export function CommandExecutionPanel({ runId, stateVersion, authorization, conn
   }
 
   return <section className={styles.panel} aria-label="Command executions">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S3-F02</p><h2>Command executions</h2><p className={styles.note}>Authoritative worker status and finalized evidence.</p></div><strong>{viewStatus}</strong></div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>Command activity</p><h2>Command activity</h2><p className={styles.note}>Authoritative worker status and finalized evidence.</p></div><strong>{viewStatus}</strong></div>
     {authorization?.decision === "accepted" ? <button type="button" onClick={execute} disabled={submitStatus === "submitting" || authorization.expected_state_version !== stateVersion}>{submitStatus === "submitting" ? "Submitting..." : "Execute command"}</button> : <p className={styles.note}>Execution is available only after an accepted, current authorization decision.</p>}
     {authorization && authorization.expected_state_version !== stateVersion ? <p role="alert">Authorization is stale. Refresh the run and authorize the command again before executing.</p> : null}
     {error ? <div role="alert"><strong>{error.code}</strong><p>{error.message}</p>{error.requested !== null ? <p>Requested version: {error.requested}. Current version: {error.current}.</p> : null}{error.correlationId ? <p>Correlation ID: {error.correlationId}</p> : null}</div> : null}

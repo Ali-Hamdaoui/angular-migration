@@ -67,7 +67,7 @@ export function G02ReviewPanel({ runId, initialState }: { runId: string; initial
   const rejected = review?.status === "rejected" || review?.status === "stale";
 
   return <section className={styles.panel} aria-label="G02 source integrity review">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S1-F08</p><h2>G02 source-integrity boundary</h2></div>{review ? <strong>{review.status}</strong> : null}</div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>Source approval · Gate G02</p><h2>Source approval</h2></div>{review ? <strong>{review.status}</strong> : null}</div>
     {loading ? <p className={styles.note}>Loading G02 evidence...</p> : null}
     {!loading && missing ? <div><p className={styles.note}>G02 is pending. Initialize the review package from the finalized immutable snapshot.</p><button type="button" onClick={initializePackage} disabled={submitting}>Initialize G02 review</button></div> : null}
     {event?.event_type === "SOURCE_INTEGRITY_FAILED" ? <p role="alert">Source integrity failed. Approval is blocked until the source boundary is resolved.</p> : null}

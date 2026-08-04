@@ -155,7 +155,7 @@ export function CommandPolicyInspector({ runId, runState, stageId, stateVersion,
   const canValidate = Boolean(runId && currentStageId && plan && Object.keys(workspaceAliases).length);
   return (
     <section className={styles.panel} aria-label="Command policy inspector">
-      <div className={styles.previewHeader}><div><p className={styles.kicker}>S3-F01</p><h2>Command Policy Inspector</h2><p className={styles.note}>Backend-owned registry, plan, profile, and workspace policy.</p></div><strong>{status}</strong></div>
+      <div className={styles.previewHeader}><div><p className={styles.kicker}>Command authorization</p><h2>Command authorization</h2><p className={styles.note}>Backend-owned registry, plan, profile, and workspace policy.</p></div><strong>{status}</strong></div>
       {status === "loading" ? <p role="status">Loading registered commands and approved stage plan...</p> : null}
       {status === "reconnecting" ? <p role="status">Reconnecting; refreshing authoritative command policy...</p> : null}
       {status === "unavailable" ? <p role="alert">Backend unavailable. {message} {correlationId ? `Correlation ID: ${correlationId}` : ""}</p> : null}

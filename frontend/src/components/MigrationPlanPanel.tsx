@@ -19,7 +19,7 @@ export function MigrationPlanPanel({ runId, initialState, connectionStatus, work
   const stage = plan?.stage_plan;
   const route = useMemo(() => plan?.plan.route ?? [], [plan]);
   return <section className={styles.panel} aria-labelledby="migration-plan-title">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S2-F06</p><h2 id="migration-plan-title">Migration plan</h2><p className={styles.note}>Backend-owned plan projection; no local workflow advancement.</p></div><span className={styles.status}>{statusLabel}</span></div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>Migration plan · Gate G06</p><h2 id="migration-plan-title">Migration plan</h2><p className={styles.note}>Backend-owned plan projection; no local workflow advancement.</p></div><span className={styles.status}>{statusLabel}</span></div>
     {error ? <p role="alert">{error}</p> : null}
     {status === "authorization" ? <p role="alert">You are not authorized to inspect this run’s plan.</p> : null}
     {status === "blocked" ? <p role="alert">Plan evidence is blocked or failed integrity validation. Refresh the authoritative run and review the backend guidance.</p> : null}

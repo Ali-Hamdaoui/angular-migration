@@ -78,8 +78,8 @@ export function SourceSnapshotPanel({
     <section className={styles.panel} aria-label="Immutable source snapshot">
       <div className={styles.previewHeader}>
         <div>
-          <p className={styles.kicker}>S1-F07</p>
-          <h2>Immutable source snapshot</h2>
+          <p className={styles.kicker}>Source snapshot</p>
+          <h2>Source snapshot</h2>
         </div>
         {canCreate ? (
           <button type="button" onClick={handleCreate} disabled={creating}>

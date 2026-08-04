@@ -105,7 +105,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   }
 
   return <section className={styles.panel} aria-labelledby="llm-diagnostics-title">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S2-F03</p><h2 id="llm-diagnostics-title">LLM diagnostics and usage</h2><p className={styles.note}>Governed Azure OpenAI smoke invocation with estimated cost from the configured pricing snapshot.</p></div><span className={styles.status}>{readiness?.status ?? "not loaded"}</span></div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>AI activity and usage</p><h2 id="llm-diagnostics-title">AI activity and usage</h2><p className={styles.note}>Governed Azure OpenAI smoke invocation with estimated cost from the configured pricing snapshot.</p></div><span className={styles.status}>{readiness?.status ?? "not loaded"}</span></div>
     {connectionStatus ? <div className={styles.connectionBar} role="status" aria-live="polite">{connectionLabel(connectionStatus)}</div> : null}
     {loading ? <p role="status">Loading LLM diagnostics...</p> : null}
     {error ? <p role="alert">{error}</p> : null}

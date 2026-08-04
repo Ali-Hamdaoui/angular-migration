@@ -96,7 +96,7 @@ export function FeasibilityPanel({ runId, initialState, connectionStatus, workfl
   const approved = feasibility?.gate_status === "approved";
   const connectionLabel = connectionStatus === "reconnecting" ? "Connection lost. Reconnecting..." : connectionStatus === "recovering" ? "Refreshing authoritative feasibility state..." : feasibility?.status ?? (working ? "in_progress" : "not loaded");
   return <section className={styles.panel} aria-labelledby="feasibility-title">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S2-F05</p><h2 id="feasibility-title">Feasibility and G05</h2><p className={styles.note}>Catalogue-owned compatibility truth; no local workflow advancement.</p></div><span className={styles.status}>{connectionLabel}</span></div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>Compatibility review · Gate G05</p><h2 id="feasibility-title">Compatibility review</h2><p className={styles.note}>Catalogue-owned compatibility truth; no local workflow advancement.</p></div><span className={styles.status}>{connectionLabel}</span></div>
     {loading ? <p role="status">Loading authoritative feasibility...</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {stale ? <p role="alert">The feasibility or G05 state is stale. The authoritative snapshot was reloaded; review the current package before retrying.</p> : null}

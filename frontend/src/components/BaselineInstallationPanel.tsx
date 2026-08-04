@@ -104,7 +104,7 @@ export function BaselineInstallationPanel({ runId, initialState, connectionStatu
   const blocked = Boolean(baselineBlockers.length) || baseline?.authorization_status !== "authorized" || profile?.status === "blocked" || !selected;
   const statusText = useMemo(() => status.replaceAll("_", " ").toLowerCase(), [status]);
   return <section className={styles.panel} aria-labelledby="baseline-installation-title">
-    <div className={styles.header}><div><p className={styles.kicker}>S1-F11-I03</p><h2 id="baseline-installation-title">Frozen baseline clean installation</h2><p className={styles.note}>Runs the registered <code>npm ci</code> command in the authorized baseline sandbox and inspects immutable evidence.</p></div><span className={styles.status}>{statusText}</span></div>
+    <div className={styles.header}><div><p className={styles.kicker}>Install baseline dependencies</p><h2 id="baseline-installation-title">Install baseline dependencies</h2><p className={styles.note}>Runs the registered <code>npm ci</code> command in the authorized baseline sandbox and inspects immutable evidence.</p></div><span className={styles.status}>{statusText}</span></div>
     {loading ? <p role="status">Loading installation prerequisites...</p> : null}
     <div className={styles.connectionBar} role="status" aria-live="polite">{connectionStatus === "open" ? "Live installation events" : connectionStatus === "reconnecting" ? "Connection lost. Reconnecting..." : connectionStatus === "recovering" ? "Refreshing authoritative installation state..." : connectionStatus === "failed" ? "Unable to refresh installation state" : "Connecting to installation events..."}</div>
     {error ? <p role="alert">{error}</p> : null}
