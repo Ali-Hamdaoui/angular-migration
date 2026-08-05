@@ -45,7 +45,7 @@ _ANGULAR_PEER_FROM_RE = re.compile(
     r"\bfrom\s+(@[a-z0-9_\-]+/[a-z0-9_\-]+)@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
 )
 _ANGULAR_PEER_CONFLICT_RE = re.compile(
-    r'Package\s+"(?P<package>@[a-z0-9_\-]+/[a-z0-9_\-]+)"\s+'
+    r'Package\s+"(?P<package>(?:@[a-z0-9_\-]+/)?[a-z0-9_\-]+)"\s+'
     r'has\s+an\s+incompatible\s+peer\s+dependency\s+to\s+'
     r'"(?P<peer>@[a-z0-9_\-]+/[a-z0-9_\-]+)"\s*'
     r'\(\s*requires\s+"(?P<required>[^"\r\n]+)"\s*,\s*'

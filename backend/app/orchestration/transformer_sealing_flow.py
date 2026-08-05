@@ -130,22 +130,25 @@ class TransformerSealingFlow:
                 self._queue(continuation, "materialize_next_stage")
                 return
             context = self._sealing.context(session, continuation)
-            g12 = session.scalar(
+            approval = session.scalar(
                 select(StageGatePackageModel)
                 .where(
                     StageGatePackageModel.stage_id == continuation.current_stage_id,
-                    StageGatePackageModel.gate_id == "G12",
+                    StageGatePackageModel.gate_id.in_(("G11", "G12")),
                     StageGatePackageModel.status == "approved",
                 )
-                .order_by(StageGatePackageModel.gate_version.desc())
+                .order_by(
+                    (StageGatePackageModel.gate_id == "G11").desc(),
+                    StageGatePackageModel.gate_version.desc(),
+                )
             )
-            if g12 is None:
-                self._block(session, continuation, "G12_APPROVAL_REQUIRED", "Approved G12 is missing")
+            if approval is None:
+                self._block(session, continuation, "STAGE_APPROVAL_REQUIRED", "Approved G11 is missing")
                 return
-            g12_checksum = g12.package_checksum
+            approval_checksum = approval.package_checksum
         try:
             target, fingerprint, chain_hash, output, seal = self._sealing.seal(
-                context, g12_checksum
+                context, approval_checksum
             )
         except (StageSealingError, OSError, ValueError) as error:
             self._fail(continuation_id, worker_id, error)
@@ -422,7 +425,9 @@ class TransformerSealingFlow:
                         StageGatePackageModel.status == "approved",
                     )
                 }
-                if not {"G07", "G08", "G09", "G12"}.issubset(approved):
+                if not {"G07", "G08"}.issubset(approved) or not (
+                    "G11" in approved or {"G09", "G12"}.issubset(approved)
+                ):
                     self._block(
                         session,
                         continuation,

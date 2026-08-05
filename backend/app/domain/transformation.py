@@ -44,6 +44,8 @@ class TransformationStatus(str, Enum):
 
 
 class TransformationNode(str, Enum):
+    STAGE_WORKSPACE_READY = "stage_workspace_ready"
+    BASELINE_INSTALL = "baseline_install"
     VALIDATE_G06 = "validate_g06"
     PREPARE_WORKSPACE = "prepare_workspace"
     RESOLVE_RUNTIME = "resolve_runtime"
@@ -72,7 +74,11 @@ class TransformationNode(str, Enum):
     REVIEW_REPAIR = "review_repair"
     CREATE_G10 = "create_g10"
     WAIT_G10 = "wait_g10"
+    APPROVED_PENDING_EXECUTION = "approved_pending_execution"
     APPLY_REPAIR = "apply_repair"
+    VERIFY_REPAIR = "verify_repair"
+    RETRY_MIGRATION = "retry_migration"
+    DEPENDENCY_TRANSITION = "dependency_transition"
     ANGULAR_UPDATE_RETRY = "angular_update_retry"
     REPAIR_REVALIDATE = "repair_revalidate"
     CREATE_G11 = "create_g11"
@@ -82,6 +88,8 @@ class TransformationNode(str, Enum):
     SEAL_STAGE = "seal_stage"
     MATERIALIZE_NEXT_STAGE = "materialize_next_stage"
     COMPLETE_RUN = "complete_run"
+    STAGE_COMPLETED = "stage_completed"
+    BLOCKED = "blocked"
     CANCEL = "cancel"
     TERMINAL = "terminal"
 
@@ -144,6 +152,17 @@ class TransformationProjection(ContractModel):
     next_backend_action: str | None = None
     angular_update_retry_attempt: int | None = None
     angular_update_retry_status: str | None = None
+    workflow_step: str
+    active_command_phase: str | None = None
+    stage_start_fingerprint: str | None = None
+    repair_contract: dict[str, object] | None = None
+    dependency_operation: dict[str, object] | None = None
+    completed_transition_phases: list[dict[str, object]] = Field(default_factory=list)
+    repair_verification: dict[str, object] | None = None
+    dependency_closure: dict[str, object] | None = None
+    validation_results: dict[str, object] = Field(default_factory=dict)
+    active_error: dict[str, str] | None = None
+    historical_diagnostics: list[dict[str, object]] = Field(default_factory=list)
 
 
 class TransformationCancelRequest(ContractModel):

@@ -204,6 +204,8 @@ class TransformerOrchestrator:
             self._create_repair_gate(continuation_id, worker_id, "G10")
         elif node == "apply_repair":
             self._apply_repair(continuation_id, worker_id)
+        elif node == "verify_repair":
+            self._verify_repair(continuation_id, worker_id)
         elif node == "angular_update_retry":
             self._angular_update_retry(continuation_id, worker_id)
         elif node == "dependency_transition":
@@ -409,6 +411,10 @@ class TransformerOrchestrator:
                 if execution.status == "succeeded":
                     step.status = "PASSED"
                     step.completed_at = datetime.now(UTC)
+                    attempt = self._latest_repair(session, continuation)
+                    if attempt is not None and attempt.status == "applied_verified":
+                        attempt.status = "migration_retried"
+                        attempt.updated_at = datetime.now(UTC)
                     if self._pending_dependency_transition(session, continuation):
                         self._queue(continuation, "dependency_transition")
                     else:
@@ -740,12 +746,12 @@ class TransformerOrchestrator:
                 .filter(
                     RepairAttemptModel.run_id == continuation.run_id,
                     RepairAttemptModel.stage_id == continuation.current_stage_id,
-                    RepairAttemptModel.status.in_(("applied", "revalidating")),
+                    RepairAttemptModel.status.in_(("applied", "applied_verified", "migration_retried", "revalidating")),
                 )
                 .order_by(RepairAttemptModel.attempt_number.desc())
                 .first()
             )
-            gate_id = "G11" if repair is not None else "G09"
+            gate_id = "G11"
         summary = self._validation.write_summary(payload, artifact_root)
         gate_payload = {
             "gate_id": gate_id,
@@ -765,13 +771,13 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             self._validation.register_summary(session, continuation, summary)
             self._stage.register_artifact(session, gate, continuation)
-            if gate_id == "G11":
+            if repair is not None:
                 repair = (
                     session.query(RepairAttemptModel)
                     .filter(
                         RepairAttemptModel.run_id == continuation.run_id,
                         RepairAttemptModel.stage_id == continuation.current_stage_id,
-                        RepairAttemptModel.status.in_(("applied", "revalidating")),
+                        RepairAttemptModel.status.in_(("applied", "applied_verified", "migration_retried", "revalidating")),
                     )
                     .order_by(RepairAttemptModel.attempt_number.desc())
                     .first()
@@ -841,7 +847,7 @@ class TransformerOrchestrator:
                     and (
                         (
                             attempt is not None
-                            and attempt.status == "applied"
+                            and attempt.status in {"applied", "applied_verified"}
                         )
                         or self._angular_update_reconstruction_checkpoint(session, continuation) is not None
                     )
@@ -912,7 +918,7 @@ class TransformerOrchestrator:
                         attempt = session.query(RepairAttemptModel).filter(
                             RepairAttemptModel.run_id == continuation.run_id,
                             RepairAttemptModel.stage_id == continuation.current_stage_id,
-                            RepairAttemptModel.status == "applied",
+                            RepairAttemptModel.status.in_(("applied", "applied_verified")),
                         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
                         step = session.scalar(
                             select(StageStepModel).where(
@@ -926,7 +932,7 @@ class TransformerOrchestrator:
                             if step is not None and step.execution_id
                             else None
                         )
-                        if attempt is None or attempt.status != "applied" or execution is None:
+                        if attempt is None or attempt.status not in {"applied", "applied_verified"} or execution is None:
                             if (
                                 attempt is None
                                 and execution is not None
@@ -1581,7 +1587,7 @@ class TransformerOrchestrator:
                 continuation = session.get(TransformationContinuationModel, continuation_id)
                 attempt = self._latest_repair(session, continuation) if continuation is not None else None
                 run = session.get(MigrationRunModel, continuation.run_id) if continuation else None
-                post_applied = attempt is not None and attempt.status == "applied"
+                post_applied = attempt is not None and attempt.status in {"applied", "applied_verified"}
                 recovery_reason = "post_apply_recovery" if post_applied else "apply_recovery"
                 if post_applied:
                     checkpoint = self._ensure_post_repair_checkpoint(
@@ -1774,7 +1780,7 @@ class TransformerOrchestrator:
                 for item in proposal_payload.get("operations", [])
                 if isinstance(item, dict)
             )
-            recovering = attempt.status == "applying"
+            recovering = attempt.status in {"applying", "executing"}
             checkpoint = (
                 session.get(StageCheckpointModel, attempt.checkpoint_id)
                 if attempt.checkpoint_id is not None
@@ -1918,9 +1924,7 @@ class TransformerOrchestrator:
                 )
                 .values(
                     status=(
-                        "approved_pending_execution"
-                        if is_dependency_transition
-                        else "applying"
+                        "executing"
                     ),
                     updated_at=datetime.now(UTC),
                 )
@@ -1983,7 +1987,7 @@ class TransformerOrchestrator:
                     or current_gate is None
                     or current_gate.status != "approved"
                     or current_decision is None
-                    or current_attempt.status != "applying"
+                    or current_attempt.status not in {"applying", "executing"}
                     or current_binding.id != context["workspace_binding_id"]
                     or current.state_version != context["continuation_state_version"]
                     or live != context["fingerprint"]
@@ -2101,9 +2105,7 @@ class TransformerOrchestrator:
             attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
             attempt.apply_ledger_checksum = ledger.ref.checksum
             attempt.post_fingerprint = fingerprint
-            attempt.status = (
-                "approved_pending_execution" if is_dependency_transition else "applied"
-            )
+            attempt.status = "executing" if is_dependency_transition else "applied_verified"
             attempt.updated_at = datetime.now(UTC)
             post_apply_node = self._post_apply_node(proposal)
             if (
@@ -2187,7 +2189,7 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
-            if attempt.status in {"applied", "revalidating_affected"}:
+            if attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating_affected"}:
                 run = session.get(MigrationRunModel, continuation.run_id)
                 metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
                 if run is None or metadata is None or metadata.checksum != attempt.proposal_checksum:
@@ -2254,7 +2256,7 @@ class TransformerOrchestrator:
                     except ValidationTargetUnionError as error:
                         self._block(session, continuation, error.code, error.message)
                         return
-                if attempt.status == "applied":
+                if attempt.status in {"applied", "applied_verified", "migration_retried"}:
                     attempt.status = "revalidating_affected"
                     attempt.updated_at = datetime.now(UTC)
                 for target in targets:
@@ -2511,6 +2513,29 @@ class TransformerOrchestrator:
             except DependencyTransitionError as error:
                 self._block(session, continuation, error.code, error.message)
 
+    def _verify_repair(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            binding = self._stage._binding(session, continuation)
+            live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            if (
+                attempt is None
+                or attempt.status != "applied_verified"
+                or not attempt.apply_ledger_checksum
+                or live != binding.workspace_fingerprint
+            ):
+                self._block(
+                    session,
+                    continuation,
+                    "REPAIR_VERIFICATION_FAILED",
+                    "Applied repair post-state is incomplete or no longer canonical",
+                )
+                return
+            attempt.status = "migration_retried"
+            attempt.updated_at = datetime.now(UTC)
+            self._queue(continuation, "target_inspection")
+
     @staticmethod
     def _pending_dependency_transition(session, continuation) -> bool:
         """True when a dependency-transition repair is awaiting its angular retry.
@@ -2533,6 +2558,7 @@ class TransformerOrchestrator:
             "npm_ci",
             "dependency_closure",
             "applied",
+            "applied_verified",
         }:
             return False
         if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
@@ -2789,7 +2815,7 @@ class TransformerOrchestrator:
         except TransformerStageError as error:
             if error.code != "POST_REPAIR_CHECKPOINT_MISSING":
                 raise
-        if attempt.status != "applied":
+        if attempt.status not in {"applied", "applied_verified"}:
             raise TransformerStageError(
                 "POST_REPAIR_CHECKPOINT_MISSING",
                 "Post-repair checkpoint is missing for an unapplied repair attempt",
@@ -2928,6 +2954,7 @@ class TransformerOrchestrator:
             "npm_ci",
             "dependency_closure",
             "applied",
+            "applied_verified",
         }:
             checkpoint = self._ensure_post_repair_checkpoint(session, continuation, attempt)
         else:
@@ -3055,7 +3082,7 @@ class TransformerOrchestrator:
         attempt = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id, stage_id=continuation.current_stage_id
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-        return attempt.id if attempt and attempt.status in {"applied", "revalidating"} else "initial"
+        return attempt.id if attempt and attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating"} else "initial"
 
     def _cancel(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -3089,6 +3116,12 @@ class TransformerOrchestrator:
                         "waiting_g10",
                         "applying",
                         "applied",
+                        "approved_pending_execution",
+                        "executing",
+                        "applied_verified",
+                        "migration_retried",
+                        "validation_passed",
+                        "validation_failed",
                         "revalidating",
                         "revalidating_affected",
                     )

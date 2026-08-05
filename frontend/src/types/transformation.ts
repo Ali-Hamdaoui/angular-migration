@@ -35,7 +35,12 @@ export type TransformationProjection = {
   repair_base_checksum: string | null;
   repair_diff_artifact_id?: string | null;
   repair_diff_checksum?: string | null;
-  repair_proposal_operations?: Array<{ operation: string | null; path: string | null }>;
+  repair_proposal_operations?: Array<{
+    operation: string | null;
+    path: string | null;
+    preimage_sha256: string | null;
+    postimage_sha256: string | null;
+  }>;
   repair_safe_diff: string | null;
   repair_review: {
     decision: "accept" | "request_changes" | "reject";
@@ -51,6 +56,78 @@ export type TransformationProjection = {
   next_backend_action?: string | null;
   angular_update_retry_attempt?: number | null;
   angular_update_retry_status?: string | null;
+  workflow_step: string;
+  active_command_phase: string | null;
+  stage_start_fingerprint: string | null;
+  repair_contract: {
+    attempt_id: string;
+    stage_id: string;
+    failure_execution_id: string | null;
+    failure_type: string | null;
+    repair_kind: string;
+    strategy: string | null;
+    operations: Array<Record<string, unknown>>;
+    risk_level: string;
+    validation_targets: string[];
+    proposal_checksum: string | null;
+    reviewer_result: TransformationProjection["repair_review"];
+    human_decision: {
+      decision: string;
+      actor: string;
+      comment: string | null;
+      accepted: boolean;
+    } | null;
+    lifecycle_status: string;
+  } | null;
+  dependency_operation: {
+    operation: string;
+    repair_kind: string;
+    failure_type: string;
+    strategy: string;
+    path: string;
+    blocking_dependency: {
+      package: string;
+      installed_version: string;
+      required_peer_ranges: Array<{ package: string; version_range: string }>;
+    };
+    target_state: { package: string; target_version: string; angular_major: number };
+    checkpoint_id: string;
+  } | null;
+  completed_transition_phases: Array<{
+    phase: string;
+    execution_id: string | null;
+    artifact_id: string | null;
+    status: string;
+    package_json_change: {
+      before_checksum: string | null;
+      after_checksum: string | null;
+      unified_diff: string | null;
+    } | null;
+    lockfile_changes: {
+      before: Record<string, unknown> | null;
+      after: Record<string, unknown> | null;
+    } | null;
+    installed_verification: Record<string, unknown> | null;
+  }>;
+  repair_verification: {
+    pre_fingerprint: string | null;
+    post_fingerprint: string | null;
+    apply_ledger_checksum: string | null;
+    validation_summary_checksum: string | null;
+    verified: boolean;
+  } | null;
+  dependency_closure: Record<string, unknown> | null;
+  validation_results: Record<string, {
+    status: string;
+    execution_id: string | null;
+    command_status: string | null;
+  }>;
+  active_error: { code: string; message: string } | null;
+  historical_diagnostics: Array<{
+    code: string;
+    message: string | null;
+    status: "resolved";
+  }>;
   route_stages: Array<{
     stage_id: string;
     source_version: string | null;

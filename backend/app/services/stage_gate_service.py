@@ -47,7 +47,7 @@ _NEXT_NODE = {
     StageGateId.G08.value: TransformationNode.FINAL_INSTALL.value,
     StageGateId.G09.value: TransformationNode.CREATE_G12.value,
     StageGateId.G10.value: TransformationNode.APPLY_REPAIR.value,
-    StageGateId.G11.value: TransformationNode.CREATE_G09.value,
+    StageGateId.G11.value: TransformationNode.SEAL_STAGE.value,
     StageGateId.G12.value: TransformationNode.SEAL_STAGE.value,
 }
 
@@ -262,11 +262,52 @@ class StageGateService:
         session.add(decision)
         package.status = "approved" if accepted else "rejected"
         expected_state_version = continuation.state_version
+        attempt = None
         if accepted:
+            if gate_id == StageGateId.G10.value:
+                attempt = session.scalar(
+                    select(RepairAttemptModel).where(
+                        RepairAttemptModel.g10_gate_package_id == package.id,
+                        RepairAttemptModel.run_id == continuation.run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    )
+                )
+                if attempt is None:
+                    raise StageGateError(
+                        "G10_LINEAGE_STALE", "G10 repair attempt binding is missing"
+                    )
+                attempt.status = "approved_pending_execution"
+                attempt.updated_at = decided_at
+            elif gate_id == StageGateId.G11.value:
+                attempt = session.scalar(
+                    select(RepairAttemptModel)
+                    .where(
+                        RepairAttemptModel.run_id == continuation.run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    )
+                    .order_by(RepairAttemptModel.attempt_number.desc())
+                )
+                if attempt is not None:
+                    attempt.status = "validation_passed"
+                    attempt.completed_at = decided_at
+                    attempt.updated_at = decided_at
             continuation.status = "queued"
             continuation.current_node = _NEXT_NODE[gate_id]
             continuation.wake_sequence += 1
         else:
+            if gate_id == StageGateId.G11.value:
+                attempt = session.scalar(
+                    select(RepairAttemptModel)
+                    .where(
+                        RepairAttemptModel.run_id == continuation.run_id,
+                        RepairAttemptModel.stage_id == continuation.current_stage_id,
+                    )
+                    .order_by(RepairAttemptModel.attempt_number.desc())
+                )
+                if attempt is not None:
+                    attempt.status = "validation_failed"
+                    attempt.completed_at = decided_at
+                    attempt.updated_at = decided_at
             continuation.status = "blocked"
             continuation.last_error_code = f"{gate_id}_{request.decision.upper()}"
             continuation.last_error_message = request.comment or f"{gate_id} was not approved"
@@ -412,7 +453,9 @@ class StageGateService:
             )
         )
         if attempt is None or binding is None or stage_plan is None or attempt.status not in {
-            "review_accepted", "request_changes", "waiting_g10", "applying", "applied"
+            "review_accepted", "request_changes", "waiting_g10",
+            "approved_pending_execution", "applying", "executing", "applied",
+            "applied_verified", "migration_retried", "validation_passed",
         }:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair attempt is not in a controlled apply state")
         if stored_package.envelope.attempt_id != attempt.id:

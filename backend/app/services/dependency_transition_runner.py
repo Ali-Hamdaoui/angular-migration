@@ -10,6 +10,7 @@ pre_angular_update checkpoint is performed by the graph handler
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import re
@@ -45,6 +46,7 @@ from app.services.command_executor_service import (
     CommandExecutorService,
 )
 from app.services.dependency_closure_service import (
+    compatible_reinstall_version,
     is_exact_version,
     verify_dependency_closure,
     verify_dependency_transition_state,
@@ -75,29 +77,95 @@ def _version_major(value: object) -> int | None:
 
 def _dependency_evidence(workspace: Path, packages: tuple[str, ...]) -> dict[str, object]:
     workspace = Path(workspace)
+    manifest_path = workspace / "package.json"
+    manifest = _read_json_document(manifest_path)
+    lock = _read_json_document(workspace / "package-lock.json")
+    lock_packages = lock.get("packages") if isinstance(lock, dict) else None
     lockfiles = {
         name: _file_checksum(workspace / name)
         for name in ("package-lock.json", "npm-shrinkwrap.json")
         if (workspace / name).is_file()
     }
     installed: dict[str, object] = {}
+    manifest_entries: dict[str, object] = {}
+    lockfile_entries: dict[str, object] = {}
     for package in sorted(set(packages)):
-        package_json = workspace / "node_modules" / package / "package.json"
+        manifest_entries[package] = next(
+            (
+                {"section": section, "range": manifest[section][package]}
+                for section in ("dependencies", "devDependencies")
+                if isinstance(manifest.get(section), dict) and package in manifest[section]
+            ),
+            None,
+        )
+        root = lock_packages.get("") if isinstance(lock_packages, dict) else None
+        root_entry = next(
+            (
+                {"section": section, "range": root[section][package]}
+                for section in ("dependencies", "devDependencies")
+                if isinstance(root, dict)
+                and isinstance(root.get(section), dict)
+                and package in root[section]
+            ),
+            None,
+        )
+        package_entry = (
+            lock_packages.get(f"node_modules/{package}")
+            if isinstance(lock_packages, dict)
+            else None
+        )
+        lockfile_entries[package] = {
+            "root": root_entry,
+            "version": package_entry.get("version") if isinstance(package_entry, dict) else None,
+        }
+        installed_path = workspace / "node_modules" / package / "package.json"
         version = None
         try:
-            document = json.loads(package_json.read_text(encoding="utf-8"))
+            document = json.loads(installed_path.read_text(encoding="utf-8"))
             version = document.get("version") if isinstance(document, dict) else None
         except (OSError, ValueError):
             pass
         installed[package] = {
             "path": f"node_modules/{package}/package.json",
-            "sha256": _file_checksum(package_json),
+            "sha256": _file_checksum(installed_path),
             "version": version,
         }
     return {
-        "package_json_sha256": _file_checksum(workspace / "package.json"),
+        "package_json_sha256": _file_checksum(manifest_path),
+        "package_json_content": manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None,
+        "manifest_entries": manifest_entries,
         "lockfiles": lockfiles,
+        "lockfile_entries": lockfile_entries,
         "installed_packages": installed,
+    }
+
+
+def _read_json_document(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _package_json_change(before: object, after: dict[str, object]) -> dict[str, object]:
+    previous = before if isinstance(before, dict) else {}
+    old_content = previous.get("package_json_content")
+    new_content = after.get("package_json_content")
+    diff = ""
+    if isinstance(old_content, str) and isinstance(new_content, str):
+        diff = "".join(
+            difflib.unified_diff(
+                old_content.splitlines(keepends=True),
+                new_content.splitlines(keepends=True),
+                fromfile="a/package.json",
+                tofile="b/package.json",
+            )
+        )
+    return {
+        "before_checksum": previous.get("package_json_sha256"),
+        "after_checksum": after.get("package_json_sha256"),
+        "unified_diff": diff or None,
     }
 
 class DependencyTransitionRunner:
@@ -112,7 +180,7 @@ class DependencyTransitionRunner:
 
     def advance(self, session, continuation) -> str:
         context = self._context(session, continuation)
-        if context["attempt"].status in {"applied", "transition_complete"}:
+        if context["attempt"].status in {"applied", "transition_complete", "applied_verified"}:
             self._resume(continuation, "target_inspection")
             return "passed"
         if context["attempt"].status == "approved_pending_execution":
@@ -120,8 +188,11 @@ class DependencyTransitionRunner:
             context["attempt"].updated_at = self._now()
             self._resume(continuation, "dependency_transition")
             return "queued"
-        phase = context["attempt"].status
-        if phase in {"executing", "uninstall"}:
+        if context["attempt"].status != "executing":
+            context["attempt"].status = "executing"
+            context["attempt"].updated_at = self._now()
+        phase = self._current_phase(session, continuation, context)
+        if phase == "uninstall":
             outcome = self._phase_uninstall(session, continuation, context)
         elif phase == "angular_update":
             outcome = self._phase_update(session, continuation, context)
@@ -140,6 +211,47 @@ class DependencyTransitionRunner:
             return outcome
         self._resume(continuation, "dependency_transition")
         return "queued"
+
+    def _current_phase(self, session, continuation, context) -> str:
+        uninstall = self._execution(
+            session, context, f"{context['attempt'].id}:transition:uninstall"
+        )
+        uninstall_verified = uninstall is not None and session.scalar(
+            select(ArtifactMetadataModel.id).where(
+                ArtifactMetadataModel.owner_reference
+                == f"{uninstall.id}:dependency-transition-uninstall"
+            )
+        )
+        if uninstall is None or uninstall.status != "succeeded" or not uninstall_verified:
+            return "uninstall"
+        angular_step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        if angular_step is None or angular_step.status != "PASSED":
+            return "angular_update"
+        install = self._execution(
+            session, context, f"{context['attempt'].id}:transition:install"
+        )
+        install_verified = install is not None and session.scalar(
+            select(ArtifactMetadataModel.id).where(
+                ArtifactMetadataModel.owner_reference
+                == f"{install.id}:dependency-transition-install"
+            )
+        )
+        if install is None or install.status != "succeeded" or not install_verified:
+            return "reinstall"
+        ci_step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "final_install-0",
+            )
+        )
+        return "npm_ci" if ci_step is None or ci_step.status != "PASSED" else "dependency_closure"
 
     def _context(self, session, continuation) -> dict[str, object]:
         run = session.get(MigrationRunModel, continuation.run_id)
@@ -181,6 +293,7 @@ class DependencyTransitionRunner:
             "npm_ci",
             "dependency_closure",
             "applied",
+            "applied_verified",
             "transition_complete",
         }:
             raise DependencyTransitionError(
@@ -292,6 +405,14 @@ class DependencyTransitionRunner:
         )
         target_version = target_state.target_version if target_state is not None else None
         angular_major = target_state.angular_major if target_state is not None else None
+        try:
+            approved_target_version = compatible_reinstall_version(
+                str(blocking_package or ""), int(angular_major) if isinstance(angular_major, int) else -1
+            )
+        except ValueError as error:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_INTENT_INVALID", str(error)
+            ) from error
         if (
             target_state is None
             or target_state.package != blocking_package
@@ -302,6 +423,7 @@ class DependencyTransitionRunner:
             or not isinstance(target_version, str)
             or not is_exact_version(target_version)
             or not isinstance(angular_major, int)
+            or target_version != approved_target_version
         ):
             raise DependencyTransitionError(
                 "DEPENDENCY_TRANSITION_INTENT_INVALID",
@@ -376,12 +498,7 @@ class DependencyTransitionRunner:
             execution = self._completed_uninstall(session, context, arguments)
             if execution is not None:
                 self._verify_uninstall(session, continuation, context, execution)
-                context["attempt"].status = "angular_update"
-                context["attempt"].updated_at = self._now()
                 return "continue"
-            if context["attempt"].status != "uninstall":
-                context["attempt"].status = "uninstall"
-                context["attempt"].updated_at = self._now()
             try:
                 verify_dependency_transition_state(
                     context["workspace"],
@@ -395,8 +512,6 @@ class DependencyTransitionRunner:
                 ) from error
             return self._queue_transition_command(session, continuation, context, "uninstall", key)
         if execution.status in {"pending", "queued", "running"}:
-            context["attempt"].status = "uninstall"
-            context["attempt"].updated_at = self._now()
             self._stage._wait_for_command(session, continuation, execution.id)
             return "waiting"
         if execution.status != "succeeded" or execution.exit_code != 0:
@@ -405,8 +520,6 @@ class DependencyTransitionRunner:
                 execution.failure_message or "npm uninstall did not succeed",
             )
         self._verify_uninstall(session, continuation, context, execution)
-        context["attempt"].status = "angular_update"
-        context["attempt"].updated_at = self._now()
         return "continue"
 
     def _queue_transition_command(self, session, continuation, context, phase, key) -> str:
@@ -543,6 +656,13 @@ class DependencyTransitionRunner:
                 "node_modules_blocking_package_present": installed_present,
             },
             "dependency_evidence": dependency,
+            "package_json_change": _package_json_change(
+                (execution.start_fingerprint or {}).get("dependency"), dependency
+            ),
+            "lockfile_changes": {
+                "before": ((execution.start_fingerprint or {}).get("dependency") or {}).get("lockfile_entries"),
+                "after": dependency.get("lockfile_entries"),
+            },
             "workspace_fingerprint": checkpoint_fingerprint,
             "binding_fingerprint": binding.workspace_fingerprint,
         }
@@ -572,9 +692,6 @@ class DependencyTransitionRunner:
             )
             self._update_binding_fingerprint(session, continuation, binding, snapshot.fingerprint)
     def _phase_update(self, session, continuation, context) -> str:
-        if context["attempt"].status != "angular_update":
-            context["attempt"].status = "angular_update"
-            context["attempt"].updated_at = self._now()
         step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.run_id == continuation.run_id,
@@ -588,8 +705,6 @@ class DependencyTransitionRunner:
                 "The angular_update-0 step is missing",
             )
         if step.status == "PASSED":
-            context["attempt"].status = "reinstall"
-            context["attempt"].updated_at = self._now()
             return "continue"
         execution = (
             session.get(CommandExecutionModel, step.execution_id)
@@ -619,8 +734,6 @@ class DependencyTransitionRunner:
             step.updated_at = self._now()
             if live != context["binding"].workspace_fingerprint:
                 self._update_binding_fingerprint(session, continuation, context["binding"], live)
-            context["attempt"].status = "reinstall"
-            context["attempt"].updated_at = self._now()
             return "continue"
         # Terminal failure: queue the governed retry of the failed angular update
         # (the v2->v3 supersession path; the runner stays in control until the
@@ -637,9 +750,6 @@ class DependencyTransitionRunner:
         return "queued"
 
     def _phase_install(self, session, continuation, context) -> str:
-        if context["attempt"].status != "reinstall":
-            context["attempt"].status = "reinstall"
-            context["attempt"].updated_at = self._now()
         key = f"{context['attempt'].id}:transition:install"
         execution = self._execution(session, context, key)
         if execution is None:
@@ -653,8 +763,6 @@ class DependencyTransitionRunner:
                 execution.failure_message or "npm install did not succeed",
             )
         self._verify_install(session, continuation, context, execution)
-        context["attempt"].status = "npm_ci"
-        context["attempt"].updated_at = self._now()
         return "continue"
 
     def _verify_install(self, session, continuation, context, execution) -> None:
@@ -663,7 +771,7 @@ class DependencyTransitionRunner:
         workspace = context["workspace"]
         intent = context["intent"]
         package = intent["blocking_package"]
-        target_major = _version_major(intent["target_version"])
+        target_version = intent["target_version"]
         package_doc = self._read_package_json(workspace)
         range_value = None
         for section in ("dependencies", "devDependencies"):
@@ -671,10 +779,8 @@ class DependencyTransitionRunner:
             if isinstance(value, str):
                 range_value = value
                 break
-        manifest_major = _version_major(range_value)
         installed = workspace / "node_modules" / package / "package.json"
         installed_version = None
-        installed_major = None
         if installed.is_file():
             try:
                 installed_doc = json.loads(installed.read_text(encoding="utf-8"))
@@ -685,15 +791,13 @@ class DependencyTransitionRunner:
                 )
             except (OSError, ValueError):
                 installed_version = None
-            installed_major = _version_major(installed_version)
         if (
-            target_major is None
-            or manifest_major != target_major
-            or installed_major != target_major
+            range_value != target_version
+            or installed_version != target_version
         ):
             raise DependencyTransitionError(
                 "DEPENDENCY_TRANSITION_INSTALL_VERIFICATION_FAILED",
-                "npm install did not reattach the blocking dependency at the target major",
+                "npm install did not reattach the blocking dependency at the approved exact version",
             )
         post_binding = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
         dependency = _dependency_evidence(workspace, (package,))
@@ -707,17 +811,21 @@ class DependencyTransitionRunner:
             "correlation_id": execution.correlation_id,
             "package": package,
             "target_version": intent["target_version"],
-            "target_major": target_major,
             "pre_command": execution.start_fingerprint or {},
             "post_command": {
                 "package_json_sha256": _file_checksum(workspace / "package.json"),
                 "manifest_range": range_value,
-                "manifest_major": manifest_major,
                 "installed_version": installed_version,
-                "installed_major": installed_major,
             },
             "binding_fingerprint": binding.workspace_fingerprint,
             "dependency_evidence": dependency,
+            "package_json_change": _package_json_change(
+                (execution.start_fingerprint or {}).get("dependency"), dependency
+            ),
+            "lockfile_changes": {
+                "before": ((execution.start_fingerprint or {}).get("dependency") or {}).get("lockfile_entries"),
+                "after": dependency.get("lockfile_entries"),
+            },
             "workspace_fingerprint": post_binding,
         }
         stored = self._write_or_recover_verification(
@@ -738,9 +846,6 @@ class DependencyTransitionRunner:
             self._update_binding_fingerprint(session, continuation, binding, post_binding)
 
     def _phase_ci(self, session, continuation, context) -> str:
-        if context["attempt"].status != "npm_ci":
-            context["attempt"].status = "npm_ci"
-            context["attempt"].updated_at = self._now()
         step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.run_id == continuation.run_id,
@@ -749,8 +854,6 @@ class DependencyTransitionRunner:
             )
         )
         if step is not None and step.status == "PASSED":
-            context["attempt"].status = "dependency_closure"
-            context["attempt"].updated_at = self._now()
             return "continue"
         execution = (
             session.get(CommandExecutionModel, step.execution_id)
@@ -787,8 +890,6 @@ class DependencyTransitionRunner:
                 execution.failure_message or "npm ci did not succeed",
             )
         self._verify_ci(session, continuation, context, step, execution)
-        context["attempt"].status = "dependency_closure"
-        context["attempt"].updated_at = self._now()
         return "continue"
 
     def _verify_ci(self, session, continuation, context, step, execution) -> None:
@@ -859,9 +960,6 @@ class DependencyTransitionRunner:
         )
 
     def _phase_closure(self, session, continuation, context) -> str:
-        if context["attempt"].status != "dependency_closure":
-            context["attempt"].status = "dependency_closure"
-            context["attempt"].updated_at = self._now()
         run = context["run"]
         attempt = context["attempt"]
         binding = context["binding"]
@@ -879,8 +977,9 @@ class DependencyTransitionRunner:
                 "@angular/core",
                 "@angular/cli",
                 "@angular/compiler-cli",
-                "@angular-builders/jest",
+                intent["blocking_package"],
             ),
+            exact_versions={intent["blocking_package"]: intent["target_version"]},
         )
         if not report["ok"]:
             raise DependencyTransitionError(
@@ -901,10 +1000,10 @@ class DependencyTransitionRunner:
             stored,
             owner_reference=f"dependency-closure:{attempt.id}",
         )
-        attempt.status = "applied"
+        attempt.status = "applied_verified"
         attempt.completed_at = self._now()
         attempt.updated_at = self._now()
-        self._resume(continuation, "target_inspection")
+        self._resume(continuation, "verify_repair")
         return "passed"
 
     @staticmethod

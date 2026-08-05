@@ -8,7 +8,6 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from time import sleep
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -603,61 +602,24 @@ class TransformerStageService:
         )
 
     def snapshot_workspace(self, workspace_path: str, stage_root: str, stage_id: str) -> StagePreparationResult:
+        """Record a lightweight checkpoint of the one mutable stage workspace.
+
+        New stages never duplicate the application tree.  The checkpoint row
+        persists the canonical fingerprint and immutable artifact lineage;
+        legacy rows that already point at a separate snapshot remain readable
+        by the recovery code below.
+        """
         workspace = Path(workspace_path).resolve(strict=True)
         root = Path(stage_root).resolve(strict=True)
         workspace.relative_to(root)
-        checkpoint_root = root / ".checkpoints"
-        checkpoint_root.mkdir(parents=True, exist_ok=True)
-        target = checkpoint_root / f"{stage_id}-{uuid4().hex}"
-        temporary = checkpoint_root / f".{target.name}.preparing-{uuid4().hex}"
         if any(item.is_symlink() for item in workspace.rglob("*")):
             raise TransformerStageError("WORKSPACE_SYMLINK_UNSUPPORTED", "Checkpoint source contains a symlink")
-        try:
-            report = StageSandboxCopier().copy(workspace, temporary, registered_root=checkpoint_root)
-            fingerprint = report.fingerprint
-            copied_files = report.copied_files
-            last_error = None
-            for delay in (0.05, 0.1, 0.2, 0.4):
-                try:
-                    if target.exists():
-                        existing = StageSandboxCopier.fingerprint(target)
-                        if existing != fingerprint:
-                            raise TransformerStageError(
-                                "CHECKPOINT_DESTINATION_CONFLICT",
-                                "Existing checkpoint destination has a different fingerprint",
-                            )
-                        shutil.rmtree(temporary, ignore_errors=True)
-                        return StagePreparationResult(
-                            "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_"),
-                            str(target),
-                            existing,
-                            copied_files,
-                            True,
-                        )
-                    temporary.replace(target)
-                    break
-                except PermissionError as error:
-                    if getattr(error, "winerror", None) not in (None, 5, 32):
-                        raise
-                    last_error = error
-                    sleep(delay)
-            else:
-                raise TransformerStageError(
-                    "CHECKPOINT_RECOVERY_FAILED",
-                    "Checkpoint snapshot sealing failed after bounded rename retries",
-                ) from last_error
-        except TransformerStageError:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
         return StagePreparationResult(
             "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_"),
-            str(target),
-            fingerprint,
-            copied_files,
-            True,
+            str(workspace),
+            StageSandboxCopier.fingerprint(workspace),
+            0,
+            False,
         )
 
     def persist_snapshot_checkpoint(
@@ -760,11 +722,27 @@ class TransformerStageService:
         stage_root: str,
         expected_fingerprint: str,
     ) -> str:
-        snapshot = Path(snapshot_path).resolve(strict=True)
-        workspace = Path(workspace_path).resolve(strict=True)
+        snapshot = Path(snapshot_path).resolve(strict=False)
+        workspace = Path(workspace_path).resolve(strict=False)
         root = Path(stage_root).resolve(strict=True)
         snapshot.relative_to(root)
         workspace.relative_to(root)
+        if snapshot == workspace:
+            try:
+                observed = StageSandboxCopier.fingerprint(workspace)
+            except OSError as error:
+                raise TransformerStageError(
+                    "WORKSPACE_RECONSTRUCTION_EVIDENCE_MISSING",
+                    "The lightweight checkpoint workspace is missing or unreadable",
+                ) from error
+            if observed != expected_fingerprint:
+                raise TransformerStageError(
+                    "WORKSPACE_RECONSTRUCTION_EVIDENCE_MISSING",
+                    "The lightweight checkpoint cannot reproduce the expected state from the current workspace",
+                )
+            return observed
+        snapshot = snapshot.resolve(strict=True)
+        workspace = workspace.resolve(strict=True)
         if StageSandboxCopier.fingerprint(snapshot) != expected_fingerprint:
             raise TransformerStageError("CHECKPOINT_INTEGRITY_FAILED", "Checkpoint fingerprint changed")
         temporary = workspace.parent / f".{workspace.name}.reconstructing-{uuid4().hex[:12]}"

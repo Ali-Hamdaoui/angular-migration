@@ -175,6 +175,13 @@ export function TransformationPanel({
   const shared = { projection: current, workflowEvents, artifacts };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
+  const g10EvidenceAvailable = current.dependency_operation
+    ? Boolean(
+        current.repair_proposal_checksum
+        && current.dependency_operation.checkpoint_id
+        && current.workspace_fingerprint,
+      )
+    : diffAvailable;
   const reviewerOverrideRequired = current.status === "waiting_gate"
     && current.active_gate === "G10"
     && current.repair_review?.decision === "request_changes";
@@ -183,7 +190,10 @@ export function TransformationPanel({
       <div>
         <span className={styles.eyebrow}>Durable Transformer / backend truth</span>
         <h3>{projection.source_version ?? "source"} → {projection.target_version ?? "target"}</h3>
-        <p>Current step: <code>{projection.current_node}</code></p>
+        <p>Current step: <code>{projection.workflow_step}</code></p>
+        {projection.current_node !== projection.workflow_step
+          ? <p className={styles.note}>Backend node: <code>{projection.current_node}</code></p>
+          : null}
         {projection.next_backend_action ? <p>Next backend action: {projection.next_backend_action}</p> : null}
       </div>
       <span className={styles.status}>{projection.status}</span>
@@ -210,7 +220,7 @@ export function TransformationPanel({
         </div>
         {reviewerOverrideRequired ? <div className={styles.alert} role="alert">
           <strong>Reviewer raised unresolved concerns.</strong>
-          <p>Review the findings, policy checks, limitations, validation targets, and exact candidate diff before approving.</p>
+          <p>Review the findings, policy checks, limitations, validation targets, and {current.dependency_operation ? "Dependency Transition Plan" : "exact candidate diff"} before approving.</p>
         </div> : null}
         {revisionAccepted
           ? <p className={styles.success} role="status">
@@ -224,8 +234,8 @@ export function TransformationPanel({
           ? <div className={styles.actions}>
               <button
                 type="button"
-                disabled={submitting || (projection.active_gate === "G10" && !diffAvailable) || (reviewerOverrideRequired && !overrideComment.trim())}
-                title={projection.active_gate === "G10" && !diffAvailable ? "Candidate diff is empty or unavailable — G10 approval disabled" : undefined}
+                disabled={submitting || (projection.active_gate === "G10" && !g10EvidenceAvailable) || (reviewerOverrideRequired && !overrideComment.trim())}
+                title={projection.active_gate === "G10" && !g10EvidenceAvailable ? "Required repair evidence is incomplete — G10 approval disabled" : undefined}
                 onClick={() => void decideGate("approve")}
               >
                 {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : `Approve ${projection.active_gate}`}

@@ -839,6 +839,7 @@ class CommandPolicyEngineService:
                 package=blocking_package,
                 target_major=target_major,
                 installed_version=blocking_candidate.installed_version,
+                artifact_id=attempt.failure_evidence_artifact_id,
             )
             if (
                 blocking_candidate.installed_version != authority["installed_version"]
@@ -847,6 +848,7 @@ class CommandPolicyEngineService:
                     for item in blocking_candidate.required_peer_ranges
                 }
                 != authority["peer_ranges"]
+                or target_version != authority["target_version"]
             ):
                 return False
         except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError):

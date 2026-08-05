@@ -202,6 +202,7 @@ _SEMANTIC_RETRY_CODES = frozenset(
         "REPAIR_PREIMAGE_STALE",
         "REPAIR_CAUSAL_REJECTION",
         "REPAIR_DEPENDENCY_INTENT_INVALID",
+        "REPAIR_PATH_INVALID",
     }
 )
 _PROPOSER_GROUNDING_INSTRUCTIONS = (
@@ -241,7 +242,7 @@ def _render_dependency_transition_intent(operation: dict[str, object]) -> str:
         f"checkpoint_id: {checkpoint_id}",
         (
             f"executed_commands: npm uninstall {package} → "
-            f"ng update @angular/core@{major} @angular/cli@{major} --allow-dirty → "
+            f"ng update @angular/cli@{major} @angular/core@{major} --allow-dirty → "
             f"npm install --save-dev --save-exact {package}@{target_version} → npm ci"
         ),
     ]
@@ -428,7 +429,7 @@ class RepairOperationCandidate(BaseModel):
         "dependency_change",
         "dependency_transition",
     ]
-    path: str = Field(min_length=1, max_length=500)
+    path: str
     old_text: str | None = None
     new_text: str | None = None
     content: str | None = None
@@ -1474,13 +1475,21 @@ class RepairApplicationService:
                     diagnosis = reparsed
             backend_package = diagnosis.get("package") if isinstance(diagnosis, dict) else None
             if not isinstance(backend_package, str) or not backend_package:
-                raise ValueError("backend evidence did not identify the blocking package")
+                raise ValueError(
+                    "field=normalized_failure.failure_diagnosis.package; "
+                    "expected=non-empty blocking package parsed from the failed Angular command; "
+                    f"observed={json.dumps(backend_package)}; "
+                    f"artifact_id={context.get('failure_evidence_artifact_id') or 'unavailable'}; "
+                    f"execution_id={evidence.get('execution_id') or 'unavailable'}; "
+                    "recovery=reparse the immutable command failure with the npm package-name grammar"
+                )
             installed_version = installed_dependency_version(workspace, backend_package)
             authority = validate_dependency_transition_evidence(
                 evidence,
                 package=backend_package,
                 target_major=expected_major,
                 installed_version=installed_version,
+                artifact_id=str(context.get("failure_evidence_artifact_id") or ""),
             )
             if blocking is not None:
                 if blocking.package is not None and blocking.package != authority["package"]:
@@ -1527,7 +1536,7 @@ class RepairApplicationService:
                             "REPAIR_DEPENDENCY_INTENT_INVALID",
                             "proposal target version must be exact",
                         )
-                    if target_state.target_version != target_exact:
+                    if target_state.target_version != authority["target_version"]:
                         raise RepairApplicationError(
                             "REPAIR_DEPENDENCY_INTENT_INVALID",
                             "proposal target version conflicts with backend authority",
@@ -1560,7 +1569,7 @@ class RepairApplicationService:
         ).model_dump(mode="json")
         operation["target_state"] = TargetStateCandidate(
             package=authority["package"],
-            target_version=str(target_exact),
+            target_version=str(authority["target_version"]),
             angular_major=expected_major,
         ).model_dump(mode="json")
         operation["checkpoint_id"] = checkpoint_id
@@ -1617,6 +1626,12 @@ class RepairApplicationService:
 
     def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairProposalCandidate.model_validate(value)
+        for index, operation in enumerate(candidate.operations):
+            if not operation.path or len(operation.path) > 500:
+                raise RepairApplicationError(
+                    "REPAIR_PATH_INVALID",
+                    f"operations.{index}.path must contain 1 to 500 characters",
+                )
         if candidate.proposal_format == "operations":
             if not candidate.operations or candidate.unified_diff is not None:
                 raise RepairApplicationError(

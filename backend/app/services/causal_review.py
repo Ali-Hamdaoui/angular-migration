@@ -77,7 +77,13 @@ _DEPENDENCY_ERROR_CODES = frozenset(
 _REVIEWER_ACCEPTED_STATUSES = frozenset(
     {
         "waiting_g10",
+        "approved_pending_execution",
+        "executing",
         "applied",
+        "applied_verified",
+        "migration_retried",
+        "validation_passed",
+        "validation_failed",
         "revalidating",
         "revalidating_affected",
         "apply_recovery_required",
