@@ -17,6 +17,7 @@ from app.artifact_store import (
 )
 from app.domain.contracts import ArtifactType
 from app.domain.transformation import FailureRoute
+from app.services.dependency_closure_service import installed_dependency_version
 
 
 CONTEXT_PACK_SCHEMA_VERSION = "repair-context-pack-v1"
@@ -24,6 +25,45 @@ CONTEXT_PACK_FILES = ("package.json", "angular.json", "tsconfig.json")
 CONTEXT_PACK_MAX_FILES = 8
 CONTEXT_PACK_MAX_BYTES_PER_FILE = 20_000
 CONTEXT_PACK_MAX_TOTAL_BYTES = 100_000
+ANGULAR_DIRTY_WORKSPACE_MESSAGE = (
+    "Repository is not clean. Please commit or stash any changes before updating."
+)
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ANGULAR_PEER_CONFLICT_MARKERS = (
+    "migration failed",
+    "eresolve",
+    "peer",
+    "incompatible",
+    "does not support",
+    "dependencies are not compatible",
+    "requires angular",
+)
+_ANGULAR_SCOPED_PACKAGE_RE = re.compile(
+    r"(?<![\w@])@[a-z0-9_\-]+/[a-z0-9_\-]+@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
+)
+_ANGULAR_PEER_FROM_RE = re.compile(
+    r"\bfrom\s+(@[a-z0-9_\-]+/[a-z0-9_\-]+)@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
+)
+_ANGULAR_PEER_CONFLICT_RE = re.compile(
+    r'Package\s+"(?P<package>@[a-z0-9_\-]+/[a-z0-9_\-]+)"\s+'
+    r'has\s+an\s+incompatible\s+peer\s+dependency\s+to\s+'
+    r'"(?P<peer>@[a-z0-9_\-]+/[a-z0-9_\-]+)"\s*'
+    r'\(\s*requires\s+"(?P<required>[^"\r\n]+)"\s*,\s*'
+    r'would\s+install\s+"(?P<proposed>[^"\r\n]+)"\s*\)',
+    re.IGNORECASE,
+)
+_ANGULAR_PEER_RANGE_RE = re.compile(
+    r"\bpeer(?:Dependencies| dependency)?\s+(@[a-z0-9_\-]+/[a-z0-9_\-]+)"
+    r"@[\"']?([\^~><=]?\s*\d+\.\d+\.\d+[^\"'\s]*)"
+)
+
+
+def _installed_version_of(message: str, package: str) -> str | None:
+    """Best-effort version adjacent to the package name in the failure message."""
+    match = re.search(
+        re.escape(package) + r"@[\^~]?\s*(\d+\.\d+\.\d+(?:[-\w.]*)?)", message
+    )
+    return match.group(1) if match else None
 
 
 class FailureEvidenceService:
@@ -46,6 +86,88 @@ class FailureEvidenceService:
         "STALE_GATE_BINDING",
     }
     non_repairable_codes: ClassVar[set[str]] = {"VALIDATION_EVIDENCE_MISSING", "VALIDATION_INCOMPLETE"}
+
+    @staticmethod
+    def is_angular_update_dirty_workspace(evidence: dict[str, object]) -> bool:
+        normalized = evidence.get("normalized_failure") or {}
+        message = " ".join(str(normalized.get("failure_message") or "").split())
+        if message.startswith("Error: "):
+            message = message.removeprefix("Error: ")
+        return (
+            normalized.get("command_id") == "angular-update-exact"
+            and normalized.get("command_allows_dirty") is not True
+            and ANGULAR_DIRTY_WORKSPACE_MESSAGE in message
+        )
+
+    @staticmethod
+    def diagnose_angular_update_failure(
+        normalized: dict[str, object],
+    ) -> dict[str, object] | None:
+        """Deterministic peer-conflict diagnosis for a failed Angular update."""
+        if normalized.get("command_id") != "angular-update-exact":
+            return None
+        message = " ".join(str(normalized.get("failure_message") or "").split())
+        message = _ANSI_ESCAPE.sub("", message)
+        if not message:
+            return None
+        lowered = message.lower()
+        if not any(marker in lowered for marker in _ANGULAR_PEER_CONFLICT_MARKERS):
+            return None
+        clean = message
+        if clean.startswith("Error: "):
+            clean = clean.removeprefix("Error: ")
+        if ANGULAR_DIRTY_WORKSPACE_MESSAGE in clean:
+            return None
+        conflict = _ANGULAR_PEER_CONFLICT_RE.search(clean)
+        if conflict is not None:
+            return {
+                "kind": "peer_dependency_conflict",
+                "package": conflict.group("package"),
+                "installed_version": None,
+                "required_ranges": {
+                    conflict.group("peer"): conflict.group("required").strip()
+                },
+                "proposed_angular_version": conflict.group("proposed").strip(),
+            }
+        package: str | None = None
+        installed_version: str | None = None
+        for match in _ANGULAR_PEER_FROM_RE.finditer(message):
+            candidate = match.group(1)
+            if not candidate.startswith("@angular/"):
+                package = candidate
+                installed_version = _installed_version_of(message, candidate)
+                break
+        if package is None:
+            for match in _ANGULAR_SCOPED_PACKAGE_RE.finditer(message):
+                candidate = match.group(0).rsplit("@", 1)[0]
+                if not candidate.startswith("@angular/"):
+                    package = candidate
+                    installed_version = _installed_version_of(message, candidate)
+                    break
+        required_ranges: dict[str, str] = {}
+        for match in _ANGULAR_PEER_RANGE_RE.finditer(message):
+            peer = match.group(1)
+            if peer not in required_ranges:
+                required_ranges[peer] = match.group(2).strip()
+        return {
+            "kind": "peer_dependency_conflict",
+            "package": package,
+            "installed_version": installed_version,
+            "required_ranges": required_ranges,
+        }
+
+    @staticmethod
+    def is_angular_update_peer_dependency_conflict(evidence: dict[str, object]) -> bool:
+        normalized = evidence.get("normalized_failure") or {}
+        diagnosis = normalized.get("failure_diagnosis")
+        return (
+            normalized.get("command_id") == "angular-update-exact"
+            and normalized.get("exit_code") is not None
+            and normalized.get("exit_code") != 0
+            and isinstance(diagnosis, dict)
+            and diagnosis.get("kind") == "peer_dependency_conflict"
+            and not FailureEvidenceService.is_angular_update_dirty_workspace(evidence)
+        )
 
     def __init__(self, *, now_provider=None) -> None:
         self._now = now_provider or (lambda: datetime.now(UTC))
@@ -85,6 +207,17 @@ class FailureEvidenceService:
             "failure_code": execution.failure_code if execution else None,
             "failure_message": (execution.failure_message or "")[:2000] if execution else None,
         }
+        if normalized["command_id"] == "angular-update-exact":
+            normalized["command_allows_dirty"] = "--allow-dirty" in (execution.arguments or [])
+            diagnosis = self.diagnose_angular_update_failure(normalized)
+            if isinstance(diagnosis, dict) and isinstance(diagnosis.get("package"), str):
+                try:
+                    diagnosis["installed_version"] = installed_dependency_version(
+                        Path(binding.workspace_path), diagnosis["package"]
+                    )
+                except ValueError:
+                    pass
+            normalized["failure_diagnosis"] = diagnosis
         failure_fingerprint = "sha256:" + hashlib.sha256(
             json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -113,6 +246,10 @@ class FailureEvidenceService:
         code = str((evidence["normalized_failure"] or {}).get("error_code") or "")
         if evidence["failure_fingerprint"] in evidence["prior_fingerprints"]:
             return FailureRoute.NO_PROGRESS
+        if self.is_angular_update_dirty_workspace(evidence):
+            return FailureRoute.ANGULAR_UPDATE_COMMAND_POLICY
+        if self.is_angular_update_peer_dependency_conflict(evidence):
+            return FailureRoute.ANGULAR_UPDATE_PEER_CONFLICT
         if code in self.transient_codes:
             return FailureRoute.ENVIRONMENT_TRANSIENT
         if code in self.permanent_codes:

@@ -57,6 +57,11 @@ from app.services.angular_transformation_evidence_service import (
     AngularTransformationEvidenceService,
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
+from app.services.causal_review import g10_eligibility, repair_budget
+from app.services.dependency_transition_runner import (
+    DependencyTransitionError,
+    DependencyTransitionRunner,
+)
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.lockfile_generation_runner import (
     LockfileGenerationError,
@@ -106,6 +111,7 @@ class TransformerOrchestrator:
         repair_service=None,
         patch_service=None,
         lockfile_runner=None,
+        dependency_transition_runner=None,
         sealing_flow=None,
     ) -> None:
         self._scope = scope
@@ -120,6 +126,9 @@ class TransformerOrchestrator:
         self._repairs = repair_service or RepairApplicationService(scope=scope)
         self._patches = patch_service or PatchApplyService()
         self._lockfiles = lockfile_runner or LockfileGenerationRunner(
+            stage_service=self._stage
+        )
+        self._dependency_transitions = dependency_transition_runner or DependencyTransitionRunner(
             stage_service=self._stage
         )
         self._sealing_flow = sealing_flow or TransformerSealingFlow(
@@ -197,6 +206,8 @@ class TransformerOrchestrator:
             self._apply_repair(continuation_id, worker_id)
         elif node == "angular_update_retry":
             self._angular_update_retry(continuation_id, worker_id)
+        elif node == "dependency_transition":
+            self._dependency_transition(continuation_id, worker_id)
         elif node == "lockfile_generation":
             self._lockfile_generation(continuation_id, worker_id)
         elif node == "repair_revalidate":
@@ -398,7 +409,10 @@ class TransformerOrchestrator:
                 if execution.status == "succeeded":
                     step.status = "PASSED"
                     step.completed_at = datetime.now(UTC)
-                    self._queue(continuation, "target_inspection")
+                    if self._pending_dependency_transition(session, continuation):
+                        self._queue(continuation, "dependency_transition")
+                    else:
+                        self._queue(continuation, "target_inspection")
                 else:
                     step.status = "FAILED"
                     step.completed_at = datetime.now(UTC)
@@ -813,7 +827,7 @@ class TransformerOrchestrator:
                 )
         route = self._failures.classify(evidence)
         if (
-            route.value == "repairable_source"
+            self._repairable_route(route)
             and (replayed is None or reuse_checkpoint is None)
         ):
             with self._scope() as session:
@@ -849,7 +863,7 @@ class TransformerOrchestrator:
             attempt_artifacts.extend((failure, route_artifact))
             context = (
                 self._failures.write_context_pack(evidence, failure.ref.checksum)
-                if route.value == "repairable_source"
+                if self._repairable_route(route)
                 else None
             )
             if context is not None:
@@ -858,15 +872,34 @@ class TransformerOrchestrator:
             failure, route_artifact, context = replayed
         snapshot = None
         if (
-            route.value == "repairable_source"
+            self._repairable_route(route)
             and context is not None
             and (replayed is None or reuse_checkpoint is None)
         ):
-            snapshot = self._stage.snapshot_workspace(
-                str(evidence["workspace_path"]),
-                str(Path(str(evidence["workspace_path"])).parent),
-                str(evidence["stage_id"]),
-            )
+            try:
+                snapshot = self._stage.snapshot_workspace(
+                    str(evidence["workspace_path"]),
+                    str(Path(str(evidence["workspace_path"])).parent),
+                    str(evidence["stage_id"]),
+                )
+            except TransformerStageError as error:
+                with self._scope() as session:
+                    self._block(
+                        session,
+                        self._owned(session, continuation_id, worker_id),
+                        error.code,
+                        error.message,
+                    )
+                return
+            except Exception:
+                with self._scope() as session:
+                    self._block(
+                        session,
+                        self._owned(session, continuation_id, worker_id),
+                        "CHECKPOINT_RECOVERY_FAILED",
+                        "Checkpoint snapshot sealing failed",
+                    )
+                return
         try:
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
@@ -875,6 +908,89 @@ class TransformerOrchestrator:
                     if artifact is not None:
                         self._stage.register_artifact(session, artifact, continuation)
                 if self._is_angular_update_failure(session, continuation):
+                    if route.value == "angular_update_command_policy":
+                        attempt = session.query(RepairAttemptModel).filter(
+                            RepairAttemptModel.run_id == continuation.run_id,
+                            RepairAttemptModel.stage_id == continuation.current_stage_id,
+                            RepairAttemptModel.status == "applied",
+                        ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+                        step = session.scalar(
+                            select(StageStepModel).where(
+                                StageStepModel.run_id == continuation.run_id,
+                                StageStepModel.stage_id == continuation.current_stage_id,
+                                StageStepModel.name == "angular_update-0",
+                            )
+                        )
+                        execution = (
+                            session.get(CommandExecutionModel, step.execution_id)
+                            if step is not None and step.execution_id
+                            else None
+                        )
+                        if attempt is None or attempt.status != "applied" or execution is None:
+                            if (
+                                attempt is None
+                                and execution is not None
+                                and execution.status == "failed"
+                                and execution.template_version == 2
+                            ):
+                                # First-time dirty-workspace failure (legacy v2
+                                # plan): the v3 --allow-dirty retry is the fix,
+                                # no repair is needed. Restore the execution-
+                                # bound checkpoint, persist a post-repair
+                                # checkpoint so the v2->v3 supersession binds
+                                # correctly, and queue the governed retry.
+                                try:
+                                    self._restore_angular_update_checkpoint(
+                                        session, continuation
+                                    )
+                                    binding = self._stage._binding(session, continuation)
+                                    run = session.get(
+                                        MigrationRunModel, continuation.run_id
+                                    )
+                                    snapshot = self._stage.snapshot_workspace(
+                                        binding.workspace_path,
+                                        (run.workspace_aliases or {})["STAGE_SANDBOX"],
+                                        continuation.current_stage_id,
+                                    )
+                                    self._stage._checkpoint(
+                                        session,
+                                        continuation,
+                                        snapshot,
+                                        "post_repair",
+                                        f"restore:{execution.checkpoint_id or execution.id}",
+                                        snapshot.fingerprint,
+                                    )
+                                    self._stage.queue_angular_update_retry(
+                                        session,
+                                        continuation,
+                                        failed_execution_id=execution.id,
+                                        idempotency_key=(
+                                            f"{execution.id}:retry:post-repair:initial"
+                                        ),
+                                    )
+                                except TransformerStageError as error:
+                                    self._block(
+                                        session, continuation, error.code, error.message
+                                    )
+                                return
+                            self._block(
+                                session,
+                                continuation,
+                                "ANGULAR_UPDATE_POST_REPAIR_LINEAGE_MISSING",
+                                "Dirty Angular update failure has no applied repair lineage",
+                            )
+                            return
+                        try:
+                            self._ensure_post_repair_checkpoint(session, continuation, attempt)
+                            self._stage.queue_angular_update_retry(
+                                session,
+                                continuation,
+                                failed_execution_id=execution.id,
+                                idempotency_key=f"{execution.id}:retry:post-repair:{attempt.id}",
+                            )
+                        except TransformerStageError as error:
+                            self._block(session, continuation, error.code, error.message)
+                        return
                     if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
                         self._restore_angular_update_checkpoint(session, continuation)
                         continuation.attempt += 1
@@ -885,7 +1001,7 @@ class TransformerOrchestrator:
                         continuation.state_version += 1
                         continuation.updated_at = datetime.now(UTC)
                         return
-                    if route.value != "repairable_source":
+                    if not self._repairable_route(route):
                         self._block(
                             session,
                             continuation,
@@ -894,7 +1010,7 @@ class TransformerOrchestrator:
                         )
                         return
 
-                if route.value != "repairable_source":
+                if not self._repairable_route(route):
                     if route.value == "environment_transient" and continuation.attempt < continuation.max_attempts:
                         expected_state_version = continuation.state_version
                         continuation.attempt += 1
@@ -925,29 +1041,22 @@ class TransformerOrchestrator:
                             f"Validation failure routed to {route.value}",
                         )
                     return
-                attempts = session.query(RepairAttemptModel).filter_by(
-                    run_id=continuation.run_id, stage_id=continuation.current_stage_id
-                ).count()
-                applied = session.query(RepairAttemptModel).filter(
-                    RepairAttemptModel.run_id == continuation.run_id,
-                    RepairAttemptModel.stage_id == continuation.current_stage_id,
-                    RepairAttemptModel.apply_ledger_artifact_id.is_not(None),
-                ).count()
                 stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
                 repair_policy = (
                     ((stage_plan.stage_plan or {}).get("repair_policy") or {})
                     if stage_plan is not None
                     else {}
                 )
-                try:
-                    max_repair_attempts = int(repair_policy.get("max_attempts") or 3)
-                except (TypeError, ValueError):
-                    max_repair_attempts = 3
-                try:
-                    max_repair_applied = int(repair_policy.get("max_applied") or 2)
-                except (TypeError, ValueError):
-                    max_repair_applied = 2
-                if attempts >= max_repair_attempts or applied >= max_repair_applied:
+                budget = repair_budget(
+                    session,
+                    continuation.run_id,
+                    continuation.current_stage_id,
+                    repair_policy,
+                )
+                if (
+                    budget["consumed_attempts"] >= budget["max_attempts"]
+                    or budget["consumed_applied"] >= budget["max_applied"]
+                ):
                     self._block(
                         session,
                         continuation,
@@ -955,6 +1064,9 @@ class TransformerOrchestrator:
                         "Governed repair attempt limit reached",
                     )
                     return
+                attempts = session.query(RepairAttemptModel).filter_by(
+                    run_id=continuation.run_id, stage_id=continuation.current_stage_id
+                ).count()
                 if reuse_checkpoint is None and snapshot is None:
                     self._block(
                         session,
@@ -1224,6 +1336,18 @@ class TransformerOrchestrator:
                 # still approve or reject the replayed package.
                 attempt = self._latest_repair(session, continuation)
                 if gate_id == "G10":
+                    eligible, reason = self._g10_causal_eligibility(
+                        session, continuation, attempt
+                    )
+                    if not eligible:
+                        self._block(
+                            session,
+                            continuation,
+                            "REPAIR_CAUSAL_REJECTION",
+                            reason or "Repair candidate is not causally eligible for G10",
+                        )
+                        return
+                if gate_id == "G10":
                     attempt.g10_gate_package_id = existing.id
                     attempt.status = "waiting_g10"
                     attempt.updated_at = datetime.now(UTC)
@@ -1236,6 +1360,18 @@ class TransformerOrchestrator:
                 continuation.updated_at = datetime.now(UTC)
                 return
             attempt = self._latest_repair(session, continuation)
+            if gate_id == "G10":
+                eligible, reason = self._g10_causal_eligibility(
+                    session, continuation, attempt
+                )
+                if not eligible:
+                    self._block(
+                        session,
+                        continuation,
+                        "REPAIR_CAUSAL_REJECTION",
+                        reason or "Repair candidate is not causally eligible for G10",
+                    )
+                    return
             binding = self._stage._binding(session, continuation)
             run = session.get(MigrationRunModel, continuation.run_id)
             plan = session.get(MigrationPlanModel, continuation.plan_id)
@@ -1632,6 +1768,12 @@ class TransformerOrchestrator:
             ).read_artifact(continuation.run_id, metadata.relative_path)
             if proposal_artifact.ref.artifact_id != attempt.proposal_artifact_id or proposal_artifact.ref.checksum != attempt.proposal_checksum:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Approved repair proposal identity changed")
+            proposal_payload = json.loads(proposal_artifact.content)
+            is_dependency_transition = any(
+                item.get("operation") == "dependency_transition"
+                for item in proposal_payload.get("operations", [])
+                if isinstance(item, dict)
+            )
             recovering = attempt.status == "applying"
             checkpoint = (
                 session.get(StageCheckpointModel, attempt.checkpoint_id)
@@ -1774,7 +1916,14 @@ class TransformerOrchestrator:
                     RepairAttemptModel.proposal_artifact_id == current_attempt.proposal_artifact_id,
                     RepairAttemptModel.proposal_checksum == current_attempt.proposal_checksum,
                 )
-                .values(status="applying", updated_at=datetime.now(UTC))
+                .values(
+                    status=(
+                        "approved_pending_execution"
+                        if is_dependency_transition
+                        else "applying"
+                    ),
+                    updated_at=datetime.now(UTC),
+                )
             )
             if attempt_claim.rowcount != 1:
                 raise TransformerStageError("REPAIR_PROPOSAL_STALE", "Repair attempt changed before mutation")
@@ -1892,7 +2041,7 @@ class TransformerOrchestrator:
                 context["stage_id"],
                 context["continuation_state_version"],
             )
-            proposal = json.loads(proposal_artifact.content)
+            proposal = proposal_payload
             try:
                 apply_result = self._patches.apply(
                     proposal=proposal,
@@ -1952,10 +2101,15 @@ class TransformerOrchestrator:
             attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
             attempt.apply_ledger_checksum = ledger.ref.checksum
             attempt.post_fingerprint = fingerprint
-            attempt.status = "applied"
+            attempt.status = (
+                "approved_pending_execution" if is_dependency_transition else "applied"
+            )
             attempt.updated_at = datetime.now(UTC)
             post_apply_node = self._post_apply_node(proposal)
-            if self._angular_update_retry_eligible(session, continuation):
+            if (
+                post_apply_node != "dependency_transition"
+                and self._angular_update_retry_eligible(session, continuation)
+            ):
                 post_apply_node = "angular_update_retry"
             reset_groups = (
                 StageStepModel.name.like("final_install-%")
@@ -1978,11 +2132,16 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _post_apply_node(proposal: dict[str, object]) -> str:
+        operations = proposal.get("operations") or []
+        if any(
+            item.get("operation") == "dependency_transition" for item in operations
+        ):
+            return "dependency_transition"
         return (
             "lockfile_generation"
             if any(
                 item.get("operation") == "dependency_change"
-                for item in proposal.get("operations") or []
+                for item in operations
             )
             else "repair_revalidate"
         )
@@ -2243,6 +2402,10 @@ class TransformerOrchestrator:
             )
 
     @staticmethod
+    def _repairable_route(route) -> bool:
+        return route.value in {"repairable_source", "angular_update_peer_conflict"}
+
+    @staticmethod
     def _is_angular_update_failure(session, continuation) -> bool:
         step = session.scalar(
             select(StageStepModel).where(
@@ -2326,7 +2489,148 @@ class TransformerOrchestrator:
             except TransformerStageError as error:
                 self._block(session, continuation, error.code, error.message)
 
+    def _dependency_transition(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            uninstall = session.scalar(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.idempotency_key
+                    == f"{attempt.id}:transition:uninstall",
+                )
+            )
+            if uninstall is None and attempt.status == "approved_pending_execution":
+                try:
+                    self._restore_angular_update_checkpoint(session, continuation)
+                except TransformerStageError as error:
+                    self._block(session, continuation, error.code, error.message)
+                    return
+            try:
+                self._dependency_transitions.advance(session, continuation)
+            except DependencyTransitionError as error:
+                self._block(session, continuation, error.code, error.message)
+
+    @staticmethod
+    def _pending_dependency_transition(session, continuation) -> bool:
+        """True when a dependency-transition repair is awaiting its angular retry.
+
+        The latest repair attempt must be applied with a checksum-bound proposal
+        carrying a dependency_transition operation, and the angular_update-0
+        step's latest execution must be a terminal succeeded retry (i.e., the
+        post-repair retry ran, so the runner may continue from phase UPDATE).
+        """
+        attempt = session.query(RepairAttemptModel).filter_by(
+            run_id=continuation.run_id,
+            stage_id=continuation.current_stage_id,
+        ).order_by(RepairAttemptModel.attempt_number.desc()).first()
+        if attempt is None or attempt.status not in {
+            "approved_pending_execution",
+            "executing",
+            "uninstall",
+            "angular_update",
+            "reinstall",
+            "npm_ci",
+            "dependency_closure",
+            "applied",
+        }:
+            return False
+        if not attempt.proposal_artifact_id or not attempt.proposal_checksum:
+            return False
+        metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
+        )
+        if metadata is None or metadata.checksum != attempt.proposal_checksum:
+            return False
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None or not run.artifact_root:
+            return False
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            ).read_artifact(continuation.run_id, metadata.relative_path)
+            if (
+                stored.ref.artifact_id != attempt.proposal_artifact_id
+                or stored.ref.checksum != attempt.proposal_checksum
+                or stored.envelope is None
+                or stored.envelope.run_id != continuation.run_id
+                or stored.envelope.stage_id != continuation.current_stage_id
+                or stored.envelope.attempt_id != attempt.id
+            ):
+                return False
+            proposal = RepairProposal.model_validate(json.loads(stored.content))
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError):
+            return False
+        if not any(item.operation == "dependency_transition" for item in proposal.operations):
+            return False
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        execution = (
+            session.get(CommandExecutionModel, step.execution_id)
+            if step is not None and step.execution_id
+            else None
+        )
+        return (
+            execution is not None
+            and execution.status == "succeeded"
+            and execution.parent_execution_id is not None
+        )
+
+    @staticmethod
+    def _g10_causal_eligibility(session, continuation, attempt) -> tuple[bool, str | None]:
+        return g10_eligibility(
+            session, continuation.run_id, continuation.current_stage_id, attempt.id
+        )
+
     def _post_repair_checkpoint(self, session, continuation, attempt):
+        if attempt.status in {
+            "executing",
+            "uninstall",
+            "angular_update",
+            "reinstall",
+            "npm_ci",
+            "dependency_closure",
+        }:
+            binding = self._stage._binding(session, continuation)
+            checkpoints = session.scalars(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "post_repair",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+            ).all()
+            for checkpoint in checkpoints:
+                execution = (
+                    session.get(CommandExecutionModel, checkpoint.created_from_execution_id)
+                    if checkpoint.created_from_execution_id
+                    else None
+                )
+                if (
+                    execution is None
+                    or execution.command_id != "npm-dependency-uninstall"
+                    or execution.status != "succeeded"
+                    or execution.exit_code != 0
+                    or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
+                ):
+                    continue
+                if self._stage.authoritative_checkpoint_fingerprint(session, checkpoint) != checkpoint.workspace_fingerprint:
+                    raise TransformerStageError(
+                        "POST_REPAIR_CHECKPOINT_STALE",
+                        "Dependency-transition checkpoint is not authoritative",
+                    )
+                return checkpoint
+            raise TransformerStageError(
+                "POST_REPAIR_CHECKPOINT_MISSING",
+                "No sealed post-uninstall checkpoint is available",
+            )
         if not all(
             (
                 attempt.post_fingerprint,
@@ -2615,7 +2919,16 @@ class TransformerOrchestrator:
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-        if attempt is not None and attempt.status == "applied":
+        if attempt is not None and attempt.status in {
+            "approved_pending_execution",
+            "executing",
+            "uninstall",
+            "angular_update",
+            "reinstall",
+            "npm_ci",
+            "dependency_closure",
+            "applied",
+        }:
             checkpoint = self._ensure_post_repair_checkpoint(session, continuation, attempt)
         else:
             checkpoint = self._angular_update_reconstruction_checkpoint(session, continuation)

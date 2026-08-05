@@ -29,11 +29,12 @@ from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType
 from app.services.repair_application_service import (
     RepairApplicationError,
+    RepairApplicationService,
     _unified_diff_header_path,
     replace_text_once,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE, STAGE_VOLATILE_NAMES
 
 _workspace_lock_guard = threading.Lock()
 _workspace_locks: dict[str, threading.RLock] = {}
@@ -122,6 +123,11 @@ def _workspace_manifest(root: Path, locked_targets=None) -> dict[str, bytes]:
     manifest = {}
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         if path.name.endswith(".transformer-repair.target.lock"):
+            continue
+        if any(
+            part.casefold() in STAGE_VOLATILE_NAMES
+            for part in path.relative_to(root).parts
+        ):
             continue
         relative = path.relative_to(root).as_posix()
         locked = (locked_targets or {}).get(relative)
@@ -226,6 +232,11 @@ class PatchApplyService:
             if proposal["proposal_format"] == "operations"
             else self._prepare_unified_diff(str(proposal["unified_diff"]), workspace)
         )
+        transition_only = any(
+            item.get("operation") == "dependency_transition"
+            for item in proposal.get("operations", [])
+            if isinstance(item, dict)
+        )
         expected_manifest = dict(initial_manifest)
         for change in changes:
             if change["action"] == "delete":
@@ -319,7 +330,8 @@ class PatchApplyService:
                         "Workspace changed outside the approved repair",
                     )
                 prepared["post_fingerprint"] = post_fingerprint
-                prepared["status"] = "applied"
+                prepared["mutation_count"] = len(prepared["operations"])
+                prepared["status"] = "ledger_only" if transition_only else "applied"
                 final = self._write(store, run_id, stage_id, attempt_id, "applied", prepared)
             except Exception:
                 target_locks.close()
@@ -337,33 +349,39 @@ class PatchApplyService:
         return prepared_artifact, final, prepared["post_fingerprint"]
 
     def _prepare_operations(self, operations, workspace: Path):
+        bound = RepairApplicationService(scope=None)._coalesce_operations(
+            [dict(item) for item in operations], workspace
+        )
         changes = []
-        for item in operations:
-            target = (workspace / item["path"]).resolve(strict=False)
-            target.relative_to(workspace)
-            if target.exists() and target.is_symlink():
-                raise RepairApplicationError("REPAIR_SYMLINK_FORBIDDEN", "Repair target is a symlink")
+        for item in bound:
             action = item["operation"]
-            if action == "create_text_file":
-                changes.append({"path": item["path"], "action": "write", "content": item["content"], "preimage_sha256": "absent"})
+            if action == "dependency_transition":
                 continue
-            if not target.is_file():
-                raise RepairApplicationError("REPAIR_PREIMAGE_INVALID", "Repair target is missing")
-            actual = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
-            if actual != item["preimage_sha256"]:
-                raise RepairApplicationError("REPAIR_PREIMAGE_STALE", "Repair preimage changed")
-            with target.open("r", encoding="utf-8", newline="") as handle:
-                current = handle.read()
-            if action == "delete_text_file":
-                changes.append({"path": item["path"], "action": "delete", "content": "", "preimage_sha256": actual})
-            elif action in {"replace_text", "dependency_change"}:
-                content = replace_text_once(current, item["old_text"], item["new_text"])
+            if action == "create_text_file":
                 changes.append(
                     {
                         "path": item["path"],
                         "action": "write",
-                        "content": content,
-                        "preimage_sha256": actual,
+                        "content": item["content"],
+                        "preimage_sha256": "absent",
+                    }
+                )
+            elif action == "delete_text_file":
+                changes.append(
+                    {
+                        "path": item["path"],
+                        "action": "delete",
+                        "content": "",
+                        "preimage_sha256": item["preimage_sha256"],
+                    }
+                )
+            elif action in {"replace_text", "dependency_change"}:
+                changes.append(
+                    {
+                        "path": item["path"],
+                        "action": "write",
+                        "content": item["new_text"],
+                        "preimage_sha256": item["preimage_sha256"],
                     }
                 )
             else:

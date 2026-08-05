@@ -101,6 +101,8 @@ class FailureRoute(str, Enum):
     DEPENDENCY_INCOMPATIBLE = "dependency_incompatible"
     UNEXPECTED_PROMPT = "unexpected_prompt"
     POLICY_VIOLATION = "policy_violation"
+    ANGULAR_UPDATE_COMMAND_POLICY = "angular_update_command_policy"
+    ANGULAR_UPDATE_PEER_CONFLICT = "angular_update_peer_conflict"
     REPAIRABLE_SOURCE = "repairable_source"
     NON_REPAIRABLE_VALIDATION = "non_repairable_validation"
     NO_PROGRESS = "no_progress"

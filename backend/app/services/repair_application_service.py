@@ -56,6 +56,13 @@ from app.repositories.models import (
     UsageCostRecordModel,
     WorkflowEventModel,
 )
+from app.services.causal_review import CausalRejection, REVIEWER_CAUSAL_POLICY, causal_rejection
+from app.services.dependency_closure_service import (
+    installed_dependency_version,
+    is_exact_version,
+    validate_dependency_transition_evidence,
+    verify_dependency_transition_state,
+)
 from app.services.failure_evidence_service import FailureEvidenceService, validate_context_pack
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import append_continuation_event
@@ -63,6 +70,76 @@ from app.services.workspace_fingerprint import (
     STAGE_FINGERPRINT_PROFILE,
     SUPPORTED_LEGACY_FINGERPRINT_PROFILES,
 )
+
+
+class RequiredPeerRange(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    package: str
+    version_range: str
+
+
+class RequiredPeerRangeCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package: str | None = None
+    version_range: str | None = None
+
+
+class BlockingDependencyCandidate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    package: str
+    installed_version: str | None
+    required_peer_ranges: list[RequiredPeerRange] = Field(max_length=32)
+
+
+class BlockingDependencyCandidateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package: str | None = None
+    installed_version: str | None = None
+    required_peer_ranges: list[RequiredPeerRangeCandidate] | None = Field(
+        default=None, max_length=32
+    )
+
+
+class TargetStateCandidate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    package: str
+    target_version: str
+    angular_major: int
+
+
+class TargetStateCandidateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package: str | None = None
+    target_version: str | None = None
+    angular_major: int | None = None
+
+
+class ProvenanceEntry(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    key: str
+    value: str
+
+
+def _normalize_provenance(value: object) -> list[dict[str, str]]:
+    entries = value if isinstance(value, list) else []
+    if all(
+        isinstance(entry, dict) and set(entry) == {'key', 'value'}
+        for entry in entries
+    ):
+        return entries
+    return [
+        {'key': key, 'value': str(entry_value)}
+        for entry in entries
+        if isinstance(entry, dict)
+        for key, entry_value in entry.items()
+    ]
 
 
 class RepairApplicationError(ValueError):
@@ -114,8 +191,18 @@ _GATEWAY_FAILURE_CODES = {
 _DEPENDENCY_SECTIONS = frozenset(
     {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
 )
+_DEPENDENCY_TRANSITION_TARGET_SECTIONS = ("dependencies", "devDependencies")
+_DEPENDENCY_TRANSITION_VALID_REPAIR_KINDS = frozenset({"dependency_transition"})
+_DEPENDENCY_TRANSITION_VALID_FAILURE_TYPES = frozenset({"peer_dependency_conflict"})
+_DEPENDENCY_TRANSITION_VALID_STRATEGIES = frozenset({"detach_update_reattach"})
 _SEMANTIC_RETRY_CODES = frozenset(
-    {"REPAIR_REPLACEMENT_MISSING", "REPAIR_REPLACEMENT_AMBIGUOUS", "REPAIR_PREIMAGE_STALE"}
+    {
+        "REPAIR_REPLACEMENT_MISSING",
+        "REPAIR_REPLACEMENT_AMBIGUOUS",
+        "REPAIR_PREIMAGE_STALE",
+        "REPAIR_CAUSAL_REJECTION",
+        "REPAIR_DEPENDENCY_INTENT_INVALID",
+    }
 )
 _PROPOSER_GROUNDING_INSTRUCTIONS = (
     "CURRENT_WORKSPACE_FILES are the only valid preimage authority. "
@@ -130,6 +217,35 @@ _SEMANTIC_RETRY_FEEDBACK = (
     "Regenerate using the exact current file content."
 )
 _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _version_major(value: object) -> int | None:
+    match = re.match(r"\s*[~^]?\s*(\d+)", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _render_dependency_transition_intent(operation: dict[str, object]) -> str:
+    blocking = operation.get("blocking_dependency") or {}
+    target = operation.get("target_state") or {}
+    package = str(blocking.get("package") or "")
+    target_version = str(target.get("target_version") or "")
+    major = target.get("angular_major") or "?"
+    checkpoint_id = str(operation.get("checkpoint_id") or "")
+    lines = [
+        "schema_version: transformer-repair-v2",
+        "repair_kind: dependency_transition",
+        f"strategy: {str(operation.get('strategy') or 'detach_update_reattach')}",
+        f"failure_type: {str(operation.get('failure_type') or 'peer_dependency_conflict')}",
+        f"blocking_dependency: {package}",
+        f"target_state: angular {major} / {package}@{target_version}",
+        f"checkpoint_id: {checkpoint_id}",
+        (
+            f"executed_commands: npm uninstall {package} → "
+            f"ng update @angular/core@{major} @angular/cli@{major} --allow-dirty → "
+            f"npm install --save-dev --save-exact {package}@{target_version} → npm ci"
+        ),
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _unified_diff_header_path(line: str, path_prefix: str) -> str:
@@ -305,7 +421,13 @@ def _translate_gateway_failure(exc: AzureGatewayError) -> RepairLlmError:
 class RepairOperationCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    operation: Literal["replace_text", "create_text_file", "delete_text_file", "dependency_change"]
+    operation: Literal[
+        "replace_text",
+        "create_text_file",
+        "delete_text_file",
+        "dependency_change",
+        "dependency_transition",
+    ]
     path: str = Field(min_length=1, max_length=500)
     old_text: str | None = None
     new_text: str | None = None
@@ -313,6 +435,14 @@ class RepairOperationCandidate(BaseModel):
     section: str | None = Field(default=None, min_length=1, max_length=64)
     package: str | None = Field(default=None, min_length=1, max_length=256)
     new_version: str | None = Field(default=None, min_length=1, max_length=256)
+    repair_kind: str | None = Field(default=None, min_length=1, max_length=64)
+    failure_type: str | None = Field(default=None, min_length=1, max_length=64)
+    strategy: str | None = Field(default=None, min_length=1, max_length=64)
+    checkpoint_id: str | None = Field(default=None, max_length=128)
+    schema_version: str | None = Field(default=None, min_length=1, max_length=64)
+    blocking_dependency: BlockingDependencyCandidateInput | None = None
+    target_state: TargetStateCandidateInput | None = None
+    provenance: list[ProvenanceEntry] = Field(default_factory=list, max_length=32)
 
 
 class RepairOperation(RepairOperationCandidate):
@@ -419,6 +549,15 @@ class RepairApplicationService:
                     policy=(
                         "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
                         "lockfile edits, path escapes, secrets, or policy bypasses. "
+                        "For Angular peer-dependency-conflict failures (failure_type "
+                        "\"peer_dependency_conflict\"), emit exactly one \"dependency_transition\" "
+                        "operation (schema_version \"transformer-repair-v2\", repair_kind "
+                        "\"dependency_transition\", strategy \"detach_update_reattach\", path "
+                        "\"package.json\"). Provide only rationale, risk_level, strategy, "
+                        "limitations, and validation_targets; omit checkpoint_id, package identity, "
+                        "installed_version, peer ranges, target package, and target exact version. "
+                        "The backend binds those fields. Never emit file operations, READMEs, "
+                        "comments, or --force for such failures. "
                         + _PROPOSER_GROUNDING_INSTRUCTIONS
                     ),
                 )
@@ -521,7 +660,7 @@ class RepairApplicationService:
                 schema=RepairReviewCandidate,
                 policy=(
                     "Review the supplied proposal against policy. Never author operations, a diff, "
-                    "replacement code, commands, or a different proposal."
+                    "replacement code, commands, or a different proposal.\n" + REVIEWER_CAUSAL_POLICY
                 ),
             )
         except RepairLlmError:
@@ -988,6 +1127,494 @@ class RepairApplicationService:
         operation["new_text"] = canonical
         return operation
 
+    def _coalesce_operations(
+        self,
+        operations: list[dict[str, object]],
+        workspace: Path,
+        *,
+        context: dict[str, object] | None = None,
+        bind_preimages: bool = False,
+    ) -> list[dict[str, object]]:
+        """Bind logical edits to one deterministic mutation per physical path."""
+        groups: dict[str, list[dict[str, object]]] = {}
+        result: list[dict[str, object]] = []
+        for item in operations:
+            bound = dict(item)
+            relative = self._safe_path(str(item.get("path") or ""), workspace)
+            bound["path"] = relative
+            if str(item.get("operation")) == "dependency_transition":
+                if relative != "package.json":
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_PATH_INVALID",
+                        "Dependency transitions may target only package.json",
+                    )
+                bound["preimage_sha256"] = None
+                result.append(bound)
+                continue
+            groups.setdefault(relative, []).append(bound)
+
+        for relative, group in groups.items():
+            target = workspace / relative
+            current_path = workspace
+            for part in PurePosixPath(relative).parts:
+                current_path = current_path / part
+                if current_path.is_symlink():
+                    raise RepairApplicationError(
+                        "REPAIR_SYMLINK_FORBIDDEN",
+                        "Repair targets may not traverse symlinks",
+                    )
+            actions = {str(item.get("operation")) for item in group}
+            if not actions <= {"replace_text", "create_text_file", "delete_text_file", "dependency_change"}:
+                raise RepairApplicationError(
+                    "REPAIR_OPERATION_INVALID", "Repair operation is unsupported"
+                )
+            if "create_text_file" in actions:
+                if len(group) != 1 or target.exists() or group[0].get("content") is None:
+                    raise RepairApplicationError(
+                        "REPAIR_OPERATION_AMBIGUOUS",
+                        "Create operations cannot share a physical path",
+                    )
+                group[0]["preimage_sha256"] = None
+                result.append(group[0])
+                continue
+
+            if target.is_symlink() or not target.is_file():
+                raise RepairApplicationError(
+                    "REPAIR_PREIMAGE_INVALID",
+                    "Repair target must be a regular existing file",
+                )
+            try:
+                with target.open("r", encoding="utf-8", newline="") as handle:
+                    current = handle.read()
+            except UnicodeDecodeError as error:
+                raise RepairApplicationError(
+                    "REPAIR_BINARY_FORBIDDEN", "Repair target is not UTF-8 text"
+                ) from error
+            actual = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+            for item in group:
+                if bind_preimages:
+                    item["preimage_sha256"] = actual
+                elif item.get("preimage_sha256") != actual:
+                    raise RepairApplicationError(
+                        "REPAIR_PREIMAGE_STALE",
+                        "Repair target preimage checksum changed",
+                    )
+
+            if relative == "package.json" or "dependency_change" in actions:
+                if relative != "package.json":
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_PATH_INVALID",
+                        "Dependency changes may edit only package.json",
+                    )
+                if actions != {"dependency_change"}:
+                    raise RepairApplicationError(
+                        "REPAIR_OPERATION_AMBIGUOUS",
+                        "package.json cannot combine dependency and file operations",
+                    )
+                if context is not None:
+                    self._require_lockfile_generation_authority(context)
+                try:
+                    document = json.loads(
+                        current, object_pairs_hook=self._json_object_without_duplicates
+                    )
+                except ValueError as error:
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_PACKAGE_INVALID",
+                        "Authoritative package.json is invalid",
+                    ) from error
+                if not isinstance(document, dict):
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_PACKAGE_INVALID",
+                        "Authoritative package.json must be an object",
+                    )
+                if len(group) == 1 and not any(
+                    group[0].get(name) is not None
+                    for name in ("section", "package", "new_version")
+                ):
+                    after = replace_text_once(
+                        current,
+                        str(group[0].get("old_text")),
+                        str(group[0].get("new_text")),
+                    )
+                    result.append(
+                        {
+                            "operation": "dependency_change",
+                            "path": relative,
+                            "preimage_sha256": actual,
+                            "old_text": current,
+                            "new_text": after,
+                            "section": None,
+                            "package": None,
+                            "new_version": None,
+                            "provenance": list(group[0].get("provenance") or []),
+                        }
+                    )
+                    continue
+                seen: dict[tuple[str, str], str] = {}
+                provenance: list[dict[str, str]] = []
+                for item in group:
+                    fields = [item.get(name) for name in ("section", "package", "new_version")]
+                    if not all(isinstance(field, str) and field.strip() for field in fields):
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "Dependency changes require section, package, and new_version",
+                        )
+                    section, package, new_version = (str(field) for field in fields)
+                    if section not in _DEPENDENCY_SECTIONS:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_SECTION_INVALID",
+                            "Dependency changes must target a supported package section",
+                        )
+                    key = (section, package)
+                    prior = seen.get(key)
+                    if prior is not None and prior != new_version:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_CONFLICT",
+                            "Contradictory dependency changes target the same package key",
+                        )
+                    seen[key] = new_version
+                    matches = [
+                        (name, document[name][package])
+                        for name in _DEPENDENCY_SECTIONS
+                        if isinstance(document.get(name), dict) and package in document[name]
+                    ]
+                    if not matches:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_PACKAGE_MISSING",
+                            "The requested package is missing from authoritative package.json",
+                        )
+                    if len(matches) != 1 or matches[0][0] != section:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS",
+                            "The requested package has ambiguous dependency entries",
+                        )
+                    if not isinstance(matches[0][1], str):
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_VERSION_INVALID",
+                            "The authoritative dependency value is not a version string",
+                        )
+                    document[section][package] = new_version
+                    provenance.append(
+                        {
+                            "operation": "dependency_change",
+                            "path": relative,
+                            "section": section,
+                            "package": package,
+                            "new_version": new_version,
+                        }
+                    )
+                newline = _dominant_newline(current)
+                canonical = json.dumps(document, ensure_ascii=False, indent=2).replace(
+                    "\n", newline
+                )
+                if current.endswith(("\n", "\r")):
+                    canonical += newline
+                if canonical == current:
+                    raise RepairApplicationError(
+                        "REPAIR_REPLACEMENT_NOOP",
+                        "Dependency changes produced no file change",
+                    )
+                first = group[0]
+                result.append(
+                    {
+                        "operation": "dependency_change",
+                        "path": relative,
+                        "preimage_sha256": actual,
+                        "old_text": current,
+                        "new_text": canonical,
+                        "section": first.get("section") if len(group) == 1 else None,
+                        "package": first.get("package") if len(group) == 1 else None,
+                        "new_version": first.get("new_version") if len(group) == 1 else None,
+                        "provenance": provenance,
+                    }
+                )
+                continue
+
+            if "delete_text_file" in actions:
+                if len(group) != 1:
+                    raise RepairApplicationError(
+                        "REPAIR_OPERATION_AMBIGUOUS",
+                        "Delete operations cannot share a physical path",
+                    )
+                result.append(
+                    {
+                        "operation": "delete_text_file",
+                        "path": relative,
+                        "content": "",
+                        "preimage_sha256": actual,
+                        "provenance": [],
+                    }
+                )
+                continue
+
+            if actions != {"replace_text"}:
+                raise RepairApplicationError(
+                    "REPAIR_OPERATION_AMBIGUOUS",
+                    "Different file operations cannot share a physical path",
+                )
+            after = current
+            provenance = []
+            for item in group:
+                try:
+                    after = replace_text_once(
+                        after, str(item.get("old_text")), str(item.get("new_text"))
+                    )
+                except RepairApplicationError:
+                    raise
+                provenance.append(
+                    {
+                        "operation": "replace_text",
+                        "path": relative,
+                        "old_text": str(item.get("old_text")),
+                        "new_text": str(item.get("new_text")),
+                    }
+                )
+            result.append(
+                {
+                    "operation": "replace_text",
+                    "path": relative,
+                    "preimage_sha256": actual,
+                    "old_text": current,
+                    "new_text": after,
+                    "provenance": provenance,
+                }
+            )
+        for operation in result:
+            operation['provenance'] = _normalize_provenance(operation.get('provenance'))
+        return result
+
+    def _bind_dependency_transition(
+        self, value: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
+        """Validate and normalize the single structured dependency_transition operation."""
+        operations = list(value.get("operations") or [])
+        transitions = [
+            item for item in operations if item.get("operation") == "dependency_transition"
+        ]
+        if len(operations) != 1 or len(transitions) != 1:
+            raise RepairApplicationError(
+                "REPAIR_OPERATION_AMBIGUOUS",
+                "dependency_transition requires exactly one operation and no other mutations",
+            )
+        operation = dict(transitions[0])
+        expected_fields = {
+            "schema_version": "transformer-repair-v2",
+            "repair_kind": "dependency_transition",
+            "failure_type": "peer_dependency_conflict",
+            "strategy": "detach_update_reattach",
+        }
+        for field, expected in expected_fields.items():
+            supplied = operation.get(field)
+            if supplied is not None and supplied != expected:
+                raise RepairApplicationError(
+                    "REPAIR_DEPENDENCY_INTENT_INVALID",
+                    f"dependency_transition {field} conflicts with backend authority",
+                )
+            operation[field] = expected
+        try:
+            blocking_value = operation.get("blocking_dependency")
+            blocking = (
+                BlockingDependencyCandidateInput.model_validate(blocking_value)
+                if blocking_value is not None
+                else None
+            )
+            target_value = operation.get("target_state")
+            target_state = (
+                TargetStateCandidateInput.model_validate(target_value)
+                if target_value is not None
+                else None
+            )
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_INTENT_INVALID",
+                "dependency_transition intent fields are incomplete",
+            ) from error
+        checkpoint_id = context.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str) or not checkpoint_id:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_AUTHORITY_MISSING",
+                "Repair attempt checkpoint authority is missing",
+            )
+        if operation.get("checkpoint_id") is not None and operation["checkpoint_id"] != checkpoint_id:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_INTENT_INVALID",
+                "dependency_transition checkpoint_id conflicts with backend authority",
+            )
+        expected_major = _version_major(context.get("target_exact"))
+        target_exact = context.get("target_exact")
+        if expected_major is None or not is_exact_version(target_exact):
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_AUTHORITY_MISSING",
+                "Stage plan target exact version authority is missing",
+            )
+        workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+        segments = context.get("segments")
+        try:
+            evidence = json.loads(str(segments[0]))
+        except (IndexError, TypeError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_EVIDENCE_MISSING",
+                "Backend dependency conflict evidence is missing",
+            ) from error
+        try:
+            normalized = evidence.get("normalized_failure")
+            diagnosis = normalized.get("failure_diagnosis") if isinstance(normalized, dict) else None
+            if (
+                isinstance(normalized, dict)
+                and (
+                    not isinstance(diagnosis, dict)
+                    or not isinstance(diagnosis.get("package"), str)
+                    or not diagnosis.get("required_ranges")
+                )
+            ):
+                reparsed = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+                if reparsed is not None:
+                    normalized = {**normalized, "failure_diagnosis": reparsed}
+                    evidence = {**evidence, "normalized_failure": normalized}
+                    diagnosis = reparsed
+            backend_package = diagnosis.get("package") if isinstance(diagnosis, dict) else None
+            if not isinstance(backend_package, str) or not backend_package:
+                raise ValueError("backend evidence did not identify the blocking package")
+            installed_version = installed_dependency_version(workspace, backend_package)
+            authority = validate_dependency_transition_evidence(
+                evidence,
+                package=backend_package,
+                target_major=expected_major,
+                installed_version=installed_version,
+            )
+            if blocking is not None:
+                if blocking.package is not None and blocking.package != authority["package"]:
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_INTENT_INVALID",
+                        "proposal blocking package conflicts with backend evidence",
+                    )
+                if blocking.installed_version is not None:
+                    if not is_exact_version(blocking.installed_version):
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "proposal installed package version must be exact",
+                        )
+                    if blocking.installed_version != authority["installed_version"]:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "proposal installed package version conflicts with backend authority",
+                        )
+                if blocking.required_peer_ranges is not None:
+                    proposed_ranges = {
+                        item.package: item.version_range
+                        for item in blocking.required_peer_ranges
+                        if item.package is not None or item.version_range is not None
+                    }
+                    if any(item.package is None or item.version_range is None for item in blocking.required_peer_ranges):
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "proposal peer range fields are incomplete",
+                        )
+                    if proposed_ranges != authority["peer_ranges"]:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "proposal peer ranges conflict with backend evidence",
+                        )
+            if target_state is not None:
+                if target_state.package is not None and target_state.package != authority["package"]:
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_INTENT_INVALID",
+                        "proposal target package conflicts with backend evidence",
+                    )
+                if target_state.target_version is not None:
+                    if not is_exact_version(target_state.target_version):
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "proposal target version must be exact",
+                        )
+                    if target_state.target_version != target_exact:
+                        raise RepairApplicationError(
+                            "REPAIR_DEPENDENCY_INTENT_INVALID",
+                            "proposal target version conflicts with backend authority",
+                        )
+                if target_state.angular_major is not None and target_state.angular_major != expected_major:
+                    raise RepairApplicationError(
+                        "REPAIR_DEPENDENCY_INTENT_INVALID",
+                        "proposal Angular major conflicts with backend authority",
+                    )
+            verify_dependency_transition_state(
+                workspace,
+                package=str(authority["package"]),
+                installed_version=str(authority["installed_version"]),
+                peer_ranges=dict(authority["peer_ranges"]),
+            )
+        except RepairApplicationError:
+            raise
+        except ValueError as error:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+                str(error),
+            ) from error
+        operation["blocking_dependency"] = BlockingDependencyCandidate(
+            package=authority["package"],
+            installed_version=authority["installed_version"],
+            required_peer_ranges=[
+                RequiredPeerRange(package=peer_package, version_range=version_range)
+                for peer_package, version_range in authority["peer_ranges"].items()
+            ],
+        ).model_dump(mode="json")
+        operation["target_state"] = TargetStateCandidate(
+            package=authority["package"],
+            target_version=str(target_exact),
+            angular_major=expected_major,
+        ).model_dump(mode="json")
+        operation["checkpoint_id"] = checkpoint_id
+        value["operations"] = [operation]
+        package = str(authority["package"])
+        try:
+            with (workspace / "package.json").open("r", encoding="utf-8", newline="") as handle:
+                document = json.loads(
+                    handle.read(), object_pairs_hook=self._json_object_without_duplicates
+                )
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_INVALID", "Authoritative package.json is invalid"
+            ) from error
+        if not isinstance(document, dict):
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_INVALID", "Authoritative package.json must be an object"
+            )
+        present = [
+            section
+            for section in _DEPENDENCY_TRANSITION_TARGET_SECTIONS
+            if isinstance(document.get(section), dict) and package in document[section]
+        ]
+        if len(present) != 1:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_PACKAGE_MISSING",
+                "The backend blocking package is missing or ambiguous in authoritative package.json",
+            )
+        return RepairProposal.model_validate(value).model_dump(mode="json")
+
+    def _causal_gate_rejection(self, context: dict[str, object], proposal: dict[str, object]):
+        """Run the causal gate over the failure evidence and the bound proposal."""
+        evidence_dict = None
+        segments = context.get("segments")
+        if segments and isinstance(segments[0], str):
+            try:
+                parsed = json.loads(segments[0])
+                if isinstance(parsed, dict):
+                    evidence_dict = parsed
+            except (TypeError, ValueError):
+                evidence_dict = None
+        if evidence_dict is None:
+            evidence_dict = {
+                key: context.get(key)
+                for key in ("run_id", "stage_id", "attempt_id")
+                if context.get(key) is not None
+            }
+            evidence_dict = evidence_dict or None
+        return causal_rejection(
+            evidence_dict,
+            proposal,
+            stage_plan_commands=context.get("stage_plan_commands"),
+        )
+
     def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairProposalCandidate.model_validate(value)
         if candidate.proposal_format == "operations":
@@ -1000,40 +1627,29 @@ class RepairApplicationService:
                 "REPAIR_PROPOSAL_FORMAT_INVALID", "Unified diff format must contain only a diff"
             )
         workspace = Path(str(context["workspace_path"])).resolve(strict=True)
-        operations = []
-        for operation in candidate.operations:
-            bound = operation.model_dump(mode="json")
-            relative = self._safe_path(operation.path, workspace)
-            bound["path"] = relative
-            target = workspace / relative
-            if operation.operation == "dependency_change":
-                bound = self._normalize_dependency_operation(bound, target)
-            if operation.operation == "create_text_file":
-                bound["preimage_sha256"] = None
-            else:
-                bound["preimage_sha256"] = (
-                    "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
-                    if target.is_file() and not target.is_symlink()
-                    else None
-                )
-            operations.append(bound)
-        touched_files = (
-            [operation["path"] for operation in operations]
-            if operations
-            else self._unified_diff_touched_files(candidate.unified_diff, workspace)
+        operations = self._coalesce_operations(
+            [operation.model_dump(mode="json") for operation in candidate.operations],
+            workspace,
+            context=context,
+            bind_preimages=True,
         )
-        return RepairProposal.model_validate(
-            {
-                **candidate.model_dump(mode="json"),
-                "failure_evidence_checksum": context["failure_evidence_checksum"],
-                "context_pack_checksum": context["context_pack_checksum"],
-                "operations": operations,
-                "touched_files": touched_files,
-                "validation_targets": self._normalize_validation_targets(
-                    candidate.validation_targets
-                ),
-            }
-        ).model_dump(mode="json")
+        payload = {
+            **candidate.model_dump(mode="json"),
+            "failure_evidence_checksum": context["failure_evidence_checksum"],
+            "context_pack_checksum": context["context_pack_checksum"],
+            "operations": operations,
+            "touched_files": (
+                [operation["path"] for operation in operations]
+                if operations
+                else self._unified_diff_touched_files(candidate.unified_diff, workspace)
+            ),
+            "validation_targets": self._normalize_validation_targets(
+                candidate.validation_targets
+            ),
+        }
+        if any(item.get("operation") == "dependency_transition" for item in operations):
+            return self._bind_dependency_transition(payload, context)
+        return RepairProposal.model_validate(payload).model_dump(mode="json")
 
     def _unified_diff_touched_files(self, diff: str | None, workspace: Path) -> list[str]:
         lines = (diff or "").splitlines()
@@ -1124,6 +1740,24 @@ class RepairApplicationService:
 
     def _bind_review_candidate(self, value: dict[str, object], context: dict[str, object]):
         candidate = RepairReviewCandidate.model_validate(value)
+        try:
+            proposal = json.loads(str(context["segments"][2]))
+            evidence = json.loads(str(context["segments"][0]))
+        except (TypeError, ValueError, KeyError, IndexError):
+            proposal = None
+            evidence = None
+        if (
+            candidate.decision == "accept"
+            and isinstance(proposal, dict)
+            and isinstance(evidence, dict)
+        ):
+            rejection = causal_rejection(
+                evidence,
+                proposal,
+                stage_plan_commands=context.get("stage_plan_commands"),
+            )
+            if rejection is not None:
+                raise RepairApplicationError("REPAIR_REVIEW_CAUSAL_INVALID", rejection.reason)
         return RepairReview(
             **candidate.model_dump(
                 mode="json",
@@ -1174,70 +1808,46 @@ class RepairApplicationService:
             )
         workspace = Path(str(context["workspace_path"])).resolve(strict=True)
         normalized = [self._safe_path(item, workspace) for item in proposal.touched_files]
-        if len(normalized) != len(set(normalized)):
-            raise RepairApplicationError("REPAIR_PATH_DUPLICATE", "Touched file paths must be unique")
-        operation_paths = []
-        for operation in proposal.operations:
-            relative = self._safe_path(operation.path, workspace)
-            operation_paths.append(relative)
-            target = workspace / relative
-            if operation.operation == "create_text_file":
-                if target.exists() or operation.content is None:
-                    raise RepairApplicationError(
-                        "REPAIR_PREIMAGE_INVALID", "Create operation target or content is invalid"
-                    )
-            else:
-                if not target.is_file() or target.is_symlink():
-                    raise RepairApplicationError(
-                        "REPAIR_PREIMAGE_INVALID", "Repair target must be a regular existing file"
-                    )
-                try:
-                    target.read_text(encoding="utf-8")
-                except UnicodeDecodeError as error:
-                    raise RepairApplicationError(
-                        "REPAIR_BINARY_FORBIDDEN", "Repair target is not UTF-8 text"
-                    ) from error
-                actual = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
-                if operation.preimage_sha256 != actual:
-                    raise RepairApplicationError(
-                        "REPAIR_PREIMAGE_STALE", "Repair target preimage checksum changed"
-                    )
-            if operation.operation == "dependency_change" and relative != "package.json":
+        if proposal.operations:
+            operation_paths = [self._safe_path(item.path, workspace) for item in proposal.operations]
+            if len(normalized) != len(set(normalized)) and len(operation_paths) == len(set(operation_paths)):
                 raise RepairApplicationError(
-                    "REPAIR_DEPENDENCY_PATH_INVALID",
-                    "Dependency changes may edit only package.json",
+                    "REPAIR_PATH_DUPLICATE", "Touched file paths must be unique"
                 )
-            if relative == "package.json" and operation.operation != "dependency_change":
-                raise RepairApplicationError(
-                    "REPAIR_DEPENDENCY_OPERATION_REQUIRED",
-                    "package.json changes require the controlled dependency operation",
-                )
-            if operation.operation == "dependency_change":
-                self._require_lockfile_generation_authority(context)
-            if operation.operation in {"replace_text", "dependency_change"} and (
-                operation.old_text is None or operation.new_text is None
-            ):
-                raise RepairApplicationError(
-                    "REPAIR_OPERATION_INVALID", "replace_text needs old_text and new_text"
-                )
-            if operation.operation in {"replace_text", "dependency_change"}:
-                replace_text_once(
-                    target.read_text(encoding="utf-8"),
-                    str(operation.old_text),
-                    str(operation.new_text),
-                )
-        if proposal.operations and sorted(operation_paths) != sorted(normalized):
-            raise RepairApplicationError(
-                "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
+            operations = self._coalesce_operations(
+                [item.model_dump(mode="json") for item in proposal.operations],
+                workspace,
+                context=context,
             )
+            expected_paths = [str(item["path"]) for item in operations]
+            normalized = list(dict.fromkeys(normalized))
+            if normalized != expected_paths:
+                raise RepairApplicationError(
+                    "REPAIR_TOUCHED_FILES_MISMATCH", "Operation paths do not match touched_files"
+                )
+        else:
+            if len(normalized) != len(set(normalized)):
+                raise RepairApplicationError("REPAIR_PATH_DUPLICATE", "Touched file paths must be unique")
+            operations = []
         if proposal.proposal_format == "operations" and proposal.operations:
-            rendered = self._render_safe_diff(proposal.model_dump(mode="json"), workspace)
+            bound = proposal.model_dump(mode="json")
+            bound["operations"] = operations
+            bound["touched_files"] = expected_paths
+            if any(item.get("operation") == "dependency_transition" for item in operations):
+                bound = self._bind_dependency_transition(bound, context)
+            rendered = self._render_safe_diff(bound, workspace)
             if not rendered:
                 raise RepairApplicationError(
                     "REPAIR_EMPTY_DIFF",
                     "Proposed operations claim changes but render an empty diff",
                 )
-        return proposal.model_dump(mode="json")
+            result = bound
+        else:
+            result = proposal.model_dump(mode="json")
+        rejection = self._causal_gate_rejection(context, result)
+        if rejection is not None:
+            raise RepairApplicationError("REPAIR_CAUSAL_REJECTION", rejection.reason)
+        return result
 
     @staticmethod
     def _require_lockfile_generation_authority(context: dict[str, object]) -> None:
@@ -1311,6 +1921,10 @@ class RepairApplicationService:
             )
             if stage_plan is None:
                 raise RepairApplicationError("REPAIR_AUTHORITY_MISSING", "Repair stage plan is missing")
+            stage_value = stage_plan.stage_plan or {}
+            angular_references = (stage_value.get("commands") or {}).get("angular_update") or []
+            angular_reference = angular_references[0] if len(angular_references) == 1 else {}
+            angular_bindings = angular_reference.get("parameter_bindings") or {}
             context = {
                 "attempt_id": attempt.id,
                 "run_id": attempt.run_id,
@@ -1342,9 +1956,12 @@ class RepairApplicationService:
                 "stage_plan_checksum": stage_plan.checksum if stage_plan else (continuation.stage_plan_checksum if continuation else None),
                 "stage_plan_state_version": stage_plan.state_version if stage_plan else None,
                 "stage_plan_commands": dict((stage_plan.stage_plan or {}).get("commands") or {}),
+                "target_exact": angular_bindings.get("target_exact") or stage_value.get("target_exact"),
+                "target_cli_exact": angular_bindings.get("target_cli_exact") or stage_value.get("target_cli_exact"),
                 "workspace_binding_id": binding.id,
                 "workspace_binding_alias": binding.alias,
                 "workspace_stored_fingerprint": binding.workspace_fingerprint,
+                "checkpoint_id": attempt.checkpoint_id,
             }
             if not attempt.failure_evidence_artifact_id or not attempt.failure_evidence_checksum:
                 raise RepairApplicationError("REPAIR_EVIDENCE_MISSING", "Failure evidence artifact is missing")
@@ -3143,6 +3760,9 @@ class RepairApplicationService:
         for operation in proposal["operations"]:
             path = str(operation["path"])
             action = str(operation["operation"])
+            if action == "dependency_transition":
+                rendered.append(_render_dependency_transition_intent(operation))
+                continue
             target = workspace / path
             if action == "create_text_file":
                 before = ""

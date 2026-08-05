@@ -31,7 +31,7 @@ from app.domain.contracts import (
     CommandResultDto,
     CommandStatus,
 )
-from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
 from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
@@ -163,6 +163,12 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
             ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
             ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
         ),
+        CommandDefinition(
+            ANGULAR_UPDATE_V3_RENDERER.command_id,
+            ANGULAR_UPDATE_V3_RENDERER.executable,
+            ANGULAR_UPDATE_V3_RENDERER.argument_patterns,
+            ANGULAR_UPDATE_V3_RENDERER.executable_aliases,
+        ),
     )
 
 
@@ -221,14 +227,27 @@ class CommandRegistry:
         *_transformation_command_definitions(),
     )
 
-    def find(self, command_id: str) -> CommandDefinition:
-        latest = None
-        for definition in self.definitions:
-            if definition.command_id == command_id:
-                latest = definition
-        if latest is None:
+    def find(self, command_id: str, arguments: tuple[str, ...] | None = None) -> CommandDefinition:
+        candidates = [
+            definition
+            for definition in self.definitions
+            if definition.command_id == command_id
+        ]
+        if not candidates:
             raise CommandPolicyViolation("Command ID is not registered for Sprint 0 execution")
-        return latest
+        if arguments is None:
+            return candidates[-1]
+        # The registry holds multiple immutable shapes of one command_id
+        # (e.g. angular-update-exact v1/v2/v3). Bind the request to the shape
+        # that matches its concrete arguments; zero or several matches reject.
+        matching = [
+            definition for definition in candidates if definition.matches_arguments(arguments)
+        ]
+        if len(matching) != 1:
+            raise CommandPolicyViolation(
+                "Arguments do not match a registered command definition"
+            )
+        return matching[0]
 
 
 @dataclass(frozen=True)
@@ -264,7 +283,7 @@ class CommandPolicy:
         if request.cancellation_policy is not CancellationPolicy.TERMINATE_PROCESS_TREE:
             raise CommandPolicyViolation("Cancellation policy is not supported by the Sprint 0 supervisor")
 
-        definition = self.registry.find(request.command_id)
+        definition = self.registry.find(request.command_id, tuple(request.arguments))
         if request.executable not in definition.allowed_executables:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
         if not definition.matches_arguments(tuple(request.arguments)):

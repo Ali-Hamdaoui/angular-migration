@@ -107,7 +107,32 @@ WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID = f"{WORKSPACE_FINGERPRINT_VERSION}:stage
 WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID = f"{WORKSPACE_FINGERPRINT_VERSION}:source-config"
 
 PLANNING_VOLATILE_ROOTS = frozenset({"node_modules", ".angular", "dist", "coverage"})
-STAGE_VOLATILE_NAMES = frozenset({"node_modules", ".angular", ".cache", "dist", "build", "logs", "reports", "tmp", ".pytest_cache"})
+STAGE_VOLATILE_NAMES = frozenset(
+    {
+        ".angular",
+        ".cache",
+        ".checkpoints",
+        ".git",
+        ".interrupted",
+        ".preparing",
+        ".pytest_cache",
+        ".reconstructing",
+        ".ruff_cache",
+        ".temp",
+        ".tmp",
+        "build",
+        "cache",
+        "caches",
+        "coverage",
+        "dist",
+        "logs",
+        "node_modules",
+        "reports",
+        "temp",
+        "temporary",
+        "tmp",
+    }
+)
 
 
 def _legacy_path_order_key(entry: tuple[str, bytes]) -> tuple[str, str]:
@@ -186,7 +211,8 @@ def workspace_fingerprint_v1(
         if not item.is_file():
             continue
         relative = item.relative_to(root)
-        if exclude and any(part in exclude for part in relative.parts):
+        excluded = {name.casefold() for name in exclude}
+        if excluded and any(part.casefold() in excluded for part in relative.parts):
             continue
         entries.append((relative.as_posix(), item.read_bytes()))
     sort_key = (
@@ -225,12 +251,16 @@ PLANNING_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
     profile_id=WORKSPACE_FINGERPRINT_PLANNING_PROFILE_ID,
 )
 STAGE_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
-    excluded_names=frozenset(),
+    excluded_names=STAGE_VOLATILE_NAMES,
     profile_id=WORKSPACE_FINGERPRINT_STAGE_PROFILE_ID,
 )
 SOURCE_CONFIG_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
     excluded_names=STAGE_VOLATILE_NAMES,
     profile_id=WORKSPACE_FINGERPRINT_SOURCE_CONFIG_PROFILE_ID,
+)
+LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
+    excluded_names=frozenset(),
+    profile_id="legacy:workspace-fingerprint-v1:stage:complete-tree",
 )
 LEGACY_STAGE_RAW_ORDER_FINGERPRINT_PROFILE = WorkspaceFingerprintProfile(
     excluded_names=frozenset(),

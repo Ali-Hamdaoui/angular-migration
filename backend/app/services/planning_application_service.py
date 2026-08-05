@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 
-from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -93,8 +93,8 @@ class StageExecutionPlanService:
     @staticmethod
     def _command(command_id, request, parameter_bindings=None):
         if command_id == "angular-update-exact":
-            definition = ANGULAR_UPDATE_V2_RENDERER
-            template_version = 2
+            definition = ANGULAR_UPDATE_V3_RENDERER
+            template_version = 3
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
             template_version = 1

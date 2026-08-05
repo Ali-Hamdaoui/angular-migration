@@ -8,12 +8,14 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from time import sleep
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import LocalFilesystemArtifactStore
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V3_RENDERER
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -46,6 +48,7 @@ from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
 from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
+from app.services.workspace_fingerprint import LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -420,13 +423,12 @@ class TransformerStageService:
     ):
         """Queue one governed successor for the failed angular update command.
 
-        The successor reuses the failed execution's approved authorization,
-        plan/runtime profile, command identity, and reconstruction checkpoint
-        (``CommandExecutorService.queue_retry_execution`` authority); the
-        terminal failed row is never mutated or replayed. The workspace must
-        be the governed post-repair workspace: its live fingerprint must equal
-        the durable binding, which the apply already updated to the
-        post-repair fingerprint.
+        The successor reuses the failed execution's immutable lineage. A
+        legacy accepted Angular v2 command is explicitly superseded by one
+        newly authorized v3 command; the terminal failed row is never mutated
+        or replayed. The workspace must be the governed post-repair workspace:
+        its live fingerprint must equal the durable binding, which the apply
+        already updated to the post-repair fingerprint.
         """
         failed = session.get(CommandExecutionModel, failed_execution_id)
         if (
@@ -445,12 +447,99 @@ class TransformerStageService:
                 "ANGULAR_UPDATE_RETRY_REQUIRES_RECOVERY",
                 "Post-repair workspace is not the governed workspace fingerprint",
             )
+        failed = session.get(CommandExecutionModel, failed_execution_id)
+        replacement_authorization_id = None
+        retry_checkpoint_id = None
+        if (
+            failed is not None
+            and failed.command_id == "angular-update-exact"
+            and failed.template_version == 2
+        ):
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            stage_data = (stage_plan.stage_plan or {}) if stage_plan is not None else {}
+            references = ((stage_data.get("commands") or {}).get("angular_update") or [])
+            planned = references[0] if len(references) == 1 else None
+            bindings = (planned or {}).get("parameter_bindings") or {}
+            try:
+                failed_arguments_match = (
+                    tuple(failed.arguments or [])
+                    == ANGULAR_UPDATE_V2_RENDERER.render_arguments(bindings)
+                )
+                retry_arguments = ANGULAR_UPDATE_V3_RENDERER.render_arguments(bindings)
+            except (TypeError, ValueError) as error:
+                raise TransformerStageError(
+                    "ANGULAR_UPDATE_RETRY_INVALID",
+                    "The accepted v2 Angular command authority cannot be superseded",
+                ) from error
+            if (
+                planned is None
+                or planned.get("command_id") != "angular-update-exact"
+                or planned.get("template_id") != ANGULAR_UPDATE_V2_RENDERER.template_id
+                or planned.get("template_version") != 2
+                or not failed_arguments_match
+            ):
+                raise TransformerStageError(
+                    "ANGULAR_UPDATE_RETRY_INVALID",
+                    "The accepted v2 Angular command authority cannot be superseded",
+                )
+            retry_checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "post_repair",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+            )
+            if retry_checkpoint is None:
+                raise TransformerStageError(
+                    "POST_REPAIR_CHECKPOINT_MISSING",
+                    "Angular v3 recovery requires the durable post-repair checkpoint",
+                )
+            retry_checkpoint_id = retry_checkpoint.id
+            try:
+                replacement_authorization_id = self._command_executor.authorize_retry_command(
+                    session,
+                    failed_execution_id,
+                    template_id=ANGULAR_UPDATE_V3_RENDERER.template_id,
+                    template_version=3,
+                    executable=ANGULAR_UPDATE_V3_RENDERER.executable,
+                    arguments=list(retry_arguments),
+                    working_directory_alias=binding.alias,
+                    working_directory=binding.workspace_path,
+                    plan_id=failed.plan_id or continuation.plan_id,
+                    plan_version=failed.plan_version or stage_data.get("plan_version") or 1,
+                    execution_profile_id=str(stage_data.get("execution_profile_id") or ""),
+                    network_profile=ANGULAR_UPDATE_V3_RENDERER.network_profile,
+                    timeout_seconds=ANGULAR_UPDATE_V3_RENDERER.timeout_seconds,
+                    idempotency_key=f"{failed_execution_id}:supersession:angular-v3",
+                )
+            except CommandExecutorError as error:
+                raise TransformerStageError(error.code, error.message) from error
+        elif failed is not None and failed.template_version == 3:
+            # A v3 retry binds the newest post-repair checkpoint (the tree the
+            # retry actually runs on) so interruption recovery restores the
+            # correct state; absent one, the failed execution's own checkpoint
+            # remains the fallback.
+            retry_checkpoint = session.scalar(
+                select(StageCheckpointModel)
+                .where(
+                    StageCheckpointModel.run_id == continuation.run_id,
+                    StageCheckpointModel.stage_id == continuation.current_stage_id,
+                    StageCheckpointModel.kind == "post_repair",
+                )
+                .order_by(StageCheckpointModel.sequence.desc())
+            )
+            if retry_checkpoint is not None:
+                retry_checkpoint_id = retry_checkpoint.id
         try:
             result = self._command_executor.queue_retry_execution(
                 session,
                 failed_execution_id,
                 idempotency_key=idempotency_key,
                 workspace_recovered=True,
+                replacement_authorization_id=replacement_authorization_id,
+                checkpoint_id=retry_checkpoint_id,
             )
         except CommandExecutorError as error:
             raise TransformerStageError(error.code, error.message) from error
@@ -519,21 +608,55 @@ class TransformerStageService:
         workspace.relative_to(root)
         checkpoint_root = root / ".checkpoints"
         checkpoint_root.mkdir(parents=True, exist_ok=True)
-        target = checkpoint_root / f"{stage_id}-{uuid4().hex[:12]}"
-        temporary = checkpoint_root / f".{target.name}.preparing"
+        target = checkpoint_root / f"{stage_id}-{uuid4().hex}"
+        temporary = checkpoint_root / f".{target.name}.preparing-{uuid4().hex}"
         if any(item.is_symlink() for item in workspace.rglob("*")):
             raise TransformerStageError("WORKSPACE_SYMLINK_UNSUPPORTED", "Checkpoint source contains a symlink")
         try:
-            shutil.copytree(workspace, temporary)
-            temporary.replace(target)
+            report = StageSandboxCopier().copy(workspace, temporary, registered_root=checkpoint_root)
+            fingerprint = report.fingerprint
+            copied_files = report.copied_files
+            last_error = None
+            for delay in (0.05, 0.1, 0.2, 0.4):
+                try:
+                    if target.exists():
+                        existing = StageSandboxCopier.fingerprint(target)
+                        if existing != fingerprint:
+                            raise TransformerStageError(
+                                "CHECKPOINT_DESTINATION_CONFLICT",
+                                "Existing checkpoint destination has a different fingerprint",
+                            )
+                        shutil.rmtree(temporary, ignore_errors=True)
+                        return StagePreparationResult(
+                            "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_"),
+                            str(target),
+                            existing,
+                            copied_files,
+                            True,
+                        )
+                    temporary.replace(target)
+                    break
+                except PermissionError as error:
+                    if getattr(error, "winerror", None) not in (None, 5, 32):
+                        raise
+                    last_error = error
+                    sleep(delay)
+            else:
+                raise TransformerStageError(
+                    "CHECKPOINT_RECOVERY_FAILED",
+                    "Checkpoint snapshot sealing failed after bounded rename retries",
+                ) from last_error
+        except TransformerStageError:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
         return StagePreparationResult(
             "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_"),
             str(target),
-            StageSandboxCopier.fingerprint(target),
-            sum(1 for item in target.rglob("*") if item.is_file()),
+            fingerprint,
+            copied_files,
             True,
         )
 
@@ -677,6 +800,14 @@ class TransformerStageService:
         except OSError:
             return None
         if current == checkpoint.workspace_fingerprint:
+            return current
+        try:
+            legacy = LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE.fingerprint(
+                Path(checkpoint.workspace_path)
+            )
+        except OSError:
+            return None
+        if legacy == checkpoint.workspace_fingerprint:
             return current
         lineage = session.scalar(
             select(RepairFingerprintRecoveryModel).where(
@@ -1120,7 +1251,7 @@ class TransformerStageService:
         binding = self._binding(session, continuation)
         workspace = Path(binding.workspace_path)
         fingerprint = self._stage_execution._preparation._copier.fingerprint(workspace)
-        if fingerprint == binding.workspace_fingerprint:
+        if fingerprint == binding.workspace_fingerprint and execution.command_id != "npm-ci-bootstrap":
             raise TransformerStageError("BOOTSTRAP_NO_CHANGE", "Bootstrap install produced no workspace change")
         binding.workspace_fingerprint = fingerprint
         binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id

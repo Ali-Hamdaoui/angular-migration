@@ -248,6 +248,57 @@ ANGULAR_UPDATE_V2_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute an approved exact Angular update (v2)",
 )
 
+# v3 is the current stage-only renderer. v1 and v2 remain immutable history.
+ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v3",
+    executable="npx",
+    argument_patterns=(
+        "--yes",
+        "-p",
+        "@angular/cli@{target_cli_exact}",
+        "ng",
+        "update",
+        "@angular/core@{target_exact}",
+        "@angular/cli@{target_cli_exact}",
+        "--allow-dirty",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute an approved exact Angular update in the isolated stage workspace (v3)",
+)
+
+# Immutable detach/reattach steps of the dependency-transition repair: the
+# blocking peer dependency is uninstalled, the Angular update retried, and the
+# dependency reinstalled at the approved target version.
+NPM_DEPENDENCY_UNINSTALL_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-dependency-uninstall",
+    template_id="tpl-npm-dependency-uninstall",
+    executable="npm",
+    argument_patterns=("uninstall", "{package}"),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=1800,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Uninstall the blocking peer dependency (immutable detach step of the dependency transition repair)",
+)
+
+NPM_DEPENDENCY_INSTALL_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-dependency-install",
+    template_id="tpl-npm-dependency-install",
+    executable="npm",
+    argument_patterns=("install", "--save-dev", "--save-exact", "{package}@{target_version}"),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=1800,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Install the approved target version of the detached dependency (reattach step of the dependency transition repair)",
+)
+
 # Default command templates for Sprint 3 pipeline
 TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinition]] = {
     "npm-ci-bootstrap": TransformationCommandDefinition(
@@ -298,6 +349,8 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         argument_patterns=("run", "{lint_script}"), executable_aliases=("npm.cmd",), timeout_seconds=1800,
         conditional=True, description="Run a discovered lint target",
     ),
+    "npm-dependency-uninstall": NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    "npm-dependency-install": NPM_DEPENDENCY_INSTALL_RENDERER,
 }
 
 
@@ -314,6 +367,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         version=2,
         allowed_env_vars=ANGULAR_UPDATE_V2_RENDERER.allowed_env_vars,
         max_output_bytes=ANGULAR_UPDATE_V2_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V3_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V3_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V3_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V3_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V3_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V3_RENDERER.description,
+        version=3,
+        allowed_env_vars=ANGULAR_UPDATE_V3_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V3_RENDERER.max_output_bytes,
     ),
 )
 

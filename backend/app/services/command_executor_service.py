@@ -93,8 +93,16 @@ _WORKER_MUTABLE_WORKSPACE_ALIASES = frozenset({
     "DELIVERY_CANDIDATE",
 })
 _MUTATING_COMMAND_IDS = frozenset(
-    {"npm-ci-bootstrap", "angular-update-exact", "npm-ci-final", "npm-lockfile-generate"}
+    {
+        "npm-ci-bootstrap",
+        "angular-update-exact",
+        "npm-ci-final",
+        "npm-lockfile-generate",
+        "npm-dependency-uninstall",
+        "npm-dependency-install",
+    }
 )
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 def worker_workspace_aliases(aliases: Mapping[str, str | Path], authorized_alias: str | None) -> dict[str, Path]:
@@ -518,6 +526,149 @@ class CommandExecutorService:
                             "command_id": authorization.command_id, "state_version": run.state_version})
         return self._response_from_model(model)
 
+    def authorize_retry_command(
+        self,
+        session: Session,
+        failed_execution_id: str,
+        *,
+        template_id: str,
+        template_version: int,
+        executable: str,
+        arguments: list[str],
+        working_directory_alias: str,
+        working_directory: str,
+        plan_id: str,
+        plan_version: int,
+        execution_profile_id: str,
+        network_profile: str,
+        timeout_seconds: int,
+        idempotency_key: str,
+    ) -> str:
+        """Authorize a bounded command-template supersession before retrying."""
+        failed = session.get(CommandExecutionModel, failed_execution_id)
+        run = session.get(MigrationRunModel, failed.run_id) if failed is not None else None
+        if failed is None or run is None:
+            raise CommandExecutorError(
+                "EXECUTION_NOT_FOUND", "Failed execution does not exist"
+            )
+        if failed.command_id != "angular-update-exact":
+            raise CommandExecutorError(
+                "ANGULAR_UPDATE_RETRY_INVALID",
+                "Only an Angular update execution may receive v3 recovery authorization",
+            )
+        self._policy_engine.registry.seed_defaults(session)
+        request = CommandPolicyValidateRequestDto(
+            run_id=failed.run_id,
+            expected_state_version=run.state_version,
+            stage_id=failed.stage_id,
+            command_id=failed.command_id,
+            template_id=template_id,
+            template_version=template_version,
+            executable=executable,
+            arguments=arguments,
+            cwd_alias=working_directory_alias,
+            plan_id=plan_id,
+            plan_version=plan_version,
+            working_directory_alias=working_directory_alias,
+            working_directory=working_directory,
+            execution_profile_id=execution_profile_id,
+            network_profile=network_profile,
+            cancellation_policy="terminate_process_tree",
+            timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key,
+            requested_by="transformer-recovery",
+        )
+        response = self._policy_engine.validate(
+            session,
+            request,
+            supersedes_authorization_id=failed.authorization_id,
+        )
+        if response.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_REJECTED",
+                "Angular v3 recovery authorization was rejected: "
+                + "; ".join(response.reasons),
+            )
+        return response.authorization_id
+
+    def authorize_dependency_transition_command(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+        command_id: str,
+        executable: str,
+        arguments: list[str],
+        working_directory_alias: str,
+        working_directory: str,
+        plan_id: str,
+        plan_version: int,
+        execution_profile_id: str,
+        network_profile: str,
+        timeout_seconds: int,
+        idempotency_key: str,
+    ) -> str:
+        """Authorize one detach/reattach command bound to an applied repair proposal."""
+        from app.domain.command import (
+            ANGULAR_UPDATE_V3_RENDERER,
+            NPM_DEPENDENCY_INSTALL_RENDERER,
+            NPM_DEPENDENCY_UNINSTALL_RENDERER,
+        )
+        from app.repositories.models.workflow import RepairAttemptModel
+
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        run = session.get(MigrationRunModel, attempt.run_id) if attempt is not None else None
+        if attempt is None or run is None:
+            raise CommandExecutorError(
+                "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt does not exist"
+            )
+        renderer_for_command = {
+            "npm-dependency-uninstall": (NPM_DEPENDENCY_UNINSTALL_RENDERER, 1),
+            "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
+            "angular-update-exact": (ANGULAR_UPDATE_V3_RENDERER, 3),
+        }
+        renderer = renderer_for_command.get(command_id)
+        if renderer is None:
+            raise CommandExecutorError(
+                "COMMAND_TEMPLATE_NOT_FOUND",
+                "command has no dependency-transition renderer",
+            )
+        template, template_version = renderer
+        self._policy_engine.registry.seed_defaults(session)
+        request = CommandPolicyValidateRequestDto(
+            run_id=attempt.run_id,
+            expected_state_version=run.state_version,
+            stage_id=attempt.stage_id,
+            command_id=command_id,
+            template_id=template.template_id,
+            template_version=template_version,
+            executable=executable,
+            arguments=arguments,
+            cwd_alias=working_directory_alias,
+            plan_id=plan_id,
+            plan_version=plan_version,
+            working_directory_alias=working_directory_alias,
+            working_directory=working_directory,
+            execution_profile_id=execution_profile_id,
+            network_profile=network_profile,
+            cancellation_policy="terminate_process_tree",
+            timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key,
+            requested_by="transformer-recovery",
+        )
+        response = self._policy_engine.validate(
+            session,
+            request,
+            repair_transition_attempt_id=attempt_id,
+        )
+        if response.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_REJECTED",
+                "Dependency transition command authorization was rejected: "
+                + "; ".join(response.reasons),
+            )
+        return response.authorization_id
+
     def queue_retry_execution(
         self,
         session: Session,
@@ -525,6 +676,8 @@ class CommandExecutorService:
         *,
         idempotency_key: str,
         workspace_recovered: bool = False,
+        replacement_authorization_id: str | None = None,
+        checkpoint_id: str | None = None,
     ) -> CommandExecutionResponse:
         """Create one immutable successor for a failed or interrupted execution."""
         failed = session.get(CommandExecutionModel, failed_execution_id)
@@ -543,6 +696,27 @@ class CommandExecutorService:
                     "Retry key is bound to another execution",
                 )
             return self._response_from_model(existing, idempotent_replay=True)
+        if replacement_authorization_id and (
+            failed.command_id != "angular-update-exact"
+            or failed.template_version != 2
+        ):
+            raise CommandExecutorError(
+                "ANGULAR_UPDATE_RETRY_INVALID",
+                "Only an accepted v2 Angular update may be superseded by v3",
+            )
+        if replacement_authorization_id and failed.template_version == 2:
+            existing_successor = session.scalar(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == failed.run_id,
+                    CommandExecutionModel.parent_execution_id == failed.id,
+                    CommandExecutionModel.template_version == 3,
+                )
+            )
+            if existing_successor is not None:
+                raise CommandExecutorError(
+                    "ANGULAR_UPDATE_V3_RETRY_ALREADY_EXECUTED",
+                    "The version-3 Angular recovery is already bound to this failed execution",
+                )
         if failed.status == CommandStatus.INTERRUPTED.value:
             if not failed.reconstruction_required:
                 raise CommandExecutorError(
@@ -585,12 +759,26 @@ class CommandExecutorService:
             )
         authorization = session.get(
             CommandAuthorizationAuditModel,
-            failed.authorization_id,
+            replacement_authorization_id or failed.authorization_id,
         )
         if authorization is None or authorization.decision != "accepted":
             raise CommandExecutorError(
                 "AUTHORIZATION_STALE",
                 "The original accepted authorization is unavailable",
+            )
+        if (
+            replacement_authorization_id
+            and (
+                authorization.run_id != failed.run_id
+                or authorization.stage_id != failed.stage_id
+                or authorization.command_id != failed.command_id
+                or authorization.template_id != "tpl-angular-update-exact-v3"
+                or authorization.template_version != 3
+            )
+        ):
+            raise CommandExecutorError(
+                "AUTHORIZATION_STALE",
+                "The replacement authorization does not supersede the failed command",
             )
 
         now = datetime.now(UTC)
@@ -598,33 +786,33 @@ class CommandExecutorService:
             id=f"exec-{uuid4().hex[:12]}",
             run_id=failed.run_id,
             stage_id=failed.stage_id,
-            authorization_id=failed.authorization_id,
-            template_id=failed.template_id,
-            template_version=failed.template_version,
-            plan_id=failed.plan_id,
-            plan_version=failed.plan_version,
+            authorization_id=authorization.id,
+            template_id=authorization.template_id,
+            template_version=authorization.template_version,
+            plan_id=authorization.plan_id,
+            plan_version=authorization.plan_version,
             idempotency_key=idempotency_key,
-            request_payload_hash=failed.request_payload_hash,
+            request_payload_hash=authorization.request_payload_hash,
             correlation_id=failed.correlation_id,
-            requested_by=failed.requested_by,
-            executable=failed.executable,
-            arguments=list(failed.arguments or []),
-            working_directory_alias=failed.working_directory_alias,
+            requested_by=authorization.actor or failed.requested_by,
+            executable=authorization.executable,
+            arguments=list(authorization.arguments or []),
+            working_directory_alias=authorization.workspace_alias,
             safe_relative_working_directory=failed.safe_relative_working_directory,
-            runtime_profile_id=failed.runtime_profile_id,
+            runtime_profile_id=authorization.execution_profile_id,
             status=CommandStatus.QUEUED.value,
             requested_at=now,
-            command_id=failed.command_id,
+            command_id=authorization.command_id,
             shell=False,
             timeout_seconds=failed.timeout_seconds,
-            network_profile=failed.network_profile,
+            network_profile=authorization.network_profile,
             cancellation_policy=failed.cancellation_policy,
             state_version=1,
             event_sequence=1,
             worker_id=None,
             operation_kind=failed.operation_kind,
-            checkpoint_id=failed.checkpoint_id,
-            prompt_request_id=failed.prompt_request_id,
+            checkpoint_id=checkpoint_id or failed.checkpoint_id,
+            prompt_request_id=None,
             authoritative_state_version=failed.authoritative_state_version,
             parent_execution_id=failed.id,
             attempt_number=(failed.attempt_number or 1) + 1,
@@ -644,6 +832,11 @@ class CommandExecutorService:
                 "attempt_number": successor.attempt_number,
                 "authorization_id": successor.authorization_id,
                 "command_id": successor.command_id,
+                "template_id": successor.template_id,
+                "template_version": successor.template_version,
+                "supersedes_authorization_id": failed.authorization_id
+                if replacement_authorization_id
+                else None,
             },
         )
         return self._response_from_model(successor)
@@ -1124,7 +1317,19 @@ class CommandExecutorService:
     @staticmethod
     def _result_failure_message(result, fallback: str) -> str:
         if result.stderr_artifact and result.stderr_artifact.content.strip():
-            return result.stderr_artifact.content.strip()[:1000]
+            raw = _ANSI_ESCAPE.sub("", result.stderr_artifact.content)
+            if (
+                result.result.command_id == "angular-update-exact"
+                and result.result.exit_code is not None
+                and result.result.exit_code != 0
+            ):
+                # Keep the whole failure tail: the peer-dependency detail block
+                # sits above the "Migration failed" summary line, so slicing
+                # from the marker would discard the evidence the classifier
+                # needs. The last 2000 chars of the stripped stderr contain
+                # both the detail block and the final summary.
+                return raw.strip()[-2000:]
+            return raw.strip()[:1000]
         return fallback
 
     @staticmethod
