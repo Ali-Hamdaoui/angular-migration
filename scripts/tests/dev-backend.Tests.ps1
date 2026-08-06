@@ -33,6 +33,14 @@ Describe "dev-backend target root configuration" {
         $resolved | Should Be (Resolve-Path -LiteralPath $targetRoot).Path
         $env:ALLOWED_TARGET_ROOTS | Should Be $resolved
     }
+
+    It "rejects commas before creating a target root" {
+        $targetRoot = Join-Path $TestDrive "unsafe,target"
+
+        { Initialize-BackendTargetRoot -TargetRoot $targetRoot } |
+            Should Throw "TargetRoot cannot contain a comma."
+        (Test-Path -LiteralPath $targetRoot) | Should Be $false
+    }
 }
 
 Describe "dev-backend child process specifications" {
@@ -72,6 +80,93 @@ Describe "dev-backend process-tree containment" {
             -ProcessSnapshot $snapshot)
 
         ($selected -join ",") | Should Be "102,101,100"
+    }
+
+    It "quiesces roots and rescans until no launched descendants remain" {
+        $script:snapshotCallCount = 0
+        $script:stoppedProcessIds = @()
+        Mock Get-CimInstance {
+            $script:snapshotCallCount++
+            if ($script:snapshotCallCount -eq 1) {
+                return @(
+                    [pscustomobject]@{ ProcessId = 101; ParentProcessId = 100 },
+                    [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101 }
+                )
+            }
+            if ($script:snapshotCallCount -eq 2) {
+                # The intermediate process is gone, but its child still reports
+                # the now-missing intermediate PID as its parent.
+                return @(
+                    [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101 }
+                )
+            }
+            return @()
+        }
+        Mock Stop-Process {
+            param($Id)
+            foreach ($stoppedId in @($Id)) {
+                $script:stoppedProcessIds += [int]$stoppedId
+            }
+        }
+        Mock Stop-WindowsProcessTree {}
+
+        Stop-BackendProcessTrees -Processes @([pscustomobject]@{ Id = 100 })
+
+        $script:snapshotCallCount | Should Be 13
+        ($script:stoppedProcessIds[0..3] -join ",") | Should Be "100,102,101,102"
+        Assert-MockCalled Stop-WindowsProcessTree -Times 1 -Exactly -ParameterFilter {
+            $RootProcessId -eq 100
+        }
+    }
+}
+
+Describe "dev-backend partial startup cleanup" {
+    It "stops the first child when the second child cannot start" {
+        $script:startAttempt = 0
+        Mock Start-Process {
+            $script:startAttempt++
+            if ($script:startAttempt -eq 1) {
+                return [pscustomobject]@{ Id = 301 }
+            }
+            throw "second child failed"
+        }
+        Mock Stop-BackendProcessTrees {}
+        $specifications = @(
+            [pscustomobject]@{
+                FilePath = "python.exe"
+                Arguments = @("-m", "uvicorn")
+                WorkingDirectory = $TestDrive
+            },
+            [pscustomobject]@{
+                FilePath = "python.exe"
+                Arguments = @("-m", "worker")
+                WorkingDirectory = $TestDrive
+            }
+        )
+
+        { Start-BackendRuntimeProcesses -Specifications $specifications } |
+            Should Throw "second child failed"
+        Assert-MockCalled Stop-BackendProcessTrees -Times 1 -Exactly -ParameterFilter {
+            $Processes.Count -eq 1 -and $Processes[0].Id -eq 301
+        }
+    }
+}
+
+Describe "dev-backend child exit supervision" {
+    It "reports the failed child name and exit code" {
+        $apiProcess = [pscustomobject]@{ HasExited = $false; ExitCode = 0 }
+        $apiProcess | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+        $workerProcess = [pscustomobject]@{ HasExited = $true; ExitCode = 7 }
+        $workerProcess | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+        $specifications = @(
+            [pscustomobject]@{ Name = "api" },
+            [pscustomobject]@{ Name = "transformer-worker" }
+        )
+
+        { Assert-BackendRuntimeProcessesRunning `
+            -Processes @($apiProcess, $workerProcess) `
+            -Specifications $specifications } |
+            Should Throw "transformer-worker exited with code 7."
     }
 }
 

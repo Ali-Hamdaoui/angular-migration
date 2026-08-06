@@ -55,7 +55,9 @@ monitors both children and stops both process trees when you press `Ctrl+C`.
 `-TargetRoot` defaults to the current user's
 `Downloads\MSA-COMMON-STG1` directory. The launcher creates it when needed and
 exports the resolved path as `ALLOWED_TARGET_ROOTS` before either child starts.
-Use `-Port <number>` to override the API's default port `8000`.
+Because backend path lists are comma-delimited, the launcher rejects target
+paths containing a comma instead of interpreting them as multiple roots. Use
+`-Port <number>` to override the API's default port `8000`.
 
 Frontend:
 
