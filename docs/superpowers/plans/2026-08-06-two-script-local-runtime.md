@@ -40,29 +40,29 @@ Describe "dev-backend launcher" {
     }
 
     It "accepts the requested target root and port parameters" {
-        $scriptText | Should -Match '\[string\]\$TargetRoot\s*=\s*"C:\\Users\\hamdaoui\.ali\\Downloads\\MSA-COMMON-STG1"'
-        $scriptText | Should -Match '\[ValidateRange\(1,\s*65535\)\]\s*\[int\]\$Port\s*=\s*8000'
+        $scriptText | Should Match '\[string\]\$TargetRoot\s*=\s*"C:\\Users\\hamdaoui\.ali\\Downloads\\MSA-COMMON-STG1"'
+        $scriptText | Should Match '\[ValidateRange\(1,\s*65535\)\]\s*\[int\]\$Port\s*=\s*8000'
     }
 
     It "starts the Transformer worker with the same Python executable as Uvicorn" {
-        $scriptText | Should -Match '\$transformerArguments\s*=|app\.orchestration\.transformer_worker'
-        $scriptText | Should -Match 'Start-Process'
-        $scriptText | Should -Match '\$python'
+        $scriptText | Should Match '\$transformerArguments\s*=|app\.orchestration\.transformer_worker'
+        $scriptText | Should Match 'Start-Process'
+        $scriptText | Should Match '\$python'
     }
 
     It "configures the target root before starting child processes" {
         $environmentIndex = $scriptText.IndexOf('$env:ALLOWED_TARGET_ROOTS')
         $startProcessIndex = $scriptText.IndexOf('Start-Process')
 
-        $environmentIndex | Should -BeGreaterThan -1
-        $startProcessIndex | Should -BeGreaterThan -1
-        $environmentIndex | Should -BeLessThan $startProcessIndex
+        $environmentIndex | Should BeGreaterThan -1
+        $startProcessIndex | Should BeGreaterThan -1
+        $environmentIndex | Should BeLessThan $startProcessIndex
     }
 
     It "cleans up child process trees in a finally block" {
-        $scriptText | Should -Match 'function\s+Stop-ProcessTree'
-        $scriptText | Should -Match 'finally\s*\{'
-        $scriptText | Should -Match 'Stop-ProcessTree'
+        $scriptText | Should Match 'function\s+Stop-ProcessTree'
+        $scriptText | Should Match 'finally\s*\{'
+        $scriptText | Should Match 'Stop-ProcessTree'
     }
 }
 ```
@@ -72,7 +72,7 @@ Describe "dev-backend launcher" {
 Run:
 
 ```powershell
-Invoke-Pester -Path .\scripts\dev-backend.Tests.ps1 -Output Detailed
+Invoke-Pester -Path .\scripts\dev-backend.Tests.ps1 -EnableExit -PassThru
 ```
 
 Expected: FAIL because the current launcher has no `TargetRoot`/`Port` parameter block, does not start `app.orchestration.transformer_worker`, and has no process-tree cleanup function.
@@ -151,7 +151,7 @@ Refresh both process objects once per second. If either exits, throw with its ex
 Run:
 
 ```powershell
-Invoke-Pester -Path .\scripts\dev-backend.Tests.ps1 -Output Detailed
+Invoke-Pester -Path .\scripts\dev-backend.Tests.ps1 -EnableExit -PassThru
 ```
 
 Expected: all launcher contract examples PASS.
@@ -242,7 +242,7 @@ Expected: no parser errors.
 Run:
 
 ```powershell
-Invoke-Pester -Path .\scripts\dev-backend.Tests.ps1 -Output Detailed
+Invoke-Pester -Path .\scripts\dev-backend.Tests.ps1 -EnableExit -PassThru
 ```
 
 Expected: all tests pass with zero failures.
