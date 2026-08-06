@@ -52,19 +52,25 @@ class StageSealingService:
                 StagePromptRequestModel.status.not_in(("decided", "cancelled", "stale")),
             )
         )
-        active_repair = session.scalar(
-            select(RepairAttemptModel.id).where(
-                RepairAttemptModel.stage_id == continuation.current_stage_id,
-                RepairAttemptModel.status.not_in(
-                    (
-                        "waiting_g11",
-                        "completed",
-                        "rejected",
-                        "apply_failed",
-                        "request_changes",
-                    )
-                ),
+        latest_repair = session.scalar(
+            select(RepairAttemptModel)
+            .where(RepairAttemptModel.stage_id == continuation.current_stage_id)
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .limit(1)
+        )
+        active_repair = (
+            latest_repair.id
+            if latest_repair is not None
+            and latest_repair.status
+            not in (
+                "waiting_g11",
+                "validation_passed",
+                "completed",
+                "rejected",
+                "apply_failed",
+                "request_changes",
             )
+            else None
         )
         g09 = session.scalar(
             select(StageGatePackageModel)
@@ -79,7 +85,7 @@ class StageSealingService:
             raise StageSealingError(
                 "STAGE_NOT_CLEAN", "Commands, prompts, or repairs are still active"
             )
-        if g09 is None:
+        if g09 is None and active_repair is not None:
             raise StageSealingError("G09_APPROVAL_REQUIRED", "Approved G09 evidence is missing")
         binding = session.scalar(
             select(StageWorkspaceBindingModel).where(
@@ -117,8 +123,8 @@ class StageSealingService:
             "workspace_fingerprint": binding.workspace_fingerprint,
             "artifact_root": run.artifact_root,
             "stage_root": (run.workspace_aliases or {})["STAGE_SANDBOX"],
-            "g09_package_checksum": g09.package_checksum,
-            "g09_workspace_fingerprint": g09.workspace_fingerprint,
+            "g09_package_checksum": g09.package_checksum if g09 else None,
+            "g09_workspace_fingerprint": g09.workspace_fingerprint if g09 else None,
             "previous_chain_hash": previous.manifest_checksum if previous else "genesis",
             "validation_summary_checksum": self._validation_checksum(
                 session, continuation.current_stage_id
@@ -245,10 +251,13 @@ class StageSealingService:
             select(StageGatePackageModel)
             .where(
                 StageGatePackageModel.stage_id == stage_id,
-                StageGatePackageModel.gate_id == "G09",
+                StageGatePackageModel.gate_id.in_(("G09", "G11")),
                 StageGatePackageModel.status == "approved",
             )
-            .order_by(StageGatePackageModel.gate_version.desc())
+            .order_by(
+                (StageGatePackageModel.gate_id == "G09").desc(),
+                StageGatePackageModel.gate_version.desc(),
+            )
         )
         return gate.artifact_set_checksum
 

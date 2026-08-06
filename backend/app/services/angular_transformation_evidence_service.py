@@ -53,11 +53,20 @@ class AngularTransformationEvidenceService:
             "installed_metadata": self._version(installed_cli.get("version")),
             "ng_version": self._line_version(ng_version_output, "Angular CLI:"),
         }
-        mismatches = {
-            f"core.{name}": value for name, value in core_sources.items() if value != target_core
-        } | {
-            f"cli.{name}": value for name, value in cli_sources.items() if value != target_cli
-        }
+        mismatches = {}
+        for label, sources, target in (
+            ("core", core_sources, target_core),
+            ("cli", cli_sources, target_cli),
+        ):
+            target_major = self._major(target)
+            declared = sources["package_json"]
+            resolved = [sources[name] for name in ("package_lock", "installed_metadata", "ng_version")]
+            if not declared or self._major(declared) != target_major:
+                mismatches[f"{label}.package_json"] = declared
+            if not resolved or any(value is None or value != resolved[0] or self._major(value) != target_major for value in resolved):
+                for name in ("package_lock", "installed_metadata", "ng_version"):
+                    if sources[name] is None or sources[name] != resolved[0] or self._major(sources[name]) != target_major:
+                        mismatches[f"{label}.{name}"] = sources[name]
         if mismatches:
             raise AngularTransformationEvidenceError(
                 "TARGET_VERSION_MISMATCH",
@@ -68,6 +77,8 @@ class AngularTransformationEvidenceService:
             "status": "verified",
             "target_core": target_core,
             "target_cli": target_cli,
+            "resolved_core": core_sources["package_lock"],
+            "resolved_cli": cli_sources["package_lock"],
             "core_sources": core_sources,
             "cli_sources": cli_sources,
         }
@@ -146,6 +157,13 @@ class AngularTransformationEvidenceService:
     def _version(self, value: object) -> str | None:
         match = self._semver.search(value) if isinstance(value, str) else None
         return match.group(1) if match else None
+
+    @staticmethod
+    def _major(value: str | None) -> int | None:
+        try:
+            return int(value.split(".", 1)[0]) if value else None
+        except (AttributeError, ValueError):
+            return None
 
     def _line_version(self, output: str, label: str) -> str | None:
         for line in output.splitlines():

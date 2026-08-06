@@ -611,8 +611,10 @@ class CommandExecutorService:
         """Authorize one detach/reattach command bound to an applied repair proposal."""
         from app.domain.command import (
             ANGULAR_UPDATE_V3_RENDERER,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
             NPM_DEPENDENCY_INSTALL_RENDERER,
             NPM_DEPENDENCY_UNINSTALL_RENDERER,
+            TRANSFORMATION_COMMAND_CATALOGUE,
         )
         from app.repositories.models.workflow import RepairAttemptModel
 
@@ -625,6 +627,7 @@ class CommandExecutorService:
         renderer_for_command = {
             "npm-dependency-uninstall": (NPM_DEPENDENCY_UNINSTALL_RENDERER, 1),
             "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
+            "npm-angular-lockfile-normalize": (NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER, 2),
             "angular-update-exact": (ANGULAR_UPDATE_V3_RENDERER, 3),
         }
         renderer = renderer_for_command.get(command_id)

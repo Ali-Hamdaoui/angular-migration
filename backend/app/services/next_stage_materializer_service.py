@@ -102,7 +102,12 @@ class NextStageMaterializerService:
 
     def materialize(self, context: dict[str, object]) -> StageExecutionPlan | None:
         observed = self._sealed_source_exact(Path(str(context["sealed_path"])))
-        if observed != context["current_target_exact"]:
+        expected = self._version(context["current_target_exact"])
+        if (
+            not expected
+            or not observed
+            or expected.split(".", 1)[0] != observed.split(".", 1)[0]
+        ):
             raise NextStageMaterializerError(
                 "SEALED_VERSION_MISMATCH",
                 "Sealed package and lockfile do not match the completed stage target",
@@ -162,12 +167,16 @@ class NextStageMaterializerService:
                 "version"
             )
         )
-        if not declared or declared != locked:
+        if (
+            not declared
+            or not locked
+            or declared.split(".", 1)[0] != locked.split(".", 1)[0]
+        ):
             raise NextStageMaterializerError(
                 "SEALED_VERSION_EVIDENCE_INVALID",
                 "Sealed package.json and package-lock.json disagree on @angular/core",
             )
-        return declared
+        return locked
 
     def _version(self, value) -> str | None:
         match = self.semver.search(str(value or ""))

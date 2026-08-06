@@ -32,6 +32,7 @@ from app.domain.command import (
     DEFAULT_COMMAND_TEMPLATES,
     NPM_DEPENDENCY_INSTALL_RENDERER,
     NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NetworkProfile,
     command_arguments_match,
 )
@@ -44,6 +45,7 @@ from app.domain.contracts import (
 )
 from app.services.path_validation_service import is_portable_absolute_path
 from app.services.dependency_closure_service import (
+    installed_dependency_version,
     is_exact_version,
     validate_dependency_transition_evidence,
     verify_dependency_transition_state,
@@ -902,6 +904,32 @@ class CommandPolicyEngineService:
                     package=blocking_package,
                     installed_version=blocking_candidate.installed_version,
                     peer_ranges=authority["peer_ranges"],
+                )
+            except (KeyError, TypeError, ValueError, OSError):
+                return False
+
+        if request.command_id == NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id:
+            try:
+                binding = session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == request.run_id,
+                        StageWorkspaceBindingModel.stage_id == request.stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if binding is None:
+                    return False
+                patch = installed_dependency_version(
+                    Path(binding.workspace_path).resolve(strict=True), "@angular/core"
+                )
+                return (
+                    request.template_id == NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.template_id
+                    and request.template_version == 2
+                    and request.executable == "npm"
+                    and tuple(request.arguments)
+                    == NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.render_arguments(
+                        {"target_angular_patch": patch}
+                    )
                 )
             except (KeyError, TypeError, ValueError, OSError):
                 return False

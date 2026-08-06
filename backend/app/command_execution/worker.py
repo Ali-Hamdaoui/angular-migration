@@ -31,7 +31,13 @@ from app.domain.contracts import (
     CommandResultDto,
     CommandStatus,
 )
-from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
+from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
+    ANGULAR_UPDATE_V3_RENDERER,
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    TRANSFORMATION_COMMAND_CATALOGUE,
+    command_arguments_match,
+)
 from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
@@ -168,6 +174,12 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
             ANGULAR_UPDATE_V3_RENDERER.executable,
             ANGULAR_UPDATE_V3_RENDERER.argument_patterns,
             ANGULAR_UPDATE_V3_RENDERER.executable_aliases,
+        ),
+        CommandDefinition(
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.argument_patterns,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable_aliases,
         ),
     )
 

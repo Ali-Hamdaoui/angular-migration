@@ -299,6 +299,27 @@ NPM_DEPENDENCY_INSTALL_RENDERER: Final[TransformationCommandDefinition] = Transf
     description="Install the approved target version of the detached dependency (reattach step of the dependency transition repair)",
 )
 
+NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-angular-lockfile-normalize",
+    template_id="tpl-npm-angular-lockfile-normalize-v2",
+    executable="npm",
+    argument_patterns=(
+        "install",
+        "--package-lock-only",
+        "--save-exact",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "@angular/platform-browser-dynamic@{target_angular_patch}",
+    ),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Normalize Angular lockfile resolution without changing the manifest",
+)
+
 # Default command templates for Sprint 3 pipeline
 TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinition]] = {
     "npm-ci-bootstrap": TransformationCommandDefinition(
@@ -357,6 +378,17 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
 _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
     definition.to_template() for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
 ) + (
+    CommandTemplate(
+        template_id=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.template_id,
+        command_id=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,
+        executable=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable,
+        arguments=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.argument_patterns,
+        executable_aliases=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable_aliases,
+        description=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.description,
+        version=2,
+        allowed_env_vars=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.allowed_env_vars,
+        max_output_bytes=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.max_output_bytes,
+    ),
     CommandTemplate(
         template_id=ANGULAR_UPDATE_V2_RENDERER.template_id,
         command_id=ANGULAR_UPDATE_V2_RENDERER.command_id,

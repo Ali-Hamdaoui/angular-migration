@@ -70,6 +70,18 @@ class ValidationRunner:
             execution = (
                 session.get(CommandExecutionModel, step.execution_id) if step.execution_id else None
             )
+            if step.status == "PASSED":
+                if (
+                    execution is None
+                    or execution.status != "succeeded"
+                    or not execution.command_log_artifact_id
+                    or not execution.result_artifact_id
+                ):
+                    raise ValidationRunnerError(
+                        "VALIDATION_EVIDENCE_MISSING",
+                        f"{group}-{index} has a passing step without finalized command evidence",
+                    )
+                continue
             if execution is None:
                 fingerprint = self.source_fingerprint(Path(binding.workspace_path))
                 request = SimpleNamespace(

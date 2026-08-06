@@ -23,6 +23,7 @@ _EXACT_VERSION = re.compile(
 _COMPATIBLE_REINSTALL_VERSIONS = {
     ("@angular-builders/jest", 19): "19.0.0",
     ("jest-preset-angular", 19): "14.4.0",
+    ("jest-preset-angular", 20): "14.6.2",
 }
 
 

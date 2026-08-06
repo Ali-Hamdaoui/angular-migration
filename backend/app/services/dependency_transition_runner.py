@@ -25,8 +25,10 @@ from app.artifact_store import (
     LocalFilesystemArtifactStore,
 )
 from app.domain.command import (
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NPM_DEPENDENCY_INSTALL_RENDERER,
     NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    TRANSFORMATION_COMMAND_CATALOGUE,
 )
 from app.domain.contracts import ArtifactType
 from app.repositories.models import (
@@ -50,7 +52,9 @@ from app.services.dependency_closure_service import (
     is_exact_version,
     verify_dependency_closure,
     verify_dependency_transition_state,
+    installed_dependency_version,
 )
+
 from app.services.repair_application_service import RepairProposal
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
@@ -196,6 +200,8 @@ class DependencyTransitionRunner:
             outcome = self._phase_uninstall(session, continuation, context)
         elif phase == "angular_update":
             outcome = self._phase_update(session, continuation, context)
+        elif phase == "normalize_lockfile":
+            outcome = self._phase_normalize_lockfile(session, continuation, context)
         elif phase == "reinstall":
             outcome = self._phase_install(session, continuation, context)
         elif phase == "npm_ci":
@@ -236,6 +242,11 @@ class DependencyTransitionRunner:
         install = self._execution(
             session, context, f"{context['attempt'].id}:transition:install"
         )
+        install_retry = self._execution(
+            session, context, f"{context['attempt'].id}:transition:install-v3"
+        )
+        if install_retry is not None:
+            install = install_retry
         install_verified = install is not None and session.scalar(
             select(ArtifactMetadataModel.id).where(
                 ArtifactMetadataModel.owner_reference
@@ -243,6 +254,22 @@ class DependencyTransitionRunner:
             )
         )
         if install is None or install.status != "succeeded" or not install_verified:
+            if install is not None and install.failure_code == "COMMAND_EXIT_NONZERO" and "ERESOLVE" in (install.failure_message or ""):
+                normalized = self._execution(
+                    session, context, f"{context['attempt'].id}:transition:normalize-angular-lockfile-v5"
+                )
+                normalized = normalized if normalized is not None and normalized.status == "succeeded" else None
+                consistent = False
+                if normalized is not None:
+                    try:
+                        consistent = installed_dependency_version(
+                            context["workspace"], "@angular/platform-browser-dynamic"
+                        ) == installed_dependency_version(
+                            context["workspace"], "@angular/core"
+                        )
+                    except ValueError:
+                        consistent = False
+                return "reinstall" if consistent else "normalize_lockfile"
             return "reinstall"
         ci_step = session.scalar(
             select(StageStepModel).where(
@@ -472,11 +499,12 @@ class DependencyTransitionRunner:
                 CommandExecutionModel.idempotency_key == key,
             )
         )
-    def _completed_uninstall(self, session, context, arguments):
+    def _completed_uninstall(self, session, continuation, context, arguments):
         executions = session.scalars(
             select(CommandExecutionModel)
             .where(
                 CommandExecutionModel.run_id == context["run"].id,
+                CommandExecutionModel.stage_id == continuation.current_stage_id,
                 CommandExecutionModel.command_id == "npm-dependency-uninstall",
                 CommandExecutionModel.status == "succeeded",
                 CommandExecutionModel.exit_code == 0,
@@ -495,7 +523,7 @@ class DependencyTransitionRunner:
             arguments = NPM_DEPENDENCY_UNINSTALL_RENDERER.render_arguments(
                 {"package": context["intent"]["blocking_package"]}
             )
-            execution = self._completed_uninstall(session, context, arguments)
+            execution = self._completed_uninstall(session, continuation, context, arguments)
             if execution is not None:
                 self._verify_uninstall(session, continuation, context, execution)
                 return "continue"
@@ -531,6 +559,13 @@ class DependencyTransitionRunner:
         if phase == "uninstall":
             renderer = NPM_DEPENDENCY_UNINSTALL_RENDERER
             bindings = {"package": intent["blocking_package"]}
+        elif phase == "normalize_lockfile":
+            renderer = NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER
+            bindings = {
+                "target_angular_patch": installed_dependency_version(
+                    workspace, "@angular/core"
+                )
+            }
         else:
             renderer = NPM_DEPENDENCY_INSTALL_RENDERER
             bindings = {
@@ -598,6 +633,21 @@ class DependencyTransitionRunner:
         }
         self._stage._wait_for_command(session, continuation, execution.id)
         return "queued"
+
+    def _phase_normalize_lockfile(self, session, continuation, context) -> str:
+        key = f"{context['attempt'].id}:transition:normalize-angular-lockfile-v5"
+        execution = self._execution(session, context, key)
+        if execution is None:
+            return self._queue_transition_command(session, continuation, context, "normalize_lockfile", key)
+        if execution.status in {"pending", "queued", "running"}:
+            self._stage._wait_for_command(session, continuation, execution.id)
+            return "waiting"
+        if execution.status != "succeeded" or execution.exit_code != 0:
+            raise DependencyTransitionError(
+                execution.failure_code or "DEPENDENCY_TRANSITION_LOCKFILE_FAILED",
+                execution.failure_message or "npm lockfile generation did not succeed",
+            )
+        return "continue"
 
     def _verify_uninstall(self, session, continuation, context, execution) -> None:
         run = context["run"]
@@ -750,7 +800,7 @@ class DependencyTransitionRunner:
         return "queued"
 
     def _phase_install(self, session, continuation, context) -> str:
-        key = f"{context['attempt'].id}:transition:install"
+        key = f"{context['attempt'].id}:transition:install-v3"
         execution = self._execution(session, context, key)
         if execution is None:
             return self._queue_transition_command(session, continuation, context, "install", key)
@@ -867,7 +917,7 @@ class DependencyTransitionRunner:
                     continuation,
                     group="final_install",
                     next_node="dependency_transition",
-                    attempt_key=f"{context['attempt'].id}:transition-ci",
+                    attempt_key=f"ci-{context['attempt'].attempt_number}",
                 )
                 queued = session.get(CommandExecutionModel, result.execution_id)
                 planned_refs = (

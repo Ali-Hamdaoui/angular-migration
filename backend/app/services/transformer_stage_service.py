@@ -943,7 +943,11 @@ class TransformerStageService:
             0,
             False,
         )
-        request = SimpleNamespace(idempotency_key=f"{continuation.id}:command:{attempt_key}")
+        request = SimpleNamespace(
+            idempotency_key=(
+                f"{continuation.id}:{continuation.current_stage_id}:command:{attempt_key}"
+            )
+        )
         try:
             result = self._stage_execution._authorize_and_queue_first_command(
                 session,
@@ -1288,7 +1292,7 @@ class TransformerStageService:
     def _request(run, continuation, gate):
         return SimpleNamespace(
             expected_state_version=run.state_version,
-            idempotency_key=f"{continuation.id}:prepare",
+            idempotency_key=f"{continuation.id}:{continuation.current_stage_id}:prepare",
             artifact_set_checksum=gate.artifact_set_checksum,
             plan_checksum=continuation.plan_checksum,
             stage_plan_checksum=continuation.stage_plan_checksum,

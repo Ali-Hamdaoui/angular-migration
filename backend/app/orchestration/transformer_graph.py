@@ -639,6 +639,21 @@ class TransformerOrchestrator:
             binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = context["workspace_fingerprint"]
             binding.last_verified_at = datetime.now(UTC)
+            version_step = session.scalar(
+                select(StageStepModel).where(
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name == "target_version_check-0",
+                )
+            )
+            if version_step is not None:
+                version_step.status = "PASSED"
+                version_step.completed_at = datetime.now(UTC)
+                version_step.workspace_fingerprint = context["workspace_fingerprint"]
+                version_step.output_checksum = version_execution.runtime_checksum
+                version_step.artifact_ids = list(version_execution.artifact_ids or [])
+                version_step.updated_at = datetime.now(UTC)
+            continuation.last_error_code = None
+            continuation.last_error_message = None
             for artifact in (version_artifact, ledger_artifact, gate_artifact):
                 self._stage.register_artifact(session, artifact, continuation)
             self._gates.create(
@@ -804,6 +819,8 @@ class TransformerOrchestrator:
     def _classify_failure(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            if self._resume_stale_g08_validation(session, continuation):
+                return
             prior = [
                 item.failure_fingerprint
                 for item in session.query(RepairAttemptModel)
@@ -1236,9 +1253,87 @@ class TransformerOrchestrator:
                         error,
                     )
 
+    def _resume_stale_g08_validation(self, session, continuation) -> bool:
+        """Resume a legacy G08 wait without reclassifying its old failure."""
+        if continuation.current_node not in {"classify_failure", "propose_repair"}:
+            return False
+        gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.gate_id == "G08",
+                StageGatePackageModel.status == "approved",
+            )
+            .order_by(StageGatePackageModel.created_at.desc())
+            .limit(1)
+        )
+        binding = self._stage._binding(session, continuation)
+        version_step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "target_version_check-0",
+            )
+        )
+        final_install = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "final_install-0",
+            )
+        )
+        if (
+            gate is None
+            or gate.workspace_fingerprint != binding.workspace_fingerprint
+            or version_step is None
+            or version_step.status == "PASSED"
+            or final_install is None
+            or final_install.status != "PASSED"
+            or any(
+                step.status == "PASSED"
+                for step in session.scalars(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name.in_(("builds-0", "tests-0")),
+                    )
+                )
+            )
+        ):
+            return False
+        execution = (
+            session.get(CommandExecutionModel, version_step.execution_id)
+            if version_step.execution_id
+            else None
+        )
+        if (
+            execution is None
+            or execution.command_id != "angular-version-verify"
+            or execution.status != "succeeded"
+            or not execution.command_log_artifact_id
+            or not execution.result_artifact_id
+        ):
+            return False
+        now = datetime.now(UTC)
+        version_step.status = "PASSED"
+        version_step.completed_at = now
+        version_step.workspace_fingerprint = gate.workspace_fingerprint
+        version_step.output_checksum = execution.runtime_checksum
+        version_step.artifact_ids = list(execution.artifact_ids or [])
+        version_step.updated_at = now
+        attempt = self._latest_repair(session, continuation)
+        if attempt is not None and attempt.status == "evidence_frozen" and not attempt.proposal_artifact_id:
+            attempt.status = "superseded"
+            attempt.completed_at = now
+            attempt.updated_at = now
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "final_install")
+        return True
+
     def _propose_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            if self._resume_stale_g08_validation(session, continuation):
+                return
             attempt = self._latest_repair(session, continuation)
             attempt_id = attempt.id
         try:
