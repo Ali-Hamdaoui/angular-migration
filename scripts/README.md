@@ -39,6 +39,8 @@ Start the complete local solution in two terminals:
 
 The backend launcher keeps the API and Transformer worker in separate Python
 processes while giving developers one backend command. If either child exits,
-the launcher stops the other; `Ctrl+C` stops both launched process trees.
+the launcher stops the other. Both are assigned before execution to a Windows
+kill-on-close Job Object, so `Ctrl+C` stops their complete process trees without
+scanning or reusing process IDs.
 
 The scripts intentionally do not install tools automatically and do not disable TLS or certificate validation.

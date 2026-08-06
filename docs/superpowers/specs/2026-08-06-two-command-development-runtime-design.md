@@ -45,10 +45,12 @@ Both children share the current console. The supervisor monitors them once per
 second. If either child exits, the launcher reports its exit code, stops the
 other runtime tree, and exits unsuccessfully.
 
-On normal interruption or `Ctrl+C`, cleanup targets only descendants of the
-two process IDs created by the launcher. This includes Uvicorn's reload child
-and any worker-owned migration subprocess. Unrelated Python and Node processes
-must not be selected by name or port.
+The launcher creates a Windows Job Object with kill-on-close semantics. Each
+root process is created suspended, assigned to the job, and only then resumed.
+On normal interruption or `Ctrl+C`, closing the job atomically terminates the
+API, worker, Uvicorn reload child, and worker-owned migration subprocesses.
+Unrelated Python and Node processes remain untouched, without PID scanning or
+PID-reuse risk.
 
 ## Testing
 
@@ -57,9 +59,9 @@ Focused Pester tests will dot-source the launcher and verify:
 - the target root is created, resolved, and exported;
 - both child commands use the repository virtual-environment Python;
 - API and worker arguments remain separate;
-- descendant discovery is rooted in the launched process IDs;
+- a live integration test proves that closing the job terminates a launched
+  parent and its descendant;
 - startup documentation exposes exactly the two developer commands.
 
 Existing backend tests continue to prove that API routes queue work without
 dispatching migration commands and that the worker claims durable executions.
-

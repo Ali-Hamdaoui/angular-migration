@@ -116,7 +116,7 @@ The two scripts launch:
 
 - Backend launcher: applies Alembic migrations, then supervises the Uvicorn API
   and the separate durable Transformer worker. Pressing `Ctrl+C` stops both
-  backend process trees.
+  backend process trees through a Windows kill-on-close Job Object.
 - Frontend launcher: runs the Next.js development server with `npm run dev`.
 
 `-TargetRoot` is optional. Its default is the current user's

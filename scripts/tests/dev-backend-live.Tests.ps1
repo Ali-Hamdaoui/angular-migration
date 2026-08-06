@@ -4,8 +4,8 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $launcherPath = Join-Path $repositoryRoot "scripts\dev-backend.ps1"
 . $launcherPath
 
-Describe "dev-backend live process-tree cleanup" {
-    It "terminates a live launched parent and child process tree" {
+Describe "dev-backend live job-object cleanup" {
+    It "terminates a live launched parent and child when the job closes" {
         $pythonPath = Join-Path $repositoryRoot "backend\.venv\Scripts\python.exe"
         $fixturePath = Join-Path $TestDrive "spawn_process_tree.py"
         $childPidPath = Join-Path $TestDrive "child.pid"
@@ -20,11 +20,12 @@ pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
 time.sleep(60)
 '@ | Set-Content -LiteralPath $fixturePath -Encoding UTF8
 
-        $rootProcess = Start-Process `
-            -FilePath $pythonPath `
-            -ArgumentList @($fixturePath, $childPidPath) `
-            -NoNewWindow `
-            -PassThru
+        $runtimeJob = New-BackendRuntimeJob
+        $rootProcess = $runtimeJob.StartProcess(
+            $pythonPath,
+            [string[]]@($fixturePath, $childPidPath),
+            $TestDrive
+        )
         $childProcessId = $null
         try {
             $deadline = (Get-Date).AddSeconds(10)
@@ -34,7 +35,7 @@ time.sleep(60)
             (Test-Path -LiteralPath $childPidPath -PathType Leaf) | Should Be $true
             $childProcessId = [int](Get-Content -Raw -LiteralPath $childPidPath)
 
-            Stop-BackendProcessTrees -Processes @($rootProcess)
+            $runtimeJob.Dispose()
 
             $remaining = @(
                 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -45,6 +46,7 @@ time.sleep(60)
             $remaining | Should BeNullOrEmpty
         }
         finally {
+            $runtimeJob.Dispose()
             Stop-Process -Id $rootProcess.Id -Force -ErrorAction SilentlyContinue
             if ($null -ne $childProcessId) {
                 Stop-Process -Id $childProcessId -Force -ErrorAction SilentlyContinue

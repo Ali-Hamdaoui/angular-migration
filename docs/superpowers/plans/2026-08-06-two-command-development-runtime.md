@@ -4,7 +4,7 @@
 
 **Goal:** Make the complete local frontend/API/Transformer solution start from one frontend command and one backend command.
 
-**Architecture:** Keep FastAPI and the durable Transformer worker as separate Python processes. Extend the existing PowerShell backend launcher into a fail-fast supervisor that configures the target root, migrates the database, starts both children, monitors them, and cleans up only their process trees.
+**Architecture:** Keep FastAPI and the durable Transformer worker as separate Python processes. Extend the existing PowerShell backend launcher into a fail-fast supervisor that configures the target root, migrates the database, starts both children inside one Windows kill-on-close Job Object, and monitors them.
 
 **Tech Stack:** Windows PowerShell, Pester 3.4, Python virtual environment, Alembic, Uvicorn, FastAPI.
 
@@ -14,7 +14,7 @@
 - The Transformer worker remains a separate Python child process.
 - `backend/.venv/Scripts/python.exe` is the only Python executable used by the launcher.
 - `ALLOWED_TARGET_ROOTS` is set before either child starts.
-- Cleanup is rooted only in process IDs created by this launcher.
+- Each backend process is assigned to the launcher's Job Object before it runs.
 - Uvicorn uses port `8000` by default and retains `--reload` for development.
 
 ---
@@ -27,13 +27,13 @@
 
 **Interfaces:**
 - Consumes: `backend/.venv/Scripts/python.exe`, `ALLOWED_TARGET_ROOTS`, Alembic configuration.
-- Produces: `Invoke-BackendDevelopmentRuntime`, `Start-BackendRuntimeProcesses`, and PID-rooted cleanup helpers available when the script is dot-sourced for testing.
+- Produces: `Invoke-BackendDevelopmentRuntime`, `Start-BackendRuntimeProcesses`, and a native Windows Job Object helper available when the script is dot-sourced for testing.
 
 - [ ] **Step 1: Write failing Pester tests**
 
 Add tests that require target-root initialization, two distinct child process
-commands, virtual-environment Python selection, and PID-rooted descendant
-selection.
+commands, virtual-environment Python selection, Job Object assignment, and live
+descendant termination when the job closes.
 
 - [ ] **Step 2: Run tests and verify RED**
 
@@ -48,9 +48,9 @@ Expected: failures because the supervisor functions do not exist.
 - [ ] **Step 3: Implement the minimal supervisor**
 
 Refactor `dev-backend.ps1` into dot-sourceable functions plus a guarded main
-entry point. Apply migrations synchronously, then start Uvicorn and the
-Transformer worker with `Start-Process -NoNewWindow -PassThru`. Poll both and
-clean up their exact descendant trees in `finally`.
+entry point. Apply migrations synchronously, then create Uvicorn and the
+Transformer worker suspended, assign each to the same kill-on-close Job Object,
+resume them, and poll both. Dispose the job in `finally`.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
@@ -126,6 +126,6 @@ Run `git diff --check`, `git status --short`, and `git diff --stat`.
 
 - [ ] **Step 3: Review scope and safety**
 
-Confirm that cleanup uses launched PIDs, no API code was changed, no secrets or
-generated runtime files were added, and no unrelated files changed.
-
+Confirm that cleanup closes only the launcher-owned Job Object, no API code was
+changed, no secrets or generated runtime files were added, and no unrelated
+files changed.

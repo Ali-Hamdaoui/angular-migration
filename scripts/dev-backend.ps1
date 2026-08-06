@@ -59,162 +59,14 @@ function Get-BackendProcessSpecifications {
     )
 }
 
-function Get-ProcessTreeIds {
+function New-BackendRuntimeJob {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [int[]]$RootProcessIds,
+    param()
 
-        [Parameter(Mandatory)]
-        [AllowEmptyCollection()]
-        [object[]]$ProcessSnapshot
-    )
-
-    $childrenByParent = @{}
-    foreach ($processInfo in $ProcessSnapshot) {
-        $parentId = [int]$processInfo.ParentProcessId
-        if (-not $childrenByParent.ContainsKey($parentId)) {
-            $childrenByParent[$parentId] = @()
-        }
-        $childrenByParent[$parentId] += [int]$processInfo.ProcessId
+    if (-not ("BackendRuntimeJob" -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot "BackendRuntimeJob.cs")
     }
-
-    $depthById = @{}
-    $pending = [System.Collections.Generic.Queue[int]]::new()
-    foreach ($rootId in $RootProcessIds) {
-        if (-not $depthById.ContainsKey($rootId)) {
-            $depthById[$rootId] = 0
-            $pending.Enqueue($rootId)
-        }
-    }
-
-    while ($pending.Count -gt 0) {
-        $parentId = $pending.Dequeue()
-        if (-not $childrenByParent.ContainsKey($parentId)) {
-            continue
-        }
-        foreach ($childId in @($childrenByParent[$parentId])) {
-            if ($depthById.ContainsKey($childId)) {
-                continue
-            }
-            $depthById[$childId] = [int]$depthById[$parentId] + 1
-            $pending.Enqueue($childId)
-        }
-    }
-
-    $depthById.GetEnumerator() |
-        Sort-Object -Property @{ Expression = "Value"; Descending = $true }, @{ Expression = "Key"; Descending = $true } |
-        ForEach-Object { [int]$_.Key }
-}
-
-function Stop-WindowsProcessTree {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [int]$RootProcessId
-    )
-
-    # taskkill /T resolves the live Windows tree before terminating its root,
-    # avoiding broken parent chains from venv launchers and Uvicorn reloads.
-    & taskkill.exe /PID $RootProcessId /T /F 2>$null | Out-Null
-}
-
-function Stop-BackendProcessTrees {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [object[]]$Processes
-    )
-
-    $rootProcessIds = @(
-        $Processes |
-            Where-Object { $null -ne $_ } |
-            ForEach-Object { [int]$_.Id }
-    )
-    if ($rootProcessIds.Count -eq 0) {
-        return
-    }
-
-    # Stop the two supervisors first so Uvicorn cannot reload and the worker
-    # cannot claim or launch new commands while descendants are being drained.
-    foreach ($rootProcessId in $rootProcessIds) {
-        Stop-WindowsProcessTree -RootProcessId $rootProcessId
-        Stop-Process -Id $rootProcessId -Force -ErrorAction SilentlyContinue
-    }
-    foreach ($rootProcessId in $rootProcessIds) {
-        Wait-Process -Id $rootProcessId -Timeout 1 -ErrorAction SilentlyContinue
-    }
-
-    $knownProcessIds = [System.Collections.Generic.HashSet[int]]::new()
-    foreach ($rootProcessId in $rootProcessIds) {
-        $null = $knownProcessIds.Add($rootProcessId)
-    }
-    $consecutiveEmptyPasses = 0
-
-    foreach ($pass in 1..25) {
-        $snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
-        $activeProcessIds = [System.Collections.Generic.HashSet[int]]::new()
-        foreach ($processInfo in $snapshot) {
-            $null = $activeProcessIds.Add([int]$processInfo.ProcessId)
-        }
-        foreach ($knownProcessId in $knownProcessIds) {
-            if ($null -ne (Get-Process -Id $knownProcessId -ErrorAction SilentlyContinue)) {
-                $null = $activeProcessIds.Add($knownProcessId)
-            }
-        }
-        $discoveredProcessIds = @(
-            Get-ProcessTreeIds -RootProcessIds @($knownProcessIds) -ProcessSnapshot $snapshot
-        )
-        foreach ($discoveredProcessId in $discoveredProcessIds) {
-            $null = $knownProcessIds.Add([int]$discoveredProcessId)
-        }
-        $processTreeIds = @(
-            $discoveredProcessIds |
-                Where-Object { $activeProcessIds.Contains([int]$_) }
-        )
-        if ($processTreeIds.Count -eq 0) {
-            $consecutiveEmptyPasses++
-            if ($consecutiveEmptyPasses -ge 10) {
-                # Finish with a blind stop of every PID ever observed. Windows
-                # process providers can briefly omit a terminating venv or
-                # reload launcher even though its process object still exists.
-                foreach ($knownProcessId in $knownProcessIds) {
-                    Stop-Process -Id $knownProcessId -Force -ErrorAction SilentlyContinue
-                }
-                foreach ($knownProcessId in $knownProcessIds) {
-                    Wait-Process -Id $knownProcessId -Timeout 1 -ErrorAction SilentlyContinue
-                }
-                Start-Sleep -Milliseconds 500
-                $stillRunningIds = [System.Collections.Generic.HashSet[int]]::new()
-                @(
-                    $knownProcessIds |
-                        Where-Object {
-                            $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue)
-                        }
-                ) | ForEach-Object { $null = $stillRunningIds.Add([int]$_) }
-                @(
-                    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                        Where-Object { $knownProcessIds.Contains([int]$_.ProcessId) }
-                ) | ForEach-Object { $null = $stillRunningIds.Add([int]$_.ProcessId) }
-                if ($stillRunningIds.Count -eq 0) {
-                    return
-                }
-                $consecutiveEmptyPasses = 0
-            }
-            Start-Sleep -Milliseconds 100
-            continue
-        }
-        $consecutiveEmptyPasses = 0
-        foreach ($processId in $processTreeIds) {
-            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        }
-        foreach ($processId in $processTreeIds) {
-            Wait-Process -Id $processId -Timeout 1 -ErrorAction SilentlyContinue
-        }
-        Start-Sleep -Milliseconds 100
-    }
-
-    throw "Backend process-tree cleanup did not complete after repeated termination checks."
+    return New-Object BackendRuntimeJob
 }
 
 function Invoke-BackendDatabaseMigration {
@@ -243,25 +95,21 @@ function Start-BackendRuntimeProcesses {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [object[]]$Specifications
+        [object[]]$Specifications,
+
+        [Parameter(Mandatory)]
+        [object]$RuntimeJob
     )
 
     $started = @()
-    try {
-        foreach ($specification in $Specifications) {
-            $started += Start-Process `
-                -FilePath $specification.FilePath `
-                -ArgumentList $specification.Arguments `
-                -WorkingDirectory $specification.WorkingDirectory `
-                -NoNewWindow `
-                -PassThru
-        }
-        return $started
+    foreach ($specification in $Specifications) {
+        $started += $RuntimeJob.StartProcess(
+            $specification.FilePath,
+            [string[]]$specification.Arguments,
+            $specification.WorkingDirectory
+        )
     }
-    catch {
-        Stop-BackendProcessTrees -Processes $started
-        throw
-    }
+    return $started
 }
 
 function Assert-BackendRuntimeProcessesRunning {
@@ -319,8 +167,12 @@ function Invoke-BackendDevelopmentRuntime {
         -PythonPath $pythonPath `
         -Port $Port)
     $processes = @()
+    $runtimeJob = $null
     try {
-        $processes = @(Start-BackendRuntimeProcesses -Specifications $specifications)
+        $runtimeJob = New-BackendRuntimeJob
+        $processes = @(Start-BackendRuntimeProcesses `
+            -Specifications $specifications `
+            -RuntimeJob $runtimeJob)
         Write-Host "Backend API: http://127.0.0.1:$Port (PID $($processes[0].Id))" -ForegroundColor Green
         Write-Host "Transformer worker PID: $($processes[1].Id)" -ForegroundColor Green
         Write-Host "Press Ctrl+C to stop both backend processes." -ForegroundColor Yellow
@@ -333,9 +185,15 @@ function Invoke-BackendDevelopmentRuntime {
         }
     }
     finally {
-        if ($processes.Count -gt 0) {
+        if ($null -ne $runtimeJob) {
             Write-Host "Stopping backend API and Transformer worker..." -ForegroundColor Yellow
-            Stop-BackendProcessTrees -Processes $processes
+            $runtimeJob.Dispose()
+        }
+        foreach ($process in $processes) {
+            if ($null -ne $process) {
+                $process.WaitForExit(5000) | Out-Null
+                $process.Dispose()
+            }
         }
     }
 }

@@ -50,7 +50,8 @@ The backend launcher uses `backend\.venv\Scripts\python.exe`, applies Alembic
 migrations, and starts both the Uvicorn API and the separate durable
 Transformer worker. The API continues to queue authorized work; only the
 Transformer worker claims and executes migration commands. The launcher
-monitors both children and stops both process trees when you press `Ctrl+C`.
+monitors both children and assigns them to one Windows Job Object before they
+run. Pressing `Ctrl+C` closes that job and stops both complete process trees.
 
 `-TargetRoot` defaults to the current user's
 `Downloads\MSA-COMMON-STG1` directory. The launcher creates it when needed and

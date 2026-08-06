@@ -65,72 +65,23 @@ Describe "dev-backend child process specifications" {
     }
 }
 
-Describe "dev-backend process-tree containment" {
-    It "selects only launched process trees in leaf-first shutdown order" {
-        $snapshot = @(
-            [pscustomobject]@{ ProcessId = 100; ParentProcessId = 10 },
-            [pscustomobject]@{ ProcessId = 101; ParentProcessId = 100 },
-            [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101 },
-            [pscustomobject]@{ ProcessId = 200; ParentProcessId = 20 },
-            [pscustomobject]@{ ProcessId = 201; ParentProcessId = 200 }
-        )
+Describe "dev-backend job-object containment" {
+    It "ships the native Windows job helper" {
+        $helperPath = Join-Path $repositoryRoot "scripts\BackendRuntimeJob.cs"
 
-        $selected = @(Get-ProcessTreeIds `
-            -RootProcessIds @(100) `
-            -ProcessSnapshot $snapshot)
-
-        ($selected -join ",") | Should Be "102,101,100"
-    }
-
-    It "quiesces roots and rescans until no launched descendants remain" {
-        $script:snapshotCallCount = 0
-        $script:stoppedProcessIds = @()
-        Mock Get-CimInstance {
-            $script:snapshotCallCount++
-            if ($script:snapshotCallCount -eq 1) {
-                return @(
-                    [pscustomobject]@{ ProcessId = 101; ParentProcessId = 100 },
-                    [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101 }
-                )
-            }
-            if ($script:snapshotCallCount -eq 2) {
-                # The intermediate process is gone, but its child still reports
-                # the now-missing intermediate PID as its parent.
-                return @(
-                    [pscustomobject]@{ ProcessId = 102; ParentProcessId = 101 }
-                )
-            }
-            return @()
-        }
-        Mock Stop-Process {
-            param($Id)
-            foreach ($stoppedId in @($Id)) {
-                $script:stoppedProcessIds += [int]$stoppedId
-            }
-        }
-        Mock Stop-WindowsProcessTree {}
-
-        Stop-BackendProcessTrees -Processes @([pscustomobject]@{ Id = 100 })
-
-        $script:snapshotCallCount | Should Be 13
-        ($script:stoppedProcessIds[0..3] -join ",") | Should Be "100,102,101,102"
-        Assert-MockCalled Stop-WindowsProcessTree -Times 1 -Exactly -ParameterFilter {
-            $RootProcessId -eq 100
-        }
+        (Test-Path -LiteralPath $helperPath -PathType Leaf) | Should Be $true
+        (Get-Content -Raw -LiteralPath $helperPath) |
+            Should Match 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE'
     }
 }
 
 Describe "dev-backend partial startup cleanup" {
-    It "stops the first child when the second child cannot start" {
-        $script:startAttempt = 0
-        Mock Start-Process {
-            $script:startAttempt++
-            if ($script:startAttempt -eq 1) {
-                return [pscustomobject]@{ Id = 301 }
-            }
-            throw "second child failed"
+    It "starts both children through the runtime job" {
+        $runtimeJob = New-Object psobject
+        $runtimeJob | Add-Member -MemberType ScriptMethod -Name StartProcess -Value {
+            param($filePath, $arguments, $workingDirectory)
+            return [pscustomobject]@{ Id = 300 + $arguments.Count }
         }
-        Mock Stop-BackendProcessTrees {}
         $specifications = @(
             [pscustomobject]@{
                 FilePath = "python.exe"
@@ -144,11 +95,32 @@ Describe "dev-backend partial startup cleanup" {
             }
         )
 
-        { Start-BackendRuntimeProcesses -Specifications $specifications } |
-            Should Throw "second child failed"
-        Assert-MockCalled Stop-BackendProcessTrees -Times 1 -Exactly -ParameterFilter {
-            $Processes.Count -eq 1 -and $Processes[0].Id -eq 301
+        $processes = @(Start-BackendRuntimeProcesses `
+            -Specifications $specifications `
+            -RuntimeJob $runtimeJob)
+
+        $processes.Count | Should Be 2
+        $processes[0].Id | Should Be 302
+        $processes[1].Id | Should Be 302
+    }
+
+    It "closes the runtime job when child startup fails" {
+        $script:jobDisposed = $false
+        $script:runtimeJob = New-Object psobject
+        $script:runtimeJob | Add-Member -MemberType ScriptMethod -Name Dispose -Value {
+            $script:jobDisposed = $true
         }
+        Mock Invoke-BackendDatabaseMigration {}
+        Mock New-BackendRuntimeJob { return $script:runtimeJob }
+        Mock Start-BackendRuntimeProcesses { throw "second child failed" }
+
+        { Invoke-BackendDevelopmentRuntime `
+            -RepositoryRoot $repositoryRoot `
+            -TargetRoot (Join-Path $TestDrive "target") `
+            -Port 8123 } |
+            Should Throw "second child failed"
+
+        $script:jobDisposed | Should Be $true
     }
 }
 
