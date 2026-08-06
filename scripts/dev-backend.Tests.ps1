@@ -31,4 +31,16 @@ Describe "dev-backend launcher" {
         $scriptText | Should Match 'finally\s*\{'
         $scriptText | Should Match 'Stop-ProcessTree'
     }
+
+    It "parses as valid PowerShell" {
+        $tokens = $null
+        $parseErrors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile(
+            $launcherPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        ) | Out-Null
+
+        $parseErrors | Should BeNullOrEmpty
+    }
 }
