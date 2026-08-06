@@ -42,8 +42,20 @@ npm run build
 Backend:
 
 ```powershell
-.\scripts\dev-backend.ps1
+.\scripts\dev-backend.ps1 `
+  -TargetRoot "C:\Users\hamdaoui.ali\Downloads\MSA-COMMON-STG1"
 ```
+
+The backend launcher uses `backend\.venv\Scripts\python.exe`, applies Alembic
+migrations, and starts both the Uvicorn API and the separate durable
+Transformer worker. The API continues to queue authorized work; only the
+Transformer worker claims and executes migration commands. The launcher
+monitors both children and stops both process trees when you press `Ctrl+C`.
+
+`-TargetRoot` defaults to the current user's
+`Downloads\MSA-COMMON-STG1` directory. The launcher creates it when needed and
+exports the resolved path as `ALLOWED_TARGET_ROOTS` before either child starts.
+Use `-Port <number>` to override the API's default port `8000`.
 
 Frontend:
 

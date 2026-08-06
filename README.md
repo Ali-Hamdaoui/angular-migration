@@ -104,18 +104,24 @@ Use [docs/developer-setup.md](docs/developer-setup.md) for PowerShell-compatible
 Start the backend and frontend in separate PowerShell terminals:
 
 ```powershell
-.\scripts\dev-backend.ps1
+.\scripts\dev-backend.ps1 `
+  -TargetRoot "C:\Users\hamdaoui.ali\Downloads\MSA-COMMON-STG1"
 ```
 
 ```powershell
 .\scripts\dev-frontend.ps1
 ```
 
-The scripts launch:
+The two scripts launch:
 
-- Backend: python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-- Frontend: $env:NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8000"
-            npm run dev
+- Backend launcher: applies Alembic migrations, then supervises the Uvicorn API
+  and the separate durable Transformer worker. Pressing `Ctrl+C` stops both
+  backend process trees.
+- Frontend launcher: runs the Next.js development server with `npm run dev`.
+
+`-TargetRoot` is optional. Its default is the current user's
+`Downloads\MSA-COMMON-STG1` directory; pass it explicitly when you want the
+backend's allowed migration output root to be obvious in the command history.
 
 If you want to validate the full workspace after startup, run:
 
