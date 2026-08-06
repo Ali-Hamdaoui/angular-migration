@@ -128,6 +128,31 @@
   font-size: .78rem;
 }
 
+.technical {
+  margin-top: .7rem;
+  border-top: 1px solid #244462;
+  padding-top: .55rem;
+}
+
+.technical summary {
+  cursor: pointer;
+  color: #9db0c8;
+  font-size: .72rem;
+  font-weight: 700;
+}
+
+.technicalBody {
+  display: grid;
+  gap: .35rem;
+  margin-top: .55rem;
+}
+
+.technicalBody code {
+  overflow-wrap: anywhere;
+  color: #9db0c8;
+  font-size: .72rem;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

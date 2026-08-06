@@ -22,6 +22,9 @@ import {
   TransformationEvidence,
   ValidationEvidence,
   WorkerStatus,
+  TechnicalDetails,
+  decisionLabel,
+  displayStatus,
 } from "./TransformationSections";
 import styles from "./TransformationPanel.module.css";
 
@@ -76,15 +79,12 @@ function bannerLabel(
   submitting: boolean,
 ): string | null {
   if (submitting) return "Revision submitting";
-  const { status, current_node, repair_status, active_gate, last_error_code } = projection;
+  const { status, current_node, repair_status, active_gate } = projection;
   if (status === "completed") return "Completed";
-  if (status === "failed") return last_error_code ? `Failed: ${last_error_code}` : "Failed";
-  if (status === "blocked") {
-    return last_error_code ? `Blocked — ${last_error_code}` : "Blocked";
-  }
+  if (status === "failed") return "Failed";
+  if (status === "blocked") return "Blocked";
   if (status === "waiting_repair_revision" || repair_status === "request_changes") return "Human revision required";
-  if (status === "waiting_gate" && active_gate === "G10") return "Waiting for G10 decision";
-  if (status === "waiting_gate" && active_gate) return `Waiting for ${active_gate} decision`;
+  if (status === "waiting_gate" && active_gate) return `Waiting for ${decisionLabel(active_gate)}`;
   if (current_node === "propose_repair") return "Waiting for Main LLM";
   if (current_node === "review_repair") return "Waiting for Reviewer";
   if (current_node === "apply_repair" || repair_status === "applying") return "Applying approved repair";
@@ -118,8 +118,8 @@ export function TransformationPanel({
     ).at(-1)?.sequence ?? 0,
     [workflowEvents],
   );
-  const { projection, status, refresh, refreshError, loadError } = useTransformation(runId, refreshKey);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { projection, executions, executionStatus, status, refresh, refreshError, loadError } = useTransformation(runId, refreshKey);
+  const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
   const [revisionInstruction, setRevisionInstruction] = useState("");
@@ -132,7 +132,7 @@ export function TransformationPanel({
   const submittingRef = useRef(false);
   const actionRequired = projection?.status === "waiting_prompt"
     || projection?.status === "waiting_repair_revision"
-    || (projection?.status === "waiting_gate" && /^G(?:0[7-9]|1[0-2])$/.test(projection.active_gate ?? ""));
+    || (projection?.status === "waiting_gate" && decisionLabel(projection.active_gate) !== "Unsupported decision" && decisionLabel(projection.active_gate) !== "No decision requested");
 
   useEffect(() => {
     if (status !== "loading") onActionRequiredChange?.(Boolean(actionRequired));
@@ -144,16 +144,15 @@ export function TransformationPanel({
     </section>;
   }
   if (status === "empty") {
-    const g06 = workflowEvents.filter((event) => event.event_type.startsWith("G06_")).at(-1);
     return <section className={styles.empty} aria-label="Transformer status">
       <span className={styles.eyebrow}>Transformation prerequisite</span>
       <h3>Transformer continuation has not been created</h3>
-      <p>Accept G06 in Planning to create the durable Transformer continuation. This screen remains available while Planning is pending, rejected, stale, or unavailable.</p>
+      <p>Accept the migration plan in Planning to create the durable Transformer continuation. This screen remains available while Planning is pending, rejected, stale, or unavailable.</p>
       <dl className={styles.metadata}>
         <div><dt>Run status</dt><dd>{authoritativeStatus}</dd></div>
         <div><dt>Run phase</dt><dd>{authoritativePhase}</dd></div>
         <div><dt>Run state version</dt><dd>{authoritativeStateVersion}</dd></div>
-        <div><dt>Latest G06 evidence</dt><dd>{g06?.event_type ?? "none"}</dd></div>
+        <div><dt>Planning evidence</dt><dd>{workflowEvents.some((event) => event.event_type.startsWith("G06_")) ? "Recorded" : "Unavailable"}</dd></div>
       </dl>
     </section>;
   }
@@ -163,16 +162,17 @@ export function TransformationPanel({
       <h3>Transformer state unavailable</h3>
       <p role="alert">The backend projection could not be loaded. The frontend has not inferred a workflow result.</p>
       {loadFailure
-        ? <p className={styles.alert} role="alert">
-            Backend error {loadFailure.code} (HTTP {loadError?.status}): {loadFailure.message}
-          </p>
+        ? <div className={styles.alert} role="alert">
+            <p>Backend unavailable: {loadFailure.message}</p>
+            <TechnicalDetails><code>HTTP {loadError?.status}; error code: {loadFailure.code}</code></TechnicalDetails>
+          </div>
         : null}
       <button type="button" onClick={() => void refresh()}>Retry Transformer state</button>
     </section>;
   }
 
   const current = projection;
-  const shared = { projection: current, workflowEvents, artifacts };
+  const shared = { projection: current, workflowEvents, artifacts, executions, executionStatus };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
   const g10EvidenceAvailable = current.dependency_operation
@@ -185,27 +185,28 @@ export function TransformationPanel({
   const reviewerOverrideRequired = current.status === "waiting_gate"
     && current.active_gate === "G10"
     && current.repair_review?.decision === "request_changes";
+  const decisionAvailable = current.status === "waiting_gate"
+    && decisionLabel(current.active_gate) !== "Unsupported decision"
+    && decisionLabel(current.active_gate) !== "No decision requested"
+    && Boolean(current.active_gate_package_checksum && current.workspace_fingerprint);
   return <div className={styles.screen} aria-label="Transformer status">
     <section className={styles.hero}>
       <div>
         <span className={styles.eyebrow}>Durable Transformer / backend truth</span>
         <h3>{projection.source_version ?? "source"} → {projection.target_version ?? "target"}</h3>
-        <p>Current step: <code>{projection.workflow_step}</code></p>
-        {projection.current_node !== projection.workflow_step
-          ? <p className={styles.note}>Backend node: <code>{projection.current_node}</code></p>
-          : null}
+        <p>Workflow progress: {displayStatus(projection.status)}</p>
         {projection.next_backend_action ? <p>Next backend action: {projection.next_backend_action}</p> : null}
       </div>
-      <span className={styles.status}>{projection.status}</span>
+      <span className={styles.status}>{displayStatus(projection.status)}</span>
     </section>
 
     {banner ? <div className={styles.banner} role="status" aria-live="polite">{banner}</div> : null}
     {refreshError ? <p className={styles.note} role="status">{refreshError}</p> : null}
 
-    {actionError ? <p className={styles.alert} role="alert">{actionError}</p> : null}
+    {actionError ? <div className={styles.alert} role="alert"><p>{actionError.message}</p>{actionError.code ? <TechnicalDetails><code>Error code: {actionError.code}</code></TechnicalDetails> : null}</div> : null}
 
     <div className={styles.grid}>
-      <StageSummary projection={projection} workflowEvents={workflowEvents} />
+      <StageSummary {...shared} />
       <WorkerStatus projection={projection} />
 
       <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="transform-current-action">
@@ -213,9 +214,16 @@ export function TransformationPanel({
         <div className={styles.cardHeader}>
           <div>
             <h3 id="transform-current-action">
-              {projection.status === "waiting_prompt" ? "CLI prompt decision" : projection.status === "waiting_repair_revision" ? "Repair revision required" : projection.status === "waiting_gate" && projection.active_gate ? `${projection.active_gate} approval` : "No human action requested"}
+              {projection.status === "waiting_prompt" ? "CLI prompt decision" : projection.status === "waiting_repair_revision" ? "Repair revision required" : projection.status === "waiting_gate" && projection.active_gate ? decisionLabel(projection.active_gate) : "No human action requested"}
             </h3>
-            <p className={styles.note}>Backend state: {projection.status} / {projection.current_node}</p>
+            <p className={styles.note}>The backend exposes the current action and required evidence.</p>
+            <TechnicalDetails>
+              <code>Workflow node: {projection.current_node}</code>
+              <code>Decision type: {projection.active_gate ?? "unavailable"}</code>
+              <code>State version: {projection.state_version}</code>
+              <code>Package checksum: {projection.active_gate_package_checksum ?? "unavailable"}</code>
+              <code>Workspace fingerprint: {projection.workspace_fingerprint ?? "unavailable"}</code>
+            </TechnicalDetails>
           </div>
         </div>
         {reviewerOverrideRequired ? <div className={styles.alert} role="alert">
@@ -227,28 +235,25 @@ export function TransformationPanel({
               Revision accepted — child attempt {revisionAccepted.attempt_id} created (status: {revisionAccepted.status}).
             </p>
           : null}
-        {projection.status === "waiting_gate"
-          && projection.active_gate
-          && projection.active_gate_package_checksum
-          && projection.workspace_fingerprint
+        {decisionAvailable
           ? <div className={styles.actions}>
               <button
                 type="button"
                 disabled={submitting || (projection.active_gate === "G10" && !g10EvidenceAvailable) || (reviewerOverrideRequired && !overrideComment.trim())}
-                title={projection.active_gate === "G10" && !g10EvidenceAvailable ? "Required repair evidence is incomplete — G10 approval disabled" : undefined}
+                title={projection.active_gate === "G10" && !g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
                 onClick={() => void decideGate("approve")}
               >
-                {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : `Approve ${projection.active_gate}`}
+                {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : "Approve"}
               </button>
               {projection.active_gate === "G10" ? <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
                 Request changes
               </button> : null}
               <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
-                Reject {projection.active_gate}
+                Reject
               </button>
             </div>
           : projection.status === "waiting_gate"
-            ? <p className={styles.alert} role="alert">The active gate lacks the backend package checksum or workspace fingerprint required for a safe decision.</p>
+            ? <p className={styles.alert} role="alert">{decisionLabel(projection.active_gate) === "Unsupported decision" ? "This decision type is unsupported by the frontend." : "The active decision lacks the backend package checksum or workspace fingerprint required for a safe decision."}</p>
             : null}
         {reviewerOverrideRequired ? <>
           <label htmlFor="repair-override-comment">Override comment (required)</label>
@@ -281,7 +286,7 @@ export function TransformationPanel({
         </> : null}
       </section>
 
-      <LogsAndDiagnostics projection={projection} workflowEvents={workflowEvents} />
+      <LogsAndDiagnostics {...shared} />
 
       <section className={`${styles.card} ${styles.cardWide} ${projection.status === "waiting_prompt" ? styles.prompt : ""}`} aria-labelledby="transform-prompt">
         <span className={styles.eyebrow}>05 / Prompt decision and reconstruction</span>
@@ -351,12 +356,12 @@ export function TransformationPanel({
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
         await Promise.allSettled([refresh(), Promise.resolve(refreshAuthoritativeState())]);
-        setActionError(conflictMessage(error));
+        setActionError({ message: conflictMessage(error), code: "STALE_STATE" });
       } else if (error instanceof ApiClientError) {
         const { code, message } = backendErrorMessage(error);
-        setActionError(`${code}: ${message}`);
+        setActionError({ message, code });
       } else {
-        setActionError(error instanceof Error ? error.message : fallback);
+        setActionError({ message: error instanceof Error ? error.message : fallback });
       }
       return undefined;
     } finally {
@@ -366,7 +371,7 @@ export function TransformationPanel({
   }
 
   function decideGate(decision: "approve" | "reject") {
-    if (!current.active_gate || !current.active_gate_package_checksum || !current.workspace_fingerprint) return;
+    if (!decisionAvailable || !current.active_gate || !current.active_gate_package_checksum || !current.workspace_fingerprint) return;
     if (decision === "approve" && reviewerOverrideRequired) {
       if (!overrideComment.trim() || !window.confirm("Approve this repair despite the Reviewer's unresolved concerns?")) return;
     }
