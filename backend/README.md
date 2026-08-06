@@ -230,16 +230,18 @@ database:
 .\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-Run the API and the durable Transformer/command worker in separate terminals.
-The API only queues authorized commands; it never spawns migration processes:
+For normal local development, return to the repository root and run the single
+backend launcher. It applies migrations, sets the configured target root, and
+starts the API plus the durable Transformer/command worker as separate child
+processes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+.\scripts\dev-backend.ps1
 ```
 
-```powershell
-.\.venv\Scripts\python.exe -m app.orchestration.transformer_worker
-```
+The API only queues authorized commands; it never spawns migration processes.
+The launcher supervises both backend processes and cleans up their process
+trees when it exits.
 
 The Transformer worker owns continuation claims, command leases, restart
 reconciliation, cancellation polling, and Windows process-tree supervision.
