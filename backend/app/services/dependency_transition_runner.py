@@ -239,14 +239,7 @@ class DependencyTransitionRunner:
         )
         if angular_step is None or angular_step.status != "PASSED":
             return "angular_update"
-        install = self._execution(
-            session, context, f"{context['attempt'].id}:transition:install"
-        )
-        install_retry = self._execution(
-            session, context, f"{context['attempt'].id}:transition:install-v3"
-        )
-        if install_retry is not None:
-            install = install_retry
+        install = self._latest_install_execution(session, context)
         install_verified = install is not None and session.scalar(
             select(ArtifactMetadataModel.id).where(
                 ArtifactMetadataModel.owner_reference
@@ -254,21 +247,23 @@ class DependencyTransitionRunner:
             )
         )
         if install is None or install.status != "succeeded" or not install_verified:
-            if install is not None and install.failure_code == "COMMAND_EXIT_NONZERO" and "ERESOLVE" in (install.failure_message or ""):
-                normalized = self._execution(
-                    session, context, f"{context['attempt'].id}:transition:normalize-angular-lockfile-v5"
-                )
-                normalized = normalized if normalized is not None and normalized.status == "succeeded" else None
+            if (
+                install is not None
+                and install.failure_code == "COMMAND_EXIT_NONZERO"
+                and "ERESOLVE" in (install.failure_message or "")
+                and self._install_generation(install) == 1
+            ):
+                if self._normalization_succeeded_after(session, context, install) is None:
+                    return "normalize_lockfile"
                 consistent = False
-                if normalized is not None:
-                    try:
-                        consistent = installed_dependency_version(
-                            context["workspace"], "@angular/platform-browser-dynamic"
-                        ) == installed_dependency_version(
-                            context["workspace"], "@angular/core"
-                        )
-                    except ValueError:
-                        consistent = False
+                try:
+                    consistent = installed_dependency_version(
+                        context["workspace"], "@angular/platform-browser-dynamic"
+                    ) == installed_dependency_version(
+                        context["workspace"], "@angular/core"
+                    )
+                except ValueError:
+                    consistent = False
                 return "reinstall" if consistent else "normalize_lockfile"
             return "reinstall"
         ci_step = session.scalar(
@@ -499,6 +494,78 @@ class DependencyTransitionRunner:
                 CommandExecutionModel.idempotency_key == key,
             )
         )
+
+    def _install_executions(self, session, context) -> list:
+        """All reattach executions for this repair attempt in durable order.
+
+        Dynamic generations carry keys ``{attempt}:transition:install:attempt-N``.
+        Historical keys (``{attempt}:transition:install`` and
+        ``{attempt}:transition:install-v3``) are read for resume compatibility
+        but never written again.
+        """
+        attempt_id = context["attempt"].id
+        prefix = f"{attempt_id}:transition:install:attempt-"
+        executions = list(
+            session.scalars(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == context["run"].id,
+                    CommandExecutionModel.idempotency_key.startswith(prefix),
+                )
+            )
+        )
+        for key in (
+            f"{attempt_id}:transition:install",
+            f"{attempt_id}:transition:install-v3",
+        ):
+            execution = self._execution(session, context, key)
+            if execution is not None:
+                executions.append(execution)
+        executions.sort(key=lambda execution: (execution.requested_at, execution.id))
+        return executions
+
+    def _latest_install_execution(self, session, context):
+        executions = self._install_executions(session, context)
+        return executions[-1] if executions else None
+
+    def _next_install_key(self, session, context) -> str:
+        prefix = f"{context['attempt'].id}:transition:install:attempt-"
+        generation = 1
+        for execution in self._install_executions(session, context):
+            match = re.match(re.escape(prefix) + r"(\d+)$", execution.idempotency_key or "")
+            if match is not None:
+                generation = max(generation, int(match.group(1)) + 1)
+        return f"{prefix}{generation}"
+
+    @staticmethod
+    def _install_generation(execution) -> int:
+        match = re.search(r":install:attempt-(\d+)$", execution.idempotency_key or "")
+        return int(match.group(1)) if match is not None else 1
+
+    def _latest_successful_normalization(self, session, context):
+        execution = self._execution(
+            session,
+            context,
+            f"{context['attempt'].id}:transition:normalize-angular-lockfile-v5",
+        )
+        if (
+            execution is not None
+            and execution.status == "succeeded"
+            and execution.exit_code == 0
+        ):
+            return execution
+        return None
+
+    def _normalization_succeeded_after(self, session, context, install_execution):
+        """The successful normalization whose completion is newer than the failed install."""
+        normalized = self._latest_successful_normalization(session, context)
+        if normalized is None:
+            return None
+        install_at = install_execution.finished_at or install_execution.requested_at
+        normalize_at = normalized.finished_at or normalized.requested_at
+        if install_at is None or normalize_at is None:
+            return None
+        return normalized if normalize_at > install_at else None
+
     def _completed_uninstall(self, session, continuation, context, arguments):
         executions = session.scalars(
             select(CommandExecutionModel)
@@ -800,20 +867,38 @@ class DependencyTransitionRunner:
         return "queued"
 
     def _phase_install(self, session, continuation, context) -> str:
-        key = f"{context['attempt'].id}:transition:install-v3"
-        execution = self._execution(session, context, key)
-        if execution is None:
-            return self._queue_transition_command(session, continuation, context, "install", key)
-        if execution.status in {"pending", "queued", "running"}:
-            self._stage._wait_for_command(session, continuation, execution.id)
-            return "waiting"
-        if execution.status != "succeeded" or execution.exit_code != 0:
-            raise DependencyTransitionError(
-                execution.failure_code or "DEPENDENCY_TRANSITION_COMMAND_FAILED",
-                execution.failure_message or "npm install did not succeed",
+        latest = self._latest_install_execution(session, context)
+        if latest is None:
+            return self._queue_transition_command(
+                session,
+                continuation,
+                context,
+                "install",
+                self._next_install_key(session, context),
             )
-        self._verify_install(session, continuation, context, execution)
-        return "continue"
+        if latest.status in {"pending", "queued", "running"}:
+            self._stage._wait_for_command(session, continuation, latest.id)
+            return "waiting"
+        if latest.status == "succeeded" and latest.exit_code == 0:
+            self._verify_install(session, continuation, context, latest)
+            return "continue"
+        if (
+            self._install_generation(latest) == 1
+            and latest.failure_code == "COMMAND_EXIT_NONZERO"
+            and "ERESOLVE" in (latest.failure_message or "")
+            and self._normalization_succeeded_after(session, context, latest) is not None
+        ):
+            return self._queue_transition_command(
+                session,
+                continuation,
+                context,
+                "install",
+                self._next_install_key(session, context),
+            )
+        raise DependencyTransitionError(
+            latest.failure_code or "DEPENDENCY_TRANSITION_COMMAND_FAILED",
+            latest.failure_message or "npm install did not succeed",
+        )
 
     def _verify_install(self, session, continuation, context, execution) -> None:
         run = context["run"]
