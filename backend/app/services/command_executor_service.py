@@ -397,11 +397,16 @@ class CommandExecutorService:
         idempotency_key: str,
         requested_by: str | None = None,
         correlation_id: str | None = None,
+        timeout_seconds: int,
     ) -> CommandExecutionResponse:
         """Persist one execution from an accepted, immutable authorization.
 
         No command data is accepted from the caller.  The authorization audit,
         run, template, and profile are the only sources for execution inputs.
+        ``timeout_seconds`` must be the exact policy-validated timeout of the
+        authorized command request (the approved plan reference or the
+        authorized command definition); it is persisted with the execution row
+        and is never patched afterwards.
         Dispatch happens after the surrounding transaction commits.
         """
         existing = session.scalar(select(CommandExecutionModel).where(
@@ -413,6 +418,11 @@ class CommandExecutorService:
                     or existing.authoritative_state_version != expected_state_version):
                 raise CommandExecutorError("IDEMPOTENCY_KEY_REUSED", "Idempotency key is bound to a different request")
             return self._response_from_model(existing, idempotent_replay=True)
+        if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+            raise CommandExecutorError(
+                "TIMEOUT_AUTHORITY_MISSING",
+                "The authorized command timeout must be the validated positive timeout of the command request",
+            )
 
         run = session.get(MigrationRunModel, run_id)
         if run is None:
@@ -509,7 +519,7 @@ class CommandExecutorService:
             status=CommandStatus.QUEUED.value,
             command_id=authorization.command_id,
             shell=False,
-            timeout_seconds=300,
+            timeout_seconds=timeout_seconds,
             network_profile=authorization.network_profile or "none",
             cancellation_policy="terminate_process_tree",
             requested_at=now,
@@ -525,6 +535,73 @@ class CommandExecutorService:
                            {"execution_id": execution_id, "authorization_id": authorization.id,
                             "command_id": authorization.command_id, "state_version": run.state_version})
         return self._response_from_model(model)
+
+    def resolve_authorized_timeout(
+        self, session: Session, authorization_decision_id: str
+    ) -> int:
+        """Resolve the policy-validated timeout of an accepted authorization.
+
+        The policy engine requires an approved-plan command's request timeout
+        to equal the approved plan reference timeout, so the plan reference is
+        the durable authority for the validated timeout.  Authorizations that
+        do not belong to the approved plan (internal repair-transition or
+        supersession authorizations) have no plan reference and fail closed;
+        their callers always pass the timeout explicitly.
+        """
+        from app.repositories.planning_models import (
+            MigrationPlanModel,
+            StageExecutionPlanModel,
+        )
+
+        authorization = session.get(
+            CommandAuthorizationAuditModel, authorization_decision_id
+        )
+        if authorization is None or authorization.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_DECISION_NOT_FOUND",
+                "Authorization decision does not exist",
+            )
+        plan = session.scalar(
+            select(MigrationPlanModel).where(
+                MigrationPlanModel.id == authorization.plan_id,
+                MigrationPlanModel.run_id == authorization.run_id,
+            )
+        )
+        stage_plan = (
+            session.scalar(
+                select(StageExecutionPlanModel).where(
+                    StageExecutionPlanModel.migration_plan_id == plan.id,
+                    StageExecutionPlanModel.run_id == authorization.run_id,
+                    StageExecutionPlanModel.stage_id == authorization.stage_id,
+                    StageExecutionPlanModel.version == authorization.plan_version,
+                )
+            )
+            if plan is not None
+            else None
+        )
+        references = []
+        if stage_plan is not None:
+            references = [
+                reference
+                for group in ((stage_plan.stage_plan or {}).get("commands") or {}).values()
+                for reference in group
+            ]
+        planned = next(
+            (
+                reference
+                for reference in references
+                if reference.get("command_id") == authorization.command_id
+                and reference.get("template_id") == authorization.template_id
+            ),
+            None,
+        )
+        timeout = planned.get("timeout_seconds") if planned is not None else None
+        if not isinstance(timeout, int) or timeout <= 0:
+            raise CommandExecutorError(
+                "TIMEOUT_AUTHORITY_MISSING",
+                "The accepted authorization has no durable approved timeout",
+            )
+        return timeout
 
     def authorize_retry_command(
         self,
@@ -681,11 +758,27 @@ class CommandExecutorService:
         workspace_recovered: bool = False,
         replacement_authorization_id: str | None = None,
         checkpoint_id: str | None = None,
+        authorized_timeout_seconds: int,
     ) -> CommandExecutionResponse:
-        """Create one immutable successor for a failed or interrupted execution."""
+        """Create one immutable successor for a failed or interrupted execution.
+
+        ``authorized_timeout_seconds`` is the freshly validated timeout of the
+        successor's own authorization (or, absent a replacement authorization,
+        the current authorized command definition).  It is never inherited
+        from the historical failed execution row, which remains immutable
+        evidence only.
+        """
         failed = session.get(CommandExecutionModel, failed_execution_id)
         if failed is None:
             raise CommandExecutorError("EXECUTION_NOT_FOUND", "Failed execution does not exist")
+        if (
+            not isinstance(authorized_timeout_seconds, int)
+            or authorized_timeout_seconds <= 0
+        ):
+            raise CommandExecutorError(
+                "TIMEOUT_AUTHORITY_MISSING",
+                "A retry requires the freshly validated timeout of its own authorization",
+            )
         existing = session.scalar(
             select(CommandExecutionModel).where(
                 CommandExecutionModel.run_id == failed.run_id,
@@ -720,11 +813,14 @@ class CommandExecutorService:
                     "ANGULAR_UPDATE_V3_RETRY_ALREADY_EXECUTED",
                     "The version-3 Angular recovery is already bound to this failed execution",
                 )
-        if failed.status == CommandStatus.INTERRUPTED.value:
+        if failed.status in {
+            CommandStatus.INTERRUPTED.value,
+            CommandStatus.TIMED_OUT.value,
+        }:
             if not failed.reconstruction_required:
                 raise CommandExecutorError(
                     "EXECUTION_NOT_RETRYABLE",
-                    "An interrupted execution may only have a successor after reconstruction is required and verified",
+                    "An interrupted or timed-out execution may only have a successor after reconstruction is required and verified",
                 )
         elif failed.status != CommandStatus.FAILED.value:
             raise CommandExecutorError(
@@ -807,7 +903,7 @@ class CommandExecutorService:
             requested_at=now,
             command_id=authorization.command_id,
             shell=False,
-            timeout_seconds=failed.timeout_seconds,
+            timeout_seconds=authorized_timeout_seconds,
             network_profile=authorization.network_profile,
             cancellation_policy=failed.cancellation_policy,
             state_version=1,
@@ -1165,6 +1261,15 @@ class CommandExecutorService:
         if final_status == CommandStatus.TIMED_OUT.value:
             model.failure_code = "COMMAND_TIMED_OUT"
             model.failure_message = "Command timed out; partial output was preserved."
+        # A mutating command that terminated without verified success may have
+        # left the workspace partially changed. It must never feed another
+        # governed mutating/repair step until the workspace is reconstructed
+        # against an authorized checkpoint, so mark it reconstruction-required.
+        if (
+            final_status in {CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value}
+            and model.operation_kind == "mutating"
+        ):
+            model.reconstruction_required = True
         model.duration_ms = result.result.duration_ms
         model.timed_out = result.timed_out
         model.cancelled = result.cancelled

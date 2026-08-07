@@ -392,6 +392,7 @@ class StageExecutionApplicationService:
                 idempotency_key=continuation_key,
                 requested_by=actor,
                 correlation_id=authorization.correlation_id,
+                timeout_seconds=reference["timeout_seconds"],
             )
         except Exception as error:
             raise StageExecutionError("FIRST_COMMAND_QUEUE_FAILED", "The first authorized command could not be queued.") from error

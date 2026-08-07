@@ -77,6 +77,9 @@ def _installed_version_of(message: str, package: str) -> str | None:
 class FailureEvidenceService:
     transient_codes: ClassVar[set[str]] = {
         "COMMAND_WORKER_LOST_REQUEUED",
+        # Historical drift: the executor emits COMMAND_TIMED_OUT; the legacy
+        # COMMAND_TIMEOUT spelling is kept for already-persisted evidence.
+        "COMMAND_TIMED_OUT",
         "COMMAND_TIMEOUT",
         "REGISTRY_TIMEOUT",
         "NETWORK_ERROR",

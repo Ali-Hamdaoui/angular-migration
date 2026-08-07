@@ -539,6 +539,7 @@ class TransformerStageService:
                 workspace_recovered=True,
                 replacement_authorization_id=replacement_authorization_id,
                 checkpoint_id=retry_checkpoint_id,
+                authorized_timeout_seconds=ANGULAR_UPDATE_V3_RENDERER.timeout_seconds,
             )
         except CommandExecutorError as error:
             raise TransformerStageError(error.code, error.message) from error
@@ -1215,6 +1216,9 @@ class TransformerStageService:
                     execution.id,
                     idempotency_key=f"{execution.id}:retry:1",
                     workspace_recovered=True,
+                    authorized_timeout_seconds=self._planned_bootstrap_timeout(
+                        session, continuation
+                    ),
                 )
             except CommandExecutorError as error:
                 raise TransformerStageError(error.code, error.message) from error
@@ -1261,6 +1265,31 @@ class TransformerStageService:
         continuation.updated_at = self._now()
         session.flush()
         return fingerprint
+
+    def _planned_bootstrap_timeout(self, session, continuation) -> int:
+        """Fresh validated timeout authority for the bootstrap retry.
+
+        The bootstrap retry has no replacement authorization, so its timeout
+        comes from the approved stage-plan reference the policy engine
+        validated the original bootstrap command against.  Fail closed when
+        the authority is absent.
+        """
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        references = []
+        if stage_plan is not None:
+            references = (
+                ((stage_plan.stage_plan or {}).get("commands") or {})
+                .get("bootstrap_install")
+                or []
+            )
+        planned = references[0] if len(references) == 1 else {}
+        timeout = planned.get("timeout_seconds")
+        if not isinstance(timeout, int) or timeout <= 0:
+            raise TransformerStageError(
+                "BOOTSTRAP_RETRY_TIMEOUT_MISSING",
+                "The approved stage plan has no bootstrap install timeout authority",
+            )
+        return timeout
 
     def _wait_for_command(
         self,

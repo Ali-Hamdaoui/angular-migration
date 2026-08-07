@@ -54,6 +54,9 @@ def queue_command(
     with session_scope() as session:
         authorize_run(session, run_id, actor)
         try:
+            timeout_seconds = executor.resolve_authorized_timeout(
+                session, body.authorization_decision_id
+            )
             result = executor.queue_authorized_command(
                 session,
                 run_id=run_id,
@@ -62,6 +65,7 @@ def queue_command(
                 idempotency_key=body.idempotency_key,
                 requested_by=actor,
                 correlation_id=request.headers.get("x-correlation-id"),
+                timeout_seconds=timeout_seconds,
             )
         except CommandExecutorError as error:
             status_code = 404 if error.code in {"RUN_NOT_FOUND", "AUTHORIZATION_DECISION_NOT_FOUND", "COMMAND_TEMPLATE_NOT_FOUND"} else 409 if error.code in {"STALE_STATE_VERSION", "AUTHORIZATION_STALE", "IDEMPOTENCY_KEY_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "AUTHORIZATION_IDEMPOTENCY_MISMATCH"} else 422

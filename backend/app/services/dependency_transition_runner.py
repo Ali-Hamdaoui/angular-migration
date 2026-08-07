@@ -721,6 +721,7 @@ class DependencyTransitionRunner:
                 idempotency_key=key,
                 requested_by="transformer",
                 correlation_id=authorization.correlation_id,
+                timeout_seconds=renderer.timeout_seconds,
             )
         except CommandExecutorError as error:
             raise DependencyTransitionError(error.code, error.message) from error
@@ -730,7 +731,6 @@ class DependencyTransitionRunner:
                 "DEPENDENCY_TRANSITION_QUEUE_FAILED",
                 "Queued transition command evidence is missing",
             )
-        execution.timeout_seconds = renderer.timeout_seconds
         evidence_package = (
             member["package"] if member is not None else intent["blocking_package"]
         )
@@ -1060,15 +1060,6 @@ class DependencyTransitionRunner:
                     next_node="dependency_transition",
                     attempt_key=f"ci-{context['attempt'].attempt_number}",
                 )
-                queued = session.get(CommandExecutionModel, result.execution_id)
-                planned_refs = (
-                    ((context["stage_plan"].stage_plan or {}).get("commands") or {})
-                    .get("final_install")
-                    or []
-                )
-                planned = planned_refs[0] if len(planned_refs) == 1 else {}
-                if queued is not None and isinstance(planned.get("timeout_seconds"), int):
-                    queued.timeout_seconds = planned["timeout_seconds"]
             except TransformerStageError as error:
                 raise DependencyTransitionError(error.code, error.message) from error
             return "queued"

@@ -91,6 +91,14 @@ from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 logger = logging.getLogger(__name__)
 
+# Checkpoint kinds an Angular-update execution may legitimately be bound to for
+# reconstruction: the initial pre-update tree, or the post-repair tree
+# (post-uninstall / pre-angular-retry). No other kind may authorize Angular
+# workspace recovery.
+_ANGULAR_RECOVERY_CHECKPOINT_KINDS = frozenset(
+    {"pre_angular_update", "post_repair"}
+)
+
 
 class TransformerPointer(TypedDict):
     continuation_id: str
@@ -859,7 +867,50 @@ class TransformerOrchestrator:
                     run_id=continuation.run_id,
                     stage_id=continuation.current_stage_id,
                 ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-                if (
+                binding = self._stage._binding(session, continuation)
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                if live != binding.workspace_fingerprint:
+                    # A workspace that diverged from its governed binding must
+                    # never feed failure evidence or a repair attempt: a
+                    # mutating command that terminated without verified success
+                    # may have left it partially changed. Reconstruction
+                    # against the execution-bound authorized checkpoint is the
+                    # only permitted reconciliation; otherwise fail closed
+                    # before any evidence is frozen.
+                    if (
+                        not self._is_angular_update_failure(session, continuation)
+                        or self._angular_update_reconstruction_checkpoint(
+                            session, continuation
+                        )
+                        is None
+                    ):
+                        self._block(
+                            session,
+                            continuation,
+                            "CHECKPOINT_RECOVERY_FAILED",
+                            "Workspace diverged from its binding and no authorized recovery checkpoint is available",
+                        )
+                        return
+                    try:
+                        self._restore_angular_update_checkpoint(session, continuation)
+                    except TransformerStageError as error:
+                        self._block(session, continuation, error.code, error.message)
+                        return
+                    # The `live` value above was computed BEFORE the
+                    # reconstruction. Reload the binding and recompute the
+                    # physical fingerprint from the reconstructed workspace so
+                    # stale pre-reconstruction evidence can never be frozen.
+                    binding = self._stage._binding(session, continuation)
+                    live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                    if live != binding.workspace_fingerprint:
+                        self._block(
+                            session,
+                            continuation,
+                            "CHECKPOINT_RECOVERY_FAILED",
+                            "Reconstructed workspace does not match the active workspace binding",
+                        )
+                        return
+                elif (
                     self._is_angular_update_failure(session, continuation)
                     and (
                         (
@@ -2546,7 +2597,13 @@ class TransformerOrchestrator:
         return (
             execution is not None
             and execution.prompt_request_id is None
-            and execution.status in ("failed", "interrupted")
+            and (
+                execution.status in ("failed", "interrupted")
+                or (
+                    execution.status == "timed_out"
+                    and execution.reconstruction_required
+                )
+            )
         )
 
     def _angular_update_retry(self, continuation_id: str, worker_id: str) -> None:
@@ -2998,10 +3055,14 @@ class TransformerOrchestrator:
     def _angular_update_reconstruction_checkpoint(session, continuation):
         """Resolve the checkpoint referenced by the failing execution or prompt.
 
-        Never falls back to "the newest" pre_angular_update checkpoint: the
-        reconstruction source must be the checkpoint the failing execution was
-        bound to (execution.checkpoint_id), or the prompt decision that drove
-        it (prompt.reconstruction_checkpoint_id).
+        Accepts exactly the checkpoint kinds an Angular-update execution may
+        legitimately be bound to: the initial ``pre_angular_update`` checkpoint
+        or the post-repair ``post_repair`` checkpoint (post-uninstall /
+        pre-angular-retry).  Never falls back to "the newest" checkpoint of any
+        kind: the reconstruction source must be the checkpoint the failing
+        execution was bound to (execution.checkpoint_id), or the prompt
+        decision that drove it (prompt.reconstruction_checkpoint_id), and the
+        checkpoint must still agree with the durable workspace binding.
         """
         step = session.scalar(
             select(StageStepModel).where(
@@ -3029,8 +3090,23 @@ class TransformerOrchestrator:
             )
         if (
             checkpoint is None
-            or checkpoint.kind != "pre_angular_update"
+            or checkpoint.kind not in _ANGULAR_RECOVERY_CHECKPOINT_KINDS
+            or checkpoint.run_id != continuation.run_id
             or checkpoint.stage_id != continuation.current_stage_id
+            or (execution is not None and checkpoint.id != execution.checkpoint_id)
+        ):
+            return None
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+        )
+        if (
+            binding is not None
+            and binding.fingerprint_profile_id == STAGE_FINGERPRINT_PROFILE.profile_id
+            and checkpoint.workspace_fingerprint != binding.workspace_fingerprint
         ):
             return None
         return checkpoint
