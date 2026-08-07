@@ -45,6 +45,7 @@ from app.domain.contracts import (
 )
 from app.services.path_validation_service import is_portable_absolute_path
 from app.services.dependency_closure_service import (
+    compatible_reinstall_bundle,
     installed_dependency_version,
     is_exact_version,
     validate_dependency_transition_evidence,
@@ -720,7 +721,9 @@ class CommandPolicyEngineService:
         The superseded id is the RepairAttemptModel id of an applied attempt
         whose committed proposal artifact is exactly one dependency_transition
         operation; the requested command must match the renderer bound to the
-        proposal's blocking package and target version.
+        proposal's blocking package and target version. Install commands are
+        authorized only for packages and exact versions owned by the
+        backend-approved transition bundle resolved from the active workspace.
         """
         from app.artifact_store import (
             ArtifactNotFoundError,
@@ -946,14 +949,35 @@ class CommandPolicyEngineService:
                     )
                 )
             if request.command_id == NPM_DEPENDENCY_INSTALL_RENDERER.command_id:
+                try:
+                    binding = session.scalar(
+                        select(StageWorkspaceBindingModel).where(
+                            StageWorkspaceBindingModel.run_id == request.run_id,
+                            StageWorkspaceBindingModel.stage_id == request.stage_id,
+                            StageWorkspaceBindingModel.active.is_(True),
+                        )
+                    )
+                    if binding is None:
+                        return False
+                    bundle = compatible_reinstall_bundle(
+                        blocking_package, target_major, Path(binding.workspace_path)
+                    )
+                    approved_arguments = {
+                        NPM_DEPENDENCY_INSTALL_RENDERER.render_arguments(
+                            {
+                                "package": member.package,
+                                "target_version": member.exact_version,
+                            }
+                        )
+                        for member in bundle.members
+                    }
+                except (KeyError, TypeError, ValueError, OSError):
+                    return False
                 return (
                     request.template_id == NPM_DEPENDENCY_INSTALL_RENDERER.template_id
                     and request.template_version == 1
                     and request.executable == "npm"
-                    and tuple(request.arguments)
-                    == NPM_DEPENDENCY_INSTALL_RENDERER.render_arguments(
-                        {"package": blocking_package, "target_version": target_version}
-                    )
+                    and tuple(request.arguments) in approved_arguments
                 )
             if request.command_id == ANGULAR_UPDATE_V3_RENDERER.command_id:
                 if (

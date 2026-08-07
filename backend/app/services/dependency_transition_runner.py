@@ -48,6 +48,7 @@ from app.services.command_executor_service import (
     CommandExecutorService,
 )
 from app.services.dependency_closure_service import (
+    compatible_reinstall_bundle,
     compatible_reinstall_version,
     is_exact_version,
     verify_dependency_closure,
@@ -451,6 +452,31 @@ class DependencyTransitionRunner:
                 "DEPENDENCY_TRANSITION_INTENT_INVALID",
                 "dependency_transition blocking_dependency or target_state is incomplete",
             )
+        try:
+            bundle = compatible_reinstall_bundle(
+                str(blocking_package), int(angular_major), workspace
+            )
+        except ValueError as error:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_INTENT_INVALID", str(error)
+            ) from error
+        transition_targets = [
+            {
+                "package": member.package,
+                "exact_version": member.exact_version,
+                "required": member.required,
+            }
+            for member in bundle.members
+        ]
+        if (
+            not transition_targets
+            or transition_targets[-1]["package"] != blocking_package
+            or transition_targets[-1]["exact_version"] != approved_target_version
+        ):
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_INTENT_INVALID",
+                "dependency_transition transition bundle is inconsistent with backend authority",
+            )
         stage_data = stage_plan.stage_plan or {}
         references = (stage_data.get("commands") or {}).get("angular_update") or []
         planned = references[0] if len(references) == 1 else None
@@ -480,6 +506,7 @@ class DependencyTransitionRunner:
             "peer_ranges": dict(peer_ranges),
             "target_version": target_version,
             "angular_major": angular_major,
+            "transition_targets": transition_targets,
             "target_exact": str(target_exact or ""),
             "target_cli_exact": str(target_cli_exact or ""),
             "execution_profile_id": str(stage_data.get("execution_profile_id") or ""),
@@ -498,13 +525,13 @@ class DependencyTransitionRunner:
     def _install_executions(self, session, context) -> list:
         """All reattach executions for this repair attempt in durable order.
 
-        Dynamic generations carry keys ``{attempt}:transition:install:attempt-N``.
-        Historical keys (``{attempt}:transition:install`` and
-        ``{attempt}:transition:install-v3``) are read for resume compatibility
-        but never written again.
+        Covers member-scoped keys
+        (``{attempt}:transition:install:{index}:{package}:attempt-N``), dynamic
+        generations (``{attempt}:transition:install:attempt-N``), and historical
+        keys (``{attempt}:transition:install`` and ``{attempt}:transition:install-v3``)
+        which are read for resume compatibility but never written again.
         """
-        attempt_id = context["attempt"].id
-        prefix = f"{attempt_id}:transition:install:attempt-"
+        prefix = f"{context['attempt'].id}:transition:install"
         executions = list(
             session.scalars(
                 select(CommandExecutionModel).where(
@@ -513,13 +540,6 @@ class DependencyTransitionRunner:
                 )
             )
         )
-        for key in (
-            f"{attempt_id}:transition:install",
-            f"{attempt_id}:transition:install-v3",
-        ):
-            execution = self._execution(session, context, key)
-            if execution is not None:
-                executions.append(execution)
         executions.sort(key=lambda execution: (execution.requested_at, execution.id))
         return executions
 
@@ -527,18 +547,35 @@ class DependencyTransitionRunner:
         executions = self._install_executions(session, context)
         return executions[-1] if executions else None
 
-    def _next_install_key(self, session, context) -> str:
-        prefix = f"{context['attempt'].id}:transition:install:attempt-"
+    def _member_install_prefix(self, context, member_index: int) -> str:
+        targets = context["intent"]["transition_targets"]
+        base = f"{context['attempt'].id}:transition:install"
+        if len(targets) == 1:
+            return base
+        return f"{base}:{member_index}:{targets[member_index]['package'].replace('/', '_')}"
+
+    def _latest_member_install(self, session, context, member_prefix: str):
+        executions = [
+            execution
+            for execution in self._install_executions(session, context)
+            if (execution.idempotency_key or "").startswith(member_prefix)
+        ]
+        return executions[-1] if executions else None
+
+    def _next_install_key(self, session, context, member_prefix: str) -> str:
         generation = 1
         for execution in self._install_executions(session, context):
-            match = re.match(re.escape(prefix) + r"(\d+)$", execution.idempotency_key or "")
+            match = re.match(
+                re.escape(member_prefix) + r":attempt-(\d+)$",
+                execution.idempotency_key or "",
+            )
             if match is not None:
                 generation = max(generation, int(match.group(1)) + 1)
-        return f"{prefix}{generation}"
+        return f"{member_prefix}:attempt-{generation}"
 
     @staticmethod
     def _install_generation(execution) -> int:
-        match = re.search(r":install:attempt-(\d+)$", execution.idempotency_key or "")
+        match = re.search(r":attempt-(\d+)$", execution.idempotency_key or "")
         return int(match.group(1)) if match is not None else 1
 
     def _latest_successful_normalization(self, session, context):
@@ -617,7 +654,9 @@ class DependencyTransitionRunner:
         self._verify_uninstall(session, continuation, context, execution)
         return "continue"
 
-    def _queue_transition_command(self, session, continuation, context, phase, key) -> str:
+    def _queue_transition_command(
+        self, session, continuation, context, phase, key, member=None
+    ) -> str:
         run = context["run"]
         attempt = context["attempt"]
         binding = context["binding"]
@@ -635,9 +674,13 @@ class DependencyTransitionRunner:
             }
         else:
             renderer = NPM_DEPENDENCY_INSTALL_RENDERER
-            bindings = {
+            member = member or {
                 "package": intent["blocking_package"],
-                "target_version": intent["target_version"],
+                "exact_version": intent["target_version"],
+            }
+            bindings = {
+                "package": member["package"],
+                "target_version": member["exact_version"],
             }
         try:
             arguments = list(renderer.render_arguments(bindings))
@@ -688,13 +731,16 @@ class DependencyTransitionRunner:
                 "Queued transition command evidence is missing",
             )
         execution.timeout_seconds = renderer.timeout_seconds
-        dependency = _dependency_evidence(workspace, (intent["blocking_package"],))
+        evidence_package = (
+            member["package"] if member is not None else intent["blocking_package"]
+        )
+        dependency = _dependency_evidence(workspace, (evidence_package,))
         execution.start_fingerprint = {
             "canonical_source": binding.workspace_fingerprint,
             "dependency": dependency,
             "package_json_sha256": _file_checksum(workspace / "package.json"),
-            f"node_modules_{intent['blocking_package'].replace('/', '_')}_package_json_sha256": (
-                _file_checksum(workspace / "node_modules" / intent["blocking_package"] / "package.json")
+            f"node_modules_{evidence_package.replace('/', '_')}_package_json_sha256": (
+                _file_checksum(workspace / "node_modules" / evidence_package / "package.json")
             ),
             "binding_fingerprint": binding.workspace_fingerprint,
         }
@@ -867,46 +913,51 @@ class DependencyTransitionRunner:
         return "queued"
 
     def _phase_install(self, session, continuation, context) -> str:
-        latest = self._latest_install_execution(session, context)
-        if latest is None:
-            return self._queue_transition_command(
-                session,
-                continuation,
-                context,
-                "install",
-                self._next_install_key(session, context),
+        targets = context["intent"]["transition_targets"]
+        for member_index, member in enumerate(targets):
+            member_prefix = self._member_install_prefix(context, member_index)
+            latest = self._latest_member_install(session, context, member_prefix)
+            if latest is None:
+                return self._queue_transition_command(
+                    session,
+                    continuation,
+                    context,
+                    "install",
+                    self._next_install_key(session, context, member_prefix),
+                    member=member,
+                )
+            if latest.status in {"pending", "queued", "running"}:
+                self._stage._wait_for_command(session, continuation, latest.id)
+                return "waiting"
+            if latest.status == "succeeded" and latest.exit_code == 0:
+                self._verify_install(session, continuation, context, latest, member)
+                continue
+            if (
+                self._install_generation(latest) == 1
+                and latest.failure_code == "COMMAND_EXIT_NONZERO"
+                and "ERESOLVE" in (latest.failure_message or "")
+                and self._normalization_succeeded_after(session, context, latest) is not None
+            ):
+                return self._queue_transition_command(
+                    session,
+                    continuation,
+                    context,
+                    "install",
+                    self._next_install_key(session, context, member_prefix),
+                    member=member,
+                )
+            raise DependencyTransitionError(
+                latest.failure_code or "DEPENDENCY_TRANSITION_COMMAND_FAILED",
+                latest.failure_message or "npm install did not succeed",
             )
-        if latest.status in {"pending", "queued", "running"}:
-            self._stage._wait_for_command(session, continuation, latest.id)
-            return "waiting"
-        if latest.status == "succeeded" and latest.exit_code == 0:
-            self._verify_install(session, continuation, context, latest)
-            return "continue"
-        if (
-            self._install_generation(latest) == 1
-            and latest.failure_code == "COMMAND_EXIT_NONZERO"
-            and "ERESOLVE" in (latest.failure_message or "")
-            and self._normalization_succeeded_after(session, context, latest) is not None
-        ):
-            return self._queue_transition_command(
-                session,
-                continuation,
-                context,
-                "install",
-                self._next_install_key(session, context),
-            )
-        raise DependencyTransitionError(
-            latest.failure_code or "DEPENDENCY_TRANSITION_COMMAND_FAILED",
-            latest.failure_message or "npm install did not succeed",
-        )
+        return "continue"
 
-    def _verify_install(self, session, continuation, context, execution) -> None:
+    def _verify_install(self, session, continuation, context, execution, member) -> None:
         run = context["run"]
         binding = context["binding"]
         workspace = context["workspace"]
-        intent = context["intent"]
-        package = intent["blocking_package"]
-        target_version = intent["target_version"]
+        package = member["package"]
+        target_version = member["exact_version"]
         package_doc = self._read_package_json(workspace)
         range_value = None
         for section in ("dependencies", "devDependencies"):
@@ -926,16 +977,20 @@ class DependencyTransitionRunner:
                 )
             except (OSError, ValueError):
                 installed_version = None
+        dependency = _dependency_evidence(workspace, (package,))
+        lockfile_version = (
+            ((dependency.get("lockfile_entries") or {}).get(package) or {}).get("version")
+        )
         if (
             range_value != target_version
+            or lockfile_version != target_version
             or installed_version != target_version
         ):
             raise DependencyTransitionError(
                 "DEPENDENCY_TRANSITION_INSTALL_VERIFICATION_FAILED",
-                "npm install did not reattach the blocking dependency at the approved exact version",
+                "npm install did not install the transition target at the approved exact version",
             )
         post_binding = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
-        dependency = _dependency_evidence(workspace, (package,))
         execution.end_fingerprint = {
             "canonical_source": post_binding,
             "dependency": dependency,
@@ -945,11 +1000,12 @@ class DependencyTransitionRunner:
             "execution_id": execution.id,
             "correlation_id": execution.correlation_id,
             "package": package,
-            "target_version": intent["target_version"],
+            "target_version": target_version,
             "pre_command": execution.start_fingerprint or {},
             "post_command": {
                 "package_json_sha256": _file_checksum(workspace / "package.json"),
                 "manifest_range": range_value,
+                "lockfile_version": lockfile_version,
                 "installed_version": installed_version,
             },
             "binding_fingerprint": binding.workspace_fingerprint,
@@ -1105,6 +1161,7 @@ class DependencyTransitionRunner:
                 "DEPENDENCY_TRANSITION_WORKSPACE_STALE",
                 "The workspace no longer matches its active binding before closure verification",
             )
+        transition_targets = intent["transition_targets"]
         report = verify_dependency_closure(
             workspace,
             target_major=intent["angular_major"],
@@ -1112,9 +1169,12 @@ class DependencyTransitionRunner:
                 "@angular/core",
                 "@angular/cli",
                 "@angular/compiler-cli",
-                intent["blocking_package"],
+                *(target["package"] for target in transition_targets),
             ),
-            exact_versions={intent["blocking_package"]: intent["target_version"]},
+            exact_versions={
+                target["package"]: target["exact_version"]
+                for target in transition_targets
+            },
         )
         if not report["ok"]:
             raise DependencyTransitionError(

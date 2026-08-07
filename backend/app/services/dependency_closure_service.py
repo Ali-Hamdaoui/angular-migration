@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 # ponytail: no self-check, verified at runtime by the dependency-transition runner
@@ -18,13 +19,57 @@ _ANGULAR_BUILD_PACKAGES = frozenset({"@angular-devkit/build-angular", "@angular/
 _EXACT_VERSION = re.compile(
     r"\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
+
+
+@dataclass(frozen=True)
+class DependencyTransitionBundleMember:
+    """One ordered exact target of a backend-owned dependency transition bundle."""
+
+    package: str
+    exact_version: str
+    required: bool
+
+
+@dataclass(frozen=True)
+class DependencyTransitionBundle:
+    """Immutable backend-owned transition bundle for one primary blocker."""
+
+    primary_package: str
+    angular_major: int
+    members: tuple[DependencyTransitionBundleMember, ...]
+
+
 # Package-owned release metadata frozen as backend policy: the builder aligns its
 # major with Angular; jest-preset-angular 14.4.0 is its first Angular 19 release.
-_COMPATIBLE_REINSTALL_VERSIONS = {
-    ("@angular-builders/jest", 19): "19.0.0",
-    ("jest-preset-angular", 19): "14.4.0",
-    ("jest-preset-angular", 20): "14.6.2",
+# Each entry is an ordered tuple of (package, exact version, required) members:
+# "required" members are always installed; "align_if_present" members (required
+# False) are installed only when the authoritative package.json already declares
+# them. Order is the install order: required companions first, primary last.
+_COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool], ...]] = {
+    ("@angular-builders/jest", 19): (("@angular-builders/jest", "19.0.0", True),),
+    ("jest-preset-angular", 19): (("jest-preset-angular", "14.4.0", True),),
+    ("jest-preset-angular", 20): (("jest-preset-angular", "14.6.2", True),),
+    ("jest-preset-angular", 21): (
+        ("jest", "30.4.2", True),
+        ("jsdom", "26.1.0", True),
+        ("@types/jest", "30.0.0", False),
+        ("jest-preset-angular", "16.1.3", True),
+    ),
 }
+
+
+def _compatible_reinstall_authority(
+    package: str, target_major: int
+) -> tuple[tuple[str, str, bool], ...]:
+    authority = _COMPATIBLE_REINSTALL_BUNDLES.get((package, target_major))
+    if authority is None:
+        raise ValueError(
+            "field=operations.0.target_state.target_version; "
+            f"expected=backend-approved exact version for {package} at Angular {target_major}; "
+            "observed=missing; artifact_id=unavailable; execution_id=unavailable; "
+            "recovery=add verified package compatibility authority before retrying"
+        )
+    return authority
 
 
 def _major(value: object) -> int | None:
@@ -45,16 +90,60 @@ def is_exact_version(value: object) -> bool:
 
 
 def compatible_reinstall_version(package: str, target_major: int) -> str:
-    """Resolve a backend-approved exact reinstall version, or fail closed."""
-    version = _COMPATIBLE_REINSTALL_VERSIONS.get((package, target_major))
-    if version is None:
+    """Resolve the backend-approved exact primary reinstall version, or fail closed."""
+    authority = _compatible_reinstall_authority(package, target_major)
+    primary = next((entry for entry in authority if entry[0] == package), None)
+    if primary is None or not is_exact_version(primary[1]):
         raise ValueError(
             "field=operations.0.target_state.target_version; "
             f"expected=backend-approved exact version for {package} at Angular {target_major}; "
             "observed=missing; artifact_id=unavailable; execution_id=unavailable; "
             "recovery=add verified package compatibility authority before retrying"
         )
-    return version
+    return primary[1]
+
+
+def compatible_reinstall_bundle(
+    package: str, target_major: int, workspace: Path
+) -> DependencyTransitionBundle:
+    """Resolve the deterministic backend-owned transition bundle, or fail closed.
+
+    The primary package remains identifiable as the ordered last member.
+    Align-if-present members are included only when the authoritative
+    package.json already declares them. Unknown package/Angular-major
+    combinations fail closed.
+    """
+    authority = _compatible_reinstall_authority(package, target_major)
+    manifest = _read_json(Path(workspace) / "package.json")
+    if manifest is None:
+        raise ValueError("authoritative package.json is missing or invalid")
+    declared = {
+        entry
+        for section in ("dependencies", "devDependencies")
+        if isinstance(manifest.get(section), dict)
+        for entry in manifest[section]
+    }
+    raw_members = tuple(entry for entry in authority if entry[2] or entry[0] in declared)
+    packages = [entry[0] for entry in raw_members]
+    if len(set(packages)) != len(packages):
+        raise ValueError("dependency transition bundle contains duplicate packages")
+    if sum(entry[0] == package for entry in raw_members) != 1:
+        raise ValueError(
+            "dependency transition bundle primary package is missing or ambiguous"
+        )
+    for _, version, _ in raw_members:
+        if not is_exact_version(version):
+            raise ValueError("dependency transition bundle contains a non-exact version")
+    return DependencyTransitionBundle(
+        primary_package=package,
+        angular_major=target_major,
+        members=tuple(
+            DependencyTransitionBundleMember(
+                package=name, exact_version=version, required=required
+            )
+            for name, version, required in raw_members
+        ),
+    )
 
 
 def _evidence_error(
