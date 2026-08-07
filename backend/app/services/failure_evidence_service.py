@@ -38,23 +38,31 @@ _ANGULAR_PEER_CONFLICT_MARKERS = (
     "dependencies are not compatible",
     "requires angular",
 )
-_ANGULAR_SCOPED_PACKAGE_RE = re.compile(
-    r"(?<![\w@])@[a-z0-9_\-]+/[a-z0-9_\-]+@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
+_NPM_PACKAGE_NAME = r"(?:@[a-z0-9_.-]+/[a-z0-9_.-]+|[a-z0-9_.-]+)"
+_ANGULAR_PACKAGE_AT_VERSION_RE = re.compile(
+    rf"(?<![\w@]){_NPM_PACKAGE_NAME}@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
 )
 _ANGULAR_PEER_FROM_RE = re.compile(
-    r"\bfrom\s+(@[a-z0-9_\-]+/[a-z0-9_\-]+)@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
+    rf"\bfrom\s+({_NPM_PACKAGE_NAME})@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
 )
 _ANGULAR_PEER_CONFLICT_RE = re.compile(
-    r'Package\s+"(?P<package>(?:@[a-z0-9_\-]+/)?[a-z0-9_\-]+)"\s+'
-    r'has\s+an\s+incompatible\s+peer\s+dependency\s+to\s+'
-    r'"(?P<peer>@[a-z0-9_\-]+/[a-z0-9_\-]+)"\s*'
-    r'\(\s*requires\s+"(?P<required>[^"\r\n]+)"\s*,\s*'
-    r'would\s+install\s+"(?P<proposed>[^"\r\n]+)"\s*\)',
+    rf'Package\s+"(?P<package>{_NPM_PACKAGE_NAME})"\s+'
+    rf'has\s+an\s+incompatible\s+peer\s+dependency\s+to\s+'
+    rf'"(?P<peer>{_NPM_PACKAGE_NAME})"\s*'
+    rf'\(\s*requires\s+"(?P<required>[^"\r\n]+)"\s*,\s*'
+    rf'would\s+install\s+"(?P<proposed>[^"\r\n]+)"\s*\)',
+    re.IGNORECASE,
+)
+_ANGULAR_MISSING_PEER_RE = re.compile(
+    rf'Package\s+"(?P<package>{_NPM_PACKAGE_NAME})"\s+'
+    rf'has\s+a\s+missing\s+peer\s+dependency\s+of\s+'
+    rf'"(?P<peer>{_NPM_PACKAGE_NAME})"\s*@\s*'
+    rf'"(?P<required>[^"\r\n]+)"',
     re.IGNORECASE,
 )
 _ANGULAR_PEER_RANGE_RE = re.compile(
-    r"\bpeer(?:Dependencies| dependency)?\s+(@[a-z0-9_\-]+/[a-z0-9_\-]+)"
-    r"@[\"']?([\^~><=]?\s*\d+\.\d+\.\d+[^\"'\s]*)"
+    rf"\bpeer(?:Dependencies| dependency)?\s+({_NPM_PACKAGE_NAME})"
+    rf"@[\"']?([\^~><=]?\s*\d+\.\d+\.\d+[^\"'\s]*)"
 )
 
 
@@ -120,15 +128,21 @@ class FailureEvidenceService:
             return None
         conflict = _ANGULAR_PEER_CONFLICT_RE.search(clean)
         if conflict is not None:
+            peer = conflict.group("peer")
             return {
                 "kind": "peer_dependency_conflict",
                 "package": conflict.group("package"),
                 "installed_version": None,
-                "required_ranges": {
-                    conflict.group("peer"): conflict.group("required").strip()
-                },
-                "proposed_angular_version": conflict.group("proposed").strip(),
+                "required_ranges": {peer: conflict.group("required").strip()},
+                "proposed_angular_version": (
+                    conflict.group("proposed").strip()
+                    if peer.startswith(("@angular/", "@angular-devkit/"))
+                    else None
+                ),
             }
+        missing = _ANGULAR_MISSING_PEER_RE.search(clean)
+        if missing is not None:
+            return None
         package: str | None = None
         installed_version: str | None = None
         for match in _ANGULAR_PEER_FROM_RE.finditer(message):
@@ -138,7 +152,7 @@ class FailureEvidenceService:
                 installed_version = _installed_version_of(message, candidate)
                 break
         if package is None:
-            for match in _ANGULAR_SCOPED_PACKAGE_RE.finditer(message):
+            for match in _ANGULAR_PACKAGE_AT_VERSION_RE.finditer(message):
                 candidate = match.group(0).rsplit("@", 1)[0]
                 if not candidate.startswith("@angular/"):
                     package = candidate
