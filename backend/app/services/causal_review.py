@@ -120,6 +120,73 @@ def _is_documentation_path(path: str) -> bool:
     return PurePosixPath(lower).name.startswith(_DOC_NAME_PREFIXES)
 
 
+def _operation_carries_force(operation: dict) -> bool:
+    """True when an operation introduces ``--force`` into executable config.
+
+    Only ``package.json`` carries executable command configuration (npm
+    scripts) in this workflow; text written to any other path (source code,
+    comments, docs) is never executed and may mention ``--force`` freely.
+    Preimage fields never count: removing an existing ``--force`` is
+    compliant.
+    """
+    kind = str(operation.get("operation") or "")
+    if kind in {"replace_text", "create_text_file"}:
+        if str(operation.get("path") or "") != "package.json":
+            return False
+        payload = operation.get("new_text") if kind == "replace_text" else operation.get("content")
+        return "--force" in str(payload or "")
+    if kind in {"delete_text_file", "dependency_change", "dependency_transition"}:
+        # delete_text_file has no postimage; dependency_change.new_version is a
+        # validated version string, not argv; dependency_transition fields are
+        # backend-bound authority.  None can introduce executable --force.
+        return False
+    # ponytail: unknown kinds are schema-invalid; fail closed on the payload.
+    return "--force" in json.dumps(operation, sort_keys=True, default=str)
+
+
+def _diff_carries_force(diff: str) -> bool:
+    """True when an ADDED diff line introduces ``--force`` into package.json.
+
+    Only package.json scripts are executable in this workflow; added text in
+    other files is source/docs content.  Deleted lines, context lines, and
+    diff metadata (---/+++/@@ headers) never count.
+    """
+    touches_package_json = any(
+        line.startswith(("--- a/", "+++ b/")) and line.rstrip().endswith("package.json")
+        for line in diff.splitlines()
+    )
+    if not touches_package_json:
+        return False
+    for line in diff.splitlines():
+        if line.startswith(("--- ", "+++ ", "@@")):
+            continue
+        if line.startswith("+") and "--force" in line:
+            return True
+    return False
+
+
+def _carries_force_flag(proposal: dict) -> bool:
+    """True only when the proposal introduces executable ``--force``.
+
+    Prose-only fields (rationale, limitations, descriptions, findings,
+    provenance), preimage/deleted content, and text written to non-executable
+    paths may mention ``--force`` without proposing to use it.  Only text that
+    lands in executable command configuration -- package.json scripts, or
+    ADDED package.json diff lines -- is inspected.
+    # ponytail: package.json is the only executable surface in this workflow;
+    a new executable path must be added here.
+    """
+    diff = proposal.get("unified_diff")
+    if isinstance(diff, str) and _diff_carries_force(diff):
+        return True
+    operations = proposal.get("operations")
+    if isinstance(operations, list):
+        for operation in operations:
+            if isinstance(operation, dict) and _operation_carries_force(operation):
+                return True
+    return False
+
+
 def _structural_rejection(proposal: dict) -> CausalRejection | None:
     operations = proposal.get("operations")
     operations = operations if isinstance(operations, list) else []
@@ -140,7 +207,7 @@ def _structural_rejection(proposal: dict) -> CausalRejection | None:
                 CAUSAL_REJECTION_DOCUMENTATION,
                 f"Documentation-only change to {path} cannot fix an executable failure",
             )
-    if "--force" in json.dumps(proposal, sort_keys=True, default=str):
+    if _carries_force_flag(proposal):
         return CausalRejection(
             CAUSAL_REJECTION_FORCE, "Proposal carries a --force flag, which is not causal"
         )

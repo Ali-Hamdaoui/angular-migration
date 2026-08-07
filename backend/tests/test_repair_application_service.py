@@ -31,6 +31,7 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services import repair_application_service
+from app.services.causal_review import causal_rejection
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.repair_application_service import (
     RepairApplicationError,
@@ -1487,3 +1488,206 @@ def test_tampered_context_pack_rejected_at_use_time(tmp_path: Path, mutate, sort
     assert session.query(LlmInvocationModel).count() == 0
     session.close()
     engine.dispose()
+
+
+def _force_evidence() -> dict:
+    return {
+        "normalized_failure": {
+            "error_code": "DEPENDENCY_PREFLIGHT_BLOCKED",
+            "failure_message": "npm ERR! ERESOLVE unable to resolve dependency tree",
+            "failure_diagnosis": {
+                "kind": "peer_dependency_conflict",
+                "package": "@angular/core",
+                "required_ranges": ["^19.0.0"],
+            },
+        }
+    }
+
+
+def _generic_executable_evidence() -> dict:
+    return {
+        "normalized_failure": {
+            "error_code": "BUILD_FAILED",
+            "failure_message": "TypeScript compilation failed",
+        }
+    }
+
+
+def _transition_operation(**overrides) -> dict:
+    operation = {
+        "operation": "dependency_transition",
+        "path": "package.json",
+        "strategy": "detach_update_reattach",
+        "repair_kind": "dependency_transition",
+        "blocking_dependency": {"package": "@angular/core", "version": "18.2.0"},
+        "target_state": {"package": "@angular/core", "target_major": 19},
+    }
+    operation.update(overrides)
+    return operation
+
+
+def test_causal_force_check_ignores_force_mention_in_rationale() -> None:
+    proposal = {
+        "operations": [_transition_operation()],
+        "rationale": ["This repair does not bypass forbidden policies (for example using --force)"],
+        "limitations": [],
+    }
+    assert causal_rejection(_force_evidence(), proposal) is None
+
+
+def test_causal_force_check_ignores_force_mention_in_limitations() -> None:
+    proposal = {
+        "operations": [_transition_operation()],
+        "rationale": ["Complete dependency transition"],
+        "limitations": ["This sequence avoids using --force"],
+    }
+    assert causal_rejection(_force_evidence(), proposal) is None
+
+
+def test_causal_force_check_rejects_executable_force_in_operation() -> None:
+    proposal = {
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "package.json",
+                "new_text": "npm install --force",
+                "old_text": "old",
+            }
+        ],
+        "rationale": ["Update dependencies"],
+        "limitations": [],
+    }
+    rejection = causal_rejection(_force_evidence(), proposal)
+    assert rejection is not None
+    assert rejection.code == "CAUSAL_REJECTION_FORCE"
+
+
+def test_causal_force_check_allows_removing_force_via_replace_text() -> None:
+    proposal = {
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "package.json",
+                "old_text": "ng update --force",
+                "new_text": "ng update",
+            }
+        ],
+        "rationale": ["Drop the --force flag"],
+        "limitations": [],
+    }
+    assert causal_rejection(_generic_executable_evidence(), proposal) is None
+
+
+def test_causal_force_check_rejects_force_introduced_in_new_text() -> None:
+    proposal = {
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "package.json",
+                "old_text": "ng update",
+                "new_text": "ng update --force",
+            }
+        ],
+        "rationale": ["Update dependencies"],
+        "limitations": [],
+    }
+    rejection = causal_rejection(_generic_executable_evidence(), proposal)
+    assert rejection is not None
+    assert rejection.code == "CAUSAL_REJECTION_FORCE"
+
+
+def test_causal_force_check_allows_diff_removing_force() -> None:
+    proposal = {
+        "operations": [],
+        "touched_files": ["package.json"],
+        "unified_diff": (
+            "--- a/package.json\n"
+            "+++ b/package.json\n"
+            "@@ -1,3 +1,3 @@\n"
+            ' "scripts": {\n'
+            '-  "migrate": "ng update --force"\n'
+            '+  "migrate": "ng update"\n'
+            ' }'
+        ),
+        "rationale": ["Remove --force from the migrate script"],
+        "limitations": [],
+    }
+    assert causal_rejection(_generic_executable_evidence(), proposal) is None
+
+
+def test_causal_force_check_rejects_diff_adding_force() -> None:
+    proposal = {
+        "operations": [],
+        "touched_files": ["package.json"],
+        "unified_diff": (
+            "--- a/package.json\n"
+            "+++ b/package.json\n"
+            "@@ -1,3 +1,3 @@\n"
+            ' "scripts": {\n'
+            '-  "migrate": "ng update"\n'
+            '+  "migrate": "ng update --force"\n'
+            ' }'
+        ),
+        "rationale": ["Update dependencies"],
+        "limitations": [],
+    }
+    rejection = causal_rejection(_generic_executable_evidence(), proposal)
+    assert rejection is not None
+    assert rejection.code == "CAUSAL_REJECTION_FORCE"
+
+
+def test_causal_force_check_allows_source_comment_mentioning_force() -> None:
+    proposal = {
+        "operations": [
+            {
+                "operation": "replace_text",
+                "path": "src/app/example.ts",
+                "old_text": "// old",
+                "new_text": "// never use --force during Angular migration",
+            }
+        ],
+        "rationale": ["Add a migration note"],
+        "limitations": [],
+    }
+    assert causal_rejection(_generic_executable_evidence(), proposal) is None
+
+
+def test_causal_force_check_allows_documentation_content_mentioning_force() -> None:
+    proposal = {
+        "operations": [
+            {
+                "operation": "create_text_file",
+                "path": "docs/usage-guide",
+                "content": "Do not use ng update --force during the migration",
+            }
+        ],
+        "rationale": ["Document the migration policy"],
+        "limitations": [],
+    }
+    assert causal_rejection(_generic_executable_evidence(), proposal) is None
+
+
+def test_causal_force_check_allows_diff_comment_mentioning_force() -> None:
+    proposal = {
+        "operations": [],
+        "touched_files": ["src/app/example.ts"],
+        "unified_diff": (
+            "--- a/src/app/example.ts\n"
+            "+++ b/src/app/example.ts\n"
+            "@@ -1,3 +1,3 @@\n"
+            ' "migrate": "ng update"\n'
+            "+ // Never use --force here\n"
+        ),
+        "rationale": ["Add a comment"],
+        "limitations": [],
+    }
+    assert causal_rejection(_generic_executable_evidence(), proposal) is None
+
+
+def test_causal_dependency_transition_validation_unchanged() -> None:
+    proposal = {
+        "operations": [_transition_operation()],
+        "rationale": ["Complete dependency transition"],
+        "limitations": [],
+    }
+    assert causal_rejection(_force_evidence(), proposal) is None
