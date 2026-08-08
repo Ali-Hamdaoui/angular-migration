@@ -199,12 +199,22 @@ def _repair_lifecycle(status: str | None, continuation) -> str | None:
 
 def _dependency_operation(proposal: dict[str, object] | None) -> dict[str, object] | None:
     for item in (proposal or {}).get("operations") or []:
-        if isinstance(item, dict) and item.get("operation") == "dependency_transition":
+        if not isinstance(item, dict):
+            continue
+        if item.get("operation") == "dependency_transition":
             return {
                 key: item.get(key)
                 for key in (
                     "operation", "repair_kind", "failure_type", "strategy", "path",
                     "blocking_dependency", "target_state", "checkpoint_id",
+                )
+            }
+        if item.get("operation") == "dependency_add":
+            return {
+                key: item.get(key)
+                for key in (
+                    "operation", "path", "section", "package", "new_version",
+                    "strategy", "provenance",
                 )
             }
     return None
@@ -598,6 +608,10 @@ def _projection(session, continuation: TransformationContinuationModel) -> dict[
                 "operation": item.get("operation"),
                 "path": item.get("path"),
                 "preimage_sha256": item.get("preimage_sha256"),
+                "section": item.get("section"),
+                "package": item.get("package"),
+                "new_version": item.get("new_version"),
+                "strategy": item.get("strategy"),
                 "postimage_sha256": next(
                     (
                         applied.get("postimage_sha256")

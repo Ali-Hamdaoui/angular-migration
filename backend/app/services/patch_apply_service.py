@@ -375,7 +375,7 @@ class PatchApplyService:
                         "preimage_sha256": item["preimage_sha256"],
                     }
                 )
-            elif action in {"replace_text", "dependency_change"}:
+            elif action in {"replace_text", "dependency_change", "dependency_add"}:
                 changes.append(
                     {
                         "path": item["path"],

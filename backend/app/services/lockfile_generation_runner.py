@@ -168,12 +168,12 @@ class LockfileGenerationRunner:
                 "LOCKFILE_GENERATION_AUTHORITY_MISSING",
                 "Lockfile-generation authority is incomplete",
             )
-        if attempt.status != "applied" or not self._has_approved_dependency_change(
+        if attempt.status not in {"applied", "applied_verified"} or not self._has_approved_dependency_change(
             session, run, attempt, continuation.current_stage_id
         ):
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_NOT_APPROVED",
-                "No applied G10-approved dependency_change authorizes lockfile generation",
+                "No applied G10-approved dependency change or addition authorizes lockfile generation",
             )
         try:
             workspace = Path(binding.workspace_path).resolve(strict=True)
@@ -205,7 +205,10 @@ class LockfileGenerationRunner:
             and stored.envelope is not None
             and stored.envelope.stage_id == stage_id
             and stored.envelope.attempt_id == attempt.id
-            and any(item.operation == "dependency_change" for item in proposal.operations)
+            and any(
+                item.operation in {"dependency_change", "dependency_add"}
+                for item in proposal.operations
+            )
         )
 
     def _verify(self, session, continuation, step, execution) -> None:

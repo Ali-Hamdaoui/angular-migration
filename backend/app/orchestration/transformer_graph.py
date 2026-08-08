@@ -8,6 +8,7 @@ remain in dedicated services.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from app.artifact_store import (
     ArtifactNotFoundError,
     ArtifactStoreError,
+    ArtifactType,
     LocalFilesystemArtifactStore,
     StoredArtifact,
 )
@@ -58,6 +60,7 @@ from app.services.angular_transformation_evidence_service import (
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.causal_review import g10_eligibility, repair_budget
+from app.services.dependency_closure_service import verify_exact_dependency_state
 from app.services.dependency_transition_runner import (
     DependencyTransitionError,
     DependencyTransitionRunner,
@@ -775,6 +778,34 @@ class TransformerOrchestrator:
                 .first()
             )
             gate_id = "G11"
+            if repair is not None:
+                binding = self._stage._binding(session, continuation)
+                reports = self._verify_dependency_add_post_state(
+                    session,
+                    continuation,
+                    repair,
+                    artifact_root,
+                    binding,
+                )
+                if reports is not None and any(
+                    not item["report"]["agreement"] for item in reports
+                ):
+                    violations = [
+                        str(value)
+                        for item in reports
+                        if not item["report"]["agreement"]
+                        for value in item["report"]["violations"][:3]
+                    ]
+                    self._block(
+                        session,
+                        continuation,
+                        "REPAIR_DEPENDENCY_ADD_VERIFICATION_FAILED",
+                        (
+                            "dependency-add post-state verification failed: "
+                            + ", ".join(violations)
+                        )[:500],
+                    )
+                    return
         summary = self._validation.write_summary(payload, artifact_root)
         gate_payload = {
             "gate_id": gate_id,
@@ -823,6 +854,171 @@ class TransformerOrchestrator:
                 ),
                 workspace_fingerprint=str(payload["workspace_fingerprint"]),
             )
+
+    def _verify_dependency_add_post_state(
+        self,
+        session,
+        continuation,
+        repair,
+        artifact_root: str,
+        binding,
+    ) -> list[dict[str, object]] | None:
+        """Post-state exact verification for bound dependency_add operations.
+
+        Runs at aggregate_validation, after apply, lockfile generation, npm ci,
+        and validation completed. Reads ONLY the checksum-bound proposal
+        artifact (never the frontend) and verifies manifest, lockfile, and
+        installed metadata all carry the backend-bound exact version. Returns
+        None when the attempt carries no dependency_add operation (no behavior
+        change), otherwise a list of per-operation reports.
+        """
+        if not repair.proposal_artifact_id or not repair.proposal_checksum:
+            return None
+        metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(repair.proposal_artifact_id)
+        )
+        if metadata is None or metadata.checksum != repair.proposal_checksum:
+            return None
+        store = LocalFilesystemArtifactStore(
+            Path(artifact_root).parent, fixed_run_root=Path(artifact_root)
+        )
+        try:
+            stored = store.read_artifact(continuation.run_id, metadata.relative_path)
+            if (
+                stored.ref.artifact_id != repair.proposal_artifact_id
+                or stored.ref.checksum != repair.proposal_checksum
+                or stored.envelope is None
+                or stored.envelope.run_id != continuation.run_id
+                or stored.envelope.stage_id != continuation.current_stage_id
+                or stored.envelope.attempt_id != repair.id
+            ):
+                return None
+            proposal = RepairProposal.model_validate(json.loads(stored.content))
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError):
+            return None
+        additions = [
+            item
+            for item in proposal.operations
+            if item.operation == "dependency_add"
+            and item.package
+            and item.section
+            and item.new_version
+        ]
+        if not additions:
+            return None
+        reports = []
+        for item in additions:
+            try:
+                report = verify_exact_dependency_state(
+                    Path(binding.workspace_path),
+                    package=str(item.package),
+                    section=str(item.section),
+                    exact_version=str(item.new_version),
+                )
+            except ValueError as error:
+                report = {"agreement": False, "violations": [str(error)]}
+            self._write_dependency_add_verification_artifact(
+                session,
+                continuation,
+                repair,
+                artifact_root,
+                package=str(item.package),
+                section=str(item.section),
+                exact_version=str(item.new_version),
+                report=report,
+            )
+            reports.append(
+                {
+                    "package": str(item.package),
+                    "section": str(item.section),
+                    "new_version": str(item.new_version),
+                    "report": report,
+                }
+            )
+        return reports
+
+    def _write_dependency_add_verification_artifact(
+        self,
+        session,
+        continuation,
+        repair,
+        artifact_root: str,
+        *,
+        package: str,
+        section: str,
+        exact_version: str,
+        report: dict[str, object],
+    ) -> StoredArtifact:
+        content = json.dumps(
+            {
+                "schema_version": "dependency-add-verification-v1",
+                "attempt_id": repair.id,
+                "package": package,
+                "section": section,
+                "expected_exact": exact_version,
+                "report": report,
+                "proposal_checksum": repair.proposal_checksum,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        checksum = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+        store = LocalFilesystemArtifactStore(
+            Path(artifact_root).parent, fixed_run_root=Path(artifact_root)
+        )
+        relative_path = f"05_repairs/attempt-{repair.id}/dependency-add-verification.json"
+        for ref in store.list_artifacts(continuation.run_id):
+            if ref.relative_path == relative_path and ref.checksum == checksum:
+                stored = store.read_artifact(continuation.run_id, ref.relative_path)
+                if (
+                    stored.envelope
+                    and stored.envelope.input_hashes.get("attempt") == repair.id
+                ):
+                    self._register_dependency_add_verification_metadata(
+                        session, continuation, stored, repair
+                    )
+                    return stored
+        stored = store.write_text_artifact(
+            continuation.run_id,
+            relative_path,
+            content,
+            ArtifactType.JSON,
+            stage_id=continuation.current_stage_id,
+            attempt_id=repair.id,
+            created_by="repair-dependency-add-verification",
+            created_at=datetime.now(UTC),
+            input_hashes={"attempt": repair.id},
+            policy_version="dependency-add-verification-v1",
+        )
+        self._register_dependency_add_verification_metadata(
+            session, continuation, stored, repair
+        )
+        return stored
+
+    @staticmethod
+    def _register_dependency_add_verification_metadata(
+        session, continuation, stored, repair
+    ) -> None:
+        metadata_id = "metadata-" + stored.ref.artifact_id
+        if session.get(ArtifactMetadataModel, metadata_id) is not None:
+            return
+        session.add(
+            ArtifactMetadataModel(
+                id=metadata_id,
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                schema_version=stored.envelope.schema_version,
+                created_at=stored.ref.created_at,
+                owner_reference=f"dependency-add-verification:{repair.id}",
+                mime_type=stored.envelope.content_type,
+                size_bytes=len(stored.content.encode("utf-8")),
+                finalized_at=stored.ref.created_at,
+                immutable=True,
+            )
+        )
 
     def _classify_failure(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -2288,7 +2484,7 @@ class TransformerOrchestrator:
         return (
             "lockfile_generation"
             if any(
-                item.get("operation") == "dependency_change"
+                item.get("operation") in {"dependency_change", "dependency_add"}
                 for item in operations
             )
             else "repair_revalidate"

@@ -11,6 +11,8 @@ from pathlib import Path
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType
 
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
 
 class AngularTransformationEvidenceError(ValueError):
     def __init__(self, code: str, message: str) -> None:
@@ -166,12 +168,18 @@ class AngularTransformationEvidenceService:
             return None
 
     def _line_version(self, output: str, label: str) -> str | None:
+        clean_output = _ANSI_ESCAPE.sub("", output)
+
         key = label.rstrip(":").strip()
-        pattern = re.compile(rf"^\s*{re.escape(key)}\s*:\s*(?P<value>.+?)\s*$")
-        for line in output.splitlines():
+        pattern = re.compile(
+            rf"^\s*{re.escape(key)}\s*:\s*(?P<value>.+?)\s*$"
+        )
+
+        for line in clean_output.splitlines():
             match = pattern.match(line)
             if match is not None:
                 return self._version(match.group("value"))
+
         return None
 
     def _manifest(self, root: Path) -> dict[str, str]:

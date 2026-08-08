@@ -57,6 +57,10 @@ from app.repositories.models import (
     WorkflowEventModel,
 )
 from app.services.causal_review import CausalRejection, REVIEWER_CAUSAL_POLICY, causal_rejection
+from app.services.dependency_addition_authority import (
+    DependencyAdditionAuthority,
+    DependencyAdditionAuthorityError,
+)
 from app.services.dependency_closure_service import (
     installed_dependency_version,
     is_exact_version,
@@ -192,6 +196,7 @@ _DEPENDENCY_SECTIONS = frozenset(
     {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
 )
 _DEPENDENCY_TRANSITION_TARGET_SECTIONS = ("dependencies", "devDependencies")
+_DEPENDENCY_ADDITION_SECTIONS = frozenset({"dependencies", "devDependencies"})
 _DEPENDENCY_TRANSITION_VALID_REPAIR_KINDS = frozenset({"dependency_transition"})
 _DEPENDENCY_TRANSITION_VALID_FAILURE_TYPES = frozenset({"peer_dependency_conflict"})
 _DEPENDENCY_TRANSITION_VALID_STRATEGIES = frozenset({"detach_update_reattach"})
@@ -427,6 +432,7 @@ class RepairOperationCandidate(BaseModel):
         "create_text_file",
         "delete_text_file",
         "dependency_change",
+        "dependency_add",
         "dependency_transition",
     ]
     path: str
@@ -559,6 +565,12 @@ class RepairApplicationService:
                         "installed_version, peer ranges, target package, and target exact version. "
                         "The backend binds those fields. Never emit file operations, READMEs, "
                         "comments, or --force for such failures. "
+                        "When the failure evidence proves a required package is absent from "
+                        "package.json, emit exactly one \"dependency_add\" operation at path "
+                        "\"package.json\" with section limited to \"dependencies\" or "
+                        "\"devDependencies\", package, and new_version as a requested range or "
+                        "intent; the backend, not the LLM, owns the final exact executable "
+                        "version. Never emit npm shell commands. "
                         + _PROPOSER_GROUNDING_INSTRUCTIONS
                     ),
                 )
@@ -1165,7 +1177,13 @@ class RepairApplicationService:
                         "Repair targets may not traverse symlinks",
                     )
             actions = {str(item.get("operation")) for item in group}
-            if not actions <= {"replace_text", "create_text_file", "delete_text_file", "dependency_change"}:
+            if not actions <= {
+                "replace_text",
+                "create_text_file",
+                "delete_text_file",
+                "dependency_change",
+                "dependency_add",
+            }:
                 raise RepairApplicationError(
                     "REPAIR_OPERATION_INVALID", "Repair operation is unsupported"
                 )
@@ -1201,13 +1219,13 @@ class RepairApplicationService:
                         "Repair target preimage checksum changed",
                     )
 
-            if relative == "package.json" or "dependency_change" in actions:
+            if relative == "package.json" or "dependency_change" in actions or "dependency_add" in actions:
                 if relative != "package.json":
                     raise RepairApplicationError(
                         "REPAIR_DEPENDENCY_PATH_INVALID",
                         "Dependency changes may edit only package.json",
                     )
-                if actions != {"dependency_change"}:
+                if not actions or not actions <= {"dependency_change", "dependency_add"}:
                     raise RepairApplicationError(
                         "REPAIR_OPERATION_AMBIGUOUS",
                         "package.json cannot combine dependency and file operations",
@@ -1228,7 +1246,7 @@ class RepairApplicationService:
                         "REPAIR_DEPENDENCY_PACKAGE_INVALID",
                         "Authoritative package.json must be an object",
                     )
-                if len(group) == 1 and not any(
+                if len(group) == 1 and str(group[0].get("operation")) != "dependency_add" and not any(
                     group[0].get(name) is not None
                     for name in ("section", "package", "new_version")
                 ):
@@ -1261,6 +1279,79 @@ class RepairApplicationService:
                             "Dependency changes require section, package, and new_version",
                         )
                     section, package, new_version = (str(field) for field in fields)
+                    if str(item.get("operation")) == "dependency_add":
+                        if section not in _DEPENDENCY_ADDITION_SECTIONS:
+                            raise RepairApplicationError(
+                                "REPAIR_DEPENDENCY_SECTION_INVALID",
+                                "Dependency additions must target dependencies or devDependencies",
+                            )
+                        key = (section, package)
+                        prior = seen.get(key)
+                        if prior is not None and prior != new_version:
+                            raise RepairApplicationError(
+                                "REPAIR_DEPENDENCY_CONFLICT",
+                                "Contradictory dependency changes target the same package key",
+                            )
+                        seen[key] = new_version
+                        if any(
+                            isinstance(document.get(name), dict) and package in document[name]
+                            for name in _DEPENDENCY_SECTIONS
+                        ):
+                            raise RepairApplicationError(
+                                "REPAIR_DEPENDENCY_ALREADY_PRESENT",
+                                "The requested dependency_add package already exists in authoritative package.json",
+                            )
+                        llm_requested_version = new_version
+                        if context is not None:
+                            expected_major = _version_major(context.get("target_exact"))
+                            if expected_major is None:
+                                raise RepairApplicationError(
+                                    "REPAIR_DEPENDENCY_AUTHORITY_MISSING",
+                                    "Stage plan target exact version authority is missing",
+                                )
+                            try:
+                                entry = DependencyAdditionAuthority().resolve(
+                                    package=package,
+                                    section=section,
+                                    target_angular_major=expected_major,
+                                )
+                            except DependencyAdditionAuthorityError as error:
+                                raise RepairApplicationError(
+                                    "REPAIR_DEPENDENCY_ADD_AUTHORITY_MISSING",
+                                    str(error),
+                                ) from error
+                            new_version = entry.exact_version
+                            add_provenance = [
+                                {
+                                    "key": "authority_policy_version",
+                                    "value": entry.policy_version,
+                                },
+                                {"key": "authority_package", "value": entry.package},
+                                {"key": "authority_exact_version", "value": entry.exact_version},
+                                {
+                                    "key": "authority_target_angular_major",
+                                    "value": str(entry.target_angular_major),
+                                },
+                            ]
+                        else:
+                            if not is_exact_version(new_version):
+                                raise RepairApplicationError(
+                                    "REPAIR_DEPENDENCY_VERSION_INVALID",
+                                    "The bound dependency_add version must be exact",
+                                )
+                            add_provenance = []
+                        item["new_version"] = new_version
+                        if not isinstance(document.get(section), dict):
+                            document[section] = {}
+                        document[section][package] = new_version
+                        provenance.append(
+                            {
+                                "key": "llm_requested_version",
+                                "value": llm_requested_version,
+                            }
+                        )
+                        provenance.extend(add_provenance)
+                        continue
                     if section not in _DEPENDENCY_SECTIONS:
                         raise RepairApplicationError(
                             "REPAIR_DEPENDENCY_SECTION_INVALID",
@@ -1316,9 +1407,14 @@ class RepairApplicationService:
                         "Dependency changes produced no file change",
                     )
                 first = group[0]
+                result_operation = (
+                    "dependency_add"
+                    if any(str(item.get("operation")) == "dependency_add" for item in group)
+                    else "dependency_change"
+                )
                 result.append(
                     {
-                        "operation": "dependency_change",
+                        "operation": result_operation,
                         "path": relative,
                         "preimage_sha256": actual,
                         "old_text": current,
@@ -1625,6 +1721,15 @@ class RepairApplicationService:
         )
 
     def _bind_proposal_candidate(self, value: dict[str, object], context: dict[str, object]):
+        operations = value.get("operations")
+        if isinstance(operations, list):
+            for operation in operations:
+                if (
+                    isinstance(operation, dict)
+                    and operation.get("operation") == "dependency_change"
+                    and operation.get("strategy") == "add_dependency"
+                ):
+                    operation["operation"] = "dependency_add"
         candidate = RepairProposalCandidate.model_validate(value)
         for index, operation in enumerate(candidate.operations):
             if not operation.path or len(operation.path) > 500:

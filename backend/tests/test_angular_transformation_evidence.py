@@ -115,7 +115,12 @@ def test_ng_version_output_with_aligned_columns_parses_cli_and_core(tmp_path: Pa
         str(before),
         target_core="21.2.19",
         target_cli="21.2.20",
-        ng_version_output="Angular CLI       : 21.2.20\nAngular           : 21.2.19\n",
+        ng_version_output=(
+            "\x1b[1mAngular CLI       \x1b[22m: "
+            "\x1b[36m21.2.20\x1b[39m\n"
+            "\x1b[1mAngular           \x1b[22m: "
+            "\x1b[36m21.2.19\x1b[39m\n"
+        ),
         angular_execution_id="execution-angular",
     )
 

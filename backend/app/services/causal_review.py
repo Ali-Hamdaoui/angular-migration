@@ -135,9 +135,10 @@ def _operation_carries_force(operation: dict) -> bool:
             return False
         payload = operation.get("new_text") if kind == "replace_text" else operation.get("content")
         return "--force" in str(payload or "")
-    if kind in {"delete_text_file", "dependency_change", "dependency_transition"}:
+    if kind in {"delete_text_file", "dependency_change", "dependency_add", "dependency_transition"}:
         # delete_text_file has no postimage; dependency_change.new_version is a
-        # validated version string, not argv; dependency_transition fields are
+        # validated version string, not argv; dependency_add.new_version is a
+        # backend-bound exact version, not argv; dependency_transition fields are
         # backend-bound authority.  None can introduce executable --force.
         return False
     # ponytail: unknown kinds are schema-invalid; fail closed on the payload.

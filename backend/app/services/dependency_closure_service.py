@@ -315,6 +315,119 @@ def verify_dependency_transition_state(
         raise ValueError("installed package peer ranges do not match backend conflict evidence")
 
 
+def verify_exact_dependency_state(
+    workspace: Path,
+    *,
+    package: str,
+    section: str,
+    exact_version: str,
+) -> dict[str, object]:
+    """Verify manifest, lockfile root, lockfile package entry, and installed metadata
+    all agree the package is declared at the exact version. No Angular-major comparison."""
+    workspace = Path(workspace)
+    if not is_exact_version(exact_version):
+        raise ValueError(
+            "field=exact_version; "
+            f"expected=exact semver for {package}; observed={json.dumps(exact_version)}; "
+            "recovery=rebind the exact backend-approved dependency-addition version before retrying"
+        )
+    if section not in ("dependencies", "devDependencies"):
+        raise ValueError(
+            "field=section; "
+            "expected=dependency-addition section 'dependencies' or 'devDependencies'; "
+            f"observed={json.dumps(section)}; "
+            "recovery=declare the package in dependencies or devDependencies only"
+        )
+    violations: list[str] = []
+    manifest_value = None
+    manifest = _read_json(workspace / "package.json")
+    if manifest is None:
+        violations.append("package.json is missing or invalid")
+    else:
+        declared = [
+            name
+            for name in ("dependencies", "devDependencies")
+            if isinstance(manifest.get(name), dict) and package in manifest[name]
+        ]
+        if not declared:
+            violations.append(f"package.json declares {package} in no dependency section")
+        elif len(declared) != 1 or declared[0] != section:
+            violations.append(
+                f"package.json declares {package} in {','.join(declared)}; expected only {section}"
+            )
+        else:
+            manifest_value = manifest[section][package]
+            if manifest_value != exact_version:
+                violations.append(
+                    f"package.json {section}.{package}={json.dumps(manifest_value)}; "
+                    f"expected={exact_version}"
+                )
+    lockfile_manifest_value = None
+    lockfile_version = None
+    lock = _read_json(workspace / "package-lock.json")
+    lockfile_schema_version = lock.get("lockfileVersion") if lock is not None else None
+    lock_packages = (lock or {}).get("packages") if lock is not None else {}
+    if lock is None:
+        violations.append("package-lock.json is missing or invalid")
+    elif not isinstance(lockfile_schema_version, int) or lockfile_schema_version < 3:
+        violations.append(
+            f"package-lock.json lockfileVersion={lockfile_schema_version} is not v3; "
+            "resolved package entries cannot be verified"
+        )
+    else:
+        lock_packages = lock_packages if isinstance(lock_packages, dict) else {}
+        root_entry = lock_packages.get("")
+        if not isinstance(root_entry, dict):
+            violations.append('package-lock.json packages[""] root entry is missing')
+        else:
+            root_section = root_entry.get(section)
+            if not isinstance(root_section, dict) or package not in root_section:
+                violations.append(
+                    f'package-lock.json packages[""][{section}][{package}] is missing'
+                )
+            else:
+                lockfile_manifest_value = root_section[package]
+                if lockfile_manifest_value != exact_version:
+                    violations.append(
+                        f'package-lock.json packages[""][{section}].{package}='
+                        f"{json.dumps(lockfile_manifest_value)}; expected={exact_version}"
+                    )
+        lock_entry = lock_packages.get(f"node_modules/{package}")
+        if not isinstance(lock_entry, dict):
+            violations.append(
+                f'package-lock.json packages["node_modules/{package}"] entry is missing'
+            )
+        else:
+            lockfile_version = lock_entry.get("version")
+            if lockfile_version != exact_version:
+                violations.append(
+                    f"package-lock.json node_modules/{package} version="
+                    f"{json.dumps(lockfile_version)}; expected={exact_version}"
+                )
+    installed_version = None
+    installed = _read_json(workspace / "node_modules" / package / "package.json")
+    if installed is None:
+        violations.append(f"node_modules/{package}/package.json is missing or invalid")
+    else:
+        installed_version = installed.get("version")
+        if installed_version != exact_version:
+            violations.append(
+                f"node_modules/{package} version={json.dumps(installed_version)}; "
+                f"expected={exact_version}"
+            )
+    return {
+        "package": package,
+        "section": section,
+        "expected_exact": exact_version,
+        "manifest_value": manifest_value,
+        "lockfile_manifest_value": lockfile_manifest_value,
+        "lockfile_version": lockfile_version,
+        "installed_version": installed_version,
+        "agreement": not violations,
+        "violations": violations,
+    }
+
+
 def angular_build_package(workspace: Path) -> str:
     """Resolve the build package from package.json and Angular builder entries."""
     workspace = Path(workspace)
