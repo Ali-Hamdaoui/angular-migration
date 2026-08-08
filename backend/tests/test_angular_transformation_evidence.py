@@ -87,3 +87,37 @@ def test_four_source_version_proof_rejects_one_mismatch(tmp_path: Path):
             ng_version_output="Angular CLI: 19.2.0\nAngular: 19.2.0\n",
             angular_execution_id="execution-angular",
         )
+
+
+def test_ng_version_output_with_aligned_columns_parses_cli_and_core(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(
+        workspace / "package.json",
+        {"dependencies": {"@angular/core": "^21.2.19", "@angular/cli": "~21.2.20"}},
+    )
+    _write_json(
+        workspace / "package-lock.json",
+        {
+            "packages": {
+                "node_modules/@angular/core": {"version": "21.2.19"},
+                "node_modules/@angular/cli": {"version": "21.2.20"},
+            }
+        },
+    )
+    _write_json(workspace / "node_modules/@angular/core/package.json", {"version": "21.2.19"})
+    _write_json(workspace / "node_modules/@angular/cli/package.json", {"version": "21.2.20"})
+
+    versions, _ = AngularTransformationEvidenceService().build(
+        str(workspace),
+        str(before),
+        target_core="21.2.19",
+        target_cli="21.2.20",
+        ng_version_output="Angular CLI       : 21.2.20\nAngular           : 21.2.19\n",
+        angular_execution_id="execution-angular",
+    )
+
+    assert versions["core_sources"]["ng_version"] == "21.2.19"
+    assert versions["cli_sources"]["ng_version"] == "21.2.20"

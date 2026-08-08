@@ -166,9 +166,12 @@ class AngularTransformationEvidenceService:
             return None
 
     def _line_version(self, output: str, label: str) -> str | None:
+        key = label.rstrip(":").strip()
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*:\s*(?P<value>.+?)\s*$")
         for line in output.splitlines():
-            if line.strip().startswith(label):
-                return self._version(line)
+            match = pattern.match(line)
+            if match is not None:
+                return self._version(match.group("value"))
         return None
 
     def _manifest(self, root: Path) -> dict[str, str]:
