@@ -358,7 +358,7 @@ function HistoricalRepairHistory({ projection, workflowEvents }: Pick<SharedProp
 export function RepairEvidence({ projection, workflowEvents, artifacts }: SharedProps) {
   const review = projection.repair_review;
   const dependency = projection.dependency_operation;
-  const isDependencyTransition = Boolean(dependency);
+  const isDependencyTransition = dependency?.operation === "dependency_transition";
   const validationTargets = projection.repair_contract?.validation_targets ?? [];
   const diffAvailable = Boolean(projection.repair_safe_diff && projection.repair_safe_diff.trim());
   const g10Waiting = projection.status === "waiting_gate" && projection.active_gate === "G10";
@@ -427,7 +427,7 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
         : null}
     {!diffAvailable && !projection.repair_attempt_id ? <p className={styles.note}>No repair candidate diff is available.</p> : null}
     </section> : null}
-    {dependency ? <section className={styles.repairSection} aria-labelledby="transform-dependency-operation">
+    {dependency?.operation === "dependency_transition" ? <section className={styles.repairSection} aria-labelledby="transform-dependency-operation">
       <h4 id="transform-dependency-operation">Dependency Transition Plan</h4>
       <dl className={styles.metadata}>
         <div><dt>Blocking dependency</dt><dd>{dependency.blocking_dependency.package}@{dependency.blocking_dependency.installed_version}</dd></div>
@@ -459,6 +459,26 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
         ? <ul>{validationTargets.map((target) => <li key={target}>{target}</li>)}</ul>
         : <p className={styles.note}>Validation targets are pending Reviewer binding.</p>}
     </section> : null}
+    {dependency?.operation === "dependency_add" ? <section className={styles.repairSection} aria-labelledby="transform-dependency-addition">
+      <h4 id="transform-dependency-addition">Dependency Addition</h4>
+      <dl className={styles.metadata}>
+        <div><dt>Package</dt><dd>{dependency.package ?? "unavailable"}</dd></div>
+        <div><dt>Section</dt><dd>{dependency.section ?? "unavailable"}</dd></div>
+        <div><dt>Exact version</dt><dd>{dependency.new_version ?? "unavailable"}</dd></div>
+        <div><dt>Strategy</dt><dd>{dependency.strategy ?? "unavailable"}</dd></div>
+        <div><dt>Proposal evidence</dt><dd>{projection.repair_proposal_checksum ? "Recorded" : "Unavailable"}</dd></div>
+      <div><dt>Reviewer verdict</dt><dd>{reviewerVerdict ?? "pending"}</dd></div>
+      </dl>
+      <TechnicalDetails>
+        <code>Operation: {dependency.operation}</code>
+        <code>Path: {dependency.path ?? "unavailable"}</code>
+        <code>Provenance: {dependency.provenance && dependency.provenance.length > 0 ? JSON.stringify(dependency.provenance) : "not projected"}</code>
+        <code>Workspace fingerprint: {projection.workspace_fingerprint ?? "unavailable"}</code>
+      </TechnicalDetails>
+    </section> : null}
+    {dependency && dependency.operation !== "dependency_transition" && dependency.operation !== "dependency_add"
+      ? <p className={styles.note}>Dependency operation details unavailable</p>
+      : null}
     <section className={styles.repairSection} aria-labelledby="transform-repair-review">
       <h4 id="transform-repair-review">Independent Reviewer</h4>
       {review ? <>

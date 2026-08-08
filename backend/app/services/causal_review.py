@@ -40,12 +40,21 @@ REVIEWER_CAUSAL_POLICY = (
     "executable failure in the evidence. Reject (decision \"reject\", or \"request_changes\" "
     "with explicit findings) any proposal that does not change the failing state: "
     "documentation-only changes (README or *.md/*.rst/*.txt files, AUTOMATION_README.md, "
-    "comments), unrelated source edits, manifest-only package.json version edits without "
-    "lockfile and installed-tree synchronization, and any proposal containing \"--force\". "
-    "For dependency-conflict failures (for example Angular peer-dependency conflicts), only "
-    "a complete dependency transition (detach/update/reattach with blocking dependency and "
-    "target state, plus lockfile regeneration) is causally valid. Accept only proposals that "
-    "change the state responsible for the failure."
+    "comments), unrelated source edits, and any proposal containing \"--force\". "
+    "For canonical dependency_add, the proposer MUST author only the controlled package.json "
+    "dependency intent (package, section, registry semver spec) and MUST NOT fabricate "
+    "package-lock.json contents or node_modules state: lockfile generation, npm ci, and exact "
+    "post-state verification are governed backend steps that run after G10 approval. Do NOT "
+    "reject a dependency_add solely because the candidate diff contains only package.json. "
+    "Reject it when the package does not causally address the failure, the dependency section "
+    "is wrong, the spec is unsafe or non-semver, unrelated files are touched, the validation "
+    "target is missing, the approved backend lockfile-generation/verification plan is absent, "
+    "the package already exists (the operation should then be dependency_change), or the "
+    "operation violates causal policy. For dependency-conflict failures (for example Angular "
+    "peer-dependency conflicts), only a complete dependency transition "
+    "(detach/update/reattach with blocking dependency and target state, plus lockfile "
+    "regeneration) is causally valid. Accept only proposals that change the state responsible "
+    "for the failure."
 )
 
 CAUSAL_REJECTION_DOCUMENTATION = "CAUSAL_REJECTION_DOCUMENTATION"
@@ -138,8 +147,8 @@ def _operation_carries_force(operation: dict) -> bool:
     if kind in {"delete_text_file", "dependency_change", "dependency_add", "dependency_transition"}:
         # delete_text_file has no postimage; dependency_change.new_version is a
         # validated version string, not argv; dependency_add.new_version is a
-        # backend-bound exact version, not argv; dependency_transition fields are
-        # backend-bound authority.  None can introduce executable --force.
+        # backend-approved registry semver spec, not argv; dependency_transition
+        # fields are backend-bound authority. None can introduce executable --force.
         return False
     # ponytail: unknown kinds are schema-invalid; fail closed on the payload.
     return "--force" in json.dumps(operation, sort_keys=True, default=str)

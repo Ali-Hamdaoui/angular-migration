@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,6 +29,7 @@ from app.repositories.models import (
     TransformationContinuationModel,
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
+from app.services.repair_application_service import RepairProposal, RepairReview
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import (
     append_continuation_event,
@@ -50,6 +52,26 @@ _NEXT_NODE = {
     StageGateId.G11.value: TransformationNode.SEAL_STAGE.value,
     StageGateId.G12.value: TransformationNode.SEAL_STAGE.value,
 }
+
+
+def _canonical_revision_payload(value: object, *, review: bool) -> dict | None:
+    """Re-serialize a human-revision lineage payload through its authoritative schema.
+
+    ``request_revision`` embeds the parent proposal/review inside the revision
+    context after a pydantic round-trip, which adds optional nested operation
+    fields with ``null`` values (for example ``blocking_dependency``,
+    ``checkpoint_id``, ``content``, ``failure_type``, ``repair_kind``,
+    ``schema_version``, ``strategy``, ``target_state``), while the immutable
+    parent artifact stored by ``json.dumps`` omits those keys. Both sides are
+    therefore canonicalized with the same model and ``exclude_none=True`` so
+    representation-only differences cannot invalidate semantically identical
+    lineage. Real semantic drift (changed package/version/operation/content)
+    survives the canonicalization and still fails closed.
+    """
+    if not isinstance(value, dict):
+        return None
+    model = RepairReview if review else RepairProposal
+    return model.model_validate(value).model_dump(mode="json", exclude_none=True)
 
 
 class StageGateService:
@@ -400,10 +422,14 @@ class StageGateService:
           parent attempt and the parent's persisted request_changes review
           artifact (id + checksum), the parent row must be a real earlier
           attempt of the same run/stage, and the parent's review artifact must
-          be byte-identical with a checksum-bound, attempt-bound envelope whose
-          content decision is ``request_changes``. Any deviation fails closed
-          with ``REPAIR_PARENT_LINEAGE_INVALID``. A fresh attempt must not
-          carry parent review references at all.
+          be a checksum-bound, attempt-bound envelope whose content decision is
+          ``request_changes``. The revision context's embedded parent
+          proposal/review are compared SEMANTICALLY after canonicalization
+          through the authoritative RepairProposal/RepairReview schemas (None
+          values excluded), so representation-only null-key differences cannot
+          invalidate legitimate lineage while real semantic drift still fails.
+          Any deviation fails closed with ``REPAIR_PARENT_LINEAGE_INVALID``. A
+          fresh attempt must not carry parent review references at all.
         """
         session.flush()
         metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
@@ -685,8 +711,36 @@ class StageGateService:
                     or revision.get("parent_attempt_id") != attempt.parent_attempt_id
                     or revision.get("parent_proposal_id") != parent.proposal_artifact_id
                     or revision.get("parent_proposal_checksum") != parent.proposal_checksum
-                    or revision.get("previous_proposal") != parent_proposal_payload
-                    or revision.get("reviewer_output") != parent_review_payload
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 human revision context is incomplete or stale",
+                    )
+                try:
+                    canonical_revision_proposal = _canonical_revision_payload(
+                        revision.get("previous_proposal"), review=False
+                    )
+                    canonical_parent_proposal = _canonical_revision_payload(
+                        parent_proposal_payload, review=False
+                    )
+                    canonical_revision_review = _canonical_revision_payload(
+                        revision.get("reviewer_output"), review=True
+                    )
+                    canonical_parent_review = _canonical_revision_payload(
+                        parent_review_payload, review=True
+                    )
+                except ValidationError as error:
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 human revision lineage payload is invalid",
+                    ) from error
+                if (
+                    canonical_revision_proposal is None
+                    or canonical_parent_proposal is None
+                    or canonical_revision_proposal != canonical_parent_proposal
+                    or canonical_revision_review is None
+                    or canonical_parent_review is None
+                    or canonical_revision_review != canonical_parent_review
                 ):
                     raise StageGateError(
                         "REPAIR_PARENT_LINEAGE_INVALID",

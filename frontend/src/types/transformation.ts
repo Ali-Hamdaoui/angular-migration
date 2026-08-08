@@ -79,20 +79,31 @@ export type TransformationProjection = {
     } | null;
     lifecycle_status: string;
   } | null;
-  dependency_operation: {
-    operation: string;
-    repair_kind: string;
-    failure_type: string;
-    strategy: string;
-    path: string;
-    blocking_dependency: {
-      package: string;
-      installed_version: string;
-      required_peer_ranges: Array<{ package: string; version_range: string }>;
-    };
-    target_state: { package: string; target_version: string; angular_major: number };
-    checkpoint_id: string;
-  } | null;
+  dependency_operation:
+    | {
+        operation: "dependency_transition";
+        repair_kind: string;
+        failure_type: string;
+        strategy: string;
+        path: string;
+        blocking_dependency: {
+          package: string;
+          installed_version: string;
+          required_peer_ranges: Array<{ package: string; version_range: string }>;
+        };
+        target_state: { package: string; target_version: string; angular_major: number };
+        checkpoint_id: string;
+      }
+    | {
+        operation: "dependency_add";
+        path: string;
+        section: string;
+        package: string;
+        new_version: string;
+        strategy: string | null;
+        provenance: Array<Record<string, string>> | null;
+      }
+    | null;
   completed_transition_phases: Array<{
     phase: string;
     execution_id: string | null;

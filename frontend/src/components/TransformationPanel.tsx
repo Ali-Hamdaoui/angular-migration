@@ -175,13 +175,15 @@ export function TransformationPanel({
   const shared = { projection: current, workflowEvents, artifacts, executions, executionStatus };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
-  const g10EvidenceAvailable = current.dependency_operation
+  const g10EvidenceAvailable = current.dependency_operation?.operation === "dependency_transition"
     ? Boolean(
         current.repair_proposal_checksum
         && current.dependency_operation.checkpoint_id
         && current.workspace_fingerprint,
       )
-    : diffAvailable;
+    : current.dependency_operation
+      ? Boolean(current.repair_proposal_checksum && current.workspace_fingerprint)
+      : diffAvailable;
   const reviewerOverrideRequired = current.status === "waiting_gate"
     && current.active_gate === "G10"
     && current.repair_review?.decision === "request_changes";
@@ -228,7 +230,7 @@ export function TransformationPanel({
         </div>
         {reviewerOverrideRequired ? <div className={styles.alert} role="alert">
           <strong>Reviewer raised unresolved concerns.</strong>
-          <p>Review the findings, policy checks, limitations, validation targets, and {current.dependency_operation ? "Dependency Transition Plan" : "exact candidate diff"} before approving.</p>
+          <p>Review the findings, policy checks, limitations, validation targets, and {current.dependency_operation?.operation === "dependency_transition" ? "Dependency Transition Plan" : "exact candidate diff"} before approving.</p>
         </div> : null}
         {revisionAccepted
           ? <p className={styles.success} role="status">

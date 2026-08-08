@@ -315,21 +315,34 @@ def verify_dependency_transition_state(
         raise ValueError("installed package peer ranges do not match backend conflict evidence")
 
 
-def verify_exact_dependency_state(
+def verify_dependency_add_state(
     workspace: Path,
     *,
     package: str,
     section: str,
-    exact_version: str,
+    approved_version_spec: str,
 ) -> dict[str, object]:
-    """Verify manifest, lockfile root, lockfile package entry, and installed metadata
-    all agree the package is declared at the exact version. No Angular-major comparison."""
+    """Verify a governed dependency_add post-state from the approved version spec.
+
+    The approved package.json version spec is human-approved truth. Governed
+    lockfile generation and npm ci are package-manager evidence that the locked
+    tree satisfies the manifest; this verifier does not independently resolve
+    the range. It fails closed when:
+      * package.json does not declare the package at the approved spec
+      * the lockfile root does not declare the package at the approved spec
+      * the lockfile exact package entry or its version is missing
+      * the installed exact version is missing
+      * the lockfile exact version differs from the installed exact version
+    The exact resolved version is OBSERVED from the lockfile, never
+    predeclared here.
+    """
     workspace = Path(workspace)
-    if not is_exact_version(exact_version):
+    if not isinstance(approved_version_spec, str) or not approved_version_spec:
         raise ValueError(
-            "field=exact_version; "
-            f"expected=exact semver for {package}; observed={json.dumps(exact_version)}; "
-            "recovery=rebind the exact backend-approved dependency-addition version before retrying"
+            "field=approved_version_spec; "
+            f"expected=non-empty approved version spec for {package}; "
+            f"observed={json.dumps(approved_version_spec)}; "
+            "recovery=rebind the approved dependency-addition version spec before retrying"
         )
     if section not in ("dependencies", "devDependencies"):
         raise ValueError(
@@ -357,13 +370,13 @@ def verify_exact_dependency_state(
             )
         else:
             manifest_value = manifest[section][package]
-            if manifest_value != exact_version:
+            if manifest_value != approved_version_spec:
                 violations.append(
                     f"package.json {section}.{package}={json.dumps(manifest_value)}; "
-                    f"expected={exact_version}"
+                    f"expected approved spec={approved_version_spec}"
                 )
     lockfile_manifest_value = None
-    lockfile_version = None
+    resolved_exact_version = None
     lock = _read_json(workspace / "package-lock.json")
     lockfile_schema_version = lock.get("lockfileVersion") if lock is not None else None
     lock_packages = (lock or {}).get("packages") if lock is not None else {}
@@ -387,41 +400,45 @@ def verify_exact_dependency_state(
                 )
             else:
                 lockfile_manifest_value = root_section[package]
-                if lockfile_manifest_value != exact_version:
+                if lockfile_manifest_value != approved_version_spec:
                     violations.append(
                         f'package-lock.json packages[""][{section}].{package}='
-                        f"{json.dumps(lockfile_manifest_value)}; expected={exact_version}"
+                        f"{json.dumps(lockfile_manifest_value)}; "
+                        f"expected approved spec={approved_version_spec}"
                     )
         lock_entry = lock_packages.get(f"node_modules/{package}")
         if not isinstance(lock_entry, dict):
             violations.append(
                 f'package-lock.json packages["node_modules/{package}"] entry is missing'
             )
+        elif not is_exact_version(lock_entry.get("version")):
+            violations.append(
+                f"package-lock.json node_modules/{package} has no exact resolved version"
+            )
         else:
-            lockfile_version = lock_entry.get("version")
-            if lockfile_version != exact_version:
-                violations.append(
-                    f"package-lock.json node_modules/{package} version="
-                    f"{json.dumps(lockfile_version)}; expected={exact_version}"
-                )
+            resolved_exact_version = lock_entry["version"]
     installed_version = None
     installed = _read_json(workspace / "node_modules" / package / "package.json")
     if installed is None:
         violations.append(f"node_modules/{package}/package.json is missing or invalid")
     else:
         installed_version = installed.get("version")
-        if installed_version != exact_version:
+        if not is_exact_version(installed_version):
             violations.append(
-                f"node_modules/{package} version={json.dumps(installed_version)}; "
-                f"expected={exact_version}"
+                f"node_modules/{package} has no exact installed version"
+            )
+        elif resolved_exact_version is not None and installed_version != resolved_exact_version:
+            violations.append(
+                f"installed {package} version={json.dumps(installed_version)}; "
+                f"expected lockfile resolved version={json.dumps(resolved_exact_version)}"
             )
     return {
         "package": package,
         "section": section,
-        "expected_exact": exact_version,
+        "approved_version_spec": approved_version_spec,
         "manifest_value": manifest_value,
         "lockfile_manifest_value": lockfile_manifest_value,
-        "lockfile_version": lockfile_version,
+        "resolved_exact_version": resolved_exact_version,
         "installed_version": installed_version,
         "agreement": not violations,
         "violations": violations,

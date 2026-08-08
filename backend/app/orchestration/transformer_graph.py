@@ -22,11 +22,10 @@ from sqlalchemy.exc import IntegrityError
 from app.artifact_store import (
     ArtifactNotFoundError,
     ArtifactStoreError,
-    ArtifactType,
     LocalFilesystemArtifactStore,
     StoredArtifact,
 )
-from app.domain.contracts import WorkflowEventType
+from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.domain.planning import (
     VALIDATION_TARGET_GROUPS,
     ValidationTargetUnionError,
@@ -60,7 +59,7 @@ from app.services.angular_transformation_evidence_service import (
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.causal_review import g10_eligibility, repair_budget
-from app.services.dependency_closure_service import verify_exact_dependency_state
+from app.services.dependency_closure_service import verify_dependency_add_state
 from app.services.dependency_transition_runner import (
     DependencyTransitionError,
     DependencyTransitionRunner,
@@ -242,7 +241,12 @@ class TransformerOrchestrator:
         else:
             raise TransformerStageError("TRANSFORMATION_NODE_UNSUPPORTED", f"Unsupported node: {node}")
 
-    def fail(self, continuation_id: str, worker_id: str, error: TransformerStageError) -> None:
+    def fail(
+        self,
+        continuation_id: str,
+        worker_id: str,
+        error: TransformerStageError | StageGateError,
+    ) -> None:
         with self._scope() as session:
             continuation = session.get(TransformationContinuationModel, continuation_id)
             if continuation is not None and continuation.status == "running" and continuation.worker_id == worker_id:
@@ -863,14 +867,15 @@ class TransformerOrchestrator:
         artifact_root: str,
         binding,
     ) -> list[dict[str, object]] | None:
-        """Post-state exact verification for bound dependency_add operations.
+        """Post-state verification for bound dependency_add operations.
 
         Runs at aggregate_validation, after apply, lockfile generation, npm ci,
         and validation completed. Reads ONLY the checksum-bound proposal
-        artifact (never the frontend) and verifies manifest, lockfile, and
-        installed metadata all carry the backend-bound exact version. Returns
-        None when the attempt carries no dependency_add operation (no behavior
-        change), otherwise a list of per-operation reports.
+        artifact (never the frontend) and verifies the approved manifest
+        version spec survived into the lockfile root, with the exact resolved
+        version observed from the lockfile matching the installed metadata.
+        Returns None when the attempt carries no dependency_add operation (no
+        behavior change), otherwise a list of per-operation reports.
         """
         if not repair.proposal_artifact_id or not repair.proposal_checksum:
             return None
@@ -909,11 +914,11 @@ class TransformerOrchestrator:
         reports = []
         for item in additions:
             try:
-                report = verify_exact_dependency_state(
+                report = verify_dependency_add_state(
                     Path(binding.workspace_path),
                     package=str(item.package),
                     section=str(item.section),
-                    exact_version=str(item.new_version),
+                    approved_version_spec=str(item.new_version),
                 )
             except ValueError as error:
                 report = {"agreement": False, "violations": [str(error)]}
@@ -924,14 +929,14 @@ class TransformerOrchestrator:
                 artifact_root,
                 package=str(item.package),
                 section=str(item.section),
-                exact_version=str(item.new_version),
+                approved_version_spec=str(item.new_version),
                 report=report,
             )
             reports.append(
                 {
                     "package": str(item.package),
                     "section": str(item.section),
-                    "new_version": str(item.new_version),
+                    "approved_version_spec": str(item.new_version),
                     "report": report,
                 }
             )
@@ -946,16 +951,19 @@ class TransformerOrchestrator:
         *,
         package: str,
         section: str,
-        exact_version: str,
+        approved_version_spec: str,
         report: dict[str, object],
     ) -> StoredArtifact:
         content = json.dumps(
             {
-                "schema_version": "dependency-add-verification-v1",
+                "schema_version": "dependency-add-verification.v2",
                 "attempt_id": repair.id,
                 "package": package,
                 "section": section,
-                "expected_exact": exact_version,
+                "approved_version_spec": approved_version_spec,
+                "resolved_exact_version": report.get("resolved_exact_version"),
+                "installed_version": report.get("installed_version"),
+                "agreement": bool(report.get("agreement")),
                 "report": report,
                 "proposal_checksum": repair.proposal_checksum,
             },
@@ -988,7 +996,7 @@ class TransformerOrchestrator:
             created_by="repair-dependency-add-verification",
             created_at=datetime.now(UTC),
             input_hashes={"attempt": repair.id},
-            policy_version="dependency-add-verification-v1",
+            policy_version="dependency-add-verification-v2",
         )
         self._register_dependency_add_verification_metadata(
             session, continuation, stored, repair
@@ -3571,5 +3579,5 @@ class TransformerWorkflow:
     def invoke(self, continuation_id: str, worker_id: str) -> None:
         try:
             self.graph.invoke({"continuation_id": continuation_id, "worker_id": worker_id})
-        except TransformerStageError as error:
+        except (TransformerStageError, StageGateError) as error:
             self.orchestrator.fail(continuation_id, worker_id, error)

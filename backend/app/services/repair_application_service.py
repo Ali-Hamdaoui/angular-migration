@@ -57,9 +57,10 @@ from app.repositories.models import (
     WorkflowEventModel,
 )
 from app.services.causal_review import CausalRejection, REVIEWER_CAUSAL_POLICY, causal_rejection
-from app.services.dependency_addition_authority import (
-    DependencyAdditionAuthority,
-    DependencyAdditionAuthorityError,
+from app.services.dependency_addition_policy import (
+    DEPENDENCY_ADDITION_POLICY_VERSION,
+    DependencyAdditionPolicy,
+    DependencyAdditionPolicyError,
 )
 from app.services.dependency_closure_service import (
     installed_dependency_version,
@@ -568,9 +569,11 @@ class RepairApplicationService:
                         "When the failure evidence proves a required package is absent from "
                         "package.json, emit exactly one \"dependency_add\" operation at path "
                         "\"package.json\" with section limited to \"dependencies\" or "
-                        "\"devDependencies\", package, and new_version as a requested range or "
-                        "intent; the backend, not the LLM, owns the final exact executable "
-                        "version. Never emit npm shell commands. "
+                        "\"devDependencies\", package, and new_version as a registry semver "
+                        "range or intent; the backend validates the requested registry semver "
+                        "spec and binds it as the approved version spec, and governed lockfile "
+                        "generation fixes the exact resolved version after human approval. "
+                        "Never emit npm shell commands. "
                         + _PROPOSER_GROUNDING_INSTRUCTIONS
                     ),
                 )
@@ -764,13 +767,11 @@ class RepairApplicationService:
                 "REPAIR_PROPOSAL_STALE", "Repair proposal binding changed"
             )
         try:
-            proposal = RepairProposal.model_validate_json(
-                str(context["segments"][2])
-            ).model_dump(mode="json")
-            review = RepairReview.model_validate_json(
-                str(context["segments"][3])
-            ).model_dump(mode="json")
-        except ValidationError as error:
+            proposal = json.loads(str(context["segments"][2]))
+            review = json.loads(str(context["segments"][3]))
+            RepairProposal.model_validate(proposal)
+            RepairReview.model_validate(review)
+        except (ValidationError, ValueError) as error:
             raise RepairApplicationError(
                 "REPAIR_ARTIFACT_RECOVERY_FAILED",
                 "Repair proposal or review artifact is invalid",
@@ -1302,44 +1303,17 @@ class RepairApplicationService:
                                 "The requested dependency_add package already exists in authoritative package.json",
                             )
                         llm_requested_version = new_version
-                        if context is not None:
-                            expected_major = _version_major(context.get("target_exact"))
-                            if expected_major is None:
-                                raise RepairApplicationError(
-                                    "REPAIR_DEPENDENCY_AUTHORITY_MISSING",
-                                    "Stage plan target exact version authority is missing",
-                                )
-                            try:
-                                entry = DependencyAdditionAuthority().resolve(
-                                    package=package,
-                                    section=section,
-                                    target_angular_major=expected_major,
-                                )
-                            except DependencyAdditionAuthorityError as error:
-                                raise RepairApplicationError(
-                                    "REPAIR_DEPENDENCY_ADD_AUTHORITY_MISSING",
-                                    str(error),
-                                ) from error
-                            new_version = entry.exact_version
-                            add_provenance = [
-                                {
-                                    "key": "authority_policy_version",
-                                    "value": entry.policy_version,
-                                },
-                                {"key": "authority_package", "value": entry.package},
-                                {"key": "authority_exact_version", "value": entry.exact_version},
-                                {
-                                    "key": "authority_target_angular_major",
-                                    "value": str(entry.target_angular_major),
-                                },
-                            ]
-                        else:
-                            if not is_exact_version(new_version):
-                                raise RepairApplicationError(
-                                    "REPAIR_DEPENDENCY_VERSION_INVALID",
-                                    "The bound dependency_add version must be exact",
-                                )
-                            add_provenance = []
+                        try:
+                            DependencyAdditionPolicy().validate(
+                                package=package,
+                                section=section,
+                                version_spec=new_version,
+                            )
+                        except DependencyAdditionPolicyError as error:
+                            raise RepairApplicationError(
+                                "REPAIR_DEPENDENCY_VERSION_INVALID",
+                                str(error),
+                            ) from error
                         item["new_version"] = new_version
                         if not isinstance(document.get(section), dict):
                             document[section] = {}
@@ -1350,7 +1324,12 @@ class RepairApplicationService:
                                 "value": llm_requested_version,
                             }
                         )
-                        provenance.extend(add_provenance)
+                        provenance.append(
+                            {
+                                "key": "policy_version",
+                                "value": DEPENDENCY_ADDITION_POLICY_VERSION,
+                            }
+                        )
                         continue
                     if section not in _DEPENDENCY_SECTIONS:
                         raise RepairApplicationError(

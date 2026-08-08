@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.artifact_store import LocalFilesystemArtifactStore
@@ -41,6 +42,21 @@ class StageExecutionError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 409):
         self.code, self.message, self.status_code = code, message, status_code
         super().__init__(message)
+
+
+def bounded_idempotency_key(raw: str, max_length: int = 128) -> str:
+    """Deterministically bound a backend-generated idempotency key.
+
+    The command-policy DTO and the persistence layer both cap
+    idempotency_key at 128 chars; stage continuation/attempt ids can push
+    the composed key past that limit.  Short keys pass through untouched;
+    longer keys get a SHA-256-derived suffix so the same raw key always
+    yields the same bounded key (no randomness, no timestamps).
+    """
+    if len(raw) <= max_length:
+        return raw
+    suffix = ":" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    return raw[: max_length - len(suffix)] + suffix
 
 
 @dataclass(frozen=True)
@@ -357,10 +373,10 @@ class StageExecutionApplicationService:
         continuation_key = f"{request.idempotency_key}:{group}"
         if command_index:
             continuation_key += f":{command_index}"
+        continuation_key = bounded_idempotency_key(continuation_key)
         CommandRegistryService().seed_defaults(session)
-        authorization = self._policy_engine.validate(
-            session,
-            CommandPolicyValidateRequestDto(
+        try:
+            policy_request = CommandPolicyValidateRequestDto(
                 run_id=run.id,
                 expected_state_version=run.state_version,
                 stage_id=stage.stage_id,
@@ -379,7 +395,16 @@ class StageExecutionApplicationService:
                 timeout_seconds=reference["timeout_seconds"],
                 idempotency_key=continuation_key,
                 requested_by=actor,
-            ),
+            )
+        except ValidationError as error:
+            field = error.errors()[0]["loc"][0] if error.errors() else "request"
+            raise StageExecutionError(
+                "COMMAND_POLICY_REQUEST_INVALID",
+                f"Internally generated command-policy request is invalid: {field}.",
+            ) from error
+        authorization = self._policy_engine.validate(
+            session,
+            policy_request,
         )
         if authorization.decision != "accepted":
             raise StageExecutionError("FIRST_COMMAND_NOT_AUTHORIZED", "The first planned command was rejected by command policy.")
