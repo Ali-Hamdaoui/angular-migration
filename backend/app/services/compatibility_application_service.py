@@ -14,6 +14,7 @@ from app.domain.compatibility import (
     FeasibilityPackage,
     G05Package,
     Stage1ExecutionProfile,
+    calculate_stage1_profile_checksum,
 )
 from app.domain.execution_profile import RuntimeCandidate, Version
 from app.services.artifact_binding import canonical_artifact_set_checksum
@@ -83,26 +84,43 @@ class CompatibilityResolver:
             "catalogue_version": self.catalogue.version,
             "source_angular_exact": request.source_angular_exact,
         }
-        checksum = "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        return Stage1ExecutionProfile(**payload, checksum=checksum)
+        stage1_checksum = "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return Stage1ExecutionProfile(
+            **payload,
+            source_execution_profile_checksum=request.source_execution_profile_checksum,
+            stage1_profile_checksum=stage1_checksum,
+            checksum=stage1_checksum,
+        )
 
     @staticmethod
     def _candidate_allowed(candidate: RuntimeCandidate, entry) -> bool:
         node = Version.parse(candidate.node_exact)
         npm = Version.parse(candidate.npm_exact)
         npx = Version.parse(candidate.npx_exact)
+        if entry.validated_runtime_profiles:
+            version_allowed = bool(
+                node
+                and npm
+                and any(str(node) == node_exact and str(npm) == npm_exact for node_exact, npm_exact in entry.validated_runtime_profiles)
+            )
+        else:
+            version_allowed = bool(
+                node
+                and npm
+                and node.major == entry.node_major
+                and npm.major == entry.npm_major
+                and (entry.node_exact is None or str(node) == entry.node_exact)
+                and (entry.npm_exact is None or str(npm) == entry.npm_exact)
+            )
         return bool(
             candidate.available
             and candidate.operating_system.lower() == "windows"
             and candidate.architecture.lower() == "amd64"
             and node
-            and node.major == entry.node_major
             and npm
-            and npm.major == entry.npm_major
             and npx
+            and version_allowed
             and npx.major == entry.npm_major
-            and (entry.node_exact is None or candidate.node_exact == entry.node_exact)
-            and (entry.npm_exact is None or candidate.npm_exact == entry.npm_exact)
             and (candidate.angular_cli_exact is None or candidate.angular_cli_exact == (entry.cli_exact or entry.target_cli_exact))
             and candidate.registry_configured
             and candidate.certificate_valid

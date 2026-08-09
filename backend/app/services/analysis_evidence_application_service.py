@@ -31,6 +31,7 @@ from app.repositories.models import (
 from app.repositories.session import session_scope
 from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.services.analysis_application_service import AnalysisAgentService, AnalysisApplicationError, AnalysisArtifact
+from app.services.planning_job_service import PLANNING_JOB_NONTERMINAL_STATES
 from app.state.transition_service import StateTransitionService, TransitionRequest, TransitionError, StaleStateVersionError
 from app.domain.contracts import RunStatus
 
@@ -52,12 +53,17 @@ class AnalysisEvidenceApplicationService:
     def generate(self, run_id: str, payload, actor: str) -> AnalysisResponse:
         with self.scope() as session:
             run = self._authorized_run(session, run_id, actor)
+            g03 = self._approved_g03(session, run_id)
+            workspace_fingerprint = self._authoritative_workspace_fingerprint(
+                g03,
+                payload.workspace_fingerprint,
+            )
             canonical = self._canonical_inputs(session, run_id, payload.prerequisite_artifacts)
             request = AnalysisRequest(
                 run_id=run_id, expected_state_version=payload.expected_state_version,
                 idempotency_key=payload.idempotency_key, actor=actor,
                 prerequisite_artifacts=canonical,
-                workspace_fingerprint=payload.workspace_fingerprint,
+                workspace_fingerprint=workspace_fingerprint,
                 plan_version=payload.plan_version, correlation_id=payload.correlation_id,
             )
             request_checksum = self._checksum(request.model_dump(mode="json"))
@@ -68,8 +74,6 @@ class AnalysisEvidenceApplicationService:
                 return self._analysis_dto(session, existing, replay=True)
             if run.state_version != payload.expected_state_version:
                 raise AnalysisEvidenceError("STALE_STATE_VERSION", "The run state version is stale.", 409)
-            if session.scalar(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run_id, G03ApprovalModel.status == "approved")) is None:
-                raise AnalysisEvidenceError("G03_APPROVAL_REQUIRED", "An approved G03 baseline boundary is required.", 409)
             started = self._transition(session, run, request, WorkflowEventType.ANALYSIS_AGENT_STARTED, "analysis agent started")
             now = self.now()
             invocation = LlmInvocationModel(
@@ -248,7 +252,10 @@ class AnalysisEvidenceApplicationService:
             if event_type == WorkflowEventType.G04_APPROVED:
                 active_job = session.scalar(
                     select(PlanningJobModel)
-                    .where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.not_in({"completed", "failed"}))
+                    .where(
+                        PlanningJobModel.run_id == run_id,
+                        PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES),
+                    )
                     .order_by(PlanningJobModel.created_at.desc())
                 )
                 if active_job is None:
@@ -264,7 +271,7 @@ class AnalysisEvidenceApplicationService:
                             attempt=0,
                             lease_expires_at=None,
                             idempotency_key=f"planning-after-g04:{run_id}:{payload.package_checksum}",
-                            correlation_id=getattr(payload, "correlation_id", None),
+                            correlation_id=analysis.correlation_id or f"planning:{run_id}",
                             last_error_code=None,
                             last_error_stage=None,
                             retryable=None,
@@ -537,6 +544,41 @@ class AnalysisEvidenceApplicationService:
             if client != server:
                 raise AnalysisEvidenceError("ANALYSIS_INPUT_SET_MISMATCH", "The client artifact list does not match server-derived evidence.", 409)
         return canonical
+
+    @staticmethod
+    def _approved_g03(session, run_id: str) -> G03ApprovalModel:
+        gate = session.scalar(
+            select(G03ApprovalModel)
+            .where(G03ApprovalModel.run_id == run_id, G03ApprovalModel.status == "approved")
+            .order_by(G03ApprovalModel.updated_at.desc())
+        )
+        if gate is None:
+            raise AnalysisEvidenceError(
+                "G03_APPROVAL_REQUIRED",
+                "An approved G03 baseline boundary is required.",
+                409,
+            )
+        if not gate.sandbox_fingerprint:
+            raise AnalysisEvidenceError(
+                "G03_WORKSPACE_FINGERPRINT_MISSING",
+                "The approved G03 package has no baseline sandbox fingerprint.",
+                409,
+            )
+        return gate
+
+    @staticmethod
+    def _authoritative_workspace_fingerprint(
+        gate: G03ApprovalModel,
+        supplied_fingerprint: str | None,
+    ) -> str:
+        authoritative = gate.sandbox_fingerprint
+        if supplied_fingerprint is not None and supplied_fingerprint != authoritative:
+            raise AnalysisEvidenceError(
+                "ANALYSIS_WORKSPACE_FINGERPRINT_MISMATCH",
+                "The supplied workspace fingerprint does not match the approved G03 baseline.",
+                409,
+            )
+        return authoritative
 
     def _transition(self, session, run, request, event, reason, payload=None, **state_changes):
         try:

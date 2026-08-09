@@ -34,3 +34,4 @@ backend/Usershamdaoui.aliangular-migrationtmp-pytest/
 .pytest-tmp-*/
 .pytest_cache/
 .ruff_cache/
+.worktrees/

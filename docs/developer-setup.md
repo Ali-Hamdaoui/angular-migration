@@ -8,11 +8,11 @@ This guide is the Sprint 0 entry point for local development on Windows PowerShe
 - Node.js and npm compatible with the frontend workspace.
 - Git.
 - `rg` / ripgrep for architecture checks.
-- Optional: a Python virtual environment under `backend/.venv`.
+- A Python virtual environment under `backend/.venv` for the development launcher.
 
 ## Install Dependencies
 
-Backend:
+Backend (starts FastAPI and the Transformer/command worker):
 
 ```powershell
 cd backend
@@ -50,6 +50,11 @@ Frontend:
 ```powershell
 .\scripts\dev-frontend.ps1
 ```
+
+Run the two commands in separate PowerShell terminals. The backend launcher
+applies Alembic migrations, sets `ALLOWED_TARGET_ROOTS`, and supervises the API
+and Transformer processes together. It does not delete the target root or
+database.
 
 ## Quality Gates
 

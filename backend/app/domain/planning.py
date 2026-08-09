@@ -9,9 +9,11 @@ than shell strings.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 import hashlib
 import json
 import re
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -33,6 +35,22 @@ APPROVED_BUILDERS = frozenset({
     "@angular-devkit/build-angular:server",
 })
 
+class ValidationTarget(str, Enum):
+    BUILD = "build"
+    TEST = "test"
+    LINT = "lint"
+
+
+# Authoritative validation-target registry.  Every consumer (proposal binding,
+# G10 lineage, affected-check selection, the full validation set) resolves
+# through these constants so the supported-target set can never diverge.
+VALIDATION_TARGET_GROUPS = MappingProxyType({
+    ValidationTarget.BUILD.value: "builds",
+    ValidationTarget.TEST.value: "tests",
+    ValidationTarget.LINT.value: "lint",
+})
+SUPPORTED_VALIDATION_TARGETS = frozenset(target.value for target in ValidationTarget)
+
 
 class PlanArtifactInput(ContractModel):
     artifact_id: str = Field(min_length=1, max_length=128)
@@ -43,12 +61,17 @@ class CommandTemplateReference(ContractModel):
     """A command-registry reference safe to hand to CommandExecutor later."""
 
     command_id: str = Field(min_length=1, max_length=128)
+    template_id: str = Field(min_length=1, max_length=128)
+    template_version: int = Field(ge=1)
+    parameter_bindings: dict[str, str] = Field(default_factory=dict)
     executable: str = Field(min_length=1, max_length=128)
     arguments: tuple[str, ...] = ()
     shell: Literal[False] = False
     working_directory_alias: str = Field(min_length=1, max_length=128)
     timeout_seconds: int = Field(gt=0, le=7200)
     network_profile: str = Field(min_length=1, max_length=128)
+    runtime_profile_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    cancellation_policy: str = "terminate_process_tree"
     conditional: bool = False
 
     @model_validator(mode="after")
@@ -79,6 +102,8 @@ class RepairPolicy(ContractModel):
     enabled: bool = True
     proposer_reviewer_required: bool = True
     human_apply_required: bool = True
+    max_attempts: int = Field(default=3, ge=1)
+    max_applied: int = Field(default=2, ge=1)
 
 
 class ForbiddenChangePolicy(ContractModel):
@@ -128,12 +153,17 @@ class StageExecutionPlan(ContractModel):
     stage_id: str = Field(min_length=1, max_length=128)
     plan_version: int = Field(ge=1)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
+    evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
     source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
     target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
     target_exact: str = Field(min_length=1, max_length=64)
     target_cli_exact: str | None = Field(default=None, max_length=64)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    package_manager: str = Field(default="npm", min_length=1, max_length=32)
+    resolved_scripts: dict[str, str] = Field(default_factory=dict)
+    project_targets: dict[str, str] = Field(default_factory=dict)
     commands: dict[str, tuple[CommandTemplateReference, ...]]
     build_system_decision: BuildSystemDecision
     validation_policy: ValidationPolicy
@@ -144,10 +174,10 @@ class StageExecutionPlan(ContractModel):
 
     @model_validator(mode="after")
     def validate_commands(self) -> "StageExecutionPlan":
-        required = {"bootstrap_install", "angular_update", "target_version_check", "final_install", "builds", "tests", "lint"}
+        required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "builds", "tests", "lint"}
         if set(self.commands) != required:
             raise ValueError("stage plan commands must contain the complete standard command set")
-        if any(not refs for refs in self.commands.values() if self.commands.get("lint") != refs):
+        if any(not refs for name, refs in self.commands.items() if name != "lint"):
             raise ValueError("required stage plan command groups cannot be empty")
         if self.build_system_decision.action == "blocked":
             raise ValueError("a blocked build-system decision cannot produce an executable stage plan")
@@ -165,7 +195,13 @@ class PlanGenerationRequest(ContractModel):
     target_family: str = Field(default="angular-21.x", pattern=r"^angular-(19|20|21)\.x$")
     catalogue_version: str = Field(min_length=1, max_length=128)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
+    evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    execution_profile_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
+    package_manager: str = Field(default="npm", min_length=1, max_length=32)
+    resolved_scripts: dict[str, str] = Field(default_factory=dict)
+    project_targets: dict[str, str] = Field(default_factory=dict)
     stage_route: tuple[tuple[str, ...], ...] = Field(min_length=1)
     # Older callers and the public F06 contract omit this when the first
     # route entry carries the exact CLI version.  The stage planner derives
@@ -179,6 +215,10 @@ class PlanGenerationRequest(ContractModel):
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":
+        if self.package_manager != "npm":
+            raise ValueError("only npm planning commands are supported")
+        if any(not key or not value or any(token in value for token in "\r\n;|&<>`$()'\"") or any(character.isspace() for character in value) for key, value in {**self.resolved_scripts, **self.project_targets}.items()):
+            raise ValueError("planning command bindings contain unsafe tokens")
         if self.catalogue_version not in APPROVED_CATALOGUE_VERSIONS:
             raise ValueError("catalogue version is not approved")
         if not self.execution_profile_id.strip():
@@ -195,6 +235,14 @@ class PlanGenerationRequest(ContractModel):
             raise ValueError("stage route identifiers cannot contain shell syntax")
         if self.target_cli_exact is not None and not _EXACT_VERSION.fullmatch(self.target_cli_exact):
             raise ValueError("target CLI version must be an exact semantic version")
+        first_route_cli = self.stage_route[0][4] if len(self.stage_route[0]) == 5 else None
+        if self.target_cli_exact is not None and first_route_cli is not None and self.target_cli_exact != first_route_cli:
+            raise ValueError("global CLI target must equal the first route CLI target")
+        effective_cli = self.target_cli_exact or first_route_cli or self.stage_route[0][3]
+        core_major = int(self.stage_route[0][3].split(".", 1)[0])
+        cli_major = int(effective_cli.split(".", 1)[0])
+        if cli_major != core_major:
+            raise ValueError("CLI target major must match the Angular core target major")
         if not _EXACT_VERSION.fullmatch(self.source_exact) or any(not _EXACT_VERSION.fullmatch(route[3]) or (len(route) == 5 and not _EXACT_VERSION.fullmatch(route[4])) for route in self.stage_route):
             raise ValueError("source and target versions must be exact semantic versions")
         if self.stage_route[0][0] != self.source_family or self.stage_route[-1][1] != self.target_family:
@@ -228,6 +276,74 @@ def _checksum(value: object) -> str:
 def checksum_model(value: ContractModel, *, exclude: tuple[str, ...] = ("checksum",)) -> str:
     payload = value.model_dump(mode="json", exclude=set(exclude))
     return _checksum(payload)
+
+
+class ValidationTargetUnionError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def executable_groups(
+    policy_required_checks, commands: dict[str, object]
+) -> tuple[str, ...]:
+    """Command groups the stage plan can actually execute for the policy checks.
+
+    Deterministic: policy order, deduplicated.  A group whose command list is
+    empty (e.g. lint when the plan omits lint commands) is excluded, so the
+    caller never invents a target the plan does not authorize.
+    """
+    groups = []
+    for check in policy_required_checks:
+        if check not in VALIDATION_TARGET_GROUPS:
+            raise ValidationTargetUnionError(
+                "VALIDATION_CHECK_UNSUPPORTED", f"Unsupported required check: {check}"
+            )
+        group = VALIDATION_TARGET_GROUPS[check]
+        if commands.get(group) and group not in groups:
+            groups.append(group)
+    return tuple(groups)
+
+
+def validation_target_union(
+    proposal_targets,
+    review_required_targets,
+    policy_required_checks,
+    commands: dict[str, object],
+) -> tuple[str, ...]:
+    """The single authoritative affected-validation union.
+
+    The final set is the order-preserving, deduplicated union of the
+    executable mandatory policy groups (ALWAYS present, in policy order), the
+    proposer's targets, and the reviewer's required targets - filtered by
+    executability (a group whose command list is non-empty), never by policy
+    membership alone.  Raises REPAIR_VALIDATION_TARGET_INVALID when nothing
+    executable remains, and for any requested target that is not
+    backend-supported (matching the bind-time rejection so the union never
+    silently drops a target the caller believed it requested).  Unknown
+    POLICY checks keep the VALIDATION_CHECK_UNSUPPORTED code from
+    ``executable_groups``.
+    """
+    policy_set = set(policy_required_checks)
+    union = []
+    for target in (*policy_required_checks, *proposal_targets, *review_required_targets):
+        if target not in VALIDATION_TARGET_GROUPS:
+            raise ValidationTargetUnionError(
+                "VALIDATION_CHECK_UNSUPPORTED"
+                if target in policy_set
+                else "REPAIR_VALIDATION_TARGET_INVALID",
+                f"Unsupported validation target or check: {target}",
+            )
+        group = VALIDATION_TARGET_GROUPS[target]
+        if commands.get(group) and target not in union:
+            union.append(target)
+    if not union:
+        raise ValidationTargetUnionError(
+            "REPAIR_VALIDATION_TARGET_INVALID",
+            "Repair proposal has no approved affected validation target",
+        )
+    return tuple(union)
 
 
 def utc_now() -> datetime:

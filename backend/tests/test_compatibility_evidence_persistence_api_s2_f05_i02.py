@@ -19,11 +19,13 @@ from app.repositories.models import (
     CompatibilityResolutionModel,
     G05ApprovalModel,
     MigrationRunModel,
+    PlanningJobModel,
     RegistrySnapshotModel,
     WorkflowEventModel,
 )
 from app.repositories.session import create_database_engine
 from app.services.compatibility_application_service import CompatibilityResolver
+from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 
 
@@ -52,8 +54,8 @@ def _catalogue():
     )
 
 
-def _candidate():
-    return RuntimeCandidate(
+def _candidate(**changes):
+    values = dict(
         profile_id="node-20-approved",
         node_executable=r"C:\Tools\node\node.exe",
         node_exact="20.11.1",
@@ -62,9 +64,11 @@ def _candidate():
         npx_executable=r"C:\Tools\node\npx.cmd",
         npx_exact="10.2.4",
     )
+    values.update(changes)
+    return RuntimeCandidate(**values)
 
 
-def setup(tmp_path: Path):
+def setup(tmp_path: Path, *, catalogue=None):
     engine = create_database_engine(f"sqlite:///{tmp_path / 'test.db'}", sqlite_wal_enabled=False)
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
@@ -93,9 +97,10 @@ def setup(tmp_path: Path):
 
         return managed()
 
-    resolver = CompatibilityResolver(_catalogue())
+    catalogue = catalogue or _catalogue()
+    resolver = CompatibilityResolver(catalogue)
     service = CompatibilityEvidenceApplicationService(session_scope_factory=scope, resolver=resolver, now_provider=lambda: NOW)
-    payload = FeasibilityCreateRequest(expected_state_version=1, idempotency_key="feasibility-1", source_angular_exact="18.2.4", catalogue_version="catalog-v1", registry_snapshot_id="registry-1", registry_snapshot_checksum="sha256:" + "b" * 64, prerequisite_artifacts=[{"artifact_id": prerequisite.ref.artifact_id, "checksum": prerequisite.ref.checksum}], runtime_candidates=(_candidate(),), workspace_fingerprint="sha256:" + "c" * 64)
+    payload = FeasibilityCreateRequest(expected_state_version=1, idempotency_key="feasibility-1", source_angular_exact="18.2.4", catalogue_version=catalogue.version, registry_snapshot_id="registry-1", registry_snapshot_checksum="sha256:" + "b" * 64, prerequisite_artifacts=[{"artifact_id": prerequisite.ref.artifact_id, "checksum": prerequisite.ref.checksum}], runtime_candidates=(_candidate(),), workspace_fingerprint="sha256:" + "c" * 64)
     return service, payload, sessions, store, resolver
 
 
@@ -142,6 +147,8 @@ def test_api_exposes_snapshot_and_decision_with_idempotent_replay(tmp_path):
     with sessions() as session:
         assert session.query(G05ApprovalModel).count() == 2
         assert session.query(MigrationRunModel).one().state_version == 4
+        job = session.query(PlanningJobModel).one()
+        assert (job.status, job.current_step, job.attempt, job.correlation_id) == ("generating_plan", "generating_plan", 0, "planning:run-1")
 
 
 def test_rejects_stale_state_checksum_and_unauthorized_actor_without_mutation(tmp_path):
@@ -167,3 +174,139 @@ def test_reuses_versioned_catalogue_and_registry_metadata_on_new_resolution(tmp_
         assert session.query(CompatibilityCatalogueModel).count() == 1
         assert session.query(RegistrySnapshotModel).count() == 1
         assert session.query(CompatibilityResolutionModel).count() == 2
+
+
+def test_catalog_v2_node_22_profile_creates_approvable_g05_and_continuation_job(tmp_path):
+    catalogue = CompatibilityCatalogueProvider().load()
+    service, payload, sessions, _, _ = setup(tmp_path, catalogue=catalogue)
+    payload = payload.model_copy(update={
+        "runtime_candidates": (_candidate(profile_id="node-22-approved", node_exact="22.23.1", npm_exact="10.9.8", npx_exact="10.9.8"),),
+    })
+
+    result = service.resolve("run-1", payload, "operator")
+    decision = G05DecisionRequest(
+        expected_state_version=result.state_version,
+        idempotency_key="g05-v2-approve",
+        gate_version=result.gate_version,
+        package_checksum=result.package_checksum,
+        artifact_set_checksum=result.package["artifact_set_checksum"],
+        workspace_fingerprint=payload.workspace_fingerprint,
+        decision="approve",
+    )
+    accepted = service.decide_g05("run-1", decision, "operator")
+
+    assert result.status == "feasible_with_warnings"
+    assert result.gate_status == "pending"
+    assert accepted.accepted is True
+    with sessions() as session:
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="approved").one()
+        job = session.query(PlanningJobModel).one()
+        assert gate.package_checksum == result.package_checksum
+        assert (job.status, job.current_step) == ("generating_plan", "generating_plan")
+
+
+def test_feasibility_requires_physical_workspace_fingerprint(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+
+    with pytest.raises(Exception) as error:
+        service.resolve("run-1", payload.model_copy(update={"workspace_fingerprint": None}), "operator")
+
+    assert getattr(error.value, "code", None) == "COMPATIBILITY_WORKSPACE_FINGERPRINT_REQUIRED"
+    with sessions() as session:
+        assert session.query(CompatibilityResolutionModel).count() == 0
+        assert session.query(G05ApprovalModel).count() == 0
+
+
+def test_g05_reject_decision_returns_run_to_waiting_plan_approval(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    result = service.resolve("run-1", payload, "operator")
+
+    decision = service.decide_g05(
+        "run-1",
+        G05DecisionRequest(
+            expected_state_version=result.state_version,
+            idempotency_key="g05-reject",
+            gate_version=result.gate_version,
+            package_checksum=result.package_checksum,
+            artifact_set_checksum=result.package["artifact_set_checksum"],
+            workspace_fingerprint=payload.workspace_fingerprint,
+            decision="reject",
+        ),
+        "operator",
+    )
+
+    assert decision.accepted is False
+    assert decision.status == "reject"
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        assert run.status == "WAITING_PLAN_APPROVAL"
+        assert run.state_version == 4
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="reject").one()
+        assert gate.decision == "reject"
+        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == [
+            "COMPATIBILITY_RESOLUTION_STARTED",
+            "COMPATIBILITY_RESOLUTION_COMPLETED",
+            "G05_CREATED",
+            "G05_REJECTED",
+        ]
+
+
+def test_g05_request_modification_decision_returns_run_to_waiting_plan_approval(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    result = service.resolve("run-1", payload, "operator")
+
+    decision = service.decide_g05(
+        "run-1",
+        G05DecisionRequest(
+            expected_state_version=result.state_version,
+            idempotency_key="g05-request-modification",
+            gate_version=result.gate_version,
+            package_checksum=result.package_checksum,
+            artifact_set_checksum=result.package["artifact_set_checksum"],
+            workspace_fingerprint=payload.workspace_fingerprint,
+            decision="request_modification",
+        ),
+        "operator",
+    )
+
+    assert decision.accepted is False
+    assert decision.status == "request_modification"
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        assert run.status == "WAITING_PLAN_APPROVAL"
+        assert run.state_version == 4
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="request_modification").one()
+        assert gate.decision == "request_modification"
+        assert [event.event_type for event in session.query(WorkflowEventModel).order_by(WorkflowEventModel.sequence)] == [
+            "COMPATIBILITY_RESOLUTION_STARTED",
+            "COMPATIBILITY_RESOLUTION_COMPLETED",
+            "G05_CREATED",
+            "G05_MODIFICATION_REQUESTED",
+        ]
+
+
+def test_g05_cannot_approve_legacy_package_without_workspace_fingerprint(tmp_path):
+    service, payload, sessions, _, _ = setup(tmp_path)
+    result = service.resolve("run-1", payload, "operator")
+    with sessions.begin() as session:
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1", status="pending").one()
+        gate.workspace_fingerprint = None
+
+    decision = G05DecisionRequest(
+        expected_state_version=result.state_version,
+        idempotency_key="g05-missing-fingerprint",
+        gate_version=result.gate_version,
+        package_checksum=result.package_checksum,
+        artifact_set_checksum=result.package["artifact_set_checksum"],
+        workspace_fingerprint=None,
+        decision="approve",
+    )
+
+    with pytest.raises(Exception) as error:
+        service.decide_g05("run-1", decision, "operator")
+
+    assert getattr(error.value, "code", None) == "G05_WORKSPACE_FINGERPRINT_REQUIRED"
+    with sessions() as session:
+        gate = session.query(G05ApprovalModel).filter_by(run_id="run-1").order_by(G05ApprovalModel.created_at.desc()).first()
+        assert gate.status == "stale"
+        assert "fingerprint" in (gate.stale_reason or "").lower()

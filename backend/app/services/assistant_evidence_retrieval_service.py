@@ -1,8 +1,9 @@
-"""Select bounded evidence excerpts from the immutable artifact owner."""
+"""Select bounded evidence excerpts from immutable, run-owned artifacts."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -18,7 +19,6 @@ from app.repositories.models import (
     MigrationRunModel,
     SourceSnapshotModel,
 )
-
 
 _SECRET = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[:=]\s*|password\s*[:=]\s*|secret\s*[:=]\s*)[^\s,;]+")
 _PATH = re.compile(r"(?i)([a-z]:\\|/home/|/Users/|/workspace/)[^\s,;]+")
@@ -50,6 +50,10 @@ class AssistantEvidenceRetrievalService:
         return _PATH.sub("[REDACTED_PATH]", _SECRET.sub("[REDACTED]", text))
 
     @staticmethod
+    def _terms(value: str) -> set[str]:
+        return {term for term in re.findall(r"[a-z0-9]+", value.lower()) if len(term) > 2}
+
+    @staticmethod
     def _authorized_ids(session, run_id: str) -> set[str]:
         authorized: set[str] = set()
         snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
@@ -68,23 +72,22 @@ class AssistantEvidenceRetrievalService:
         if run is None:
             return None
         root = Path(run.artifact_root or get_settings().artifact_root)
-        if self._artifact_store_factory:
-            return self._artifact_store_factory(root)
-        return LocalFilesystemArtifactStore(root, fixed_run_root=root)
+        return self._artifact_store_factory(root) if self._artifact_store_factory else LocalFilesystemArtifactStore(root, fixed_run_root=root)
 
     def retrieve(self, session, run_id: str, question: str, *, stage_id: str | None = None, limit: int = 8) -> tuple[list[LlmContextSegment], list[dict[str, object]]]:
-        rows = session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id)).all()
+        rows = session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id, ArtifactMetadataModel.immutable.is_(True))).all()
         authorized = self._authorized_ids(session, run_id)
+        canonical_authorized = authorized | {"metadata-" + item for item in authorized}
         store = self._store(session, run_id)
         candidates = [row.id for row in rows]
         selected: list[LlmContextSegment] = []
         refs: list[dict[str, object]] = []
         omitted: list[dict[str, str]] = []
-        terms = set(re.findall(r"[a-z0-9]+", question.lower()))
+        terms = self._terms(question)
         for row in sorted(rows, key=lambda item: (item.relative_path, item.id)):
             metadata = row.safe_metadata or {}
             artifact_id = self._artifact_id(row)
-            authorized_record = artifact_id in authorized or row.id in authorized
+            authorized_record = artifact_id in authorized or row.id in canonical_authorized
             reason: str | None = None
             if row.run_id != run_id:
                 reason = "wrong_run"
@@ -103,51 +106,57 @@ class AssistantEvidenceRetrievalService:
             if reason:
                 omitted.append({"artifact_id": row.id, "reason": reason})
                 continue
-            if store is None:
-                omitted.append({"artifact_id": row.id, "reason": "checksum_mismatch"})
-                continue
-            try:
-                stored = store.read_artifact_by_id(artifact_id)
-            except (ArtifactStoreError, FileNotFoundError, OSError, ValueError):
-                omitted.append({"artifact_id": row.id, "reason": "checksum_mismatch"})
-                continue
-            if stored.ref.run_id != run_id or stored.ref.checksum != row.checksum:
-                omitted.append({"artifact_id": row.id, "reason": "checksum_mismatch"})
-                continue
-            content = self._redact(stored.content)
+
+            checksum_verified = False
+            content: str | None = None
+            if store is not None:
+                try:
+                    stored = store.read_artifact_by_id(artifact_id)
+                    if stored.ref.run_id == run_id and stored.ref.checksum == row.checksum:
+                        content = stored.content
+                        checksum_verified = True
+                except (ArtifactStoreError, FileNotFoundError, OSError, ValueError):
+                    content = None
+            if content is None:
+                # Preserve DEV's safe metadata fallback, but never label it as
+                # immutable proof when the artifact bytes were not verified.
+                content = str(metadata.get("excerpt") or metadata.get("content") or row.relative_path)
+            content = self._redact(content)
             if not content.strip():
                 omitted.append({"artifact_id": row.id, "reason": "empty_after_redaction"})
                 continue
-            relevance = sum(1 for term in terms if term in content.lower())
-            # Deterministic bounded ranking: relevant artifacts first, then path/id.
-            if terms and relevance == 0:
+            searchable = " ".join((row.relative_path, row.artifact_type, json.dumps(metadata, sort_keys=True), content[:4000]))
+            if terms and not (terms & self._terms(searchable)):
                 omitted.append({"artifact_id": row.id, "reason": "not_relevant"})
                 continue
             lines = content.splitlines() or [content]
             bounded_lines = lines[:200]
             bounded = "\n".join(bounded_lines)[:8000]
             locator = {"kind": "line_range", "value": f"1-{len(bounded_lines)}"}
-            stage_key = row.stage_id or stored.ref.stage_id or "run"
-            selected_id = self.excerpt_id(artifact_id=artifact_id, checksum=stored.ref.checksum, stage_key=stage_key, locator=locator)
+            stage_key = row.stage_id or (stored.ref.stage_id if checksum_verified else None) or "run"
+            selected_id = self.excerpt_id(artifact_id=artifact_id, checksum=row.checksum, stage_key=stage_key, locator=locator)
             safe_label = _PATH.sub("[REDACTED_PATH]", row.relative_path)
+            proof_label = "approved_evidence_supported" if checksum_verified else "unknown_or_unavailable"
             ref = {
-                "excerpt_id": selected_id, "artifact_id": artifact_id, "checksum_sha256": stored.ref.checksum,
-                "checksum": stored.ref.checksum, "stage_key": stage_key, "stage_id": row.stage_id,
-                "locator": locator, "excerpt_locator": locator, "proof_label": "approved_evidence_supported",
-                "text": bounded, "label": safe_label, "evidence_type": row.artifact_type,
+                "excerpt_id": selected_id, "artifact_id": artifact_id, "checksum_sha256": row.checksum,
+                "checksum": row.checksum, "stage_key": stage_key, "stage_id": row.stage_id,
+                "locator": locator, "excerpt_locator": locator, "proof_label": proof_label,
+                "checksum_verified": checksum_verified, "text": bounded, "label": safe_label, "evidence_type": row.artifact_type,
             }
             selected.append(LlmContextSegment(segment_id=selected_id, label=f"approved artifact excerpt {safe_label}", content=bounded, artifact_ref=selected_id, untrusted=True))
             refs.append(ref)
             if len(selected) >= limit:
+                selected_ids = {item["artifact_id"] for item in refs}
+                omitted_ids = {item["artifact_id"] for item in omitted}
                 for remaining in rows:
-                    if remaining.id not in {item["artifact_id"] for item in refs} and remaining.id not in {item["artifact_id"] for item in omitted}:
+                    if remaining.id not in selected_ids and remaining.id not in omitted_ids:
                         omitted.append({"artifact_id": remaining.id, "reason": "selection_limit"})
                 break
         self.last_manifest = {
             "schema_version": "assistant-evidence-selection-v1", "run_id": run_id,
             "candidate_artifact_ids": candidates, "selected_excerpt_ids": [item["excerpt_id"] for item in refs],
             "selected_artifact_ids": [item["artifact_id"] for item in refs],
-            "verified_checksums": {item["artifact_id"]: item["checksum_sha256"] for item in refs},
+            "verified_checksums": {item["artifact_id"]: item["checksum_sha256"] for item in refs if item["checksum_verified"]},
             "locators": {item["excerpt_id"]: item["locator"] for item in refs},
             "omitted_candidates": omitted, "truncated_excerpt_ids": [], "redaction_status": "redacted_before_provider",
         }

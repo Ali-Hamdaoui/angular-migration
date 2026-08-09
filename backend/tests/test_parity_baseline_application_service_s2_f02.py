@@ -97,6 +97,69 @@ def test_parity_baseline_inspection_is_deterministic_redacted_and_requires_manua
     assert transitions.calls[0] == "start" and transitions.calls[-1][0] == "complete"
 
 
+def test_parity_discovers_typed_http_literals_and_excludes_control_files_from_behavior_review(tmp_path):
+    root = workspace(tmp_path)
+    (root / "src" / "user.service.ts").write_text(
+        """
+        export class UserService {
+          list() { return this.http.get<User[]>('https://jsonplaceholder.typicode.com/users'); }
+          create(user: User) { return this.http.post<User>('https://jsonplaceholder.typicode.com/users', user); }
+        }
+        """,
+        encoding="utf-8",
+    )
+    (root / "src" / "app.config.ts").write_text(
+        """
+        import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
+        export const appConfig = { providers: [provideHttpClient(withInterceptorsFromDi())] };
+        """,
+        encoding="utf-8",
+    )
+    (root / "src" / "user.service.spec.ts").write_text(
+        """
+        import { HttpClient, provideHttpClient } from '@angular/common/http';
+        const httpClientSpy = { get: jest.fn(), post: jest.fn() };
+        httpClientSpy.get.mockReturnValue([]);
+        """,
+        encoding="utf-8",
+    )
+    (root / "src" / "dynamic.service.ts").write_text(
+        """
+        export class DynamicService {
+          list(url: string) { return this.http.get<User[]>(url); }
+        }
+        """,
+        encoding="utf-8",
+    )
+    (root / ".vscode").mkdir()
+    (root / ".vscode" / "settings.json").write_text(
+        '{"authorization": "editor-only"}',
+        encoding="utf-8",
+    )
+    (root / ".migration-factory").mkdir()
+    (root / ".migration-factory" / "source-manifest.json").write_text(
+        '{"files": [{"path": "src/auth.service.ts"}]}',
+        encoding="utf-8",
+    )
+
+    result = ParityBaselineApplicationService(Runs(root), Artifacts(), Transitions()).inspect(request())
+
+    endpoints = result.baseline.backend_integration["endpoint_references"]
+    user_endpoints = [item for item in endpoints if item["file"] == "src/user.service.ts"]
+    assert {(item["method"], item["endpoint"]) for item in user_endpoints} == {
+        ("GET", "https://jsonplaceholder.typicode.com/users"),
+        ("POST", "https://jsonplaceholder.typicode.com/users"),
+    }
+    assert "DYNAMIC_OR_UNRESOLVED_ENDPOINTS:src/user.service.ts" not in result.baseline.unknowns
+    assert "DYNAMIC_OR_UNRESOLVED_ENDPOINTS:src/app.config.ts" not in result.baseline.unknowns
+    assert "DYNAMIC_OR_UNRESOLVED_ENDPOINTS:src/user.service.spec.ts" not in result.baseline.unknowns
+    assert "DYNAMIC_OR_UNRESOLVED_ENDPOINTS:src/dynamic.service.ts" in result.baseline.unknowns
+    findings = {item.file: item for item in result.baseline.sensitive_files}
+    assert findings[".vscode/settings.json"].classification == "excluded_non_behavioral"
+    assert findings[".migration-factory/source-manifest.json"].classification == "excluded_non_behavioral"
+    assert findings["src/auth.interceptor.ts"].classification == "behavior_sensitive_requires_review"
+
+
 def test_parity_baseline_replays_identical_idempotency_and_rejects_changed_payload(tmp_path):
     service = ParityBaselineApplicationService(Runs(workspace(tmp_path)), Artifacts(), Transitions())
     assert not service.inspect(request()).idempotent_replay

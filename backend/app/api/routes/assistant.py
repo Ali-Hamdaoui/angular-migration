@@ -16,9 +16,8 @@ from app.repositories.session import session_scope
 
 router = APIRouter(prefix="/runs/{run_id}/assistant", tags=["assistant"])
 
-# These are module-level seams so controlled streaming tests can inject short
-# values without changing production behavior.  The database remains the
-# authority; polling is only the liveness mechanism.
+# The database remains authoritative; polling is only the SSE liveness
+# mechanism. These seams also keep the stream bounded and controllable.
 ASSISTANT_SSE_POLL_INTERVAL_SECONDS = 0.25
 ASSISTANT_SSE_HEARTBEAT_INTERVAL_SECONDS = 15.0
 ASSISTANT_SSE_BATCH_SIZE = 100
@@ -50,7 +49,7 @@ def get_messages(run_id: str, conversation_id: str | None = None, actor: str = D
 @router.get("/events")
 def stream_events(run_id: str, request: Request, actor: str = Depends(assistant_authenticated_actor), service: AssistantContextService = Depends(get_service)):
     _authorize(service, run_id, actor)
-    # The header is authoritative.  A present-but-invalid header must not fall
+    # The header is authoritative. A present-but-invalid header must not fall
     # through to the compatibility query parameter.
     raw_last_event_id = request.headers.get("last-event-id")
     if raw_last_event_id is None:
@@ -69,7 +68,7 @@ def stream_events(run_id: str, request: Request, actor: str = Depends(assistant_
             while True:
                 if await request.is_disconnected():
                     return
-                # Each poll has a fresh bounded session.  No database session
+                # Each poll has a fresh bounded session. No database session
                 # remains open while the stream is idle.
                 with session_scope() as session:
                     events = list(session.scalars(select(AssistantLifecycleEventModel).where(AssistantLifecycleEventModel.run_id == run_id, AssistantLifecycleEventModel.sequence > cursor).order_by(AssistantLifecycleEventModel.sequence).limit(ASSISTANT_SSE_BATCH_SIZE)))

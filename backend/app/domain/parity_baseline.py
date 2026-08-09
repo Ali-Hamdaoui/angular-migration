@@ -68,8 +68,19 @@ class SensitiveFilePolicy:
 
     def classify(self, workspace: Path) -> tuple[ParityFinding, ...]:
         findings: list[ParityFinding] = []
-        for path in _source_files(workspace):
+        for path in _source_files(workspace, behavioral_only=False):
             relative = path.relative_to(workspace).as_posix()
+            source_class = _path_classification(workspace, path)
+            if source_class in {"editor", "generated_control"}:
+                findings.append(
+                    ParityFinding(
+                        category=source_class,
+                        file=relative,
+                        classification="excluded_non_behavioral",
+                        indicators=(source_class,),
+                    )
+                )
+                continue
             try:
                 content = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -142,7 +153,11 @@ class RouteInventoryBuilder:
 
 class BackendContractSnapshotBuilder:
     _URL = re.compile(r"(?:apiUrl|apiRoot|baseUrl|baseURL|API_URL)\s*[:=]\s*[('\"]([^('\"]+)")
-    _HTTP = re.compile(r"\.(get|post|put|patch|delete)\s*\(\s*(['\"])([^'\"]+)", re.I)
+    _HTTP = re.compile(
+        r"\.(get|post|put|patch|delete|request|head|options)\s*(?:<[^>]+>)?\s*\(\s*(?:(['\"])([^'\"]+)\2|([^,)\r\n]+))",
+        re.I,
+    )
+    _DIRECT_NETWORK_CALL = re.compile(r"\b(?:fetch|axios(?:\.\w+)?|XMLHttpRequest)\s*\(", re.I)
 
     def build(self, workspace: Path) -> tuple[dict[str, Any], tuple[str, ...]]:
         api_roots: set[str] = set()
@@ -167,11 +182,19 @@ class BackendContractSnapshotBuilder:
                 environment_files.append(relative)
             for match in self._URL.finditer(content):
                 api_roots.add(_safe_endpoint(match.group(1)))
+            unresolved_http_call = False
             for match in self._HTTP.finditer(content):
                 raw = match.group(3)
+                if raw is None:
+                    unresolved_http_call = True
+                    continue
                 parsed = urlsplit(raw) if raw.startswith(("http://", "https://")) else None
                 endpoints.append({"file": relative, "method": match.group(1).upper(), "endpoint": _safe_endpoint(raw), "host": parsed.hostname if parsed else None, "path": parsed.path if parsed else (raw.split("?", 1)[0] if raw.startswith("/") else None), "literal": True, "line": content.count("\n", 0, match.start()) + 1})
-            if re.search(r"(?:HttpClient|fetch\s*\(|axios|XMLHttpRequest)", content) and not self._HTTP.search(content):
+            # Imports, dependency-injection configuration, and mocked client
+            # members are not network calls. Only an unresolved HttpClient
+            # method invocation or a direct network API invocation belongs in
+            # the unknown endpoint inventory.
+            if unresolved_http_call or self._DIRECT_NETWORK_CALL.search(content):
                 unknowns.append(f"DYNAMIC_OR_UNRESOLVED_ENDPOINTS:{relative}")
         return (
             {
@@ -239,7 +262,12 @@ class ParityBaselineBuilder:
         )
 
 
-def _source_files(workspace: Path, suffixes: set[str] | None = None) -> Iterable[Path]:
+def _source_files(
+    workspace: Path,
+    suffixes: set[str] | None = None,
+    *,
+    behavioral_only: bool = True,
+) -> Iterable[Path]:
     allowed = suffixes or _TEXT_SUFFIXES
     for path in sorted(workspace.rglob("*")):
         if (
@@ -247,9 +275,35 @@ def _source_files(workspace: Path, suffixes: set[str] | None = None) -> Iterable
             or not path.is_file()
             or path.suffix.lower() not in allowed
             or any(part in _EXCLUDED_PARTS for part in path.parts)
+            or behavioral_only and _path_classification(workspace, path) in {"editor", "generated_control"}
         ):
             continue
         yield path
+
+
+def _path_classification(workspace: Path, path: Path) -> str:
+    relative = path.relative_to(workspace)
+    parts = {part.lower() for part in relative.parts}
+    name = relative.name.lower()
+    if parts.intersection({".vscode", ".idea"}):
+        return "editor"
+    if ".migration-factory" in parts or name in {
+        "source-manifest.json",
+        "snapshot-fingerprint.json",
+    }:
+        return "generated_control"
+    if re.search(r"(?:^|[._-])(?:spec|test)\.[^.]+$", name) or parts.intersection({"test", "tests", "__tests__"}):
+        return "test"
+    if name in {
+        "angular.json",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "tsconfig.app.json",
+        "tsconfig.spec.json",
+    }:
+        return "build_configuration"
+    return "application"
 
 
 def _route_window(content: str, offset: int) -> tuple[int, int]:

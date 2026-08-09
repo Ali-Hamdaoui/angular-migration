@@ -3,9 +3,11 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import subprocess
+import asyncio
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
@@ -53,7 +55,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     recover_source_intake_jobs()
     from app.services.planning_job_service import recover_planning_jobs
     recover_planning_jobs()
-    yield
+    from app.orchestration.planning import dispatch_due_planning_jobs
+    dispatch_due_planning_jobs()
+    from app.orchestration.planning_worker import planning_worker_loop
+    worker = asyncio.create_task(planning_worker_loop(poll_seconds=settings.planning_worker_poll_seconds))
+    try:
+        yield
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
 
 
 settings = get_settings()
@@ -91,13 +101,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         error_code="validation_error",
         message="Request validation failed.",
-        details={"errors": exc.errors()},
+        details={"errors": jsonable_encoder(exc.errors())},
     )
 
 
 @app.exception_handler(ValidationError)
 async def domain_validation_exception_handler(request: Request, exc: ValidationError):
-    return error_response(request, status_code=422, error_code="DOMAIN_VALIDATION_FAILED", message="Domain validation failed.", details={"errors": exc.errors()})
+    return error_response(request, status_code=422, error_code="DOMAIN_VALIDATION_FAILED", message="Domain validation failed.", details={"errors": jsonable_encoder(exc.errors())})
 
 
 @app.exception_handler(IntegrityError)

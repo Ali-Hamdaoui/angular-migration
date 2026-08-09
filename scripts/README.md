@@ -4,7 +4,7 @@ PowerShell scripts in this directory provide repeatable Sprint 0 developer workf
 
 ## Core Commands
 
-- `dev-backend.ps1` starts FastAPI with Uvicorn reload.
+- `dev-backend.ps1` applies migrations, starts FastAPI with Uvicorn reload, and starts the separate Transformer/command worker under one supervisor.
 - `dev-frontend.ps1` starts the Next.js Control Tower.
 - `test-backend.ps1` runs backend pytest.
 - `test-frontend.ps1` runs frontend Vitest.

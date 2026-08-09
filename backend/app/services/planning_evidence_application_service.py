@@ -24,12 +24,15 @@ from app.repositories.models import (
     ExecutionProfileModel,
     MigrationPlanModel,
     MigrationRunModel,
+    MigrationStageModel,
     StageExecutionPlanModel,
     WorkflowEventModel,
 )
 from app.repositories.session import session_scope
+from app.domain.compatibility import calculate_stage1_profile_checksum
 from app.services.planning_application_service import PlanningApplicationError, PlanningApplicationService
-from app.services.artifact_binding import canonical_artifact_references
+from app.services.artifact_binding import canonical_artifact_references, canonical_artifact_set_checksum
+from app.services.compatibility_evidence_application_service import CompatibilityEvidenceApplicationService
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionError, TransitionRequest
 
 
@@ -49,6 +52,43 @@ class PlanningEvidenceApplicationService:
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._artifact_store_factory = artifact_store_factory or self._store_for_run
 
+    def record_failure(self, session, run, job, *, disposition, stage: str, diagnostic=None) -> tuple[str, object]:
+        """Persist diagnostic evidence before exposing a planning failure."""
+        now = self._now()
+        details = {
+            "run_id": run.id,
+            "planning_job_id": job.id,
+            "stage": stage,
+            "attempt": job.attempt,
+            "code": disposition.code,
+            "retryable": disposition.retryable and not disposition.terminal,
+            "logical_file": getattr(diagnostic, "logical_name", None),
+            "resolved_path": str(getattr(diagnostic, "path", "")) if getattr(diagnostic, "path", None) else None,
+            "file_checksum": getattr(diagnostic, "checksum", None),
+            "encoding": getattr(diagnostic, "encoding", None),
+            "bom_detected": getattr(diagnostic, "bom_detected", None),
+            "parser_mode": getattr(diagnostic, "parser_mode", None),
+            "exception_type": getattr(diagnostic, "exception_type", None),
+            "line": getattr(diagnostic, "line", None),
+            "column": getattr(diagnostic, "column", None),
+            "position": getattr(diagnostic, "position", None),
+            "expected_workspace_fingerprint": getattr(diagnostic, "expected_fingerprint", getattr(diagnostic, "expected_workspace_fingerprint", None)),
+            "actual_workspace_fingerprint": getattr(diagnostic, "actual_fingerprint", None),
+            "correlation_id": job.correlation_id,
+            "occurred_at": now.isoformat(),
+        }
+        store = self._store_for_run(run)
+        failure_names = {
+            "resolving_feasibility": "planning-input-resolution-failure.json",
+            "generating_plan": "planning-generation-failure.json",
+            "running_planning_review": "planning-review-failure.json",
+        }
+        failure_name = failure_names.get(stage, "planning-failure.json")
+        stored = store.write_text_artifact(run.id, f"03_planning/{failure_name}", json.dumps(details, sort_keys=True, indent=2), ArtifactType.JSON, created_by="planning-evidence", created_at=now, input_hashes={"planning_job": job.id, "attempt": str(job.attempt)}, policy_version="s2-f06-planning-failure-v2")
+        session.add(ArtifactMetadataModel(id="metadata-" + stored.ref.artifact_id, run_id=run.id, stage_id=None, artifact_type=stored.ref.artifact_type.value, relative_path=stored.ref.relative_path, checksum=stored.ref.checksum, created_at=now, finalized_at=now, immutable=True, correlation_id=job.correlation_id, safe_metadata=details))
+        session.flush()
+        return stored.ref.artifact_id, details
+
     def create(self, run_id: str, payload: PlanCreateRequest, actor: str) -> PlanResponse:
         now = self._now()
         with self._scope() as session:
@@ -64,11 +104,12 @@ class PlanningEvidenceApplicationService:
                     raise PlanningEvidenceError("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key was already used with a different payload.", 409)
                 return self._response(session, existing, replay=True)
             self._require_state(run, payload.expected_state_version)
-            bound_artifacts = self._require_approved_feasibility(session, run, request)
+            bound_artifacts, execution_profile_checksum = self._require_approved_feasibility(session, run, request)
             request = request.model_copy(
                 update={
                     "prerequisite_artifacts": tuple(bound_artifacts),
                     "input_fingerprint": self._approved_artifact_set_checksum(bound_artifacts),
+                    "execution_profile_checksum": execution_profile_checksum,
                 }
             )
             self._validate_prerequisites(session, run, request)
@@ -85,6 +126,29 @@ class PlanningEvidenceApplicationService:
             stage = result.first_stage_plan
             if stage is None:
                 raise PlanningEvidenceError("STAGE_PLAN_MISSING", "Plan generation did not produce the first StageExecutionPlan.", 503)
+            stage_parent = session.get(MigrationStageModel, stage.stage_id)
+            if stage_parent is not None and stage_parent.run_id != run_id:
+                raise PlanningEvidenceError(
+                    "STAGE_ID_OWNERSHIP_CONFLICT",
+                    "The planned stage identifier already belongs to another migration run.",
+                    409,
+                )
+            if stage_parent is None:
+                stage_parent = MigrationStageModel(
+                    id=stage.stage_id,
+                    run_id=run_id,
+                    stage_order=session.query(MigrationStageModel).filter(MigrationStageModel.run_id == run_id).count() + 1,
+                    source_version_family=stage.source_family,
+                    target_version_family=stage.target_family,
+                    source_version_detected=stage.source_exact,
+                    target_version_resolved=stage.target_exact,
+                    source_angular_version=stage.source_exact,
+                    target_angular_version=stage.target_exact,
+                    status="planned",
+                    created_at=now,
+                )
+                session.add(stage_parent)
+                session.flush()
             artifacts = self._write_artifacts(session, run, result, now)
             plan = MigrationPlanModel(id=result.plan.plan_id, run_id=run_id, idempotency_key=payload.idempotency_key, request_checksum=request_checksum, actor=actor, correlation_id=payload.correlation_id, status="generated", version=version, plan=result.plan.model_dump(mode="json"), checksum=result.plan.checksum, artifact_ids=artifacts[0], artifact_checksums=artifacts[1], state_version=run.state_version, event_sequence=0, created_at=now, updated_at=now)
             stage_record = StageExecutionPlanModel(id=stage.stage_plan_id, run_id=run_id, migration_plan_id=plan.id, stage_id=stage.stage_id, idempotency_key=payload.idempotency_key, request_checksum=request_checksum, actor=actor, correlation_id=payload.correlation_id, status="generated", version=version, stage_plan=stage.model_dump(mode="json"), checksum=stage.checksum, artifact_ids=artifacts[0], artifact_checksums=artifacts[1], state_version=run.state_version, event_sequence=0, created_at=now, updated_at=now)
@@ -176,14 +240,16 @@ class PlanningEvidenceApplicationService:
         )
         if execution_profile is None or execution_profile.status not in {"resolved", "selected"}:
             raise PlanningEvidenceError("PLANNING_RUNTIME_PROFILE_MISSING", "The selected execution profile is not durably resolved for this run.", 409)
-        if execution_profile.selected_checksum != profile.get("checksum"):
+        if not profile.get("source_execution_profile_checksum") or execution_profile.selected_checksum != profile.get("source_execution_profile_checksum"):
             raise PlanningEvidenceError("STALE_EXECUTION_PROFILE", "The selected execution profile checksum no longer matches the approved G05 binding.", 409)
+        if calculate_stage1_profile_checksum(profile) != profile.get("stage1_profile_checksum") or profile.get("checksum") != profile.get("stage1_profile_checksum"):
+            raise PlanningEvidenceError("STALE_EXECUTION_PROFILE", "The approved Stage 1 profile checksum is invalid.", 409)
         persisted_profile = next(
             (
                 item
                 for item in execution_profile.profiles
                 if item.get("profile_id") == profile.get("profile_id")
-                and item.get("checksum") == profile.get("checksum")
+                and item.get("checksum") == execution_profile.selected_checksum
             ),
             None,
         )
@@ -198,15 +264,22 @@ class PlanningEvidenceApplicationService:
                 raise PlanningEvidenceError("FEASIBILITY_INPUT_MISMATCH", "The planning route contains an exact target that differs from the approved feasibility package.", 409)
         approved_ids = list(gate.prerequisite_artifact_ids or gate.artifact_ids)
         approved_checksums = dict(gate.prerequisite_artifact_checksums or resolution.artifact_checksums or {})
+        if not gate.input_bundle_checksum:
+            raise PlanningEvidenceError("G05_INPUT_BUNDLE_MISSING", "The approved G05 input bundle is incomplete.", 409)
         if any(not approved_checksums.get(artifact_id) for artifact_id in approved_ids):
             raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 artifact bundle is incomplete or tampered.", 409)
         bound = canonical_artifact_references(
             {"artifact_id": artifact_id, "checksum": approved_checksums.get(artifact_id)}
             for artifact_id in approved_ids
         )
-        if self._approved_artifact_set_checksum(bound) != gate.artifact_set_checksum:
-            raise PlanningEvidenceError("STALE_G05_BINDING", "The approved G05 artifact bundle is stale or tampered.", 409)
-        return tuple(PlanArtifactInput(**item) for item in bound)
+        if canonical_artifact_set_checksum(bound) != gate.artifact_set_checksum:
+            raise PlanningEvidenceError("G05_ARTIFACT_SET_CHECKSUM_MISMATCH", "The approved G05 artifact bundle is stale or tampered.", 409)
+        expected_bundle = CompatibilityEvidenceApplicationService._input_bundle_checksum(
+            bound, gate.package_checksum, gate.workspace_fingerprint, gate.plan_version
+        )
+        if gate.input_bundle_checksum != expected_bundle:
+            raise PlanningEvidenceError("G05_INPUT_BUNDLE_STALE", "The approved G05 input bundle checksum is stale or tampered.", 409)
+        return tuple(PlanArtifactInput(**item) for item in bound), execution_profile.selected_checksum
 
     @staticmethod
     def _approved_artifact_set_checksum(references):

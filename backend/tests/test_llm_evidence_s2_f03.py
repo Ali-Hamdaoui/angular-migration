@@ -12,32 +12,10 @@ from app.api.llm_contracts import LlmSmokeRequest
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
 from app.domain.contracts import AgentKind, WorkflowEventType
-from app.llm_gateway import (
-    AzureGatewayError,
-    AzureOpenAILLMGateway,
-    LlmFailureCode,
-    LlmRequest,
-    LlmResponse,
-    LlmRole,
-    LlmTaskType,
-    PromptRedactionResult,
-    PromptSchemaRegistry,
-    build_usage_record,
-)
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmFailureCode, LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, PromptSchemaRegistry, build_usage_record
 from app.llm_gateway.contracts import LlmContextSegment
-from app.repositories.models import (
-    ArtifactMetadataModel,
-    Base,
-    LlmInvocationModel,
-    MigrationRunModel,
-    UsageCostRecordModel,
-    WorkflowEventModel,
-)
-from app.services.llm_evidence_application_service import (
-    AssistantInvocationRequest,
-    LlmEvidenceApplicationService,
-    _AssistantResponse,
-)
+from app.repositories.models import ArtifactMetadataModel, Base, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel, WorkflowEventModel
+from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService, _AssistantResponse
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 
@@ -100,7 +78,7 @@ def test_smoke_persists_immutable_artifacts_usage_and_ordered_events(tmp_path):
 
 
 def test_smoke_rejects_stale_and_idempotency_conflict_before_duplicate_side_effects(tmp_path):
-    scope, _sessions, settings, engine = fixture(tmp_path)
+    scope, sessions, settings, engine = fixture(tmp_path)
     service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=FakeGateway(), now_provider=lambda: NOW)
     with pytest.raises(Exception) as stale:
         service.smoke(request('stale', version=2))
@@ -128,7 +106,7 @@ def test_smoke_failure_persists_redacted_failure_evidence(tmp_path):
 
 
 def test_smoke_persists_specific_provider_failure_metadata(tmp_path):
-    scope, sessions, settings, _engine = fixture(tmp_path)
+    scope, sessions, settings, engine = fixture(tmp_path)
     failure = AzureGatewayError(LlmFailureCode.SERVER, 'provider failed', provider_status=500, provider_code='InternalServerError', provider_message='safe provider message', provider_request_id='azure-request-1')
     service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=FakeGateway(fail=failure), now_provider=lambda: NOW)
 
@@ -138,6 +116,27 @@ def test_smoke_persists_specific_provider_failure_metadata(tmp_path):
         artifact = LocalFilesystemArtifactStore(tmp_path / 'artifacts', fixed_run_root=tmp_path / 'artifacts').read_artifact_by_id(result.artifact_ids[0])
         payload = json.loads(artifact.content)
         assert payload == {'error_code': 'server', 'message': 'LLM invocation failed.', 'provider_error_code': 'InternalServerError', 'provider_http_status': 500, 'provider_message': 'safe provider message', 'provider_request_id': 'azure-request-1', 'resolved_deployment': 'resolved-deployment'}
+
+
+def test_assistant_persists_safe_gateway_diagnostics(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    failure = AzureGatewayError(LlmFailureCode.PROTOCOL, 'bad response', provider_code='MISSING_STRUCTURED_CONTENT', provider_message='status=completed; output_types=message', provider_request_id='azure-request-2', deployment_alias='resolved-deployment', failure_stage='response_contract_validation', failure_subtype='MISSING_STRUCTURED_CONTENT', response_received=True, response_kind='json', transport_started=True)
+    service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=FakeGateway(fail=failure), now_provider=lambda: NOW)
+
+    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-failure', correlation_id='corr-assistant-failure', question='safe question', context=[]))
+
+    assert result.status == 'failed'
+    assert result.failure_stage == 'response_contract_validation'
+    assert result.failure_subtype == 'MISSING_STRUCTURED_CONTENT'
+    assert result.provider_request_id == 'azure-request-2'
+    assert result.deployment_alias == 'resolved-deployment'
+    with sessions() as session:
+        row = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
+        assert row.failure_code == 'protocol'
+        assert row.sanitized_provider_message == 'status=completed; output_types=message'
+        assert row.transport_started is True
+        assert 'safe question' not in (row.sanitized_provider_message or '')
+    engine.dispose()
 
 
 def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azure(tmp_path):
@@ -155,7 +154,7 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
 
         def request(self, **kwargs):
             self.calls.append(kwargs)
-            return {'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}, {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'ok', 'summary': 'ok summary', 'intent': 'workflow_status', 'capability_key': 'workflow_status', 'proof_label': 'authoritative_persisted_fact', 'citations': [], 'missing_information': [], 'suggested_follow_ups': [], 'next_step_proposals': [], 'confidence': 'high'})}]}], 'usage': {'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5}}
+            return {'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}, {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'ok', 'citations': []})}]}], 'usage': {'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5}}
 
     transport = Transport()
     registry = PromptSchemaRegistry()
@@ -172,25 +171,25 @@ def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azu
     assert transport.calls[0]['payload']['text']['format']['strict'] is True
     assert transport.calls[0]['payload']['text']['format']['name'] == 'assistant-response-v1'
     assert transport.calls[0]['payload']['text']['format']['type'] == 'json_schema'
-    assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'summary', 'intent', 'capability_key', 'proof_label', 'citations', 'missing_information', 'suggested_follow_ups', 'next_step_proposals', 'confidence'}
+    assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'citations'}
     schema = transport.calls[0]['payload']['text']['format']['schema']
     citation_schema = transport.calls[0]['payload']['text']['format']['schema']['properties']['citations']['items']
     assert schema['additionalProperties'] is False
     assert citation_schema['additionalProperties'] is False
-    assert set(citation_schema['required']) == {'excerpt_id', 'artifact_id', 'checksum_sha256', 'stage_key', 'locator', 'proof_label'}
+    assert set(citation_schema['required']) == {'artifact_id', 'checksum', 'stage_id'}
     assert 'response_format' not in transport.calls[0]['payload']
     assert 'temperature' not in transport.calls[0]['payload']
     assert result.role == 'assistant'
     assert result.task_type == 'assistant_response'
     assert result.prompt_version == 'assistant-response-v1'
     assert result.latency_ms is not None
-    assert result.structured_output['summary'] == 'ok summary'
+    assert result.structured_output == {'answer': 'ok', 'citations': []}
     assert result.artifact_ids
     assert 'SENTINEL_QUESTION' not in (result.redacted_summary or '')
     assert 'SENTINEL_CONTEXT' not in (result.redacted_summary or '')
     assert 'SENTINEL_LABEL' in (result.redacted_summary or '')
     activity = service.activity('run-1')
-    assert activity.invocations[0].structured_output['capability_key'] == 'workflow_status'
+    assert activity.invocations[0].structured_output == {'answer': 'ok', 'citations': []}
     assert 'SENTINEL_CONTEXT' not in (activity.invocations[0].redacted_summary or '')
     with sessions() as session:
         invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))

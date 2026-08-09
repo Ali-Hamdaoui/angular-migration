@@ -27,8 +27,9 @@ function inputKey(inputs: SetupInputs): string {
   return JSON.stringify(inputs);
 }
 
-function canStart(result: ProductionPreflight | null, currentKey: string, validatedKey: string | null): boolean {
-  if (!result || currentKey !== validatedKey) return false;
+function canStart(result: ProductionPreflight | null, pathResult: PathValidationResult | null, currentKey: string, validatedKey: string | null): boolean {
+  if (!result || !pathResult || currentKey !== validatedKey) return false;
+  if (pathResult.snapshot.status === "blocked" || !pathResult.snapshot.target_reservation_eligible) return false;
   if (new Date(result.snapshot.expires_at).getTime() <= Date.now()) return false;
   return result.snapshot.status === "passed" || result.snapshot.status === "passed_with_warnings";
 }
@@ -59,6 +60,33 @@ function validationFailure(stage: ValidationStage, error: unknown): string {
   }
   return `${stage} failed — ${error instanceof Error ? error.message : "unknown error"}`;
 }
+
+const pathFindingLabels: Record<string, string> = {
+  SOURCE_PATH_NOT_ABSOLUTE: "Source path must be absolute.",
+  SOURCE_PATH_NOT_FOUND: "Source path does not exist.",
+  SOURCE_PATH_NOT_DIRECTORY: "Source path must be a directory.",
+  SOURCE_PATH_NOT_READABLE: "Source path is not readable.",
+  TARGET_PARENT_NOT_ABSOLUTE: "Target parent path must be absolute.",
+  TARGET_PARENT_NOT_DIRECTORY: "Target parent must be an existing directory or safely creatable.",
+  TARGET_PARENT_NOT_WRITABLE: "Target parent or its nearest existing parent is not writable.",
+  SOURCE_TARGET_EQUAL: "Source and target parent must be different.",
+  TARGET_PARENT_INSIDE_SOURCE: "Target parent must not be inside the source project.",
+  SOURCE_INSIDE_TARGET_PARENT: "Source project must not be inside the target parent.",
+  OUTPUT_ROOT_INSIDE_SOURCE: "Generated output would be inside the source project.",
+  SOURCE_INSIDE_OUTPUT_ROOT: "Source project would be inside the generated output.",
+  SOURCE_OUTSIDE_ALLOWED_ROOTS: "Source is outside configured roots; this is advisory only.",
+  TARGET_PARENT_OUTSIDE_ALLOWED_ROOTS: "Target parent is outside configured roots; this is advisory only.",
+  OUTPUT_ROOT_OUTSIDE_ALLOWED_ROOTS: "Generated output is outside configured roots; this is advisory only.",
+};
+
+function pathFindingMessage(result: PathValidationResult, code: string): string {
+  return result.snapshot.rules.find((rule) => rule.code === code)?.message ?? pathFindingLabels[code] ?? code;
+}
+
+function pathFindingList(result: PathValidationResult, codes: string[]) {
+  return codes.map((code) => <li key={code}>{pathFindingMessage(result, code)}</li>);
+}
+
 export function MigrationSetupForm() {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
@@ -72,7 +100,7 @@ export function MigrationSetupForm() {
   const [validationStage, setValidationStage] = useState<ValidationStage | null>(null);
   const validationAttempt = useRef(0);
   const currentKey = inputKey(inputs);
-  const startEnabled = canStart(preflight, currentKey, validatedKey);
+  const startEnabled = canStart(preflight, pathValidation, currentKey, validatedKey);
 
   function readLiveInputs(): SetupInputs {
     const form = formRef.current;
@@ -240,8 +268,8 @@ export function MigrationSetupForm() {
           <section className={styles.result} aria-label="Path validation result">
             <h2>Path validation</h2>
             <div><strong>{pathValidation.snapshot.status}</strong><span>{pathValidation.snapshot.checksum}</span></div>
-            {pathValidation.snapshot.blockers.length > 0 ? <p>Blockers: {pathValidation.snapshot.blockers.join(", ")}</p> : null}
-            {pathValidation.snapshot.warnings.length > 0 ? <p>Warnings: {pathValidation.snapshot.warnings.join(", ")}</p> : null}
+            {pathValidation.snapshot.blockers.length > 0 ? <div><strong>Blockers</strong><ul>{pathFindingList(pathValidation, pathValidation.snapshot.blockers)}</ul></div> : null}
+            {pathValidation.snapshot.warnings.length > 0 ? <div><strong>Warnings</strong><ul>{pathFindingList(pathValidation, pathValidation.snapshot.warnings)}</ul></div> : null}
             <p>{outputRootLabel}: {pathValidation.snapshot.resolved_output_root}</p>
             <p>Future migrated app (created after G14): {pathValidation.snapshot.resolved_output_root}\migrated-app</p>
             <p>Future migration workspace (created after an approved run begins): {pathValidation.snapshot.resolved_output_root}\.migration-factory</p>
@@ -252,8 +280,8 @@ export function MigrationSetupForm() {
           <section className={styles.result} aria-label="Preflight result">
             <div><strong>{preflight.snapshot.status}</strong><span>{preflight.snapshot.input_checksum}</span></div>
             <p>Latest authoritative validation: {preflight.snapshot.preflight_id}</p>
-            {preflight.snapshot.blockers.length > 0 ? <p>Blockers: {preflight.snapshot.blockers.join(", ")}</p> : null}
-            {preflight.snapshot.warnings.length > 0 ? <p>Warnings: {preflight.snapshot.warnings.join(", ")}</p> : null}
+            {preflight.snapshot.blockers.length > 0 ? <div><strong>Blockers</strong><ul>{preflight.snapshot.blockers.map((code) => <li key={code}>{pathFindingLabels[code] ?? code}</li>)}</ul></div> : null}
+            {preflight.snapshot.warnings.length > 0 ? <div><strong>Warnings</strong><ul>{preflight.snapshot.warnings.map((code) => <li key={code}>{pathFindingLabels[code] ?? code}</li>)}</ul></div> : null}
             <p>{outputRootLabel}: {preflight.snapshot.resolved_output_root || pathValidation?.snapshot.resolved_output_root}</p>
             {artifactHref ? <a href={artifactHref}>Open preflight artifact</a> : null}
           </section>

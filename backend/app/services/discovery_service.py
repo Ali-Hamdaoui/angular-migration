@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.domain.discovery import DiscoveryEvidenceDraft, DiscoveryFinding, ScannerFinding
+from app.services.workspace_configuration_reader import WorkspaceConfigurationError, WorkspaceConfigurationReader
 
 
 class DiscoveryService:
@@ -167,7 +168,8 @@ class DiscoveryService:
         return DiscoveryFinding(key=key, value=value, source_references=tuple(references))
 
     def _angular_json(self, discovery_root: Path) -> tuple[dict | None, str | None]:
-        return self._json(Path(discovery_root) / "angular.json", "ANGULAR_JSON")
+        path = Path(discovery_root) / "angular.json"
+        return self._json(path, "ANGULAR_JSON")
 
     def _json(self, path: Path, name: str = "PACKAGE_JSON") -> tuple[dict | None, str | None]:
         missing = f"{name}_MISSING"

@@ -134,6 +134,29 @@ class PlanningPackage(ContractModel):
     review_status: Literal["accepted"] = "accepted"
 
 
+class PlanningReviewOutcome(ContractModel):
+    run_id: str
+    plan_version: int = Field(ge=1)
+    artifact_set_checksum: str
+    deterministic_plan_checksum: str
+    plan_checksum: str
+    stage_plan_checksum: str
+    narrative: PlanningNarrative
+    proposer_output_checksum: str
+    reviewer: PlanningReview
+    reviewer_output_checksum: str
+    usage: dict[str, Any]
+    reviewer_usage: dict[str, Any]
+    revision_count: int = Field(default=0, ge=0, le=1)
+    workspace_fingerprint: str | None = None
+    decision: PlanningReviewDecision
+    package: PlanningPackage | None = None
+
+    @property
+    def review_status(self) -> str:
+        return "accepted" if self.decision is PlanningReviewDecision.ACCEPT else self.decision.value
+
+
 class G06Decision(str, Enum):
     APPROVE = "approve"
     APPROVE_WITH_COMMENT = "approve_with_comment"

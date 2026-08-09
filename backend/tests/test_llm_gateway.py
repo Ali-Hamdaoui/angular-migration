@@ -1,3 +1,4 @@
+import hashlib
 import json
 from io import BytesIO
 import urllib.error
@@ -29,6 +30,8 @@ from app.llm_gateway import (
     redact_prompt_text,
     summarize_usage,
 )
+from app.llm_gateway.azure_gateway import ProviderTransportResult, StructuredOutputValidationError
+from app.services.repair_application_service import RepairProposal
 
 
 def _settings(tmp_path: Path, *, token_budget: int = 0, cost_budget: float = 0.0) -> Settings:
@@ -147,16 +150,17 @@ def test_azure_gateway_traverses_message_content_until_output_text(tmp_path: Pat
     assert response.structured_output == {'answer': 'validated'}
 
 
-@pytest.mark.parametrize('body, code', [
-    ({'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_assistant_message'),
-    ({'status': 'completed', 'output': [{'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'refusal'}]}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_output_text'),
-    ({'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'incomplete'),
+@pytest.mark.parametrize('body, code, subtype', [
+    ({'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_assistant_message', 'MISSING_OUTPUT'),
+    ({'status': 'completed', 'output': [{'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'refusal'}]}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'missing_output_text', 'REFUSAL_OR_INCOMPLETE_RESPONSE'),
+    ({'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}, 'incomplete', 'REFUSAL_OR_INCOMPLETE_RESPONSE'),
 ])
-def test_azure_gateway_reports_bounded_protocol_diagnostics(tmp_path: Path, body: dict[str, object], code: str) -> None:
+def test_azure_gateway_reports_bounded_protocol_diagnostics(tmp_path: Path, body: dict[str, object], code: str, subtype: str) -> None:
     with pytest.raises(AzureGatewayError) as error:
-        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body, body]), registry=_registry()).complete(_azure_request())
     assert error.value.code == LlmFailureCode.PROTOCOL
     assert error.value.provider_code == code
+    assert error.value.failure_subtype == subtype
     assert 'validated' not in (error.value.provider_message or '')
 
 
@@ -166,7 +170,15 @@ def test_azure_gateway_invalid_json_is_protocol(tmp_path: Path) -> None:
         AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
     assert error.value.code == LlmFailureCode.PROTOCOL
     assert error.value.provider_code == 'invalid_json'
+    assert error.value.failure_subtype == 'INVALID_JSON'
     assert 'not-json' not in (error.value.provider_message or '')
+
+
+def test_azure_gateway_classifies_unknown_output_item(tmp_path: Path) -> None:
+    body = {'status': 'completed', 'output': [{'type': 'tool_call', 'content': []}], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.failure_subtype == 'UNSUPPORTED_OUTPUT_ITEM'
 
 
 def test_azure_gateway_valid_json_schema_mismatch_is_schema(tmp_path: Path) -> None:
@@ -174,6 +186,65 @@ def test_azure_gateway_valid_json_schema_mismatch_is_schema(tmp_path: Path) -> N
     with pytest.raises(AzureGatewayError) as error:
         AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
     assert error.value.code == LlmFailureCode.SCHEMA
+
+
+def _provider_result(body: dict[str, object]) -> ProviderTransportResult:
+    serialized = json.dumps(body).encode('utf-8')
+    return ProviderTransportResult(
+        body=body,
+        provider_request_id='test-request-id',
+        provider_status=200,
+        response_content_type='application/json',
+        response_bytes=len(serialized),
+        response_sha256=hashlib.sha256(serialized).hexdigest(),
+        response_kind='json',
+    )
+
+
+def test_azure_gateway_schema_mismatch_preserves_transport_evidence_and_bounded_detail(tmp_path: Path) -> None:
+    body = _responses_body(json.dumps({'answer': 42}))
+    with pytest.raises(StructuredOutputValidationError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([_provider_result(body)]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.SCHEMA
+    assert error.value.provider_code == 'schema_validation'
+    assert error.value.failure_stage == 'schema_validation'
+    assert error.value.failure_subtype == 'ASSISTANT_SCHEMA_VALIDATION'
+    assert error.value.transport_started is True
+    assert error.value.response_received is True
+    assert error.value.provider_request_id == 'test-request-id'
+    assert error.value.provider_status == 200
+    assert error.value.response_sha256 != ''
+    assert error.value.response_bytes == len(json.dumps(body).encode('utf-8'))
+    assert error.value.response_kind == 'json'
+    assert 'answer:string_type' in error.value.provider_message
+    assert '42' not in error.value.provider_message
+
+
+def test_azure_gateway_repair_shaped_schema_mismatch_is_schema_with_bounded_detail(tmp_path: Path) -> None:
+    registry = PromptSchemaRegistry(version='test')
+    registry.register('repair_proposer_v1', RepairProposal)
+    payload = {
+        'failure_evidence_checksum': 'sha256:' + '0' * 64,
+        'context_pack_checksum': 'sha256:' + '1' * 64,
+        'proposal_format': 'operations',
+        'operations': [{'operation': 'modify_file', 'path': 'src/main.ts', 'preimage_sha256': None, 'old_text': 'old', 'new_text': 'new', 'content': None}],
+        'unified_diff': None,
+        'touched_files': ['src/main.ts'],
+        'rationale': ['reason'],
+        'risk_level': 'low',
+        'validation_targets': ['build'],
+        'limitations': [],
+    }
+    request = _azure_request().model_copy(update={'response_schema': 'repair_proposer_v1'})
+    with pytest.raises(StructuredOutputValidationError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([_provider_result(_responses_body(json.dumps(payload)))]), registry=registry).complete(request)
+    assert error.value.code == LlmFailureCode.SCHEMA
+    assert error.value.provider_code == 'schema_validation'
+    assert error.value.provider_request_id == 'test-request-id'
+    assert error.value.transport_started is True
+    assert error.value.response_received is True
+    assert 'operations.0.operation:literal_error' in error.value.provider_message
+    assert 'modify_file' not in error.value.provider_message
 
 
 def test_assistant_prompt_and_role_policy_are_explicit_and_typed(tmp_path: Path) -> None:
@@ -307,6 +378,41 @@ def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) 
 
     assert response.usage.retry_count == 1
     assert len(transport.calls) == 2
+
+
+def test_azure_gateway_retries_only_max_output_incomplete_with_bounded_controls(tmp_path: Path) -> None:
+    incomplete = {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    transport = _FakeAzureTransport([incomplete, _responses_body(json.dumps({'answer': 'ok'}))])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    response = gateway.complete(_azure_request())
+
+    assert response.structured_output == {'answer': 'ok'}
+    assert response.usage.retry_count == 1
+    assert len(transport.calls) == 2
+    first, second = (call['payload'] for call in transport.calls)
+    assert first['max_output_tokens'] == 512
+    assert second['max_output_tokens'] == 1536
+    assert second['reasoning'] == {'effort': 'low'}
+    assert second['text']['verbosity'] == 'low'
+    assert second['text']['format'] == first['text']['format']
+
+
+def test_azure_gateway_stops_after_one_max_output_retry_and_preserves_transport_evidence(tmp_path: Path) -> None:
+    incomplete = {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+    transport = _FakeAzureTransport([incomplete, incomplete])
+    gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
+
+    with pytest.raises(AzureGatewayError) as error:
+        gateway.complete(_azure_request())
+
+    assert len(transport.calls) == 2
+    assert error.value.failure_subtype == 'REFUSAL_OR_INCOMPLETE_RESPONSE'
+    assert error.value.retryable is True
+    assert error.value.retry_count == 1
+    assert error.value.response_received is True
+    assert error.value.transport_started is True
+    assert error.value.provider_status is None
 
 
 def test_azure_gateway_fails_closed_for_missing_configuration_and_unregistered_schema(tmp_path: Path) -> None:

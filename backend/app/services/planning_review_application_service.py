@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.command import ANGULAR_UPDATE_V3_RENDERER
 from app.domain.contracts import AgentKind
 from app.domain.planning import (
     APPROVED_BUILDERS,
@@ -34,14 +35,42 @@ from app.domain.planning_review import (
     PlanningPackage,
     PlanningReview,
     PlanningReviewDecision,
+    PlanningReviewOutcome,
 )
-from app.llm_gateway import LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry
+from app.llm_gateway import AzureGatewayError, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry
 
 
 class PlanningReviewApplicationError(ValueError):
-    def __init__(self, code: str, message: str, status_code: int = 422) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 422, details: dict[str, Any] | None = None) -> None:
         self.code, self.message, self.status_code = code, message, status_code
+        self.details = details or {}
         super().__init__(message)
+
+
+def _safe_gateway_failure_details(error: Exception, *, stage: str) -> dict[str, Any]:
+    """Return bounded gateway metadata without persisting provider payloads."""
+    if isinstance(error, AzureGatewayError):
+        code = getattr(error.code, "value", error.code)
+        return {
+            "failure_code": code,
+            "failure_stage": error.failure_stage or stage,
+            "failure_subtype": error.failure_subtype or "LLM_GATEWAY_FAILED",
+            "retryable": bool(error.retryable),
+            "provider_http_status": error.provider_status,
+            "provider_error_code": error.provider_code,
+            "provider_request_id": error.provider_request_id,
+            "transport_started": bool(error.transport_started),
+        }
+    return {
+        "failure_code": "PLANNING_GATEWAY_ERROR",
+        "failure_stage": stage,
+        "failure_subtype": "UNCLASSIFIED_GATEWAY_FAILURE",
+        "retryable": False,
+        "provider_http_status": None,
+        "provider_error_code": None,
+        "provider_request_id": None,
+        "transport_started": False,
+    }
 
 
 class PlanningGatewayNarrative(BaseModel):
@@ -81,7 +110,7 @@ class PlanningAgentService:
         self.registry.register(self.schema_name, PlanningGatewayNarrative)
         self.registry.register(self.reviewer_schema_name, PlanningGatewayReview)
 
-    def explain(self, request: PlanningExplanationRequest) -> PlanningPackage:
+    def explain(self, request: PlanningExplanationRequest) -> PlanningReviewOutcome:
         self._validate_plan_pair(request.plan, request.stage_plan, request.run_id, request.plan_version)
         deterministic_checksum = _deterministic_plan_checksum(request.plan, request.stage_plan)
         context = [
@@ -95,6 +124,12 @@ class PlanningAgentService:
                 segment_id="stage-plan",
                 label="deterministic stage plan",
                 content=_json(request.stage_plan),
+                untrusted=False,
+            ),
+            LlmContextSegment(
+                segment_id="deterministic-plan-binding",
+                label="deterministic plan checksum binding",
+                content=_json({"deterministic_plan_checksum": deterministic_checksum}),
                 untrusted=False,
             ),
         ]
@@ -115,13 +150,7 @@ class PlanningAgentService:
             reviewer_response, review = self._review(
                 request, context, deterministic_checksum, narrative, proposer_checksum, revision_count
             )
-        if review.decision is not PlanningReviewDecision.ACCEPT:
-            raise PlanningReviewApplicationError(
-                "PLANNING_REVIEW_NOT_ACCEPTED",
-                "The Planning reviewer did not accept the explanation; G06 remains unavailable.",
-                422,
-            )
-        return PlanningPackage(
+        values = dict(
             run_id=request.run_id,
             plan_version=request.plan_version,
             artifact_set_checksum=request.artifact_set_checksum,
@@ -136,6 +165,12 @@ class PlanningAgentService:
             reviewer_usage=reviewer_response.usage.model_dump(mode="json"),
             revision_count=revision_count,
             workspace_fingerprint=request.workspace_fingerprint,
+        )
+        package = PlanningPackage(**values) if review.decision is PlanningReviewDecision.ACCEPT else None
+        return PlanningReviewOutcome(
+            **values,
+            decision=review.decision,
+            package=package,
         )
 
     @staticmethod
@@ -174,7 +209,7 @@ class PlanningAgentService:
                     task_type=LlmTaskType.PLAN_RATIONALE,
                     role=LlmRole.PHASE_PROPOSER,
                     prompt_name=self.prompt_name,
-                    system_policy="Explain only the deterministic migration plan. Never create or change commands, versions, approvals, or executable truth.",
+                    system_policy="Explain only the deterministic migration plan. Copy deterministic_plan_checksum exactly from the trusted deterministic-plan-binding context. Never calculate or change checksum bindings, commands, versions, approvals, or executable truth.",
                     context=context,
                     response_schema=self.schema_name,
                     max_output_tokens=2048,
@@ -185,7 +220,8 @@ class PlanningAgentService:
             )
         except Exception as exc:
             raise PlanningReviewApplicationError(
-                "PLANNING_PROPOSER_FAILED", "The Planning proposer failed; G06 remains unavailable.", 503
+                "PLANNING_PROPOSER_FAILED", "The Planning proposer failed; G06 remains unavailable.", 503,
+                _safe_gateway_failure_details(exc, stage="phase_proposer"),
             ) from exc
         if narrative.deterministic_plan_checksum != checksum:
             raise PlanningReviewApplicationError(
@@ -202,6 +238,12 @@ class PlanningAgentService:
                 content=_json(narrative.model_dump(mode="json")),
                 untrusted=True,
             ),
+            LlmContextSegment(
+                segment_id="proposer-output-binding",
+                label="planning proposer checksum binding",
+                content=_json({"proposer_output_checksum": proposer_checksum}),
+                untrusted=False,
+            ),
         ]
         try:
             response = self.gateway.complete(
@@ -212,7 +254,17 @@ class PlanningAgentService:
                     task_type=LlmTaskType.PLANNING_REVIEW,
                     role=LlmRole.PHASE_REVIEWER,
                     prompt_name=self.reviewer_prompt_name,
-                    system_policy="Review only the bounded Planning explanation. Do not author commands, versions, patches, or approvals.",
+                    system_policy=(
+                        "Review only the bounded Planning explanation. Accept when the explanation accurately "
+                        "describes the deterministic plan, makes no unsupported claim, and explicitly identifies "
+                        "its material risks or unknowns. Do not request unavailable external operational proof; "
+                        "treat registry availability, test coverage, human workflow, and recovery exercises as "
+                        "documented risks or later governed validation when the deterministic plan does not claim "
+                        "they are already proven. Request revision only for an in-scope inaccuracy, omission, or "
+                        "contradiction in the explanation. Copy deterministic_plan_checksum and "
+                        "proposer_output_checksum exactly from their trusted binding contexts. Never calculate or "
+                        "change checksum bindings, commands, versions, patches, or approvals."
+                    ),
                     context=review_context,
                     response_schema=self.reviewer_schema_name,
                     max_output_tokens=1024,
@@ -226,6 +278,7 @@ class PlanningAgentService:
                 "PLANNING_REVIEW_FAILED",
                 "The Planning reviewer failed or returned invalid output; G06 remains unavailable.",
                 503,
+                _safe_gateway_failure_details(exc, stage="phase_reviewer"),
             ) from exc
         if review.deterministic_plan_checksum != checksum or review.proposer_output_checksum != proposer_checksum:
             raise PlanningReviewApplicationError(
@@ -317,22 +370,20 @@ class PlanRevisionService:
             if not changes.execution_profile_id.strip():
                 raise PlanningReviewApplicationError("UNAPPROVED_EXECUTION_PROFILE", "The execution profile is not approved.", 409)
             stage_values["execution_profile_id"] = changes.execution_profile_id
-        if changes.target_cli_exact is not None:
-            stage_values["target_cli_exact"] = changes.target_cli_exact
-            commands = dict(stage_values["commands"])
-            update = dict(commands["angular_update"][0])
-            update["arguments"] = (
-                "--yes",
-                "-p",
-                "@angular/cli@" + changes.target_cli_exact,
-                "ng",
-                "update",
-                "@angular/core@" + stage.target_exact,
-                "@angular/cli@" + changes.target_cli_exact,
-                "--interactive=false",
-            )
-            commands["angular_update"] = (update,)
-            stage_values["commands"] = commands
+        commands = dict(stage_values["commands"])
+        update = dict(commands["angular_update"][0])
+        definition = ANGULAR_UPDATE_V3_RENDERER
+        target_cli_exact = changes.target_cli_exact or stage.target_cli_exact
+        stage_values["target_cli_exact"] = target_cli_exact
+        update["template_version"] = 3
+        update["template_id"] = definition.template_id
+        update["parameter_bindings"] = {
+            "target_cli_exact": target_cli_exact,
+            "target_exact": stage.target_exact,
+        }
+        update["arguments"] = definition.render_arguments(update["parameter_bindings"])
+        commands["angular_update"] = (update,)
+        stage_values["commands"] = commands
         if changes.validation_policy_id is not None:
             if changes.validation_policy_id not in APPROVED_VALIDATION_POLICIES:
                 raise PlanningReviewApplicationError("UNAPPROVED_VALIDATION_POLICY", "The validation policy is not approved.", 409)

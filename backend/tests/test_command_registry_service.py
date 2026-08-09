@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
     AuthorizationDecision,
     CancellationPolicy,
     CommandTemplate,
@@ -32,6 +33,7 @@ from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
+from app.services.command_executor_service import CommandExecutorError, worker_workspace_aliases
 
 
 @pytest.fixture
@@ -69,11 +71,55 @@ def seeded_registry(registry: CommandRegistryService, db_session: Session) -> Co
 class TestCommandRegistryService:
     """Tests for the structured command template registry."""
 
+    def test_template_matches_only_a_single_token_parameter_binding(self):
+        template = CommandTemplate(
+            template_id="tpl-angular-update-exact",
+            command_id="angular-update-exact",
+            executable="npx",
+            arguments=("--yes", "-p", "@angular/cli@{target_cli_exact}", "ng", "update"),
+        )
+
+        assert template.matches_arguments(("--yes", "-p", "@angular/cli@19.2.0", "ng", "update"))
+        assert not template.matches_arguments(("--yes", "-p", "@angular/cli@19.2.0", "ng", "update", "--force"))
+        assert not template.matches_arguments(("--yes", "-p", "@angular/cli@19.2.0;whoami", "ng", "update"))
+
+    def test_worker_alias_map_exposes_only_the_authorized_stage_workspace(self, tmp_path):
+        stage = tmp_path / "stage"
+        stage_root = tmp_path / "stage-root"
+        stage.mkdir()
+        stage_root.mkdir()
+        stage = stage_root / "angular-18-to-19"
+        stage.mkdir()
+        aliases = {
+            "OUTPUT_ROOT": str(tmp_path / "output"),
+            "STAGE_SANDBOX": str(stage_root),
+            "STAGE_WORKSPACE_ANGULAR_18_TO_19": str(stage),
+        }
+
+        assert worker_workspace_aliases(aliases, "STAGE_WORKSPACE_ANGULAR_18_TO_19") == {
+            "STAGE_WORKSPACE_ANGULAR_18_TO_19": stage,
+        }
+
+    def test_worker_alias_map_rejects_a_stage_alias_outside_the_bound_stage_root(self, tmp_path):
+        stage_root = tmp_path / "stage-root"
+        outside = tmp_path / "outside"
+        stage_root.mkdir()
+        outside.mkdir()
+
+        with pytest.raises(CommandExecutorError, match="authorized stage workspace alias"):
+            worker_workspace_aliases(
+                {
+                    "STAGE_SANDBOX": str(stage_root),
+                    "STAGE_WORKSPACE_ANGULAR_18_TO_19": str(outside),
+                },
+                "STAGE_WORKSPACE_ANGULAR_18_TO_19",
+            )
+
     def test_list_templates_returns_defaults_when_empty(self, registry: CommandRegistryService, db_session: Session):
         """When DB is empty, list_templates returns the default template list."""
         result = registry.list_templates(db_session)
-        assert result.total == 6
-        assert len(result.templates) == 6
+        assert result.total >= 6
+        assert len(result.templates) >= 6
         command_ids = {t.command_id for t in result.templates}
         assert "python-version" in command_ids
         assert "npm-ci-bootstrap" in command_ids
@@ -81,16 +127,32 @@ class TestCommandRegistryService:
     def test_seed_defaults_creates_all_templates(self, registry: CommandRegistryService, db_session: Session):
         """Seeding populates the database with all default templates."""
         seeded = registry.seed_defaults(db_session)
-        assert len(seeded) == 6
+        assert len(seeded) >= 6
         rows = db_session.query(CommandTemplateModel).all()
-        assert len(rows) == 6
+        assert len(rows) >= 6
 
     def test_seed_defaults_is_idempotent(self, registry: CommandRegistryService, db_session: Session):
         """Seeding twice does not create duplicate entries."""
         registry.seed_defaults(db_session)
         registry.seed_defaults(db_session)
         rows = db_session.query(CommandTemplateModel).all()
-        assert len(rows) == 6
+        assert len(rows) >= 6
+
+    def test_seed_defaults_adds_missing_templates_to_a_preexisting_registry(self, registry: CommandRegistryService, db_session: Session):
+        now = datetime.now(UTC)
+        db_session.add(CommandTemplateModel(
+            id="tpl-python-version", command_id="python-version", executable="python", arguments=["--version"],
+            executable_aliases=["python.exe"], description="existing", status="active", version=1,
+            allowed_env_vars=[], max_output_bytes=1_000_000, created_at=now, updated_at=now,
+        ))
+        db_session.flush()
+
+        seeded = registry.seed_defaults(db_session)
+
+        assert {template.command_id for template in seeded} >= {
+            "npm-ci-bootstrap", "angular-update-exact", "angular-version-verify", "npm-ci-final",
+            "npm-script-build-production", "npm-script-test-ci", "npm-script-lint",
+        }
 
     def test_get_template_by_id(self, seeded_registry: CommandRegistryService, db_session: Session):
         """Can retrieve a specific template by its ID."""
@@ -137,6 +199,54 @@ class TestCommandRegistryService:
         assert "python" in allowed
         assert "python.exe" in allowed
         assert "py" in allowed
+
+    def test_seed_defaults_creates_v1_and_v2_templates(self, registry, db_session):
+        """Both v1 and v2 angular-update-exact templates are seeded."""
+        seeded = registry.seed_defaults(db_session)
+        angular = [t for t in seeded if t.command_id == "angular-update-exact"]
+        assert len(angular) == 2
+        versions = {t.version for t in angular}
+        assert versions == {1, 2}
+
+    def test_find_registered_template_returns_correct_version(self, registry, db_session):
+        """find_registered_template returns the right template by version."""
+        registry.seed_defaults(db_session)
+        v1 = registry.find_registered_template(
+            db_session, template_id="tpl-angular-update-exact",
+            command_id="angular-update-exact", version=1,
+        )
+        v2 = registry.find_registered_template(
+            db_session, template_id="tpl-angular-update-exact-v2",
+            command_id="angular-update-exact", version=2,
+        )
+        assert v1 is not None
+        assert v1.version == 1
+        assert v2 is not None
+        assert v2.version == 2
+        assert "--interactive=false" in " ".join(v1.arguments)
+        assert "--interactive=false" not in " ".join(v2.arguments)
+
+    def test_v2_template_omits_interactive_false(self, registry, db_session):
+        """The v2 argument patterns do NOT include --interactive=false."""
+        assert "--interactive=false" not in ANGULAR_UPDATE_V2_RENDERER.argument_patterns
+        registry.seed_defaults(db_session)
+        v2 = registry.find_registered_template(
+            db_session, template_id="tpl-angular-update-exact-v2",
+            command_id="angular-update-exact", version=2,
+        )
+        assert v2 is not None
+        for arg in v2.arguments:
+            assert "--interactive" not in arg
+
+    def test_seed_defaults_is_idempotent_with_versions(self, registry, db_session):
+        """Seeding twice with versioned templates does not create duplicates."""
+        registry.seed_defaults(db_session)
+        v2_tpl = [t for t in DEFAULT_COMMAND_TEMPLATES if t.command_id == "angular-update-exact" and t.version == 2]
+        assert len(v2_tpl) == 1
+        first_count = db_session.query(CommandTemplateModel).count()
+        registry.seed_defaults(db_session)
+        second_count = db_session.query(CommandTemplateModel).count()
+        assert second_count == first_count
 
 
 class TestCommandPolicyEngineService:

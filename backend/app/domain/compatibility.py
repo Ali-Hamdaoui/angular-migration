@@ -59,6 +59,7 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     validation_policy_id: str = Field(min_length=1)
     known_risks: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
+    validated_runtime_profiles: tuple[tuple[str, str], ...] = ()
 
     @model_validator(mode="after")
     def validate_adjacent_families(self) -> "CompatibilityCatalogueEntry":
@@ -80,7 +81,13 @@ class CompatibilityCatalogue(CompatibilityModel):
 
     @classmethod
     def build(cls, version: str, entries: tuple[CompatibilityCatalogueEntry, ...]) -> "CompatibilityCatalogue":
-        payload = {"version": version, "entries": [entry.model_dump(mode="json") for entry in entries]}
+        serialized_entries = []
+        for entry in entries:
+            serialized = entry.model_dump(mode="json")
+            if not entry.validated_runtime_profiles:
+                serialized.pop("validated_runtime_profiles", None)
+            serialized_entries.append(serialized)
+        payload = {"version": version, "entries": serialized_entries}
         checksum = "sha256:" + hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -111,6 +118,7 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     runtime_candidates: tuple[RuntimeCandidate, ...] = ()
     workspace_topology: str = Field(default="single_application_cli_workspace", min_length=1)
     dependency_findings: tuple[str, ...] = ()
+    source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     resolved_at: datetime
@@ -130,7 +138,17 @@ class Stage1ExecutionProfile(CompatibilityModel):
     architecture: str
     catalogue_version: str
     source_angular_exact: str
+    source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    stage1_profile_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+def calculate_stage1_profile_checksum(profile: Stage1ExecutionProfile | dict) -> str:
+    payload = profile.model_dump(mode="json") if hasattr(profile, "model_dump") else dict(profile)
+    payload.pop("source_execution_profile_checksum", None)
+    payload.pop("stage1_profile_checksum", None)
+    payload.pop("checksum", None)
+    return "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class CompatibilityStage(CompatibilityModel):

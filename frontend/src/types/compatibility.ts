@@ -25,6 +25,8 @@ export type Stage1ExecutionProfile = {
   architecture: string;
   catalogue_version: string;
   source_angular_exact: string;
+  source_execution_profile_checksum?: string | null;
+  stage1_profile_checksum?: string;
   checksum: string;
 };
 

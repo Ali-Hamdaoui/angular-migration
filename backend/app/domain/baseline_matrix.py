@@ -8,11 +8,12 @@ and API slices.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
+
+from app.services.workspace_configuration_reader import WorkspaceConfigurationError, WorkspaceConfigurationReader
 
 
 class BaselineMatrixError(ValueError):
@@ -82,8 +83,8 @@ class BaselineTargetDiscoveryService:
         if not package_path.is_file():
             raise BaselineMatrixError("PACKAGE_JSON_MISSING")
         try:
-            package = json.loads(package_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            package = WorkspaceConfigurationReader().read_json_object(package_path, logical_name="package.json").value
+        except WorkspaceConfigurationError as error:
             raise BaselineMatrixError("PACKAGE_JSON_INVALID") from error
         if not isinstance(package, dict):
             raise BaselineMatrixError("PACKAGE_JSON_INVALID")
@@ -171,14 +172,9 @@ class BaselineTargetDiscoveryService:
         if not path.is_file():
             return None
         try:
-            # Angular CLI commonly writes UTF-8 JSON with a BOM on Windows.
-            # It is valid project evidence and must not block baseline reads.
-            value = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise BaselineMatrixError("ANGULAR_JSON_INVALID") from error
-        if not isinstance(value, dict):
-            raise BaselineMatrixError("ANGULAR_JSON_INVALID")
-        return value
+            return WorkspaceConfigurationReader().read_json_object(path, logical_name="angular.json").value
+        except WorkspaceConfigurationError as error:
+            raise BaselineMatrixError(error.code) from error
 
 
 def normalize_command_result(target: BaselineTarget, *, exit_code: int | None, duration_ms: int | None, cancelled: bool = False, interrupted: bool = False, warnings: Iterable[str] = (), test_count: int | None = None, failed_tests: Iterable[str] = ()) -> BaselineTargetResult:

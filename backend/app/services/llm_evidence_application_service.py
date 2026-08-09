@@ -13,28 +13,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 from sqlalchemy import select
 
-from app.api.llm_contracts import (
-    LlmActivityResponse,
-    LlmInvocationResponse,
-    LlmReadinessResponse,
-    LlmSmokeRequest,
-    LlmUsageResponse,
-)
+from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmSmokeRequest, LlmUsageResponse
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings, get_settings
 from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
-from app.llm_gateway import (
-    AzureGatewayError,
-    AzureOpenAILLMGateway,
-    LlmBudgetAction,
-    LlmContextSegment,
-    LlmRequest,
-    LlmRole,
-    LlmTaskType,
-    PromptSchemaRegistry,
-    StructuredOutputValidationError,
-    decide_budget,
-)
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptRegistry, PromptSchemaRegistry, StructuredOutputValidationError, decide_budget, production_prompt_policy_gaps
 from app.repositories.models import ArtifactMetadataModel, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
@@ -90,7 +73,7 @@ class _AssistantResponse(BaseModel):
         'workflow_status', 'blocker_or_failure', 'completed_work', 'remaining_work',
         'analysis_explanation', 'planning_explanation', 'transformation_explanation',
         'validation_explanation', 'evidence_question', 'usage_and_cost', 'next_steps',
-        'comparison', 'unsupported',
+        'comparison', 'general_migration_question', 'unsupported',
     ]
     capability_key: str = Field(min_length=1)
     proof_label: Literal[
@@ -105,43 +88,28 @@ class _AssistantResponse(BaseModel):
 
 
 def build_assistant_response_contract(*, intent: str, capability_key: str, selected_excerpt_ids: list[str], selected_citations: list[Mapping[str, object]] | None = None, bind_excerpt_ids: bool = True, require_citations: bool | None = None) -> type[BaseModel]:
-    """Build the exact strict response contract selected by the backend router."""
+    """Build a strict Assistant response schema bound to selected evidence."""
     intent_type = Literal[(intent,)]
     capability_type = Literal[(capability_key,)]
     evidence_selected = intent == "evidence_question" and bool(selected_excerpt_ids)
     if require_citations is None:
         require_citations = evidence_selected
-    proof_type = Literal[("approved_evidence_supported",)] if evidence_selected else Literal[("unknown_or_unavailable",)] if intent == "evidence_question" else Literal[tuple((
-        "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
-    ))]
+    proof_type = Literal[("approved_evidence_supported",)] if evidence_selected else Literal[("unknown_or_unavailable",)] if intent == "evidence_question" else Literal[tuple(("authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable"))]
     selected_citations = selected_citations or [{"excerpt_id": item} for item in selected_excerpt_ids]
     excerpt_type = Literal[tuple(selected_excerpt_ids or ["__no_selected_excerpt__"])] if bind_excerpt_ids else str
+
     def bound_string(field: str):
         values = [str(item[field]) for item in selected_citations if field in item]
         return Literal[tuple(values)] if bind_excerpt_ids and values else str
+
     locator_type = _AssistantLocator
     if bind_excerpt_ids and selected_citations and all(isinstance(item.get("locator"), Mapping) for item in selected_citations):
         kinds = [str(item["locator"]["kind"]) for item in selected_citations]
         locations = [str(item["locator"]["value"]) for item in selected_citations]
         locator_type = create_model("BoundAssistantLocator", __base__=_AssistantLocator, kind=(Literal[tuple(kinds)], ...), value=(Literal[tuple(locations)], ...))
-    citation_type = create_model(
-        "BoundAssistantCitation",
-        __base__=_AssistantCitation,
-        excerpt_id=(excerpt_type, ...),
-        artifact_id=(bound_string("artifact_id"), ...),
-        checksum_sha256=(bound_string("checksum_sha256"), ...),
-        stage_key=(bound_string("stage_key"), ...),
-        locator=(locator_type, ...),
-    )
+    citation_type = create_model("BoundAssistantCitation", __base__=_AssistantCitation, excerpt_id=(excerpt_type, ...), artifact_id=(bound_string("artifact_id"), ...), checksum_sha256=(bound_string("checksum_sha256"), ...), stage_key=(bound_string("stage_key"), ...), locator=(locator_type, ...))
     citations_field = (list[citation_type], Field(min_length=1)) if require_citations else (list[citation_type], ...)
-    return create_model(
-        "BoundAssistantResponse",
-        __base__=_AssistantResponse,
-        intent=(intent_type, ...),
-        capability_key=(capability_type, ...),
-        proof_label=(proof_type, ...),
-        citations=citations_field,
-    )
+    return create_model("BoundAssistantResponse", __base__=_AssistantResponse, intent=(intent_type, ...), capability_key=(capability_type, ...), proof_label=(proof_type, ...), citations=citations_field)
 
 
 @dataclass(frozen=True)
@@ -192,7 +160,7 @@ class LlmEvidenceApplicationService:
         return registry
 
     def assistant(self, request: AssistantInvocationRequest, *, actor: str = 'local-operator') -> LlmInvocationResponse:
-        canonical = {"run_id": request.run_id, "expected_state_version": request.expected_state_version, "idempotency_key": request.idempotency_key, "question": request.question, "context": [item.model_dump(mode="json") for item in request.context]}
+        canonical = {"run_id": request.run_id, "expected_state_version": request.expected_state_version, "idempotency_key": request.idempotency_key, "question": request.question, "answer_mode": request.answer_mode, "adaptive_answer_target": request.adaptive_answer_target, "context": [item.model_dump(mode="json") for item in request.context]}
         checksum = 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self.scope() as session:
             run = session.get(MigrationRunModel, request.run_id)
@@ -222,17 +190,17 @@ class LlmEvidenceApplicationService:
         started_monotonic = self.clock()
         try:
             prepared = request.prepared_request
-            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy=getattr(prepared, 'policy', 'Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.'), context=list(getattr(prepared, 'context', request.context)), response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens, prepared_input={'serialized_input': prepared.serialized_input, 'manifest': prepared.manifest, 'schema': prepared.schema} if prepared is not None else None, adaptive_answer_target=request.adaptive_answer_target, answer_mode=request.answer_mode))
+            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy=getattr(prepared, 'policy', 'Answer only from the authoritative workflow projection. Do not infer unavailable fields or perform mutations.'), context=list(getattr(prepared, 'context', request.context)), response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens, prepared_input={"serialized_input": prepared.serialized_input, "manifest": prepared.manifest, "schema": prepared.schema} if prepared is not None else None, adaptive_answer_target=request.adaptive_answer_target, answer_mode=request.answer_mode))
             provider_usage = response.usage
             validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
             if request.response_contract is not None:
                 validated = request.response_contract.model_validate(validated).model_dump(mode='json')
             return self._complete_assistant(request, checksum, invocation_id, response, validated, actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
-        except StructuredOutputValidationError:
-            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID', 'Assistant governed invocation returned an invalid structured response.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except StructuredOutputValidationError as error:
+            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
         except AzureGatewayError as error:
             return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
-        except Exception as error:  # noqa: BLE001 - sanitize and persist every provider boundary failure
+        except Exception as error:
             return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID' if response is not None else 'LLM_PROVIDER_FAILURE', 'Assistant governed invocation failed.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000), diagnostic=f'exception_type={type(error).__name__}')
 
     def _complete_assistant(self, request, checksum, invocation_id, response, validated, actor, *, latency_ms):
@@ -243,33 +211,29 @@ class LlmEvidenceApplicationService:
             store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
             prepared = request.prepared_request
             request_manifest = prepared.manifest if prepared is not None else {}
-            artifacts = [self._artifact(session, store, request.run_id, '04_workflow_state/llm_request_manifest.json', json.dumps(request_manifest, sort_keys=True))]
-            artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(validated, sort_keys=True)))
+            artifacts = [self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(validated, sort_keys=True))]
+            artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_request_manifest.json', json.dumps(request_manifest, sort_keys=True)))
             artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_usage_cost.json', json.dumps(response.usage.model_dump(mode='json'), sort_keys=True)))
-            row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.artifact_ids = [a.ref.artifact_id for a in artifacts]; row.artifact_checksums = {a.ref.artifact_id: a.ref.checksum for a in artifacts}; row.redacted_summary = self._assistant_summary(request, response); row.state_version = run.state_version
+            row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.deployment_alias = response.model_deployment_alias; row.artifact_ids = [a.ref.artifact_id for a in artifacts]; row.artifact_checksums = {a.ref.artifact_id: a.ref.checksum for a in artifacts}; row.redacted_summary = self._assistant_summary(request, response); row.state_version = run.state_version
             session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))
             session.flush()
             result = self._dto(session, row)
             return result.model_copy(update={'structured_output': validated})
 
     def persist_validated_response(self, invocation: LlmInvocationResponse, structured_output: dict[str, object]) -> LlmInvocationResponse:
-        """Replace the canonical response artifact with the final validated response.
-
-        This is deliberately owned by the governed invocation service so the
-        input provider artifact and the final response artifact do not acquire
-        separate persistence owners.
-        """
+        """Persist the final post-authority Assistant response envelope."""
         with self.scope() as session:
             row = session.get(LlmInvocationModel, invocation.invocation_id)
             run = session.get(MigrationRunModel, invocation.run_id)
             if row is None or run is None or not row.artifact_ids:
                 raise LlmEvidenceError('LLM_PERSISTENCE_FAILURE', 'The validated Assistant response could not be finalized.', 500)
-            old_id = row.artifact_ids[0]
-            old = session.get(ArtifactMetadataModel, old_id) or session.get(ArtifactMetadataModel, 'metadata-' + old_id)
-            if old is None:
+            response_id = row.artifact_ids[0]
+            response_artifact = session.get(ArtifactMetadataModel, response_id) or session.get(ArtifactMetadataModel, 'metadata-' + response_id)
+            if response_artifact is None:
                 raise LlmEvidenceError('LLM_PERSISTENCE_FAILURE', 'The validated Assistant response artifact is unavailable.', 500)
-            store = LocalFilesystemArtifactStore(Path(run.artifact_root or self.settings.artifact_root), fixed_run_root=Path(run.artifact_root or self.settings.artifact_root))
-            final = self._artifact(session, store, run.id, old.relative_path, json.dumps(structured_output, sort_keys=True))
+            root = Path(run.artifact_root or self.settings.artifact_root)
+            store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
+            final = self._artifact(session, store, run.id, response_artifact.relative_path, json.dumps(structured_output, sort_keys=True))
             row.artifact_ids = [final.ref.artifact_id, *row.artifact_ids[1:]]
             row.artifact_checksums = {**row.artifact_checksums, final.ref.artifact_id: final.ref.checksum}
             session.flush()
@@ -292,6 +256,23 @@ class LlmEvidenceApplicationService:
         with self.scope() as session:
             row = session.get(LlmInvocationModel, invocation_id); run = session.get(MigrationRunModel, request.run_id)
             row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.latency_ms = latency_ms
+            if isinstance(error, AzureGatewayError):
+                row.deployment_alias = error.deployment_alias or row.deployment_alias
+                row.provider_http_status = error.provider_status
+                row.provider_error_code = error.provider_code
+                row.sanitized_provider_message = error.provider_message
+                row.provider_request_id = error.provider_request_id
+                row.failure_stage = error.failure_stage
+                row.failure_subtype = error.failure_subtype
+                row.retries = error.retry_count
+                row.retryable = error.retryable
+                row.response_received = error.response_received
+                row.response_content_type = error.response_content_type
+                row.response_bytes = error.response_bytes
+                row.response_sha256 = error.response_sha256
+                row.response_kind = error.response_kind
+                row.transport_started = error.transport_started
+                row.transport_exception_type = type(error.__cause__).__name__ if error.__cause__ else None
             provider_diagnostic = getattr(error, 'provider_code', None) or getattr(error, 'provider_message', None)
             row.redacted_summary = ('Assistant provider rejected the request: ' + ': '.join(filter(None, [getattr(error, 'provider_code', None), getattr(error, 'provider_message', None)])))[:360] if provider_diagnostic else (f'Assistant invocation failed; {diagnostic}.' if diagnostic else 'Assistant invocation failed; provider details redacted.')
             if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':
@@ -299,7 +280,7 @@ class LlmEvidenceApplicationService:
                 session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=self.settings.llm_pricing_version, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, total_tokens=usage.total_tokens, input_price_per_million=usage.input_price_per_million, output_price_per_million=usage.output_price_per_million, input_cost_usd=usage.input_cost_usd, output_cost_usd=usage.output_cost_usd, total_cost_usd=usage.total_cost_usd, created_at=self.now()))
             return self._dto(session, row)
 
-    def readiness(self) -> LlmReadinessResponse:
+    def readiness(self, *, registry: PromptRegistry | None = None) -> LlmReadinessResponse:
         endpoint = bool(self.settings.azure_openai_endpoint)
         deployment = bool(self.settings.azure_openai_deployment)
         auth = bool(self.settings.azure_openai_api_key)
@@ -308,6 +289,8 @@ class LlmEvidenceApplicationService:
             status, error = 'disabled', None
         elif not configured:
             status, error = 'configuration_incomplete', 'LLM_CONFIGURATION_INCOMPLETE'
+        elif production_prompt_policy_gaps(registry):
+            status, error = 'configuration_incomplete', 'LLM_PROMPT_POLICY_MISSING'
         else:
             status, error = 'configured_unverified', 'LLM_SMOKE_NOT_VERIFIED'
         return LlmReadinessResponse(status=status, deployment_configured=deployment, model_capability='responses_json_schema' if configured else 'unknown', error_code=error, llm_enabled=self.settings.llm_enabled, endpoint_configured=endpoint, authentication_configured=auth, schema_capability_configured=configured)
@@ -346,7 +329,7 @@ class LlmEvidenceApplicationService:
             return self._complete(request, checksum, response, int((self.clock() - started_at) * 1000), authenticated_actor)
         except AzureGatewayError as error:
             return self._fail(request, checksum, invocation_id, error, int((self.clock() - started_at) * 1000), actor=authenticated_actor)
-        except Exception as error:  # noqa: BLE001 - preserve stable provider failure handling
+        except Exception as error:
             return self._fail(request, checksum, invocation_id, LlmEvidenceError('LLM_PROVIDER_FAILURE', 'LLM provider operation failed.'), int((self.clock() - started_at) * 1000), detail=error, actor=authenticated_actor)
 
     def activity(self, run_id: str, *, actor: str = 'local-operator') -> LlmActivityResponse:

@@ -1,9 +1,9 @@
 """Bounded semantic intent classification and read-only capability dispatch."""
 
-import re
 import json
+import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,13 +12,13 @@ SUPPORTED_INTENTS = (
     "workflow_status", "blocker_or_failure", "completed_work", "remaining_work",
     "analysis_explanation", "planning_explanation", "transformation_explanation",
     "validation_explanation", "evidence_question", "usage_and_cost", "next_steps",
-    "comparison", "unsupported",
+    "comparison", "general_migration_question", "unsupported",
 )
 IntentName = Literal[
     "workflow_status", "blocker_or_failure", "completed_work", "remaining_work",
     "analysis_explanation", "planning_explanation", "transformation_explanation",
     "validation_explanation", "evidence_question", "usage_and_cost", "next_steps",
-    "comparison", "unsupported",
+    "comparison", "general_migration_question", "unsupported",
 ]
 
 
@@ -38,18 +38,18 @@ MUTATION_PATTERNS = (
 
 _STOP_WORDS = frozenset(["a", "an", "and", "are", "during", "for", "has", "how", "is", "latest", "of", "the", "should", "this", "to", "what", "why", "with", "you"])
 _INTENT_PROFILES: dict[str, tuple[str, ...]] = {
-    "usage_and_cost": ("usage cost tokens model consumption spent duration time recorded budget" ,),
-    "blocker_or_failure": ("blocked blocker failure failed stopped stop error incident issue" ,),
-    "evidence_question": ("evidence supports proof source artifact citation" ,),
-    "comparison": ("compare comparison differ difference versus previous changed" ,),
-    "next_steps": ("next after follow proceed happen proposal" ,),
-    "completed_work": ("completed finished done achieved" ,),
-    "remaining_work": ("remaining still needs left outstanding" ,),
-    "analysis_explanation": ("analysis findings discovery result" ,),
-    "planning_explanation": ("planning plan planned rationale" ,),
-    "transformation_explanation": ("transformation changed change edits migration" ,),
-    "validation_explanation": ("validation tests lint verification failure result" ,),
-    "workflow_status": ("current where migration state status workflow phase gate progress" ,),
+    "usage_and_cost": ("usage cost tokens model consumption spent duration time recorded budget",),
+    "blocker_or_failure": ("blocked blocker failure failed stopped stop error incident issue",),
+    "evidence_question": ("evidence supports proof source artifact citation",),
+    "comparison": ("compare comparison differ difference versus previous changed",),
+    "next_steps": ("next after follow proceed happen proposal",),
+    "completed_work": ("completed finished done achieved",),
+    "remaining_work": ("remaining still needs left outstanding",),
+    "analysis_explanation": ("analysis findings discovery result",),
+    "planning_explanation": ("planning plan planned rationale",),
+    "transformation_explanation": ("transformation changed change edits migration",),
+    "validation_explanation": ("validation tests lint verification failure result",),
+    "workflow_status": ("current where migration state status workflow phase gate progress",),
 }
 
 
@@ -94,11 +94,12 @@ class AssistantCapabilityRegistry:
         self._items: dict[str, AssistantCapability] = {}
 
     def register(self, capability: AssistantCapability) -> None:
-        if capability.response_policy != "read_only":
+        if capability.response_policy not in {"read_only", "strict_read_only"}:
             raise ValueError("Assistant capabilities must be read-only")
         collisions = [item.capability_key for item in self._items.values() if item.supported_intents & capability.supported_intents]
         if collisions:
-            raise ValueError(f"Intent already registered: {sorted(capability.supported_intents & set().union(*(self._items[key].supported_intents for key in collisions)))}")
+            existing_intents = set().union(*(self._items[key].supported_intents for key in collisions))
+            raise ValueError(f"Intent already registered: {sorted(capability.supported_intents & existing_intents)}")
         self._items[capability.capability_key] = capability
 
     def get_for_intent(self, intent: str) -> AssistantCapability | None:
@@ -140,18 +141,14 @@ def default_capability_registry() -> AssistantCapabilityRegistry:
         ("validation", {"validation_explanation"}, {"events", "phase", "stage", "failure_reason"}, {"report", "validation"}),
         ("usage", {"usage_and_cost"}, {"usage", "duration_seconds"}, set()),
         ("next_steps", {"next_steps"}, {"blocker", "gate", "next_action", "waiting_reason"}, set()),
+        ("general_migration_question", {"general_migration_question"}, set(), set()),
     ):
-        registry.register(AssistantCapability(key, frozenset(intents), frozenset(fields), frozenset(evidence), response_policy="read_only"))
+        registry.register(AssistantCapability(key, frozenset(intents), frozenset(fields), frozenset(evidence), response_policy="strict_read_only"))
     return registry
 
 
 def classify_semantic_intent(question: str) -> SemanticIntentResult:
-    """Return a typed, bounded semantic classification and fail closed.
-
-    The classifier uses intent descriptions and normalized concept features, not an
-    ordered exact-phrase router. It is intentionally local and bounded; the
-    governed response call remains the sole answer generator.
-    """
+    """Return a typed, bounded semantic classification and fail closed."""
     if not isinstance(question, str) or not question.strip() or is_mutation_request(question):
         return SemanticIntentResult(intent="unsupported", rationale="mutation_or_invalid_request")
     normalized = " ".join(question.casefold().split())
@@ -165,16 +162,35 @@ def classify_semantic_intent(question: str) -> SemanticIntentResult:
     if composite:
         return SemanticIntentResult(intent="blocker_or_failure", rationale="composite_blocker_and_next_action")
     query_tokens = _semantic_tokens(question)
-    scores = {
-        intent: len(query_tokens & _semantic_tokens(profile[0]))
-        for intent, profile in _INTENT_PROFILES.items()
-    }
+    scores = {intent: len(query_tokens & _semantic_tokens(profile[0])) for intent, profile in _INTENT_PROFILES.items()}
     best = max(scores, key=scores.get)
     if scores[best] == 0 or list(scores.values()).count(scores[best]) > 1:
         return SemanticIntentResult(intent="unsupported", rationale="no_unambiguous_supported_intent")
     return SemanticIntentResult(intent=best, rationale=f"semantic_profile_overlap={scores[best]}")
 
 
+def _mutation_detected(question: str) -> bool:
+    """Detect mutation intent using word-level matching to avoid substring gaps."""
+    q = question.lower()
+    words = set(q.split())
+    punctuation = ",.;:!?"
+    clean = q.translate(str.maketrans("", "", punctuation))
+    clean_words = set(clean.split())
+    mutation_keywords = {"approve", "reject", "execute", "apply", "patch"}
+    if mutation_keywords & clean_words:
+        return True
+    if "change" in clean_words and ("workflow" in clean_words or "state" in clean_words):
+        return True
+    if "run" in clean_words and "command" in clean_words:
+        return True
+    if "modify" in clean_words and "files" in clean_words:
+        return True
+    return False
+
+
 def classify_intent(question: str) -> str:
-    """Compatibility adapter returning the typed classifier's intent value."""
-    return classify_semantic_intent(question).intent
+    """Compatibility adapter preserving the DEV general-question fallback."""
+    result = classify_semantic_intent(question)
+    if result.intent == "unsupported" and isinstance(question, str) and question.strip() and not is_mutation_request(question):
+        return "general_migration_question"
+    return result.intent

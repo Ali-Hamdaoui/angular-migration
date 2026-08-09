@@ -25,6 +25,7 @@ from app.repositories.models.workflow import (
     CommandLogSummaryModel,
     WorkflowEventModel,
 )
+from app.state.event_sequencer import append_workflow_event
 
 
 # Maximum log chunks to keep in memory per execution
@@ -130,21 +131,13 @@ class CommandLogService:
 
         # Emit bounded lightweight availability events, never content.
         if next_seq == 1 or next_seq % 10 == 0:
-            latest_event = session.scalar(
-                select(WorkflowEventModel)
-                .where(WorkflowEventModel.run_id == run_id)
-                .order_by(WorkflowEventModel.sequence.desc())
-                .limit(1)
-            )
-            event = WorkflowEventModel(
-                id=f"event-{uuid4().hex[:12]}",
+            append_workflow_event(
+                session,
                 run_id=run_id,
-                stage_id=None,
                 event_type=WorkflowEventType.COMMAND_OUTPUT_AVAILABLE.value,
                 idempotency_key=f"log-{execution_id}-{next_seq}",
                 actor="command-executor",
                 reason=f"log chunk #{next_seq} ({stream})",
-                sequence=(latest_event.sequence + 1) if latest_event else 1,
                 payload={
                     "execution_id": execution_id,
                     "first_sequence": next_seq,
@@ -155,7 +148,6 @@ class CommandLogService:
                 },
                 occurred_at=now,
             )
-            session.add(event)
         return chunk
 
     def ensure_summary(self, session: Session, execution_id: str, run_id: str, *, correlation_id: str | None = None) -> CommandLogSummaryModel:
