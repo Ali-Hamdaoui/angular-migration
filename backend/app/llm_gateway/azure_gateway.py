@@ -432,7 +432,8 @@ class AzureOpenAILLMGateway:
         prompt = self._prompt_registry.get(request.prompt_name or 'llm_default_v1', request.task_type)
         # Both generic prompt safety and the phase-specific policy are trusted
         # top-level instructions, never user JSON fields.
-        request = request.model_copy(update={'system_policy': f'{prompt.system_policy}\n{request.system_policy}'})
+        if request.prepared_input is None:
+            request = request.model_copy(update={'system_policy': f'{prompt.system_policy}\n{request.system_policy}'})
         redacted = self._redacted_request(request)
         endpoint_parts = urllib.parse.urlsplit(deployment.endpoint)
         attempt = 0
@@ -443,7 +444,9 @@ class AzureOpenAILLMGateway:
                     'max_output_tokens': self._retry_output_budget(request.max_output_tokens) if retry_controls else request.max_output_tokens,
                 })
                 payload = self._payload(call_request, redacted, deployment.deployment, retry_controls=retry_controls)
-                self.last_request_manifest = {'endpoint_host': endpoint_parts.hostname, 'endpoint_path': '/openai/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'max_output_tokens': call_request.max_output_tokens, 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type'], 'attempt': attempt}
+                prepared_manifest = request.prepared_input.get('manifest', {}) if request.prepared_input else {}
+                budget = prepared_manifest.get('context_budget', {}) if isinstance(prepared_manifest, dict) else {}
+                self.last_request_manifest = {'endpoint_host': endpoint_parts.hostname, 'endpoint_path': '/openai/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'max_output_tokens': call_request.max_output_tokens, 'adaptive_answer_target': request.adaptive_answer_target, 'answer_mode': request.answer_mode, 'final_serialized_input_tokens': budget.get('final_serialized_input_tokens'), 'tokenizer_strategy': budget.get('tokenizer_strategy'), 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type'], 'attempt': attempt}
                 transport_result = self._transport.request(endpoint=deployment.endpoint, api_key=deployment.api_key, api_version=deployment.api_version, deployment=deployment.deployment, payload=payload, timeout=self._settings.llm_timeout_seconds)
                 provider_request_id = transport_result.provider_request_id if isinstance(transport_result, ProviderTransportResult) else None
                 raw = transport_result.body if isinstance(transport_result, ProviderTransportResult) else transport_result
@@ -511,10 +514,12 @@ class AzureOpenAILLMGateway:
             error.response_kind = 'json'
 
     def _payload(self, request: LlmRequest, redacted: Any, deployment: str, *, retry_controls: bool = False) -> dict[str, Any]:
-        text = {'format': {'type': 'json_schema', 'name': request.response_schema, 'schema': self._registry.json_schema(request.response_schema), 'strict': True}}
+        input_text = request.prepared_input.get('serialized_input') if request.prepared_input else redacted.redacted_text
+        schema = request.prepared_input.get('schema') if request.prepared_input else self._registry.json_schema(request.response_schema)
+        text = {'format': {'type': 'json_schema', 'name': request.response_schema, 'schema': schema, 'strict': True}}
         if retry_controls:
             text['verbosity'] = 'low'
-        payload = {'model': deployment, 'store': False, 'instructions': request.system_policy, 'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': redacted.redacted_text}]}], 'max_output_tokens': request.max_output_tokens, 'text': text}
+        payload = {'model': deployment, 'store': False, 'instructions': request.system_policy, 'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': input_text}]}], 'max_output_tokens': request.max_output_tokens, 'text': text}
         if retry_controls:
             payload['reasoning'] = {'effort': 'low'}
         return payload

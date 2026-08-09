@@ -22,8 +22,9 @@ def error_response(
     error_code: str,
     message: str,
     details: dict[str, object] | None = None,
+    correlation_id: str | None = None,
 ) -> JSONResponse:
-    correlation_id = get_correlation_id(request)
+    correlation_id = correlation_id or get_correlation_id(request)
     envelope = ErrorEnvelope(
         error_code=error_code,
         message=message,

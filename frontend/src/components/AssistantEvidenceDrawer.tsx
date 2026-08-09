@@ -1,7 +1,7 @@
 import type { AssistantEvidence } from "@/types/assistant";
 import { getBackendBaseUrl } from "@/api/client";
 
-export function AssistantEvidenceDrawer({ evidence }: { evidence: AssistantEvidence[] }) {
-  if (!evidence.length) return null;
-  return <details aria-label="Validated evidence"><summary>Validated evidence ({evidence.length})</summary><ul>{evidence.map((item) => <li key={`${item.artifact_id}:${item.checksum}`}><a href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(item.artifact_id)}`} target="_blank" rel="noreferrer">{item.label}</a><small> {item.checksum}{item.excerpt_locator ? ` · ${item.excerpt_locator}` : ""}</small></li>)}</ul></details>;
+export function AssistantEvidenceDrawer({ citations }: { citations: AssistantEvidence[] }) {
+  if (!citations.length) return null;
+  return <details aria-label="Validated evidence"><summary>Validated evidence ({citations.length})</summary><ul>{citations.map((item) => <li key={item.excerpt_id ?? `${item.artifact_id}:${item.checksum}`}><a href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(item.artifact_id)}`} target="_blank" rel="noreferrer">{item.label}</a><small> {item.checksum_sha256 ?? item.checksum}{item.locator ? ` · ${item.locator.kind}:${item.locator.value}` : ""}</small></li>)}</ul></details>;
 }

@@ -26,6 +26,7 @@ from app.repositories.models import (
     UsageCostRecordModel,
     WorkflowEventModel,
 )
+from app.services.assistant_capabilities import build_next_step_proposals
 
 _PHASES = ["Preflight Snapshot", "Baseline", "Planning", "Transformation", "Validation", "Completion"]
 _PHASE_LABELS = {
@@ -189,6 +190,13 @@ class WorkflowProjectionService:
 
         stage_value = current_stage.id if current_stage else (gate_value or phase)
         step_value = current_step.name if current_step else (current_event.event_type if current_event else run.phase_status)
+        gate_id = gate_value.split()[0] if gate_value and gate_value.split()[0].startswith("G") else None
+        gate_state = gate_value.split()[1] if gate_value and len(gate_value.split()) > 1 else ("pending" if gate_pending else gate_value)
+        failed_command = next((item for item in reversed(commands) if str(item.status).lower() in {"failed", "timed_out", "rejected", "interrupted"}), None)
+        blocker_phase = "runtime_resolution" if execution_profile is not None and execution_profile.status == "blocked" else (phase.lower().replace(" ", "_") if blocker_value else None)
+        proposals = build_next_step_proposals(run_id=run_id, gate_id=gate_id, gate_state=gate_state, blocker_phase=blocker_phase, terminal=terminal, waiting_reason=waiting_reason, command_failed=failed_command is not None)
+        failure_classification = failure_value or blocker_value
+        latest_command = commands[-1] if commands else None
         return AssistantWorkflowProjectionDto(
             application_name=_value(_application_name(run.source_path)),
             run_id=run_id,
@@ -204,14 +212,24 @@ class WorkflowProjectionService:
             stage=_value(stage_value),
             step=_value(step_value),
             gate=_value(gate_value),
+            current_gate_id=_value(gate_id, supported=gate_id is not None),
+            gate_state=_value(gate_state, supported=gate_state is not None),
             status=_value(run.status),
             completed_work=completed_work,
             remaining_work=remaining_work,
             blocker=_value(blocker_value or "none"),
             waiting_reason=_value(waiting_reason),
             failure_reason=_value(failure_value),
+            failure_classification=_value(failure_classification, supported=failure_classification is not None),
             repair_state=_value(run.repair_status),
             next_permitted_action=_value(next_action),
+            next_step_proposals=proposals,
+            latest_command_result=_value({"command_key": latest_command.command_id or latest_command.executable, "status": latest_command.status, "exit_code": latest_command.exit_code, "failure_code": latest_command.failure_code, "started_at": latest_command.started_at, "completed_at": latest_command.finished_at, "correlation_id": latest_command.correlation_id} if latest_command else None, supported=latest_command is not None),
+            semantic_state_version=run.state_version,
+            operational_event_sequence=current_event.sequence if current_event else 0,
+            phase_duration_seconds=_value(duration, supported=duration is not None),
+            stage_duration_seconds=_value(_seconds(current_stage.started_at, current_stage.completed_at) if current_stage else None, supported=current_stage is not None),
+            pricing_availability=_value("available" if records else None, supported=bool(records)),
             workflow_state_version=run.state_version,
             operational_statistics=stats,
             evidence_references=evidence,

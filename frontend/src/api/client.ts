@@ -19,15 +19,16 @@ export function getBackendBaseUrl(): string {
   return (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 }
 
+export function authenticatedHeaders(accept = "application/json"): Record<string, string> {
+  return { Accept: accept, "X-Authenticated-Actor": process.env.NEXT_PUBLIC_AUTHENTICATED_ACTOR ?? "control-tower" };
+}
+
 export function createApiClient(baseUrl = getBackendBaseUrl(), fetchImplementation: FetchImplementation = fetch) {
   async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const response = await fetchImplementation(`${baseUrl}${path}`, {
       method,
       headers: {
-        Accept: "application/json",
-        // The local control plane persists this actor on every run. Keep all
-        // browser reads and writes under the same authenticated identity.
-        "X-Authenticated-Actor": process.env.NEXT_PUBLIC_AUTHENTICATED_ACTOR ?? "control-tower",
+        ...authenticatedHeaders(),
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       cache: "no-store",

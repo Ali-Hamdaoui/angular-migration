@@ -1,13 +1,13 @@
 "use client";
 
 import { type FormEvent, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+import { useRouter } from "next/navigation";
+import { getAssistantMessages, sendAssistantMessage, streamAssistantEvents, type AssistantStreamEvent } from "@/api/assistant";
 import { ApiClientError } from "@/api/client";
 import type { AssistantMessage, AssistantAnswerMode } from "@/types/assistant";
 import { assistantReplayDecision, replaceAssistantHistory } from "./assistantReplay";
 import { AssistantMessage as AssistantMessageBubble } from "./AssistantMessage";
 import { AssistantEvidenceDrawer } from "./AssistantEvidenceDrawer";
-import { getBackendBaseUrl } from "@/api/client";
 import styles from "./ControlTowerShell.module.css";
 
 const baseQuestions = [
@@ -43,6 +43,17 @@ function readPresentation(runId: string): PresentationState {
   const stored = readStorage(storageKey(runId, "presentation"));
   if (stored === "expanded" || stored === "minimized" || stored === "closed") return stored;
   return readStorage(storageKey(runId, "open")) === "true" ? "expanded" : "closed";
+}
+
+function AssistantNextSteps({ runId, proposals }: { runId: string; proposals: NonNullable<AssistantMessage["next_step_proposals"]> }) {
+  const router = useRouter();
+  if (!proposals.length) return null;
+  return <div className={styles.assistantMessageMeta} aria-label="Assistant next-step proposals">
+    {proposals.map((proposal) => proposal.target_route
+      ? <button type="button" key={proposal.action_key} onClick={() => router.push(proposal.target_route!.replace("{run_id}", encodeURIComponent(runId)))}>{proposal.label}</button>
+      : <span key={proposal.action_key}>{proposal.label}</span>)}
+    <small>{proposals.map((proposal) => `${proposal.reason}${proposal.requires_human_approval ? " · human approval required" : ""}`).join(" · ")}</small>
+  </div>;
 }
 
 export function AssistantDock(props: { runId: string; phase?: string; stateVersion?: number; workflowStatus?: string }) {
@@ -125,28 +136,38 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
   useEffect(() => {
     let active = true;
     let lastSequence = 0;
-    if (typeof window === "undefined" || typeof EventSource === "undefined") return () => { active = false; };
-    const source = new EventSource(`${getBackendBaseUrl()}/api/v1/runs/${encodeURIComponent(runId)}/assistant/events?last_event_id=0`);
+    let controller: AbortController | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = 100;
     const restore = () => getAssistantMessages(runId).then((history) => {
       if (!active) return;
       setMessages((current) => replaceAssistantHistory(current, history.messages).concat(current.filter((message) => message.message_id.startsWith("optimistic-") && !history.messages.some((restored) => restored.request_id === message.request_id))));
       setConversationId(history.conversation_id);
       setState(history.messages.length ? "ready" : "empty");
     }).catch(() => { if (active) setState("reconnecting"); });
-    const onLifecycle = (event: MessageEvent<string>) => {
-      try {
-        const payload = JSON.parse(event.data) as { sequence: number; event_type: string };
-        const decision = assistantReplayDecision(lastSequence, payload);
-        if (decision === "ignore") return;
-        if (decision === "gap") { setState("reconnecting"); void restore(); return; }
-        lastSequence = payload.sequence;
-        if (payload.event_type !== "ASSISTANT_RESPONSE_STARTED") void restore();
-      } catch { setState("reconnecting"); void restore(); }
+    const onLifecycle = (payload: AssistantStreamEvent) => {
+      const decision = assistantReplayDecision(lastSequence, payload);
+      if (decision === "ignore") return;
+      if (decision === "gap") { setState("reconnecting"); void restore(); return; }
+      lastSequence = payload.sequence;
+      delay = 100;
+      if (payload.event_type !== "ASSISTANT_RESPONSE_STARTED") void restore();
     };
-    const lifecycleEvents = ["ASSISTANT_RESPONSE_STARTED", "ASSISTANT_RESPONSE_COMPLETED", "ASSISTANT_RESPONSE_FAILED"] as const;
-    lifecycleEvents.forEach((eventName) => source.addEventListener(eventName, onLifecycle));
-    source.onerror = () => { if (active) { setState("reconnecting"); void restore(); } };
-    return () => { active = false; lifecycleEvents.forEach((eventName) => source.removeEventListener(eventName, onLifecycle)); source.close(); };
+    const connect = async () => {
+      while (active) {
+        controller = new AbortController();
+        try {
+          await streamAssistantEvents(runId, lastSequence, controller.signal, onLifecycle, () => { delay = 100; });
+        } catch {
+          if (!active) return;
+          setState("reconnecting");
+          await new Promise<void>((resolve) => { timer = setTimeout(resolve, delay); });
+          delay = Math.min(delay * 2, 2000);
+        }
+      }
+    };
+    void connect();
+    return () => { active = false; controller?.abort(); if (timer) clearTimeout(timer); };
   }, [runId]);
 
   function updateQuestion(value: string) {
@@ -211,7 +232,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
     {error ? <div className={styles.assistantError} role="alert"><strong>Assistant request failed</strong><span> {error}</span></div> : null}
     {!messages.length && state !== "loading" ? <p className={styles.note}>Ask any read-only question about this migration.</p> : null}</div>
     <div className={styles.assistantConversationRegion} role="region" tabIndex={0} aria-label="Assistant conversation">
-      <ol className={styles.assistantConversation}>{messages.map((message) => <li key={message.message_id} className={styles.assistantConversationItem}><AssistantMessageBubble message={message} />{message.role === "assistant" ? <><div className={styles.assistantMessageMeta}><span>Blocker: {message.current_blocker}</span><span>Next: {message.next_permitted_action}</span></div><AssistantEvidenceDrawer evidence={message.evidence_references} /><small>{message.operational_statistics?.total_tokens == null ? "Operational statistics unavailable" : `${message.operational_statistics.total_tokens} tokens · ${message.operational_statistics.total_cost_usd == null ? "cost unavailable" : `$${message.operational_statistics.total_cost_usd.toFixed(6)}`}`}</small></> : null}</li>)}{pendingRequest ? <li key="assistant-pending" className={styles.assistantConversationItem} aria-live="polite"><article data-role="assistant" aria-label="Assistant is thinking"><small>assistant</small><p>Thinking…</p></article></li> : null}</ol>
+      <ol className={styles.assistantConversation}>{messages.map((message) => <li key={message.message_id} className={styles.assistantConversationItem}><AssistantMessageBubble message={message} />{message.role === "assistant" ? <><div className={styles.assistantMessageMeta}><span>Blocker: {message.current_blocker}</span><span>Next: {message.next_permitted_action}</span></div>{message.summary ? <p className={styles.note}>{message.summary}</p> : null}{message.intent ? <small>Intent: {message.intent} · Capability: {message.capability_key || "unavailable"}{message.confidence ? ` · Confidence: ${message.confidence}` : ""}</small> : null}{message.failure_reason ? <p role="alert">{message.error_code ? `${message.error_code} · ` : ""}{message.failure_reason}{message.correlation_id ? ` · ${message.correlation_id}` : ""}</p> : null}{message.missing_information?.length ? <small>Missing information: {message.missing_information.join(", ")}</small> : null}{message.suggested_follow_ups?.length ? <small>Suggested follow-ups: {message.suggested_follow_ups.join(" · ")}</small> : null}<AssistantNextSteps runId={runId} proposals={message.next_step_proposals ?? []} /><AssistantEvidenceDrawer citations={message.citations?.length ? message.citations : message.evidence_references} /><small>{message.operational_statistics?.total_tokens == null ? "Operational statistics unavailable" : `${message.operational_statistics.total_tokens} tokens · ${message.operational_statistics.total_cost_usd == null ? "cost unavailable" : `$${message.operational_statistics.total_cost_usd.toFixed(6)}`}`}</small></> : null}</li>)}{pendingRequest ? <li key="assistant-pending" className={styles.assistantConversationItem} aria-live="polite"><article data-role="assistant" aria-label="Assistant is thinking"><small>assistant</small><p>Thinking…</p></article></li> : null}</ol>
       <div aria-label="Suggested assistant questions" className={styles.assistantSuggestions}>{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => updateQuestion(suggestion)}>{suggestion}</button>)}</div>
     </div>
     <form className={styles.assistantComposer} onSubmit={submit}><label htmlFor="assistant-question">Ask about this migration</label><textarea id="assistant-question" rows={3} value={question} onChange={(event) => updateQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} disabled={state === "loading"} /><div><label htmlFor="assistant-answer-mode">Answer depth</label><select id="assistant-answer-mode" value={answerMode} onChange={(event) => updateAnswerMode(event.target.value as AssistantAnswerMode)}><option value="concise">Concise</option><option value="detailed">Detailed</option><option value="deep">Deep</option></select><button type="submit" disabled={!question.trim() || state === "loading"}>{state === "loading" ? "Answering…" : "Send"}</button>{state === "failed" ? <button type="button" onClick={() => void submit(undefined, failedMessageId.current)}>Retry</button> : null}</div></form>
