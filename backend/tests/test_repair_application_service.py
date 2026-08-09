@@ -94,6 +94,20 @@ def _proposal_candidate():
     }
 
 
+def _create_candidate(path="src/app.ts", content="new"):
+    candidate = _proposal_candidate()
+    candidate["operations"][0].update(
+        {
+            "operation": "create_text_file",
+            "path": path,
+            "old_text": None,
+            "new_text": content,
+            "content": content,
+        }
+    )
+    return candidate
+
+
 def _dependency_transition_candidate(*operations):
     return {
         "proposal_format": "operations",
@@ -519,6 +533,210 @@ def test_corrected_dependency_transition_retry_binds(tmp_path: Path):
     assert bound["operations"][0]["target_state"]["target_version"] == context["expected_target_version"]
 
 
+def test_existing_create_target_has_specific_fail_closed_error(tmp_path: Path):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir()
+    target.write_text("old", encoding="utf-8", newline="")
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(
+            _create_candidate(), context
+        )
+
+    assert raised.value.code == "REPAIR_CREATE_TARGET_EXISTS"
+    assert "create_text_file" in raised.value.message
+    assert "existing" in raised.value.message
+
+
+def test_existing_create_target_is_the_only_new_semantic_retry_code():
+    assert "REPAIR_CREATE_TARGET_EXISTS" in repair_application_service._SEMANTIC_RETRY_CODES
+    assert "REPAIR_OPERATION_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
+
+
+def test_duplicate_create_operations_remain_ambiguous_and_non_retryable(tmp_path: Path):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir()
+    candidate = _create_candidate()
+    candidate["operations"].append(
+        {
+            "operation": "create_text_file",
+            "path": "src/app.ts",
+            "old_text": None,
+            "new_text": "other",
+            "content": "other",
+        }
+    )
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert raised.value.code == "REPAIR_OPERATION_AMBIGUOUS"
+    assert "REPAIR_OPERATION_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
+
+
+def test_create_operation_without_text_content_remains_fail_closed(tmp_path: Path):
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+    candidate = _create_candidate()
+    candidate["operations"][0]["content"] = None
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert raised.value.code == "REPAIR_OPERATION_AMBIGUOUS"
+    assert "REPAIR_OPERATION_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
+
+
+def test_create_target_retry_hydrates_exact_authoritative_file_and_binds_replace(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    initial = _create_candidate()
+    corrected = _proposal_candidate()
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(initial)), _responses_body(json.dumps(corrected))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    session = factory()
+    context_artifact_id = session.get(RepairAttemptModel, attempt_id).context_pack_artifact_id
+    session.close()
+    original_context = store.read_artifact_by_id(context_artifact_id)
+    expected_fingerprint = StageSandboxCopier.fingerprint(tmp_path / "workspace")
+
+    proposal = service.propose(attempt_id)
+
+    assert len(transport.calls) == 2
+    assert proposal["operations"][0]["operation"] == "replace_text"
+    assert proposal["operations"][0]["old_text"] == "old"
+    retry_request = json.loads(transport.calls[1]["payload"]["input"][0]["content"][0]["text"])
+    retry_text = "\n".join(
+        segment["content"]
+        for segment in retry_request["context"]
+        if isinstance(segment, dict) and isinstance(segment.get("content"), str)
+    )
+    assert "target already exists" in retry_text
+    assert "use replace_text" in retry_text
+    assert "exact authoritative preimage" in retry_text
+    hydrated = next(
+        json.loads(segment["content"])
+        for segment in retry_request["context"]
+        if isinstance(segment, dict)
+        and isinstance(segment.get("content"), str)
+        and segment["content"].startswith(
+            '{"schema_version": "repair-semantic-retry-context-v1"'
+        )
+    )
+    assert hydrated == {
+        "schema_version": "repair-semantic-retry-context-v1",
+        "targets": [
+            {
+                "bom": False,
+                "content": "old",
+                "final_newline": False,
+                "path": "src/app.ts",
+                "sha256": "sha256:" + hashlib.sha256(b"old").hexdigest(),
+                "size_bytes": 3,
+            }
+        ],
+        "workspace_fingerprint": expected_fingerprint,
+    }
+    current_context = store.read_artifact_by_id(context_artifact_id)
+    assert current_context.ref.checksum == original_context.ref.checksum
+    assert current_context.content == original_context.content
+
+    session = factory()
+    invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+    rejected = next(
+        store.read_artifact_by_id(artifact_id)
+        for artifact_id in invocation.artifact_ids
+        if store.read_artifact_by_id(artifact_id).ref.relative_path.endswith(
+            "rejected-proposer-candidate.json"
+        )
+    )
+    session.close()
+    rejected_payload = json.loads(rejected.content)
+    assert rejected_payload["semantic_failure_code"] == "REPAIR_CREATE_TARGET_EXISTS"
+    assert rejected_payload["semantic_retry_context"] == hydrated
+    recovered_retry = service._load_semantic_retry_context(service._attempt_context(attempt_id))
+    assert recovered_retry["error_code"] == "REPAIR_CREATE_TARGET_EXISTS"
+    engine.dispose()
+
+
+def test_create_target_retry_is_bounded_to_one(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    invalid = _create_candidate()
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(invalid)), _responses_body(json.dumps(invalid))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairApplicationError) as first:
+        service.propose(attempt_id)
+    assert first.value.code == "REPAIR_CREATE_TARGET_EXISTS"
+    assert len(transport.calls) == 2
+
+    with pytest.raises(RepairApplicationError) as exhausted:
+        service.propose(attempt_id)
+    assert exhausted.value.code == "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+    assert len(transport.calls) == 2
+    engine.dispose()
+
+
+@pytest.mark.parametrize("target_kind", ["unsafe", "directory", "symlink"])
+def test_non_recoverable_create_targets_fail_closed(tmp_path: Path, target_kind: str):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, app_ts, _artifacts = _seed_service(factory, tmp_path)
+    workspace = tmp_path / "workspace"
+    if target_kind == "unsafe":
+        path = "../outside.ts"
+    elif target_kind == "directory":
+        target = workspace / "src" / "existing-dir"
+        target.mkdir()
+        path = "src/existing-dir"
+        _refresh_seed_authority(factory, tmp_path)
+    else:
+        target = workspace / "src" / "existing-link.ts"
+        try:
+            target.symlink_to(app_ts)
+        except OSError:
+            engine.dispose()
+            pytest.skip("symlink creation is unavailable in this environment")
+        path = "src/existing-link.ts"
+        _refresh_seed_authority(factory, tmp_path)
+
+    service = RepairApplicationService(scope=_scope(factory))
+    context = service._attempt_context(attempt_id)
+    with pytest.raises(RepairApplicationError) as raised:
+        service._hydrate_semantic_retry_context(_create_candidate(path), context)
+
+    assert raised.value.code in {
+        "REPAIR_REPLACEMENT_CONTEXT_INVALID",
+        "REPAIR_WORKSPACE_MISSING",
+        "REPAIR_WORKSPACE_STALE",
+    }
+    engine.dispose()
+
+
 def test_generic_operation_ambiguity_remains_non_retryable(tmp_path: Path):
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
     candidate = _proposal_candidate()
@@ -898,6 +1116,16 @@ def _seed_exhausted_semantic_retry(
     session.commit()
     session.close()
     return store, attempt_id, app_ts, artifacts
+
+
+def _refresh_seed_authority(factory, tmp_path: Path):
+    fingerprint = StageSandboxCopier.fingerprint(tmp_path / "workspace")
+    session = factory()
+    session.get(StageWorkspaceBindingModel, "binding-1").workspace_fingerprint = fingerprint
+    session.get(RepairAttemptModel, "repair-1").pre_fingerprint = fingerprint
+    session.commit()
+    session.close()
+    return fingerprint
 
 
 def _recovery_service(factory):
@@ -1591,7 +1819,9 @@ def test_missing_replace_target_hydrates_authoritative_retry_context(tmp_path: P
     )
     assert hydrated["targets"] == [
         {
+            "bom": False,
             "content": "old",
+            "final_newline": False,
             "path": "src/app.ts",
             "sha256": "sha256:" + hashlib.sha256(b"old").hexdigest(),
             "size_bytes": 3,

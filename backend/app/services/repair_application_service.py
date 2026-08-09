@@ -214,6 +214,7 @@ _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE = "REPAIR_DEPENDENCY_TRANSITION_NOT_EXCLUSI
 _REPLACEMENT_CONTEXT_MISSING = "REPAIR_REPLACEMENT_CONTEXT_MISSING"
 _REPLACEMENT_CONTEXT_INVALID = "REPAIR_REPLACEMENT_CONTEXT_INVALID"
 _REPLACEMENT_PREIMAGE_REQUIRED = "REPAIR_REPLACEMENT_PREIMAGE_REQUIRED"
+_CREATE_TARGET_EXISTS = "REPAIR_CREATE_TARGET_EXISTS"
 _SEMANTIC_RETRY_CONTEXT_SCHEMA = "repair-semantic-retry-context-v1"
 _SEMANTIC_RETRY_CODES = frozenset(
     {
@@ -226,6 +227,7 @@ _SEMANTIC_RETRY_CODES = frozenset(
         _REPLACEMENT_CONTEXT_MISSING,
         _REPLACEMENT_PREIMAGE_REQUIRED,
         _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE,
+        _CREATE_TARGET_EXISTS,
     }
 )
 _PROPOSER_GROUNDING_INSTRUCTIONS = (
@@ -258,6 +260,15 @@ _DEPENDENCY_TRANSITION_RETRY_FEEDBACK = (
     "The backend binds authoritative transition targets. "
     "Regenerate from the same immutable failure/context evidence."
 )
+_CREATE_TARGET_EXISTS_RETRY_FEEDBACK = (
+    "The proposed create_text_file target already exists in the authoritative workspace. "
+    "Do not create or overwrite it. Inspect the hydrated authoritative target content "
+    "supplied with this retry. Use the exact authoritative preimage. If the intended "
+    "repair modifies that existing file, use replace_text with a non-empty old_text "
+    "copied EXACTLY from the authoritative file content and an appropriate new_text. "
+    "Preserve exact preimage semantics including EOF/newline state. Do not fabricate "
+    "file state."
+)
 _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -266,6 +277,8 @@ def _semantic_retry_feedback(error_code: str | None) -> str:
         return _REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK
     if error_code == _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE:
         return _DEPENDENCY_TRANSITION_RETRY_FEEDBACK
+    if error_code == _CREATE_TARGET_EXISTS:
+        return _CREATE_TARGET_EXISTS_RETRY_FEEDBACK
     return _SEMANTIC_RETRY_FEEDBACK
 
 
@@ -569,12 +582,12 @@ class RepairApplicationService:
                 if recovered_retry_context is not None:
                     semantic_retry_context_segment = recovered_retry_context["segment"]
                     semantic_retry_context_checksum = recovered_retry_context["checksum"]
+                    semantic_retry_code = recovered_retry_context["error_code"]
                     if not semantic_retry_count:
                         semantic_retry_count = 1
                         retry_of_invocation_key = _invocation_key(
                             str(attempt_id), LlmRole.REPAIR_PROPOSER
                         )
-                        semantic_retry_code = _REPLACEMENT_CONTEXT_MISSING
             if not semantic_retry_count and context.get("proposer_invocation_id"):
                 context["invocation_key"] = str(context["proposer_invocation_id"])
                 if ":semantic-retry-" in context["invocation_key"]:
@@ -650,7 +663,10 @@ class RepairApplicationService:
             except RepairApplicationError as error:
                 retry_error = error
                 hydrated_retry_context = None
-                if error.code == "REPAIR_REPLACEMENT_MISSING" and semantic_retry_count == 0:
+                if (
+                    error.code in {"REPAIR_REPLACEMENT_MISSING", _CREATE_TARGET_EXISTS}
+                    and semantic_retry_count == 0
+                ):
                     try:
                         hydrated_retry_context = self._hydrate_semantic_retry_context(
                             output, context
@@ -658,7 +674,10 @@ class RepairApplicationService:
                     except RepairApplicationError as hydration_error:
                         retry_error = hydration_error
                     else:
-                        if hydrated_retry_context is not None:
+                        if (
+                            hydrated_retry_context is not None
+                            and error.code == "REPAIR_REPLACEMENT_MISSING"
+                        ):
                             semantic_retry_context_segment = hydrated_retry_context["segment"]
                             semantic_retry_context_checksum = self._request_checksum(
                                 hydrated_retry_context["payload"]
@@ -668,6 +687,11 @@ class RepairApplicationService:
                                 "The replace_text target was missing from the authoritative "
                                 "proposer context; exact active workspace content was "
                                 "hydrated for the bounded semantic retry.",
+                            )
+                        elif hydrated_retry_context is not None:
+                            semantic_retry_context_segment = hydrated_retry_context["segment"]
+                            semantic_retry_context_checksum = self._request_checksum(
+                                hydrated_retry_context["payload"]
                             )
                 self._persist_failure(
                     context,
@@ -1778,10 +1802,22 @@ class RepairApplicationService:
                 for item in group:
                     self._replacement_preimage(item)
             if "create_text_file" in actions:
-                if len(group) != 1 or target.exists() or group[0].get("content") is None:
+                if len(group) != 1:
                     raise RepairApplicationError(
                         "REPAIR_OPERATION_AMBIGUOUS",
                         "Create operations cannot share a physical path",
+                    )
+                content = group[0].get("content")
+                if not isinstance(content, str):
+                    raise RepairApplicationError(
+                        "REPAIR_OPERATION_AMBIGUOUS",
+                        "Create operations require non-null text content",
+                    )
+                if target.exists() or target.is_symlink():
+                    raise RepairApplicationError(
+                        _CREATE_TARGET_EXISTS,
+                        "create_text_file cannot target an existing filesystem entry; "
+                        "use an operation appropriate for existing authoritative content.",
                     )
                 group[0]["preimage_sha256"] = None
                 result.append(group[0])
@@ -2387,12 +2423,16 @@ class RepairApplicationService:
             raise RepairApplicationError(
                 "REPAIR_WORKSPACE_MISSING", "Repair workspace is unavailable"
             ) from error
-        excerpts = self._context_pack_excerpts(authoritative)
+        excerpts: dict[str, object] | None = None
         missing_paths: list[str] = []
+        existing_create_paths: list[str] = []
         for operation in candidate.get("operations") or []:
-            if not isinstance(operation, dict) or operation.get("operation") != "replace_text":
+            if not isinstance(operation, dict):
                 continue
+            operation_name = operation.get("operation")
             path_value = operation.get("path")
+            if operation_name not in {"replace_text", "create_text_file"}:
+                continue
             if not isinstance(path_value, str) or not path_value:
                 raise RepairApplicationError(
                     _REPLACEMENT_CONTEXT_INVALID,
@@ -2405,6 +2445,17 @@ class RepairApplicationService:
                     _REPLACEMENT_CONTEXT_INVALID,
                     "replace_text target path cannot be hydrated safely",
                 ) from error
+            if operation_name == "create_text_file":
+                target = workspace / relative
+                if not target.exists() and not target.is_symlink():
+                    raise RepairApplicationError(
+                        _REPLACEMENT_CONTEXT_INVALID,
+                        "create_text_file target is not an existing filesystem entry",
+                    )
+                existing_create_paths.append(relative)
+                continue
+            if excerpts is None:
+                excerpts = self._context_pack_excerpts(authoritative)
             entry = excerpts.get(relative)
             if not (
                 isinstance(entry, dict)
@@ -2413,11 +2464,12 @@ class RepairApplicationService:
             ):
                 missing_paths.append(relative)
         missing_paths = list(dict.fromkeys(missing_paths))
-        if not missing_paths:
+        hydrate_paths = list(dict.fromkeys([*missing_paths, *existing_create_paths]))
+        if not hydrate_paths:
             return None
 
         targets: list[dict[str, object]] = []
-        for relative in sorted(missing_paths):
+        for relative in sorted(hydrate_paths):
             current_path = workspace
             for part in PurePosixPath(relative).parts:
                 current_path = current_path / part
@@ -2449,7 +2501,9 @@ class RepairApplicationService:
                 ) from error
             targets.append(
                 {
+                    "bom": raw.startswith(b"\xef\xbb\xbf"),
                     "content": content,
+                    "final_newline": raw.endswith((b"\n", b"\r")),
                     "path": relative,
                     "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
                     "size_bytes": len(raw),
@@ -2524,7 +2578,14 @@ class RepairApplicationService:
                     else None
                 )
                 if retry_payload is not None:
-                    recovered.append(self._validate_semantic_retry_context(retry_payload, context))
+                    recovered.append(
+                        (
+                            self._validate_semantic_retry_context(retry_payload, context),
+                            candidate_payload.get("semantic_failure_code")
+                            if isinstance(candidate_payload, dict)
+                            else None,
+                        )
+                    )
             except RepairApplicationError:
                 raise
             except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as error:
@@ -2539,10 +2600,16 @@ class RepairApplicationService:
             )
         if not recovered:
             return None
-        payload = recovered[0]
+        payload, retry_code = recovered[0]
+        if retry_code not in _SEMANTIC_RETRY_CODES:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Repair semantic retry context failure code is invalid",
+            )
         return {
             "segment": json.dumps(payload, sort_keys=True),
             "checksum": self._request_checksum(payload),
+            "error_code": retry_code,
         }
 
     def _validate_semantic_retry_context(
@@ -2605,6 +2672,18 @@ class RepairApplicationService:
                 raise RepairApplicationError(
                     "REPAIR_ARTIFACT_RECOVERY_FAILED",
                     "Repair semantic retry context target checksum is invalid",
+                )
+            if "bom" in item and item["bom"] is not raw.startswith(b"\xef\xbb\xbf"):
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context target BOM state is invalid",
+                )
+            if "final_newline" in item and item["final_newline"] is not raw.endswith(
+                (b"\n", b"\r")
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context target EOF state is invalid",
                 )
         return payload
 
