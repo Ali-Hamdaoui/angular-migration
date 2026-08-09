@@ -30,14 +30,19 @@ from app.domain.contracts import ArtifactType
 from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
     ArtifactMetadataModel,
+    MigrationPlanModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
+    StageGatePackageModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
 from app.repositories.models.base import Base
 from app.services.patch_apply_service import PatchApplyService
+from app.services.causal_review import repair_budget
+from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.repair_application_service import RepairApplicationError, RepairApplicationService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageService
 
@@ -280,6 +285,464 @@ def _seed_review_chain(
     return store
 
 
+def _seed_budget_request_case(
+    factory,
+    tmp_path: Path,
+    *,
+    target_attempt_number: int,
+    completed_attempt_numbers: tuple[int, ...] = (),
+    completed_status: str = "applied",
+    recovery_attempt_number: int | None = None,
+):
+    artifacts = tmp_path / "budget-artifacts"
+    workspace = tmp_path / "budget-workspace"
+    (workspace / "src").mkdir(parents=True, exist_ok=True)
+    (workspace / "src" / "app.ts").write_text("old", encoding="utf-8")
+    store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
+    stage_id = "stage-1"
+    run_id = "run-1"
+    target_id = f"repair-{stage_id}-{target_attempt_number}"
+    live_fingerprint = StageSandboxCopier.fingerprint(workspace)
+
+    def _metadata(stored):
+        return ArtifactMetadataModel(
+            id="metadata-" + stored.ref.artifact_id,
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_type=stored.ref.artifact_type.value,
+            relative_path=stored.ref.relative_path,
+            checksum=stored.ref.checksum,
+            schema_version=stored.envelope.schema_version if stored.envelope else 1,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+            size_bytes=len(stored.content.encode("utf-8")),
+        )
+
+    def _proposal_payload(failure_checksum: str, context_checksum: str):
+        return {
+            "failure_evidence_checksum": failure_checksum,
+            "context_pack_checksum": context_checksum,
+            "proposal_format": "operations",
+            "operations": [
+                {
+                    "operation": "replace_text",
+                    "path": "src/app.ts",
+                    "preimage_sha256": "sha256:" + "0" * 64,
+                    "old_text": "old",
+                    "new_text": "new",
+                }
+            ],
+            "unified_diff": None,
+            "touched_files": ["src/app.ts"],
+            "rationale": ["Fix the compiler error."],
+            "risk_level": "low",
+            "validation_targets": ["build"],
+            "limitations": [],
+        }
+
+    def _review_payload_for(proposal_checksum: str):
+        return {
+            "decision": "request_changes",
+            "findings": [],
+            "policy_checks": ["paths"],
+            "risk_assessment": "low",
+            "required_validation_targets": ["build"],
+            "limitations": [],
+            "proposal_checksum": proposal_checksum,
+        }
+
+    failure = store.write_text_artifact(
+        run_id,
+        f"05_repairs/attempt-{target_id}/failure-evidence.json",
+        json.dumps({"attempt_id": target_id}),
+        ArtifactType.JSON,
+        stage_id=stage_id,
+        attempt_id=target_id,
+        created_by="repair-failure-evidence",
+        created_at=NOW,
+    )
+    evidence = {
+        "schema_version": "transformer-failure-evidence-v1",
+        "run_id": run_id,
+        "stage_id": stage_id,
+        "stage_plan_checksum": "sha256:stage-plan",
+        "workspace_path": str(workspace),
+        "workspace_fingerprint": live_fingerprint,
+        "artifact_root": str(artifacts),
+        "execution_id": "execution-1",
+        "command_log_artifact_id": None,
+        "result_artifact_id": None,
+        "normalized_failure": {
+            "error_code": "COMPILATION_FAILED",
+            "exit_code": 1,
+            "failure_message": "Angular compiler reported an error",
+        },
+        "failure_fingerprint": "fingerprint-failure",
+        "prior_fingerprints": [],
+        "repair_policy": {"max_attempts": 3, "max_applied": 2},
+        "forbidden_change_policy": {},
+    }
+    context = FailureEvidenceService(now_provider=lambda: NOW).write_context_pack(
+        evidence, failure.ref.checksum
+    )
+    target_proposal = store.write_text_artifact(
+        run_id,
+        f"05_repairs/attempt-{target_id}/proposal.json",
+        json.dumps(_proposal_payload(failure.ref.checksum, context.ref.checksum), sort_keys=True),
+        ArtifactType.JSON,
+        stage_id=stage_id,
+        attempt_id=target_id,
+        created_by="repair-proposal",
+        created_at=NOW,
+    )
+    target_review = store.write_text_artifact(
+        run_id,
+        f"05_repairs/attempt-{target_id}/review.json",
+        json.dumps(_review_payload_for(target_proposal.ref.checksum), sort_keys=True),
+        ArtifactType.JSON,
+        stage_id=stage_id,
+        attempt_id=target_id,
+        created_by="repair-review",
+        created_at=NOW,
+    )
+
+    completed_rows = []
+    completed_packages = []
+    for number in completed_attempt_numbers:
+        attempt_id = f"repair-{stage_id}-{number}"
+        proposal = store.write_text_artifact(
+            run_id,
+            f"05_repairs/attempt-{attempt_id}/proposal.json",
+            json.dumps(_proposal_payload("sha256:failure", "sha256:context"), sort_keys=True),
+            ArtifactType.JSON,
+            stage_id=stage_id,
+            attempt_id=attempt_id,
+            created_by="repair-proposal",
+            created_at=NOW,
+        )
+        review = store.write_text_artifact(
+            run_id,
+            f"05_repairs/attempt-{attempt_id}/review.json",
+            json.dumps(_review_payload_for(proposal.ref.checksum), sort_keys=True),
+            ArtifactType.JSON,
+            stage_id=stage_id,
+            attempt_id=attempt_id,
+            created_by="repair-review",
+            created_at=NOW,
+        )
+        package_id = f"gate-package-{number}"
+        package = StageGatePackageModel(
+            id=package_id,
+            run_id=run_id,
+            stage_id=stage_id,
+            gate_id="G10",
+            gate_version=number,
+            status="approved",
+            package_artifact_id=f"artifact-package-{number}",
+            package_checksum="sha256:" + str(number) * 64,
+            artifact_set_checksum="sha256:" + str(number) * 64,
+            plan_id="plan-1",
+            plan_version=1,
+            stage_plan_id="stage-plan-1",
+            stage_plan_checksum="sha256:stage-plan",
+            workspace_fingerprint=live_fingerprint,
+            expected_state_version=number,
+            created_at=NOW,
+        )
+        completed_packages.append(package)
+        completed_rows.append(
+            RepairAttemptModel(
+                id=attempt_id,
+                run_id=run_id,
+                stage_id=stage_id,
+                attempt_number=number,
+                status=completed_status,
+                risk_level="low",
+                diagnosis="completed repair",
+                proposal_artifact_id=proposal.ref.artifact_id,
+                proposal_checksum=proposal.ref.checksum,
+                review_artifact_id=review.ref.artifact_id,
+                review_checksum=review.ref.checksum,
+                g10_gate_package_id=package_id,
+                apply_ledger_artifact_id=f"artifact-apply-{number}",
+                apply_ledger_checksum="sha256:" + str(number) * 64,
+                pre_fingerprint=live_fingerprint,
+                post_fingerprint=live_fingerprint,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+
+    target_package_id = f"gate-package-{target_attempt_number}"
+    target_package = StageGatePackageModel(
+        id=target_package_id,
+        run_id=run_id,
+        stage_id=stage_id,
+        gate_id="G10",
+        gate_version=target_attempt_number,
+        status="pending",
+        package_artifact_id=f"artifact-package-{target_attempt_number}",
+        package_checksum="sha256:" + str(target_attempt_number) * 64,
+        artifact_set_checksum="sha256:" + str(target_attempt_number) * 64,
+        plan_id="plan-1",
+        plan_version=1,
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        workspace_fingerprint=live_fingerprint,
+        expected_state_version=target_attempt_number,
+        created_at=NOW,
+    )
+    target_attempt = RepairAttemptModel(
+        id=target_id,
+        run_id=run_id,
+        stage_id=stage_id,
+        attempt_number=target_attempt_number,
+        status="waiting_g10",
+        risk_level="low",
+        diagnosis="current repair",
+        failure_evidence_artifact_id=failure.ref.artifact_id,
+        failure_evidence_checksum=failure.ref.checksum,
+        context_pack_artifact_id=context.ref.artifact_id,
+        context_pack_checksum=context.ref.checksum,
+        proposal_artifact_id=target_proposal.ref.artifact_id,
+        proposal_checksum=target_proposal.ref.checksum,
+        review_artifact_id=target_review.ref.artifact_id,
+        review_checksum=target_review.ref.checksum,
+        g10_gate_package_id=target_package_id,
+        pre_fingerprint=live_fingerprint,
+        failure_fingerprint="fingerprint-failure",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    recovery = None
+    if recovery_attempt_number is not None:
+        recovery = RepairAttemptModel(
+            id=f"repair-{stage_id}-{recovery_attempt_number}",
+            run_id=run_id,
+            stage_id=stage_id,
+            attempt_number=recovery_attempt_number,
+            status="superseded",
+            risk_level="unknown",
+            diagnosis="recovery evidence only",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+
+    session = factory()
+    run = MigrationRunModel(
+        id=run_id,
+        status="STAGE_CREATED",
+        run_phase="FEASIBILITY_PLANNING",
+        phase_status="completed",
+        state_version=7,
+        run_root=str(tmp_path),
+        artifact_root=str(artifacts),
+        workspace_aliases={"STAGE_SANDBOX": str(tmp_path)},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    plan = MigrationPlanModel(
+        id="plan-1",
+        run_id=run_id,
+        idempotency_key="plan",
+        request_checksum="sha256:plan",
+        actor="operator",
+        status="approved",
+        version=1,
+        plan={},
+        checksum="sha256:plan",
+        artifact_ids=[],
+        artifact_checksums={},
+        state_version=1,
+        event_sequence=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    stage_plan = StageExecutionPlanModel(
+        id="stage-plan-1",
+        run_id=run_id,
+        migration_plan_id="plan-1",
+        stage_id=stage_id,
+        idempotency_key="stage-plan",
+        request_checksum="sha256:stage-plan-request",
+        actor="operator",
+        correlation_id="correlation-1",
+        status="approved",
+        version=1,
+        stage_plan={"repair_policy": {"max_attempts": 3, "max_applied": 2}},
+        checksum="sha256:stage-plan",
+        artifact_ids=[],
+        artifact_checksums={},
+        state_version=1,
+        event_sequence=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    binding = StageWorkspaceBindingModel(
+        id="binding-1",
+        run_id=run_id,
+        stage_id=stage_id,
+        alias="STAGE_WORKSPACE_1",
+        workspace_path=str(workspace),
+        workspace_fingerprint=live_fingerprint,
+        active=True,
+        created_at=NOW,
+    )
+    continuation = TransformationContinuationModel(
+        id="cont-1",
+        run_id=run_id,
+        current_stage_id=stage_id,
+        thread_id="thread-1",
+        status="waiting_gate",
+        current_node="wait_g10",
+        g06_approval_id="g06-1",
+        plan_id="plan-1",
+        plan_checksum="sha256:plan",
+        stage_plan_id="stage-plan-1",
+        stage_plan_checksum="sha256:stage-plan",
+        max_attempts=3,
+        idempotency_key="continuation",
+        request_checksum="sha256:continuation",
+        state_version=3,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    session.add_all(
+        [
+            run,
+            plan,
+            stage_plan,
+            binding,
+            continuation,
+            *completed_packages,
+            target_package,
+            *completed_rows,
+            target_attempt,
+            *([recovery] if recovery is not None else []),
+        ]
+    )
+    for stored in [failure, context, target_proposal, target_review]:
+        session.add(_metadata(stored))
+    for number in completed_attempt_numbers:
+        for relative in (
+            f"05_repairs/attempt-repair-{stage_id}-{number}/proposal.json",
+            f"05_repairs/attempt-repair-{stage_id}-{number}/review.json",
+        ):
+            stored = store.read_artifact(run_id, relative)
+            session.add(_metadata(stored))
+    session.commit()
+    session.close()
+    return store, target_id, target_proposal.ref.artifact_id, target_proposal.ref.checksum
+
+
+def _request_revision(service, target_id, proposal_id, proposal_checksum, *, key):
+    return service.request_revision(
+        attempt_id=target_id,
+        proposal_id=proposal_id,
+        base_checksum=proposal_checksum,
+        instruction="Please revise the candidate.",
+        idempotency_key=key,
+        actor="operator",
+    )
+
+
+def test_request_changes_ignores_superseded_unapplied_recovery_attempts(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    store, target_id, proposal_id, proposal_checksum = _seed_budget_request_case(
+        factory,
+        tmp_path,
+        target_attempt_number=5,
+        recovery_attempt_number=4,
+    )
+    proposal_path = f"05_repairs/attempt-{target_id}/proposal.json"
+    original_proposal = store.read_artifact("run-1", proposal_path).content
+    service = RepairApplicationService(scope=_scope(factory), now_provider=lambda: NOW)
+
+    result = _request_revision(
+        service, target_id, proposal_id, proposal_checksum, key="revision-recovery"
+    )
+
+    assert result == {
+        "attempt_id": "repair-stage-1-6",
+        "status": "evidence_frozen",
+        "idempotent_replay": False,
+    }
+    session = factory()
+    attempts = session.query(RepairAttemptModel).order_by(RepairAttemptModel.attempt_number).all()
+    assert [attempt.attempt_number for attempt in attempts] == [4, 5, 6]
+    recovery = session.get(RepairAttemptModel, "repair-stage-1-4")
+    parent = session.get(RepairAttemptModel, target_id)
+    child = session.get(RepairAttemptModel, "repair-stage-1-6")
+    assert recovery is not None
+    assert recovery.status == "superseded"
+    assert recovery.proposal_artifact_id is None
+    assert recovery.review_artifact_id is None
+    assert recovery.apply_ledger_artifact_id is None
+    assert parent is not None and parent.status == "superseded"
+    assert parent.proposal_artifact_id == proposal_id
+    assert parent.proposal_checksum == proposal_checksum
+    assert store.read_artifact("run-1", proposal_path).content == original_proposal
+    assert child is not None and child.parent_attempt_id == target_id
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "queued"
+    assert continuation.current_node == "propose_repair"
+    session.close()
+    engine.dispose()
+
+
+def test_request_changes_still_exhausts_at_causal_repair_budget(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _, target_id, proposal_id, proposal_checksum = _seed_budget_request_case(
+        factory,
+        tmp_path,
+        target_attempt_number=4,
+        completed_attempt_numbers=(1, 2, 3),
+    )
+    session = factory()
+    budget = repair_budget(session, "run-1", "stage-1", {"max_attempts": 3, "max_applied": 2})
+    assert budget["consumed_attempts"] == 3
+    assert budget["consumed_applied"] == 3
+    session.close()
+    service = RepairApplicationService(scope=_scope(factory), now_provider=lambda: NOW)
+
+    with pytest.raises(RepairApplicationError) as error:
+        _request_revision(
+            service, target_id, proposal_id, proposal_checksum, key="revision-exhausted"
+        )
+
+    assert error.value.code == "REPAIR_LOOP_EXHAUSTED"
+    session = factory()
+    assert session.query(RepairAttemptModel).count() == 4
+    session.close()
+    engine.dispose()
+
+
+def test_repair_budget_counts_causally_completed_migration_retried_attempt(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_budget_request_case(
+        factory,
+        tmp_path,
+        target_attempt_number=2,
+        completed_attempt_numbers=(1,),
+        completed_status="migration_retried",
+    )
+    session = factory()
+
+    budget = repair_budget(
+        session,
+        "run-1",
+        "stage-1",
+        {"max_attempts": 3, "max_applied": 2},
+    )
+
+    assert budget["consumed_attempts"] == 1
+    assert budget["consumed_applied"] == 1
+    session.close()
+    engine.dispose()
+
+
 def test_child_attempt_carries_parent_request_changes_review_lineage(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _seed_review_chain(factory, tmp_path)
@@ -369,20 +832,23 @@ def test_child_creation_rejects_tampered_parent_review_artifact(tmp_path: Path):
 
 def test_request_changes_at_attempt_budget_raises_revision_limit(tmp_path: Path):
     engine, factory = _database(tmp_path)
-    _seed_review_chain(factory, tmp_path, attempt_number=3)
-
-    _orchestrator(factory, repair_service=_RequestChangesReviewer()).advance(
-        "cont-1", "worker-1"
+    _, target_id, proposal_id, proposal_checksum = _seed_budget_request_case(
+        factory,
+        tmp_path,
+        target_attempt_number=4,
+        completed_attempt_numbers=(1, 2, 3),
     )
 
-    session = factory()
-    attempts = session.query(RepairAttemptModel).all()
-    assert len(attempts) == 1
-    continuation = session.get(TransformationContinuationModel, "cont-1")
-    assert continuation.status == "blocked"
-    assert continuation.last_error_code == "REPAIR_LOOP_EXHAUSTED"
-    assert continuation.last_error_code != "REPAIR_REVIEW_REJECTED"
-    session.close()
+    with pytest.raises(RepairApplicationError) as error:
+        _request_revision(
+            RepairApplicationService(scope=_scope(factory), now_provider=lambda: NOW),
+            target_id,
+            proposal_id,
+            proposal_checksum,
+            key="revision-at-budget",
+        )
+
+    assert error.value.code == "REPAIR_LOOP_EXHAUSTED"
     engine.dispose()
 
 

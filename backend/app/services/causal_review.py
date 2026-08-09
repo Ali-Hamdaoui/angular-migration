@@ -547,7 +547,13 @@ def _succeeded_execution(session, run_id: str, stage_id: str, idempotency_key: s
 def _repair_completed(session, run, row, successors) -> bool:
     if (
         row.apply_ledger_artifact_id is None
-        or row.status not in {"applied", "revalidating_affected", "revalidating", "waiting_g11"}
+        or row.status not in {
+            "applied",
+            "revalidating_affected",
+            "revalidating",
+            "migration_retried",
+            "waiting_g11",
+        }
         or not row.proposal_artifact_id
         or not row.proposal_checksum
         or not row.review_artifact_id

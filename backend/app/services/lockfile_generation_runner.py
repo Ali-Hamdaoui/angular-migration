@@ -28,7 +28,20 @@ from app.repositories.models import (
 )
 from app.services.repair_application_service import RepairProposal
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
-from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE, STAGE_VOLATILE_NAMES
+
+#: Governed mutation-scope identity for npm-lockfile-generate evidence.
+#: v1 (pre-fix) fingerprint scope excluded only the root package-lock.json and
+#: therefore treated npm's generated node_modules/.package-lock.json as an
+#: unexpected mutation.  v2 excludes the root package-lock.json plus the same
+#: volatile roots (node_modules/** and friends) the stage fingerprint system
+#: already governs by, so npm's generated tree cannot raise false positives.
+LOCKFILE_GENERATION_FINGERPRINT_SCOPE = "lockfile-generation-mutation-v2"
+
+#: Deterministic durable attempt marker for the one V1 -> V2 successor
+#: generation.  The successor idempotency key is derived from this suffix, so
+#: restarts reconstruct the same key and never queue endless successors.
+LOCKFILE_GENERATION_ATTEMPT_2_MARKER = ":attempt-2"
 
 
 class LockfileGenerationError(ValueError):
@@ -46,12 +59,31 @@ def _file_checksum(path: Path) -> str:
     )
 
 
-def workspace_excluding_root_lockfile_fingerprint(workspace: Path) -> str:
+def _is_governed_volatile_relative(relative: str) -> bool:
+    """True when any path part is a governed volatile root (node_modules/** etc.).
+
+    Mirrors the casefold-any-part semantics of the stage fingerprint profile
+    (``workspace_fingerprint_v1``) so the lockfile mutation proof governs the
+    exact same tree authority as the stage binding fingerprint.
+    """
+    return any(part.casefold() in STAGE_VOLATILE_NAMES for part in relative.split("/"))
+
+
+def workspace_excluding_governed_volatile_fingerprint(workspace: Path) -> str:
+    """Governed mutation-scope fingerprint for npm-lockfile-generate (v2).
+
+    Scope: the root package-lock.json and every governed volatile root
+    (node_modules/**, .angular/**, dist/**, ...) may change; every other file
+    must be byte-identical across the command.  ``package.json`` stays inside
+    the governed scope and is additionally pinned by its own checksum guard.
+    """
     root = workspace.resolve(strict=True)
     entries = []
     for item in root.rglob("*"):
         relative = item.relative_to(root).as_posix()
         if relative == "package-lock.json":
+            continue
+        if _is_governed_volatile_relative(relative):
             continue
         if item.is_symlink():
             entries.append((relative, b"symlink:" + os.readlink(item).encode()))
@@ -98,38 +130,49 @@ class LockfileGenerationRunner:
                 "LOCKFILE_GENERATION_COMMAND_FAILED",
                 execution.failure_code or "npm-lockfile-generate did not succeed",
             )
+        if (execution.start_fingerprint or {}).get("fingerprint_scope") != LOCKFILE_GENERATION_FINGERPRINT_SCOPE:
+            return self._queue_successor(session, continuation, execution)
         self._verify(session, continuation, step, execution)
         self._resume(continuation, next_node)
         return "passed"
 
-    def _queue(self, session, continuation) -> str:
+    def _queue(self, session, continuation, *, generation: int = 1) -> str:
+        if generation not in {1, 2}:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
+                "Only one v1 -> v2 successor generation is permitted",
+            )
         run, attempt, binding, workspace = self._authority(session, continuation)
         if (workspace / "npm-shrinkwrap.json").exists():
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_SHRINKWRAP_PRESENT",
                 "Root npm-shrinkwrap.json forbids package-lock generation",
             )
-        if STAGE_FINGERPRINT_PROFILE.fingerprint(workspace) != binding.workspace_fingerprint:
-            raise LockfileGenerationError(
-                "LOCKFILE_GENERATION_WORKSPACE_STALE",
-                "The post-apply workspace no longer matches its active binding",
-            )
+        if generation == 1:
+            if STAGE_FINGERPRINT_PROFILE.fingerprint(workspace) != binding.workspace_fingerprint:
+                raise LockfileGenerationError(
+                    "LOCKFILE_GENERATION_WORKSPACE_STALE",
+                    "The post-apply workspace no longer matches its active binding",
+                )
+        else:
+            self._require_successor_workspace(session, continuation, workspace)
         if binding.fingerprint_profile_id != STAGE_FINGERPRINT_PROFILE.profile_id:
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_WORKSPACE_STALE",
                 "The post-apply workspace binding lacks current fingerprint authority",
             )
         start = {
+            "fingerprint_scope": LOCKFILE_GENERATION_FINGERPRINT_SCOPE,
             "post_apply_pre_command_package_json_sha256": _file_checksum(workspace / "package.json"),
             "post_apply_pre_command_package_lock_sha256": _file_checksum(workspace / "package-lock.json"),
-            "post_apply_pre_command_workspace_excluding_root_lockfile_fingerprint": workspace_excluding_root_lockfile_fingerprint(workspace),
+            "post_apply_pre_command_governed_workspace_fingerprint": workspace_excluding_governed_volatile_fingerprint(workspace),
             "post_apply_pre_command_binding_fingerprint": binding.workspace_fingerprint,
         }
         if start["post_apply_pre_command_package_json_sha256"] == "missing":
             raise LockfileGenerationError("PACKAGE_JSON_MISSING", "Approved package.json is missing")
         try:
             result = self._stage.queue_lockfile_generation(
-                session, continuation, attempt_key=attempt.id
+                session, continuation, attempt_key=self._attempt_key(attempt, generation)
             )
         except TransformerStageError as error:
             code = (
@@ -145,6 +188,54 @@ class LockfileGenerationRunner:
             )
         execution.start_fingerprint = start
         return "queued"
+
+    @staticmethod
+    def _attempt_key(attempt, generation: int) -> str:
+        if generation == 1:
+            return attempt.id
+        return f"{attempt.id}{LOCKFILE_GENERATION_ATTEMPT_2_MARKER}"
+
+    def _queue_successor(self, session, continuation, stale_execution) -> str:
+        """Queue the one durable V1 -> V2 successor for a terminal stale-baseline execution.
+
+        The stale (pre-scope) execution is never verified against v2 semantics
+        and is never reused as the fresh command: a new execution with a
+        deterministic attempt-2 idempotency generation re-runs
+        npm-lockfile-generate and captures a fresh v2 pre-command baseline.
+        """
+        if LOCKFILE_GENERATION_ATTEMPT_2_MARKER in (stale_execution.idempotency_key or ""):
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
+                "A successor execution still carries a stale fingerprint baseline",
+            )
+        return self._queue(session, continuation, generation=2)
+
+    def _require_successor_workspace(self, session, continuation, workspace) -> None:
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "lockfile_generation-0",
+            )
+        )
+        stale_execution = session.get(CommandExecutionModel, step.execution_id) if step is not None else None
+        if stale_execution is None or not (stale_execution.start_fingerprint or {}):
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
+                "No durable predecessor baseline authorizes a v2 successor",
+            )
+        start = stale_execution.start_fingerprint
+        expected_package = start.get("post_apply_pre_command_package_json_sha256")
+        if not expected_package or _file_checksum(workspace / "package.json") != expected_package:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_WORKSPACE_STALE",
+                "The successor workspace no longer matches the approved post-apply package.json",
+            )
+        governed = start.get("post_apply_pre_command_governed_workspace_fingerprint")
+        if governed is not None and workspace_excluding_governed_volatile_fingerprint(workspace) != governed:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_WORKSPACE_STALE",
+                "The successor workspace drifted outside the governed lockfile mutation scope",
+            )
 
     def _authority(self, session, continuation):
         run = session.get(MigrationRunModel, continuation.run_id)
@@ -214,14 +305,22 @@ class LockfileGenerationRunner:
     def _verify(self, session, continuation, step, execution) -> None:
         run, _attempt, binding, workspace = self._authority(session, continuation)
         start = execution.start_fingerprint or {}
+        if start.get("fingerprint_scope") != LOCKFILE_GENERATION_FINGERPRINT_SCOPE:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
+                "A v1-baseline execution cannot be verified under v2 fingerprint semantics",
+            )
         expected_package = start.get("post_apply_pre_command_package_json_sha256")
-        expected_workspace = start.get(
-            "post_apply_pre_command_workspace_excluding_root_lockfile_fingerprint"
-        )
+        expected_workspace = start.get("post_apply_pre_command_governed_workspace_fingerprint")
         expected_binding = start.get("post_apply_pre_command_binding_fingerprint")
+        if expected_package is None or expected_workspace is None:
+            raise LockfileGenerationError(
+                "LOCKFILE_GENERATION_EVIDENCE_INCOMPLETE",
+                "The v2 pre-command fingerprint baseline is incomplete",
+            )
         package_checksum = _file_checksum(workspace / "package.json")
         lock_checksum = _file_checksum(workspace / "package-lock.json")
-        workspace_without_lock = workspace_excluding_root_lockfile_fingerprint(workspace)
+        workspace_without_lock = workspace_excluding_governed_volatile_fingerprint(workspace)
         if package_checksum != expected_package:
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_PACKAGE_JSON_MUTATED",
@@ -286,11 +385,11 @@ class LockfileGenerationRunner:
         end = {
             "post_command_package_json_sha256": package_checksum,
             "post_command_package_lock_sha256": lock_checksum,
-            "post_command_workspace_excluding_root_lockfile_fingerprint": workspace_without_lock,
+            "post_command_governed_workspace_fingerprint": workspace_without_lock,
             "post_command_binding_fingerprint": post_binding,
         }
         payload = {
-            "schema_version": "lockfile-generation-verification.v1",
+            "schema_version": "lockfile-generation-verification.v2",
             "execution_id": execution.id,
             "stage_step_id": step.id,
             "correlation_id": execution.correlation_id,

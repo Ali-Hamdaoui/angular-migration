@@ -25,6 +25,7 @@ from app.repositories.models import (
 from app.services.stage_execution_application_service import (
     StageExecutionApplicationService,
     StageExecutionError,
+    validation_execution_key,
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -84,8 +85,11 @@ class ValidationRunner:
                 continue
             if execution is None:
                 fingerprint = self.source_fingerprint(Path(binding.workspace_path))
+                persisted_key = validation_execution_key(
+                    str(continuation.id), attempt_key, group, index
+                )
                 request = SimpleNamespace(
-                    idempotency_key=f"{continuation.id}:validation:{attempt_key}:{group}"
+                    idempotency_key=persisted_key
                 )
                 try:
                     queued = self._stage_execution._authorize_and_queue_first_command(
@@ -100,6 +104,7 @@ class ValidationRunner:
                         run.actor or "transformer",
                         group,
                         command_index=index,
+                        persisted_idempotency_key=persisted_key,
                     )
                 except StageExecutionError as error:
                     raise ValidationRunnerError(error.code, error.message) from error

@@ -33,10 +33,12 @@ from app.domain.planning import (
 from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
     ArtifactMetadataModel,
+    CommandExecutionModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
     StageGatePackageModel,
+    StageStepModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
 )
@@ -253,13 +255,17 @@ def _seed_revalidation(
     persisted_targets=None,
     package_targets=None,
     commands_override=None,
+    proposal_operation=None,
 ):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
     (workspace / "src").mkdir(parents=True, exist_ok=True)
     app_ts = workspace / "src" / "app.ts"
     app_ts.write_text("old", encoding="utf-8")
-    (workspace / "package.json").write_text('{"name": "fixture"}', encoding="utf-8")
+    package_json = {"name": "fixture"}
+    if proposal_operation is not None:
+        package_json["dependencies"] = {"new-dependency": "^1.0.0"}
+    (workspace / "package.json").write_text(json.dumps(package_json), encoding="utf-8")
     store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
     attempt_id = "repair-1"
     proposal = store.write_text_artifact(
@@ -268,17 +274,29 @@ def _seed_revalidation(
         json.dumps(
             {
                 "proposal_format": "operations",
-                "operations": [
-                    {
-                        "operation": "replace_text",
-                        "path": "src/app.ts",
-                        "old_text": "old",
-                        "new_text": "new",
-                        "preimage_sha256": (
-                            "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest()
-                        ),
-                    }
-                ],
+                "operations": (
+                    [
+                        {
+                            "operation": proposal_operation,
+                            "path": "package.json",
+                            "section": "dependencies",
+                            "package": "new-dependency",
+                            "new_version": "^1.0.0",
+                        }
+                    ]
+                    if proposal_operation is not None
+                    else [
+                        {
+                            "operation": "replace_text",
+                            "path": "src/app.ts",
+                            "old_text": "old",
+                            "new_text": "new",
+                            "preimage_sha256": (
+                                "sha256:" + hashlib.sha256(app_ts.read_bytes()).hexdigest()
+                            ),
+                        }
+                    ]
+                ),
                 "unified_diff": None,
                 "failure_evidence_checksum": "sha256:failure",
                 "context_pack_checksum": "sha256:context",
@@ -663,5 +681,498 @@ def test_start_revalidation_blocks_when_sealed_package_diverges_from_persisted_u
     continuation = session.get(TransformationContinuationModel, "cont-1")
     assert continuation.status == "blocked"
     assert continuation.last_error_code == "REPAIR_PROPOSAL_STALE"
+    session.close()
+    engine.dispose()
+
+
+def test_dependency_add_materializes_final_install_before_affected_revalidation(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _artifacts = _seed_revalidation(
+        factory,
+        tmp_path,
+        proposal_targets=("build", "test"),
+        review_targets=("test",),
+        attempt_status="revalidating_affected",
+        proposal_operation="dependency_add",
+    )
+
+    old_build_key = f"cont-1:validation:{attempt_id}:affected:builds:builds"
+    old_test_key = f"cont-1:validation:{attempt_id}:affected:tests:tests"
+    session = factory()
+    session.add_all(
+        [
+            CommandExecutionModel(
+                id="exec-stale-build",
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=old_build_key,
+                command_id="build",
+                executable="npm",
+                arguments=[],
+                status="succeeded",
+                exit_code=0,
+                requested_at=NOW,
+                state_version=1,
+                attempt_number=1,
+                operation_kind="read_only",
+            ),
+            CommandExecutionModel(
+                id="exec-stale-test",
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=old_test_key,
+                command_id="test",
+                executable="npm",
+                arguments=[],
+                status="failed",
+                exit_code=1,
+                failure_code="TEST_FAILED",
+                failure_message="stale validation",
+                requested_at=NOW,
+                state_version=1,
+                attempt_number=1,
+                operation_kind="read_only",
+            ),
+            StageStepModel(
+                id="step-final-install-0",
+                run_id="run-1",
+                stage_id="stage-1",
+                name="final_install-0",
+                status="PENDING",
+                component_type="command",
+                state_version=1,
+                updated_at=NOW,
+            ),
+            StageStepModel(
+                id="step-stale-build",
+                run_id="run-1",
+                stage_id="stage-1",
+                name="builds-0",
+                status="PASSED",
+                component_type="command",
+                execution_id="exec-stale-build",
+                completed_at=NOW,
+                state_version=1,
+                updated_at=NOW,
+            ),
+            StageStepModel(
+                id="step-stale-test",
+                run_id="run-1",
+                stage_id="stage-1",
+                name="tests-0",
+                status="FAILED",
+                component_type="command",
+                execution_id="exec-stale-test",
+                completed_at=NOW,
+                state_version=1,
+                updated_at=NOW,
+            ),
+        ]
+    )
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "running"
+    continuation.current_node = "classify_failure"
+    continuation.worker_id = "worker-1"
+    session.commit()
+    session.close()
+
+    class MaterializingRunner(RecordingValidationRunner):
+        def __init__(self):
+            super().__init__()
+            self.materialized = False
+            self.queued_build = False
+
+        def advance_group(self, session, continuation, group, **kwargs) -> str:
+            self.calls.append((group, str(kwargs.get("attempt_key"))))
+            if group == "final_install" and not self.materialized:
+                execution = CommandExecutionModel(
+                    id="exec-materialize",
+                    run_id="run-1",
+                    stage_id="stage-1",
+                    idempotency_key=(
+                        f"cont-1:validation:{attempt_id}:materialize:final_install:final_install"
+                    ),
+                    command_id="final_install",
+                    executable="npm",
+                    arguments=[],
+                    status="succeeded",
+                    exit_code=0,
+                    requested_at=NOW + timedelta(seconds=1),
+                    state_version=1,
+                    attempt_number=1,
+                    operation_kind="mutating",
+                )
+                session.add(execution)
+                session.flush()
+                step = session.query(StageStepModel).filter_by(
+                    stage_id="stage-1", name="final_install-0"
+                ).one()
+                step.status = "PASSED"
+                step.execution_id = execution.id
+                step.completed_at = NOW + timedelta(seconds=1)
+                self.materialized = True
+                return "passed"
+            if group == "builds" and not self.queued_build:
+                self.queued_build = True
+                continuation.status = "waiting_command"
+                continuation.current_node = "repair_revalidate"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                return "queued"
+            return "passed"
+
+    runner = MaterializingRunner()
+    orchestrator = _orchestrator(factory, runner)
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert orchestrator._recover_pre_materialization_revalidation(
+        session, continuation
+    )
+    session.commit()
+    session.close()
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.current_node == "repair_revalidate"
+    assert continuation.status == "queued"
+    for name in ("builds-0", "tests-0"):
+        step = session.query(StageStepModel).filter_by(stage_id="stage-1", name=name).one()
+        assert step.status == "PENDING"
+        assert step.execution_id is None
+        assert step.completed_at is None
+    assert session.get(CommandExecutionModel, "exec-stale-test") is not None
+    session.close()
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "running"
+    continuation.worker_id = "worker-1"
+    continuation.lease_expires_at = NOW + timedelta(seconds=120)
+    session.commit()
+    session.close()
+
+    orchestrator.advance("cont-1", "worker-1")
+    assert runner.calls[:2] == [
+        ("final_install", f"{attempt_id}:materialize"),
+        ("builds", f"{attempt_id}:affected:materialized"),
+    ]
+    assert all(group != "tests" for group, _key in runner.calls[:2])
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "running"
+    continuation.worker_id = "worker-2"
+    continuation.lease_expires_at = NOW + timedelta(seconds=120)
+    session.commit()
+    session.close()
+
+    orchestrator.advance("cont-1", "worker-2")
+    assert runner.calls[2:] == [
+        ("builds", f"{attempt_id}:affected:materialized"),
+        ("tests", f"{attempt_id}:affected:materialized"),
+    ]
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    post_materialization_key = (
+        f"cont-1:validation:{attempt_id}:affected:materialized:tests:tests"
+    )
+    post_failure = CommandExecutionModel(
+        id="exec-post-materialization-failure",
+        run_id="run-1",
+        stage_id="stage-1",
+        idempotency_key=post_materialization_key,
+        command_id="test",
+        executable="npm",
+        arguments=[],
+        status="failed",
+        exit_code=1,
+        failure_code="TEST_FAILED",
+        failure_message="same validation failure after materialization",
+        requested_at=NOW + timedelta(seconds=2),
+        state_version=1,
+        attempt_number=1,
+        operation_kind="read_only",
+    )
+    session.add(post_failure)
+    test_step = session.query(StageStepModel).filter_by(
+        stage_id="stage-1", name="tests-0"
+    ).one()
+    test_step.status = "FAILED"
+    test_step.execution_id = post_failure.id
+    test_step.completed_at = NOW + timedelta(seconds=2)
+    attempt.status = "revalidating_affected"
+    continuation.status = "running"
+    continuation.current_node = "classify_failure"
+    continuation.worker_id = "worker-3"
+    session.flush()
+    assert not orchestrator._recover_pre_materialization_revalidation(
+        session, continuation
+    )
+    assert test_step.status == "FAILED"
+    assert session.get(CommandExecutionModel, "exec-stale-test") is not None
+    assert session.get(CommandExecutionModel, "exec-materialize") is not None
+    session.rollback()
+    session.close()
+    engine.dispose()
+
+
+def test_pre_materialization_recovery_uses_persisted_validation_keys_and_restores_original_repair(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    store, attempt_id, _artifacts = _seed_revalidation(
+        factory,
+        tmp_path,
+        proposal_targets=("build", "test"),
+        review_targets=("test",),
+        persisted_targets=("build", "test"),
+        package_targets=("build", "test"),
+        attempt_status="revalidating_affected",
+        proposal_operation="dependency_add",
+    )
+
+    stale_build_key = f"cont-1:validation:{attempt_id}:affected:builds:builds"
+    stale_test_key = f"cont-1:validation:{attempt_id}:affected:tests:tests"
+    stale_failure = store.write_text_artifact(
+        "run-1",
+        "04_workflow_state/stages/stage-1/failures/stale-test.json",
+        json.dumps({"execution_id": "exec-stale-test", "failure_fingerprint": "new"}),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id="repair-2",
+        created_by="failure-evidence-service",
+        created_at=NOW,
+    )
+
+    session = factory()
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + stale_failure.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=stale_failure.ref.artifact_type.value,
+            relative_path=stale_failure.ref.relative_path,
+            checksum=stale_failure.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.add(
+        RepairAttemptModel(
+            id="repair-2",
+            run_id="run-1",
+            stage_id="stage-1",
+            attempt_number=2,
+            status="evidence_frozen",
+            risk_level="low",
+            diagnosis="same stale validation lineage",
+            failure_evidence_artifact_id=stale_failure.ref.artifact_id,
+            failure_evidence_checksum=stale_failure.ref.checksum,
+            failure_fingerprint="new",
+            created_at=NOW + timedelta(seconds=1),
+            updated_at=NOW + timedelta(seconds=1),
+        )
+    )
+    session.add_all(
+        [
+            CommandExecutionModel(
+                id="exec-stale-build",
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=stale_build_key,
+                command_id="build",
+                executable="npm",
+                arguments=[],
+                status="succeeded",
+                exit_code=0,
+                requested_at=NOW,
+                state_version=1,
+                attempt_number=1,
+                operation_kind="read_only",
+            ),
+            CommandExecutionModel(
+                id="exec-stale-test",
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=stale_test_key,
+                command_id="test",
+                executable="npm",
+                arguments=[],
+                status="failed",
+                exit_code=1,
+                failure_code="TEST_FAILED",
+                failure_message="stale validation before materialization",
+                requested_at=NOW,
+                state_version=1,
+                attempt_number=1,
+                operation_kind="read_only",
+            ),
+            StageStepModel(
+                id="step-recovery-final-install-0",
+                run_id="run-1",
+                stage_id="stage-1",
+                name="final_install-0",
+                status="PENDING",
+                component_type="command",
+                state_version=1,
+                updated_at=NOW,
+            ),
+            StageStepModel(
+                id="step-recovery-builds-0",
+                run_id="run-1",
+                stage_id="stage-1",
+                name="builds-0",
+                status="PASSED",
+                component_type="command",
+                execution_id="exec-stale-build",
+                completed_at=NOW,
+                state_version=1,
+                updated_at=NOW,
+            ),
+            StageStepModel(
+                id="step-recovery-tests-0",
+                run_id="run-1",
+                stage_id="stage-1",
+                name="tests-0",
+                status="FAILED",
+                component_type="command",
+                execution_id="exec-stale-test",
+                completed_at=NOW,
+                state_version=1,
+                updated_at=NOW,
+            ),
+        ]
+    )
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "blocked"
+    continuation.current_node = "propose_repair"
+    continuation.worker_id = "worker-1"
+    session.commit()
+    session.close()
+
+    expected_test_key = stale_test_key
+    assert TransformerOrchestrator._validation_execution_key(
+        continuation,
+        f"{attempt_id}:affected",
+        "tests",
+    ) == expected_test_key
+
+    runner = RecordingValidationRunner()
+    orchestrator = _orchestrator(factory, runner)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert orchestrator._recover_pre_materialization_revalidation(
+        session, continuation
+    )
+    session.commit()
+    session.close()
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    original_build = session.get(CommandExecutionModel, "exec-stale-build")
+    original_test = session.get(CommandExecutionModel, "exec-stale-test")
+    assert session.get(RepairAttemptModel, "repair-1").status == "revalidating_affected"
+    assert session.get(RepairAttemptModel, "repair-2").status == "superseded"
+    assert continuation.status == "queued"
+    assert continuation.current_node == "repair_revalidate"
+    for name in ("builds-0", "tests-0"):
+        step = session.query(StageStepModel).filter_by(stage_id="stage-1", name=name).one()
+        assert step.status == "PENDING"
+        assert step.execution_id is None
+        assert step.completed_at is None
+    assert original_build.idempotency_key == stale_build_key
+    assert original_test.idempotency_key == stale_test_key
+    assert original_test.status == "failed"
+    session.close()
+
+    class MaterializingRunner(RecordingValidationRunner):
+        def advance_group(self, session, continuation, group, **kwargs) -> str:
+            self.calls.append((group, str(kwargs.get("attempt_key"))))
+            if group == "final_install":
+                execution = CommandExecutionModel(
+                    id="exec-recovery-materialize",
+                    run_id="run-1",
+                    stage_id="stage-1",
+                    idempotency_key=TransformerOrchestrator._validation_execution_key(
+                        continuation,
+                        f"{attempt_id}:materialize",
+                        "final_install",
+                    ),
+                    command_id="final_install",
+                    executable="npm",
+                    arguments=["ci"],
+                    status="succeeded",
+                    exit_code=0,
+                    requested_at=NOW + timedelta(seconds=2),
+                    state_version=1,
+                    attempt_number=1,
+                    operation_kind="mutating",
+                )
+                session.add(execution)
+                session.flush()
+                step = session.query(StageStepModel).filter_by(
+                    stage_id="stage-1", name="final_install-0"
+                ).one()
+                step.status = "PASSED"
+                step.execution_id = execution.id
+                step.completed_at = NOW + timedelta(seconds=2)
+                return "passed"
+            return "passed"
+
+    materializing_runner = MaterializingRunner()
+    orchestrator = _orchestrator(factory, materializing_runner)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "running"
+    continuation.worker_id = "worker-1"
+    continuation.lease_expires_at = NOW + timedelta(seconds=120)
+    session.commit()
+    session.close()
+
+    orchestrator.advance("cont-1", "worker-1")
+    assert materializing_runner.calls[0] == (
+        "final_install",
+        f"{attempt_id}:materialize",
+    )
+    assert [group for group, _key in materializing_runner.calls] == [
+        "final_install",
+        "builds",
+        "tests",
+    ]
+    materialization_key = TransformerOrchestrator._validation_execution_key(
+        continuation,
+        f"{attempt_id}:materialize",
+        "final_install",
+    )
+    affected_key = TransformerOrchestrator._validation_execution_key(
+        continuation,
+        f"{attempt_id}:affected",
+        "tests",
+    )
+    full_replay_key = TransformerOrchestrator._validation_execution_key(
+        continuation,
+        attempt_id,
+        "final_install",
+    )
+    assert materialization_key not in {affected_key, full_replay_key}
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    attempt.status = "revalidating_affected"
+    continuation.status = "running"
+    continuation.current_node = "classify_failure"
+    continuation.worker_id = "worker-2"
+    continuation.lease_expires_at = NOW + timedelta(seconds=120)
+    assert not orchestrator._recover_pre_materialization_revalidation(
+        session, continuation
+    )
+    session.rollback()
     session.close()
     engine.dispose()

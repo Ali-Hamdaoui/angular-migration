@@ -59,6 +59,25 @@ def bounded_idempotency_key(raw: str, max_length: int = 128) -> str:
     return raw[: max_length - len(suffix)] + suffix
 
 
+def validation_execution_key(
+    continuation_id: str,
+    attempt_key: str,
+    group: str,
+    command_index: int = 0,
+) -> str:
+    """Return the durable validation command identity.
+
+    ValidationRunner historically includes the validation group in its
+    request key, and the stage queue appends that group while deriving the
+    command identity.  Keep that persisted grammar stable so recovery can
+    address executions created before this helper existed.
+    """
+    raw = f"{continuation_id}:validation:{attempt_key}:{group}:{group}"
+    if command_index:
+        raw += f":{command_index}"
+    return bounded_idempotency_key(raw)
+
+
 @dataclass(frozen=True)
 class _ValidatedStageStart:
     run_id: str
@@ -356,6 +375,7 @@ class StageExecutionApplicationService:
         actor,
         group="bootstrap_install",
         command_index=0,
+        persisted_idempotency_key=None,
     ):
         stage_plan = stage.stage_plan or {}
         references = (stage_plan.get("commands") or {}).get(group) or []
@@ -370,10 +390,13 @@ class StageExecutionApplicationService:
         profile_id = stage_plan.get("execution_profile_id")
         if not isinstance(profile_id, str) or not profile_id:
             raise StageExecutionError("EXECUTION_PROFILE_NOT_APPROVED", "The approved stage plan has no execution profile.")
-        continuation_key = f"{request.idempotency_key}:{group}"
-        if command_index:
-            continuation_key += f":{command_index}"
-        continuation_key = bounded_idempotency_key(continuation_key)
+        if persisted_idempotency_key is None:
+            continuation_key = f"{request.idempotency_key}:{group}"
+            if command_index:
+                continuation_key += f":{command_index}"
+            continuation_key = bounded_idempotency_key(continuation_key)
+        else:
+            continuation_key = persisted_idempotency_key
         CommandRegistryService().seed_defaults(session)
         try:
             policy_request = CommandPolicyValidateRequestDto(

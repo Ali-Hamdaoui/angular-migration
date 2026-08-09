@@ -22,9 +22,11 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services.lockfile_generation_runner import (
+    LOCKFILE_GENERATION_ATTEMPT_2_MARKER,
+    LOCKFILE_GENERATION_FINGERPRINT_SCOPE,
     LockfileGenerationError,
     LockfileGenerationRunner,
-    workspace_excluding_root_lockfile_fingerprint,
+    workspace_excluding_governed_volatile_fingerprint,
 )
 from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
@@ -35,8 +37,13 @@ ARGV = ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--n
 
 class _FakeStageService:
     def queue_lockfile_generation(self, session, continuation, *, attempt_key):
+        execution_id = (
+            "exec-lock"
+            if attempt_key == "repair-1"
+            else "exec-lock-" + hashlib.sha256(attempt_key.encode()).hexdigest()[:8]
+        )
         execution = CommandExecutionModel(
-            id="exec-lock",
+            id=execution_id,
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
             authorization_id="auth-lock",
@@ -256,17 +263,18 @@ def _seed(tmp_path: Path):
     return engine, factory, workspace
 
 
-def _complete_execution(session, workspace: Path):
+def _complete_execution(session, workspace: Path, execution_id: str = "exec-lock"):
     (workspace / "package-lock.json").write_text(
         '{"lockfileVersion":3,"packages":{"":{"dependencies":{"x":"2.0.0"}},'
         '"node_modules/x":{"version":"2.0.0"}}}',
         encoding="utf-8",
     )
-    execution = session.get(CommandExecutionModel, "exec-lock")
+    execution = session.get(CommandExecutionModel, execution_id)
     execution.status = "succeeded"
     execution.exit_code = 0
     execution.runtime_checksum = "sha256:" + "4" * 64
     artifact_ids = ["stdout", "stderr", "command-log", "result", "manifest"]
+    artifact_ids = [f"{a}-{execution_id}" for a in artifact_ids]
     (
         execution.stdout_artifact_id,
         execution.stderr_artifact_id,
@@ -300,23 +308,29 @@ def _runner():
     return LockfileGenerationRunner(stage_service=_FakeStageService(), now_provider=lambda: NOW)
 
 
-def test_workspace_fingerprint_excludes_only_root_lockfile(tmp_path: Path):
+def test_governed_scope_excludes_root_lockfile_and_node_modules(tmp_path: Path):
     (tmp_path / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
     (tmp_path / "package-lock.json").write_text("first", encoding="utf-8")
     nested = tmp_path / "nested" / "package-lock.json"
     nested.parent.mkdir()
     nested.write_text("nested-first", encoding="utf-8")
 
-    initial = workspace_excluding_root_lockfile_fingerprint(tmp_path)
+    initial = workspace_excluding_governed_volatile_fingerprint(tmp_path)
     (tmp_path / "package-lock.json").write_text("second", encoding="utf-8")
-    assert workspace_excluding_root_lockfile_fingerprint(tmp_path) == initial
+    assert workspace_excluding_governed_volatile_fingerprint(tmp_path) == initial
 
     nested.write_text("nested-second", encoding="utf-8")
-    assert workspace_excluding_root_lockfile_fingerprint(tmp_path) != initial
+    assert workspace_excluding_governed_volatile_fingerprint(tmp_path) != initial
+    after_nested = workspace_excluding_governed_volatile_fingerprint(tmp_path)
 
-    before_empty_directory = workspace_excluding_root_lockfile_fingerprint(tmp_path)
-    (tmp_path / "node_modules").mkdir()
-    assert workspace_excluding_root_lockfile_fingerprint(tmp_path) != before_empty_directory
+    node_modules = tmp_path / "node_modules"
+    node_modules.mkdir()
+    (node_modules / ".package-lock.json").write_text("hidden-lockfile", encoding="utf-8")
+    assert workspace_excluding_governed_volatile_fingerprint(tmp_path) == after_nested
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.component.ts").write_text("export {};", encoding="utf-8")
+    assert workspace_excluding_governed_volatile_fingerprint(tmp_path) != after_nested
 
 
 def test_queue_is_single_and_records_explicit_pre_command_checksums(tmp_path: Path):
@@ -330,11 +344,15 @@ def test_queue_is_single_and_records_explicit_pre_command_checksums(tmp_path: Pa
     execution = session.get(CommandExecutionModel, "exec-lock")
     assert execution.arguments == ARGV
     assert set(execution.start_fingerprint) == {
+        "fingerprint_scope",
         "post_apply_pre_command_package_json_sha256",
         "post_apply_pre_command_package_lock_sha256",
-        "post_apply_pre_command_workspace_excluding_root_lockfile_fingerprint",
+        "post_apply_pre_command_governed_workspace_fingerprint",
         "post_apply_pre_command_binding_fingerprint",
     }
+    assert (
+        execution.start_fingerprint["fingerprint_scope"] == LOCKFILE_GENERATION_FINGERPRINT_SCOPE
+    )
     continuation.status = "running"
     continuation.worker_id = "worker-replay"
     assert _runner().advance(session, continuation, next_node="repair_revalidate") == "waiting"
@@ -408,7 +426,9 @@ def test_unexpected_workspace_mutation_is_rejected(tmp_path: Path):
     assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
     session.commit()
     _complete_execution(session, workspace)
-    (workspace / "source.ts").write_text("unexpected", encoding="utf-8")
+    source = workspace / "src" / "app" / "app.component.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("unexpected", encoding="utf-8")
 
     with pytest.raises(LockfileGenerationError) as error:
         _runner().advance(session, continuation, next_node="repair_revalidate")
@@ -442,7 +462,7 @@ def test_incomplete_command_artifacts_are_rejected(tmp_path: Path):
     assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
     session.commit()
     _complete_execution(session, workspace)
-    session.delete(session.get(ArtifactMetadataModel, "metadata-stdout"))
+    session.delete(session.get(ArtifactMetadataModel, "metadata-stdout-exec-lock"))
 
     with pytest.raises(LockfileGenerationError) as error:
         _runner().advance(session, continuation, next_node="repair_revalidate")
@@ -507,5 +527,126 @@ def test_missing_invalid_or_unsynchronized_lockfile_is_rejected(
         _runner().advance(session, continuation, next_node="repair_revalidate")
 
     assert error.value.code == expected_code
+    session.close()
+    engine.dispose()
+
+
+def test_hidden_lockfile_mutation_is_governed_volatile(tmp_path: Path):
+    engine, factory, workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+    hidden = workspace / "node_modules" / ".package-lock.json"
+    hidden.parent.mkdir()
+    hidden.write_text('{"lockfileVersion":3,"packages":{}}', encoding="utf-8")
+    _complete_execution(session, workspace)
+    hidden.write_text('{"lockfileVersion":3,"packages":{"node_modules/x":{}}}', encoding="utf-8")
+
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "passed"
+    session.close()
+    engine.dispose()
+
+
+def _stamp_v1_baseline(execution):
+    execution.start_fingerprint = {
+        "post_apply_pre_command_package_json_sha256": execution.start_fingerprint[
+            "post_apply_pre_command_package_json_sha256"
+        ],
+        "post_apply_pre_command_package_lock_sha256": execution.start_fingerprint[
+            "post_apply_pre_command_package_lock_sha256"
+        ],
+        "post_apply_pre_command_workspace_excluding_root_lockfile_fingerprint": "sha256:"
+        + "1" * 64,
+        "post_apply_pre_command_binding_fingerprint": execution.start_fingerprint[
+            "post_apply_pre_command_binding_fingerprint"
+        ],
+    }
+
+
+def test_v1_terminal_execution_queues_fresh_v2_successor(tmp_path: Path):
+    engine, factory, workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+    old_execution = session.get(CommandExecutionModel, "exec-lock")
+    old_key = old_execution.idempotency_key
+    _stamp_v1_baseline(old_execution)
+    _complete_execution(session, workspace)
+    session.commit()
+
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+
+    assert session.query(CommandExecutionModel).count() == 2
+    step = session.get(StageStepModel, "step-lock")
+    successor = session.get(CommandExecutionModel, step.execution_id)
+    assert successor.id != old_execution.id
+    assert successor.idempotency_key != old_key
+    assert LOCKFILE_GENERATION_ATTEMPT_2_MARKER in successor.idempotency_key
+    assert (
+        successor.start_fingerprint["fingerprint_scope"] == LOCKFILE_GENERATION_FINGERPRINT_SCOPE
+    )
+    assert continuation.waiting_execution_id == successor.id
+    assert old_execution.status == "succeeded"
+    assert old_execution.idempotency_key == old_key
+    session.close()
+    engine.dispose()
+
+
+def test_v1_successor_selection_is_deterministic_across_restart(tmp_path: Path):
+    engine, factory, workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+    _stamp_v1_baseline(session.get(CommandExecutionModel, "exec-lock"))
+    _complete_execution(session, workspace)
+    session.commit()
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+
+    step = session.get(StageStepModel, "step-lock")
+    first_successor_id = step.execution_id
+    continuation.status = "running"
+    continuation.worker_id = "worker-restart"
+    continuation.waiting_execution_id = None
+
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "waiting"
+    assert session.query(CommandExecutionModel).count() == 2
+    assert session.get(StageStepModel, "step-lock").execution_id == first_successor_id
+    assert continuation.waiting_execution_id == first_successor_id
+    session.close()
+    engine.dispose()
+
+
+def test_v2_successor_success_verifies_and_continues(tmp_path: Path):
+    engine, factory, workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+    _stamp_v1_baseline(session.get(CommandExecutionModel, "exec-lock"))
+    _complete_execution(session, workspace)
+    session.commit()
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+
+    step = session.get(StageStepModel, "step-lock")
+    successor_id = step.execution_id
+    _complete_execution(session, workspace, execution_id=successor_id)
+    session.commit()
+
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "passed"
+    assert continuation.current_node == "repair_revalidate"
+    verification = session.scalar(
+        __import__("sqlalchemy").select(ArtifactMetadataModel).where(
+            ArtifactMetadataModel.owner_reference
+            == f"{successor_id}:lockfile-generation-verification"
+        )
+    )
+    assert verification is not None
+    assert session.query(CommandExecutionModel).count() == 2
     session.close()
     engine.dispose()

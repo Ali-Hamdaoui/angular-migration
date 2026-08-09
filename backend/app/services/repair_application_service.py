@@ -56,7 +56,12 @@ from app.repositories.models import (
     UsageCostRecordModel,
     WorkflowEventModel,
 )
-from app.services.causal_review import CausalRejection, REVIEWER_CAUSAL_POLICY, causal_rejection
+from app.services.causal_review import (
+    CausalRejection,
+    REVIEWER_CAUSAL_POLICY,
+    causal_rejection,
+    repair_budget,
+)
 from app.services.dependency_addition_policy import (
     DEPENDENCY_ADDITION_POLICY_VERSION,
     DependencyAdditionPolicy,
@@ -844,7 +849,22 @@ class RepairApplicationService:
                     raise RepairApplicationError(
                         "REPAIR_PROPOSAL_STALE", "Repair proposal binding changed"
                     )
-                if attempt.attempt_number >= continuation.max_attempts:
+                stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+                repair_policy = (
+                    ((stage_plan.stage_plan or {}).get("repair_policy") or {})
+                    if stage_plan is not None
+                    else {}
+                )
+                budget = repair_budget(
+                    session,
+                    continuation.run_id,
+                    continuation.current_stage_id,
+                    repair_policy,
+                )
+                if (
+                    budget["consumed_attempts"] >= budget["max_attempts"]
+                    or budget["consumed_applied"] >= budget["max_applied"]
+                ):
                     raise RepairApplicationError(
                         "REPAIR_LOOP_EXHAUSTED",
                         "Repair revision limit has been reached",

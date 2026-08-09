@@ -31,6 +31,10 @@ from app.services.next_stage_materializer_service import (
     NextStageMaterializerError,
     NextStageMaterializerService,
 )
+from app.services.repair_lifecycle_service import (
+    ACTIVE_REPAIR_STATUSES,
+    RepairLifecycleService,
+)
 from app.services.stage_sealing_service import StageSealingError, StageSealingService
 from app.services.transformation_continuation_service import (
     append_continuation_event,
@@ -127,6 +131,11 @@ class TransformerSealingFlow:
                 )
             )
             if existing is not None:
+                RepairLifecycleService.reconcile_superseded_attempts(
+                    session,
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                )
                 self._queue(continuation, "materialize_next_stage")
                 return
             context = self._sealing.context(session, continuation)
@@ -207,6 +216,11 @@ class TransformerSealingFlow:
                             "workspace_fingerprint": fingerprint,
                         },
                     )
+                RepairLifecycleService.reconcile_superseded_attempts(
+                    session,
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                )
                 self._queue(continuation, "materialize_next_stage")
         except IntegrityError:
             # A concurrent worker sealed the same stage between our read and
@@ -222,6 +236,11 @@ class TransformerSealingFlow:
                 )
                 if existing is None:
                     raise
+                RepairLifecycleService.reconcile_superseded_attempts(
+                    session,
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                )
                 self._queue(continuation, "materialize_next_stage")
 
     def materialize(self, continuation_id: str, worker_id: str) -> None:
@@ -435,6 +454,12 @@ class TransformerSealingFlow:
                         f"Stage {stage_id} lacks required approved gates",
                     )
                     return
+            for stage_id in route:
+                RepairLifecycleService.reconcile_superseded_attempts(
+                    session,
+                    run_id=continuation.run_id,
+                    stage_id=stage_id,
+                )
             if session.scalar(
                 select(CommandExecutionModel.id).where(
                     CommandExecutionModel.run_id == continuation.run_id,
@@ -448,18 +473,7 @@ class TransformerSealingFlow:
             ) or session.scalar(
                 select(RepairAttemptModel.id).where(
                     RepairAttemptModel.run_id == continuation.run_id,
-                    RepairAttemptModel.status.in_(
-                        (
-                            "evidence_frozen",
-                            "proposed",
-                            "review_accepted",
-                            "waiting_g10",
-                            "applying",
-                            "applied",
-                            "revalidating",
-                            "revalidating_affected",
-                        )
-                    ),
+                    RepairAttemptModel.status.in_(ACTIVE_REPAIR_STATUSES),
                 )
             ):
                 self._block(

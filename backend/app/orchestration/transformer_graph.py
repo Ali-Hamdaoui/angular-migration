@@ -78,6 +78,7 @@ from app.services.repair_application_service import (
     RepairProposal,
 )
 from app.services.stage_gate_service import StageGateError, StageGateService
+from app.services.stage_execution_application_service import validation_execution_key
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.transformation_continuation_service import (
@@ -1033,6 +1034,8 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             if self._resume_stale_g08_validation(session, continuation):
                 return
+            if self._recover_pre_materialization_revalidation(session, continuation):
+                return
             prior = [
                 item.failure_fingerprint
                 for item in session.query(RepairAttemptModel)
@@ -1508,6 +1511,78 @@ class TransformerOrchestrator:
                         error,
                     )
 
+    def _recover_pre_materialization_revalidation(self, session, continuation) -> bool:
+        attempt = (
+            session.query(RepairAttemptModel)
+            .filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                RepairAttemptModel.status == "revalidating_affected",
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        if attempt is None:
+            return False
+        try:
+            proposal = self._load_bound_repair_proposal(
+                session,
+                continuation,
+                attempt,
+                session.get(MigrationRunModel, continuation.run_id),
+            )
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, RepairApplicationError):
+            return False
+        if not self._proposal_requires_install_materialization(proposal):
+            return False
+        if self._successful_materialization_exists(session, continuation, attempt):
+            return False
+
+        affected_keys = {
+            self._validation_execution_key(continuation, attempt_key, group)
+            for attempt_key in (
+                f"{attempt.id}:affected",
+                f"{attempt.id}:affected:materialized",
+            )
+            for group in VALIDATION_TARGET_GROUPS.values()
+        }
+        failed_before_materialization = False
+        stale_steps = []
+        stale_execution_ids = set()
+        for step in session.query(StageStepModel).filter_by(
+            run_id=continuation.run_id,
+            stage_id=continuation.current_stage_id,
+        ):
+            execution = (
+                session.get(CommandExecutionModel, step.execution_id)
+                if step.execution_id
+                else None
+            )
+            key = execution.idempotency_key if execution is not None else None
+            if key not in affected_keys:
+                continue
+            if step.status != "PENDING":
+                stale_steps.append(step)
+            if (
+                step.status == "FAILED"
+                and execution.status in {"failed", "timed_out", "cancelled", "interrupted"}
+            ):
+                failed_before_materialization = True
+                stale_execution_ids.add(execution.id)
+        if not failed_before_materialization:
+            return False
+        reconciliation = self._reconcile_incomplete_newer_repair(
+            session, continuation, attempt, stale_execution_ids
+        )
+        if reconciliation is False:
+            return False
+        for step in stale_steps:
+            step.status = "PENDING"
+            step.execution_id = None
+            step.completed_at = None
+        self._queue(continuation, "repair_revalidate")
+        return True
+
     def _resume_stale_g08_validation(self, session, continuation) -> bool:
         """Resume a legacy G08 wait without reclassifying its old failure."""
         if continuation.current_node not in {"classify_failure", "propose_repair"}:
@@ -1587,9 +1662,13 @@ class TransformerOrchestrator:
     def _propose_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            if self._recover_pre_materialization_revalidation(session, continuation):
+                return
             if self._resume_stale_g08_validation(session, continuation):
                 return
-            attempt = self._latest_repair(session, continuation)
+            attempt = self._latest_repair(
+                session, continuation, exclude_statuses={"superseded"}
+            )
             attempt_id = attempt.id
         try:
             proposal = self._repairs.propose(attempt_id)
@@ -2538,29 +2617,15 @@ class TransformerOrchestrator:
     def _start_revalidation(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
-            attempt = self._latest_repair(session, continuation)
+            attempt = self._latest_repair(
+                session, continuation, exclude_statuses={"superseded"}
+            )
             if attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating_affected"}:
                 run = session.get(MigrationRunModel, continuation.run_id)
-                metadata = session.get(ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id))
-                if run is None or metadata is None or metadata.checksum != attempt.proposal_checksum:
-                    self._block(session, continuation, "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale")
-                    return
                 try:
-                    stored_proposal = LocalFilesystemArtifactStore(
-                        Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
-                    ).read_artifact(continuation.run_id, metadata.relative_path)
-                    if (
-                        stored_proposal.ref.artifact_id != attempt.proposal_artifact_id
-                        or stored_proposal.ref.checksum != attempt.proposal_checksum
-                        or stored_proposal.envelope is None
-                        or stored_proposal.envelope.run_id != continuation.run_id
-                        or stored_proposal.envelope.stage_id != continuation.current_stage_id
-                        or stored_proposal.envelope.attempt_id != attempt.id
-                    ):
-                        raise RepairApplicationError("REPAIR_PROPOSAL_STALE", "Bound repair proposal envelope is stale")
-                    proposal = RepairProposal.model_validate(
-                        json.loads(stored_proposal.content)
-                    ).model_dump(mode="json")
+                    proposal = self._load_bound_repair_proposal(
+                        session, continuation, attempt, run
+                    )
                     review_targets = self._bound_review_validation_targets(
                         session, continuation, attempt, run
                     )
@@ -2606,9 +2671,42 @@ class TransformerOrchestrator:
                     except ValidationTargetUnionError as error:
                         self._block(session, continuation, error.code, error.message)
                         return
+                dependency_repair = self._proposal_requires_install_materialization(
+                    proposal
+                )
                 if attempt.status in {"applied", "applied_verified", "migration_retried"}:
+                    if dependency_repair:
+                        for step in session.query(StageStepModel).filter(
+                            StageStepModel.stage_id == continuation.current_stage_id,
+                            StageStepModel.name.like("final_install-%"),
+                        ):
+                            step.status = "PENDING"
+                            step.execution_id = None
+                            step.completed_at = None
                     attempt.status = "revalidating_affected"
                     attempt.updated_at = datetime.now(UTC)
+                if dependency_repair and attempt.status == "revalidating_affected":
+                    if not self._successful_materialization_exists(
+                        session, continuation, attempt
+                    ):
+                        try:
+                            outcome = self._validation.advance_group(
+                                session,
+                                continuation,
+                                "final_install",
+                                next_node="repair_revalidate",
+                                attempt_key=f"{attempt.id}:materialize",
+                            )
+                        except ValidationRunnerError as error:
+                            self._validation_failure(session, continuation, error)
+                            return
+                        if outcome != "passed":
+                            return
+                affected_attempt_key = (
+                    f"{attempt.id}:affected:materialized"
+                    if dependency_repair
+                    else f"{attempt.id}:affected"
+                )
                 for target in targets:
                     try:
                         outcome = self._validation.advance_group(
@@ -2616,7 +2714,7 @@ class TransformerOrchestrator:
                             continuation,
                             VALIDATION_TARGET_GROUPS[target],
                             next_node="repair_revalidate",
-                            attempt_key=f"{attempt.id}:affected",
+                            attempt_key=affected_attempt_key,
                         )
                     except ValidationRunnerError as error:
                         self._validation_failure(session, continuation, error)
@@ -2640,6 +2738,143 @@ class TransformerOrchestrator:
             attempt.status = "revalidating"
             attempt.updated_at = datetime.now(UTC)
             self._queue(continuation, "final_install")
+
+    @staticmethod
+    def _proposal_requires_install_materialization(proposal: dict[str, object]) -> bool:
+        return any(
+            isinstance(item, dict)
+            and item.get("operation") in {"dependency_add", "dependency_change"}
+            for item in (proposal.get("operations") or [])
+        )
+
+    @staticmethod
+    def _load_bound_repair_proposal(session, continuation, attempt, run):
+        if run is None or not attempt.proposal_artifact_id or not attempt.proposal_checksum:
+            raise RepairApplicationError(
+                "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale"
+            )
+        metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
+        )
+        if metadata is None or metadata.checksum != attempt.proposal_checksum:
+            raise RepairApplicationError(
+                "REPAIR_PROPOSAL_STALE", "Bound repair proposal is missing or stale"
+            )
+        stored_proposal = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(continuation.run_id, metadata.relative_path)
+        if (
+            stored_proposal.ref.artifact_id != attempt.proposal_artifact_id
+            or stored_proposal.ref.checksum != attempt.proposal_checksum
+            or stored_proposal.envelope is None
+            or stored_proposal.envelope.run_id != continuation.run_id
+            or stored_proposal.envelope.stage_id != continuation.current_stage_id
+            or stored_proposal.envelope.attempt_id != attempt.id
+        ):
+            raise RepairApplicationError(
+                "REPAIR_PROPOSAL_STALE", "Bound repair proposal envelope is stale"
+            )
+        return RepairProposal.model_validate(
+            json.loads(stored_proposal.content)
+        ).model_dump(mode="json")
+
+    @staticmethod
+    def _failure_evidence_execution_id(session, continuation, attempt, run) -> str | None:
+        if run is None or not attempt.failure_evidence_artifact_id or not attempt.failure_evidence_checksum:
+            return None
+        metadata = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(attempt.failure_evidence_artifact_id),
+        )
+        if (
+            metadata is None
+            or not metadata.immutable
+            or metadata.checksum != attempt.failure_evidence_checksum
+        ):
+            return None
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(continuation.run_id, metadata.relative_path)
+        if (
+            stored.ref.artifact_id != attempt.failure_evidence_artifact_id
+            or stored.ref.checksum != attempt.failure_evidence_checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != continuation.run_id
+            or stored.envelope.stage_id != continuation.current_stage_id
+        ):
+            return None
+        payload = json.loads(stored.content)
+        execution_id = payload.get("execution_id")
+        return str(execution_id) if execution_id else None
+
+    def _reconcile_incomplete_newer_repair(
+        self, session, continuation, active_attempt, stale_execution_ids: set[str]
+    ) -> bool | None:
+        newer = (
+            session.query(RepairAttemptModel)
+            .filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                RepairAttemptModel.attempt_number > active_attempt.attempt_number,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        if newer is None:
+            return None
+        if (
+            newer.status != "evidence_frozen"
+            or newer.proposal_artifact_id is not None
+            or newer.proposer_invocation_id is not None
+            or newer.review_artifact_id is not None
+            or newer.reviewer_invocation_id is not None
+            or newer.g10_gate_package_id is not None
+            or newer.apply_ledger_artifact_id is not None
+            or newer.apply_ledger_checksum is not None
+            or newer.post_fingerprint is not None
+        ):
+            return False
+        try:
+            evidence_execution_id = self._failure_evidence_execution_id(
+                session,
+                continuation,
+                newer,
+                session.get(MigrationRunModel, continuation.run_id),
+            )
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError):
+            return False
+        if evidence_execution_id not in stale_execution_ids:
+            return False
+        now = datetime.now(UTC)
+        # ``superseded`` is an existing terminal repair lifecycle state used
+        # for unstarted evidence-frozen attempts.  Keep the row and artifacts;
+        # only the newer, unapplied attempt is retired.
+        newer.status = "superseded"
+        newer.completed_at = now
+        newer.updated_at = now
+        return True
+
+    @staticmethod
+    def _successful_materialization_exists(session, continuation, attempt) -> bool:
+        key = TransformerOrchestrator._validation_execution_key(
+            continuation, f"{attempt.id}:materialize", "final_install"
+        )
+        return (
+            session.scalar(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                    CommandExecutionModel.idempotency_key == key,
+                    CommandExecutionModel.status == "succeeded",
+                    CommandExecutionModel.exit_code == 0,
+                )
+            )
+            is not None
+        )
+
+    @staticmethod
+    def _validation_execution_key(continuation, attempt_key: str, group: str) -> str:
+        return validation_execution_key(str(continuation.id), attempt_key, group)
 
     def _bound_review_validation_targets(self, session, continuation, attempt, run) -> list[str]:
         """Verify the bound repair review and return its required targets.
@@ -3383,13 +3618,17 @@ class TransformerOrchestrator:
         return checkpoint.id, new_fingerprint
 
     @staticmethod
-    def _latest_repair(session, continuation, *, statuses=None):
+    def _latest_repair(session, continuation, *, statuses=None, exclude_statuses=None):
         query = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
         )
         if statuses is not None:
             query = query.filter(RepairAttemptModel.status.in_(statuses))
+        if exclude_statuses is None:
+            exclude_statuses = {"superseded"}
+        if exclude_statuses:
+            query = query.filter(~RepairAttemptModel.status.in_(exclude_statuses))
         attempt = query.order_by(RepairAttemptModel.attempt_number.desc()).first()
         if attempt is None:
             raise TransformerStageError("REPAIR_ATTEMPT_MISSING", "Repair attempt is missing")
@@ -3456,6 +3695,8 @@ class TransformerOrchestrator:
     def _validation_attempt_key(session, continuation) -> str:
         attempt = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id, stage_id=continuation.current_stage_id
+        ).filter(
+            RepairAttemptModel.status != "superseded"
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
         return attempt.id if attempt and attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating"} else "initial"
 
