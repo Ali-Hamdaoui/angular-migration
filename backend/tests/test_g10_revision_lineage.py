@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import select
 
-from app.domain.contracts import ArtifactType
+from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.orchestration.transformer_graph import TransformerOrchestrator, TransformerWorkflow
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -30,6 +30,7 @@ from app.repositories.models import (
     StageExecutionPlanModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.repair_application_service import RepairProposal, RepairReview
@@ -42,6 +43,7 @@ from app.services.transformer_stage_service import TransformerStageService
 from tests.test_stage_gate_service import (
     NOW_UTC,
     _g10_database,
+    _g10_orchestrator,
     _g10_scope,
     _seed_g10,
 )
@@ -407,6 +409,203 @@ def _seed_child_attempt(
     session.close()
 
 
+def _seed_recovery_child_g10(factory, tmp_path, *, recovery_event=True):
+    """Seed a G10-ready recovery child with proposal-less parent evidence."""
+    (
+        store,
+        _workspace,
+        artifacts,
+        child_id,
+        failure,
+        base_context,
+        base_proposal,
+        base_review,
+        workspace_fingerprint,
+    ) = _seed_g10(factory, tmp_path)
+    parent_id = "repair-0"
+    human_revision = {
+        "instruction": "Preserve the existing human repair intent.",
+        "parent_attempt_id": "repair-human-source",
+        "parent_proposal_id": "artifact-human-proposal",
+        "parent_proposal_checksum": "sha256:human-proposal",
+        "previous_proposal": {"operations": []},
+        "reviewer_output": {"decision": "request_changes"},
+        "grounding_instructions": "Use authoritative workspace content.",
+    }
+    base_payload = json.loads(base_context.content)
+    parent_context = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{parent_id}/context.json",
+        json.dumps({**base_payload, "human_revision": human_revision}, sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        created_by="repair-human-revision",
+        created_at=NOW_UTC,
+        input_hashes={"failure": failure.ref.checksum},
+        policy_version="repair-context-pack-v1",
+    )
+    child_context = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{child_id}/recovery-context.json",
+        json.dumps({**base_payload, "human_revision": human_revision}, sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        created_by="repair-recovery-context",
+        created_at=NOW_UTC,
+        input_hashes={
+            "failure": failure.ref.checksum,
+            "recovered_from": parent_context.ref.checksum,
+        },
+        policy_version="repair-context-pack-v1",
+    )
+    proposal_payload = json.loads(base_proposal.content)
+    proposal_payload["context_pack_checksum"] = child_context.ref.checksum
+    child_proposal = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{child_id}/recovery-proposal.json",
+        json.dumps(proposal_payload, sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=child_id,
+        created_by="repair-proposal",
+        created_at=NOW_UTC,
+    )
+    review_payload = json.loads(base_review.content)
+    review_payload["proposal_checksum"] = child_proposal.ref.checksum
+    child_review = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{child_id}/recovery-review.json",
+        json.dumps(review_payload, sort_keys=True),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=child_id,
+        created_by="repair-review",
+        created_at=NOW_UTC,
+    )
+    child_diff = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{child_id}/candidate.diff",
+        "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+        ArtifactType.DIFF,
+        stage_id="stage-1",
+        attempt_id=child_id,
+        created_by="repair-proposer-safe-diff",
+        created_at=NOW_UTC,
+        input_hashes={"proposal": child_proposal.ref.checksum},
+        policy_version="repair-safe-diff-v1",
+    )
+
+    session = factory()
+    child = session.get(RepairAttemptModel, child_id)
+    child.context_pack_artifact_id = child_context.ref.artifact_id
+    child.context_pack_checksum = child_context.ref.checksum
+    child.proposal_artifact_id = child_proposal.ref.artifact_id
+    child.proposal_checksum = child_proposal.ref.checksum
+    child.review_artifact_id = child_review.ref.artifact_id
+    child.review_checksum = child_review.ref.checksum
+    child.parent_attempt_id = parent_id
+    child.parent_review_artifact_id = None
+    child.parent_review_checksum = None
+    child.status = "review_accepted"
+    proposer = session.get(LlmInvocationModel, child.proposer_invocation_id)
+    reviewer = session.get(LlmInvocationModel, child.reviewer_invocation_id)
+    proposer.artifact_ids = [child_proposal.ref.artifact_id]
+    proposer.artifact_checksums = {child_proposal.ref.artifact_id: child_proposal.ref.checksum}
+    reviewer.artifact_ids = [child_review.ref.artifact_id]
+    reviewer.artifact_checksums = {child_review.ref.artifact_id: child_review.ref.checksum}
+    session.add(
+        RepairAttemptModel(
+            id=parent_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            attempt_number=0,
+            status="superseded",
+            risk_level="unknown",
+            diagnosis="semantic retry recovery parent",
+            checkpoint_id="ckpt-pre",
+            failure_evidence_artifact_id=failure.ref.artifact_id,
+            failure_evidence_checksum=failure.ref.checksum,
+            failure_route_artifact_id="artifact-route",
+            failure_route_checksum="sha256:route",
+            context_pack_artifact_id=parent_context.ref.artifact_id,
+            context_pack_checksum=parent_context.ref.checksum,
+            pre_fingerprint=workspace_fingerprint,
+            failure_fingerprint=base_payload["failure_fingerprint"],
+            completed_at=NOW_UTC,
+            created_at=NOW_UTC,
+            updated_at=NOW_UTC,
+        )
+    )
+    for stored in (parent_context, child_context, child_proposal, child_review, child_diff):
+        session.add(
+            ArtifactMetadataModel(
+                id="metadata-" + stored.ref.artifact_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                artifact_type=stored.ref.artifact_type.value,
+                relative_path=stored.ref.relative_path,
+                checksum=stored.ref.checksum,
+                created_at=NOW_UTC,
+                finalized_at=NOW_UTC,
+                immutable=True,
+            )
+        )
+    for suffix, retries, failure_code in (
+        ("", 0, "REPAIR_REPLACEMENT_MISSING"),
+        (":semantic-retry-1", 1, "REPAIR_REPLACEMENT_MISSING"),
+    ):
+        invocation_id = f"{parent_id}:proposer{suffix}"
+        session.add(
+            LlmInvocationModel(
+                id=invocation_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=invocation_id,
+                request_checksum="sha256:recovery-request-" + str(retries),
+                input_hashes=[failure.ref.checksum, parent_context.ref.checksum],
+                correlation_id=invocation_id,
+                actor="transformer",
+                role="repair_proposer",
+                task_type="repair_diagnosis",
+                provider="azure_openai",
+                deployment_alias="azure-openai",
+                prompt_version="prompt-repair-proposer-candidate-v2",
+                schema_version="schema-registry-v1",
+                pricing_version="mvp-pricing-2026-01",
+                stage="repair",
+                redacted_summary=None,
+                status="failed",
+                failure_code=failure_code,
+                artifact_ids=[],
+                artifact_checksums={},
+                state_version=1,
+                event_sequence=0,
+                retries=retries,
+                failure_stage="repair_semantics",
+                started_at=NOW_UTC,
+                completed_at=NOW_UTC,
+                created_at=NOW_UTC,
+            )
+        )
+    if recovery_event:
+        session.add(
+            WorkflowEventModel(
+                id="recovery-event",
+                run_id="run-1",
+                stage_id="stage-1",
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED.value,
+                idempotency_key="cont-1:semantic-recovery:test",
+                actor="operator",
+                reason="semantic retry exhausted recovery requested",
+                sequence=1,
+                payload={"attempt_id": parent_id, "child_attempt_id": child_id},
+                occurred_at=NOW_UTC,
+            )
+        )
+    session.commit()
+    session.close()
+
+
 def test_g10_child_lineage_accepts_old_writer_representation(factory, tmp_path):
     _seed_child_attempt(factory, tmp_path, previous_proposal_transform=_old_writer_round_trip)
 
@@ -420,6 +619,28 @@ def test_g10_child_lineage_accepts_old_writer_representation(factory, tmp_path):
     assert continuation.status == "waiting_gate"
     assert continuation.current_node == "wait_g10"
     session.close()
+
+
+def test_g10_accepts_recovery_child_with_proven_recovery_ancestry(factory, tmp_path):
+    _seed_recovery_child_g10(factory, tmp_path)
+
+    _g10_orchestrator(factory).advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    assert continuation.current_node == "wait_g10"
+    session.close()
+
+
+def test_g10_rejects_proposalless_recovery_child_without_recovery_event(
+    factory, tmp_path
+):
+    _seed_recovery_child_g10(factory, tmp_path, recovery_event=False)
+
+    with pytest.raises(StageGateError) as raised:
+        _g10_orchestrator(factory).advance("cont-1", "worker-1")
+    assert raised.value.code == "REPAIR_PARENT_LINEAGE_INVALID"
 
 
 def test_g10_child_lineage_rejects_semantic_drift(factory, tmp_path):

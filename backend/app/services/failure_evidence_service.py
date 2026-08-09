@@ -398,6 +398,7 @@ class FailureEvidenceService:
         max_total_bytes: int = CONTEXT_PACK_MAX_TOTAL_BYTES,
         relative_path: str | None = None,
         lineage_from: str | None = None,
+        human_revision: dict[str, object] | None = None,
     ):
         """Write a deterministically bounded, preimage-bound repair context pack.
 
@@ -454,6 +455,8 @@ class FailureEvidenceService:
             },
             "untrusted": True,
         }
+        if human_revision is not None:
+            payload["human_revision"] = human_revision
         root = Path(str(evidence["artifact_root"]))
         input_hashes = {"failure": failure_checksum}
         if lineage_from is not None:

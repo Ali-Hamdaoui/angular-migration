@@ -73,7 +73,11 @@ from app.services.dependency_closure_service import (
     validate_dependency_transition_evidence,
     verify_dependency_transition_state,
 )
-from app.services.failure_evidence_service import FailureEvidenceService, validate_context_pack
+from app.services.failure_evidence_service import (
+    CONTEXT_PACK_MAX_BYTES_PER_FILE,
+    FailureEvidenceService,
+    validate_context_pack,
+)
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import append_continuation_event
 from app.services.workspace_fingerprint import (
@@ -206,6 +210,11 @@ _DEPENDENCY_ADDITION_SECTIONS = frozenset({"dependencies", "devDependencies"})
 _DEPENDENCY_TRANSITION_VALID_REPAIR_KINDS = frozenset({"dependency_transition"})
 _DEPENDENCY_TRANSITION_VALID_FAILURE_TYPES = frozenset({"peer_dependency_conflict"})
 _DEPENDENCY_TRANSITION_VALID_STRATEGIES = frozenset({"detach_update_reattach"})
+_DEPENDENCY_TRANSITION_NOT_EXCLUSIVE = "REPAIR_DEPENDENCY_TRANSITION_NOT_EXCLUSIVE"
+_REPLACEMENT_CONTEXT_MISSING = "REPAIR_REPLACEMENT_CONTEXT_MISSING"
+_REPLACEMENT_CONTEXT_INVALID = "REPAIR_REPLACEMENT_CONTEXT_INVALID"
+_REPLACEMENT_PREIMAGE_REQUIRED = "REPAIR_REPLACEMENT_PREIMAGE_REQUIRED"
+_SEMANTIC_RETRY_CONTEXT_SCHEMA = "repair-semantic-retry-context-v1"
 _SEMANTIC_RETRY_CODES = frozenset(
     {
         "REPAIR_REPLACEMENT_MISSING",
@@ -214,6 +223,9 @@ _SEMANTIC_RETRY_CODES = frozenset(
         "REPAIR_CAUSAL_REJECTION",
         "REPAIR_DEPENDENCY_INTENT_INVALID",
         "REPAIR_PATH_INVALID",
+        _REPLACEMENT_CONTEXT_MISSING,
+        _REPLACEMENT_PREIMAGE_REQUIRED,
+        _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE,
     }
 )
 _PROPOSER_GROUNDING_INSTRUCTIONS = (
@@ -228,7 +240,33 @@ _SEMANTIC_RETRY_FEEDBACK = (
     "The previous proposal was not applied. "
     "Regenerate using the exact current file content."
 )
+_REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK = (
+    "The requested replace_text target was not present in the authoritative\n"
+    "repository context supplied to the previous proposer invocation.\n"
+    "The backend has now supplied the exact current target content and checksum.\n"
+    "Regenerate old_text from that authoritative content. It must match exactly\n"
+    "once. Do not infer whitespace, line endings, or an EOF newline from the\n"
+    "human instruction."
+)
+_DEPENDENCY_TRANSITION_RETRY_FEEDBACK = (
+    "The previous proposer candidate violated the dependency_transition exclusivity rule. "
+    "dependency_transition is exclusive: emit exactly one operation with "
+    'operation="dependency_transition" and path="package.json". '
+    "Do not emit replace_text, create_text_file, or delete_text_file. "
+    "Do not emit dependency_add or dependency_change or another dependency_transition. "
+    "Do not emit a package.json unified_diff. "
+    "The backend binds authoritative transition targets. "
+    "Regenerate from the same immutable failure/context evidence."
+)
 _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _semantic_retry_feedback(error_code: str | None) -> str:
+    if error_code == _REPLACEMENT_CONTEXT_MISSING:
+        return _REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK
+    if error_code == _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE:
+        return _DEPENDENCY_TRANSITION_RETRY_FEEDBACK
+    return _SEMANTIC_RETRY_FEEDBACK
 
 
 def _version_major(value: object) -> int | None:
@@ -521,19 +559,36 @@ class RepairApplicationService:
         self._recover_legacy_context_pack(attempt_id)
         semantic_retry_count = 0
         retry_of_invocation_key = None
+        semantic_retry_code = None
+        semantic_retry_context_segment = None
+        semantic_retry_context_checksum = None
         while True:
             context = self._attempt_context(attempt_id)
+            if semantic_retry_context_segment is None:
+                recovered_retry_context = self._load_semantic_retry_context(context)
+                if recovered_retry_context is not None:
+                    semantic_retry_context_segment = recovered_retry_context["segment"]
+                    semantic_retry_context_checksum = recovered_retry_context["checksum"]
+                    if not semantic_retry_count:
+                        semantic_retry_count = 1
+                        retry_of_invocation_key = _invocation_key(
+                            str(attempt_id), LlmRole.REPAIR_PROPOSER
+                        )
+                        semantic_retry_code = _REPLACEMENT_CONTEXT_MISSING
             if not semantic_retry_count and context.get("proposer_invocation_id"):
                 context["invocation_key"] = str(context["proposer_invocation_id"])
                 if ":semantic-retry-" in context["invocation_key"]:
                     semantic_retry_count = 1
+            if semantic_retry_context_segment is not None:
+                context["segments"].append(semantic_retry_context_segment)
+                context["semantic_retry_context_checksum"] = semantic_retry_context_checksum
             if semantic_retry_count:
                 context["semantic_retry_count"] = semantic_retry_count
                 context["retry_of_invocation_key"] = retry_of_invocation_key
                 context["invocation_key"] = (
                     f"{attempt_id}:proposer:semantic-retry-{semantic_retry_count}"
                 )
-                context["segments"].append(_SEMANTIC_RETRY_FEEDBACK)
+                context["segments"].append(_semantic_retry_feedback(semantic_retry_code))
             recovered = self._recover_completed(
                 context,
                 role="proposer",
@@ -593,19 +648,46 @@ class RepairApplicationService:
                 context = self._assert_fresh_authority(context, role="proposer")
                 proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
             except RepairApplicationError as error:
+                retry_error = error
+                hydrated_retry_context = None
+                if error.code == "REPAIR_REPLACEMENT_MISSING" and semantic_retry_count == 0:
+                    try:
+                        hydrated_retry_context = self._hydrate_semantic_retry_context(
+                            output, context
+                        )
+                    except RepairApplicationError as hydration_error:
+                        retry_error = hydration_error
+                    else:
+                        if hydrated_retry_context is not None:
+                            semantic_retry_context_segment = hydrated_retry_context["segment"]
+                            semantic_retry_context_checksum = self._request_checksum(
+                                hydrated_retry_context["payload"]
+                            )
+                            retry_error = RepairApplicationError(
+                                _REPLACEMENT_CONTEXT_MISSING,
+                                "The replace_text target was missing from the authoritative "
+                                "proposer context; exact active workspace content was "
+                                "hydrated for the bounded semantic retry.",
+                            )
                 self._persist_failure(
                     context,
                     LlmRole.REPAIR_PROPOSER,
-                    error,
+                    retry_error,
                     failure_stage_override="repair_semantics",
                     response=response,
                     rejected_candidate=output,
+                    semantic_retry_context=(
+                        hydrated_retry_context["payload"]
+                        if hydrated_retry_context is not None
+                        else None
+                    ),
                 )
-                if error.code in _SEMANTIC_RETRY_CODES and semantic_retry_count == 0:
+                if retry_error.code in _SEMANTIC_RETRY_CODES and semantic_retry_count == 0:
                     retry_of_invocation_key = _context_invocation_key(context, LlmRole.REPAIR_PROPOSER)
+                    semantic_retry_code = retry_error.code
                     semantic_retry_count = 1
                     continue
-                raise
+                raise retry_error
             stored = self._write(context, "proposal", proposal)
             try:
                 safe_diff = self._write_safe_diff(context, proposal, stored.ref.checksum)
@@ -738,6 +820,490 @@ class RepairApplicationService:
             )
             raise
         return review
+
+    def recover_exhausted_semantic_retry(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, object]:
+        """Create one governed successor for an exhausted proposal-less attempt."""
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+            }
+        )
+        replay = self._semantic_recovery_replay(
+            run_id, attempt_id, idempotency_key, request_checksum
+        )
+        if replay is not None:
+            return replay
+        with self._scope() as session:
+            existing = self._semantic_recovery_child(session, run_id, attempt_id)
+            if existing is not None:
+                return self._semantic_recovery_result(existing, idempotent_replay=True)
+
+        context = self._attempt_context(attempt_id)
+        if context["run_id"] != run_id:
+            raise RepairApplicationError(
+                "REPAIR_ATTEMPT_MISMATCH",
+                "Repair attempt does not belong to the requested run",
+            )
+        try:
+            context_pack = json.loads(str(context["segments"][1]))
+        except (IndexError, TypeError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair context evidence cannot be reconstructed",
+            ) from error
+        if not isinstance(context_pack, dict):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair context evidence cannot be reconstructed",
+            )
+        normalized_failure = context_pack.get("normalized_failure")
+        forbidden_change_policy = context_pack.get("forbidden_change_policy")
+        if not isinstance(normalized_failure, dict) or not isinstance(
+            forbidden_change_policy, dict
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair context evidence is incomplete",
+            )
+        human_revision = context_pack.get("human_revision")
+        if human_revision is not None and (
+            not isinstance(human_revision, dict)
+            or not str(human_revision.get("instruction") or "").strip()
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair human-revision context is incomplete",
+            )
+        evidence = {
+            "run_id": context["run_id"],
+            "stage_id": context["stage_id"],
+            "workspace_path": context["workspace_path"],
+            "workspace_fingerprint": context["workspace_stored_fingerprint"],
+            "artifact_root": context["artifact_root"],
+            "failure_fingerprint": context["failure_fingerprint"],
+            "normalized_failure": normalized_failure,
+            "forbidden_change_policy": forbidden_change_policy,
+        }
+        with self._scope() as session:
+            authority = self._semantic_recovery_authority(
+                session,
+                context,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                expected_state_version=expected_state_version,
+            )
+            if authority["existing_child"] is not None:
+                return self._semantic_recovery_result(
+                    authority["existing_child"], idempotent_replay=True
+                )
+
+        child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
+        stored = None
+        try:
+            root = Path(str(context["artifact_root"]))
+            self._last_artifact_root = root
+            stored = FailureEvidenceService(now_provider=self._now).write_context_pack(
+                evidence,
+                str(context["failure_evidence_checksum"]),
+                relative_path=f"05_repairs/attempt-{child_id}/recovery-context.json",
+                lineage_from=str(context["context_pack_checksum"]),
+                human_revision=human_revision,
+            )
+            with self._scope() as session:
+                authority = self._semantic_recovery_authority(
+                    session,
+                    context,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    expected_state_version=expected_state_version,
+                )
+                existing = authority["existing_child"]
+                if existing is not None:
+                    self._remove_uncommitted_artifact(stored)
+                    return self._semantic_recovery_result(existing, idempotent_replay=True)
+                attempt = authority["attempt"]
+                continuation = authority["continuation"]
+                now = self._now()
+                self._register_artifact_metadata(session, context, stored)
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=attempt.run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="evidence_frozen",
+                    risk_level="unknown",
+                    diagnosis=f"semantic retry recovery; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=stored.ref.artifact_id,
+                    context_pack_checksum=stored.ref.checksum,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                session.flush()
+                attempt.status = "superseded"
+                attempt.updated_at = now
+                attempt.completed_at = now
+                continuation.status = "queued"
+                continuation.current_node = "propose_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.next_attempt_at = None
+                continuation.waiting_execution_id = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=self._semantic_recovery_event_key(idempotency_key),
+                    reason="semantic retry exhausted recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "request_checksum": request_checksum,
+                        "expected_state_version": expected_state_version,
+                    },
+                )
+                return self._semantic_recovery_result(child, idempotent_replay=False)
+        except IntegrityError:
+            if stored is not None:
+                self._remove_uncommitted_artifact(stored)
+            replay = self._semantic_recovery_replay(
+                run_id, attempt_id, idempotency_key, request_checksum
+            )
+            if replay is not None:
+                return replay
+            with self._scope() as session:
+                existing = self._semantic_recovery_child(session, run_id, attempt_id)
+                if existing is not None:
+                    return self._semantic_recovery_result(existing, idempotent_replay=True)
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_CONFLICT",
+                "Concurrent semantic retry recovery could not be resolved",
+            )
+        except RepairApplicationError:
+            if stored is not None:
+                self._remove_uncommitted_artifact(stored)
+            raise
+
+    def _semantic_recovery_authority(
+        self,
+        session,
+        context: dict[str, object],
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+    ) -> dict[str, object]:
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None:
+            raise RepairApplicationError(
+                "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt is missing"
+            )
+        if attempt.run_id != run_id or attempt.stage_id != context["stage_id"]:
+            raise RepairApplicationError(
+                "REPAIR_ATTEMPT_MISMATCH",
+                "Repair attempt does not belong to the requested run or stage",
+            )
+        existing = self._semantic_recovery_child(session, run_id, attempt_id)
+        if existing is not None:
+            return {"existing_child": existing}
+        continuation = session.scalar(
+            select(TransformationContinuationModel).where(
+                TransformationContinuationModel.run_id == run_id,
+            )
+        )
+        latest = session.scalar(
+            select(RepairAttemptModel)
+            .where(
+                RepairAttemptModel.run_id == run_id,
+                RepairAttemptModel.stage_id == attempt.stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .limit(1)
+        )
+        if continuation is None or latest is None:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair recovery authority is missing",
+            )
+        if (
+            latest.id != attempt.id
+            or attempt.status != "evidence_frozen"
+            or attempt.completed_at is not None
+            or continuation.current_stage_id != attempt.stage_id
+            or continuation.status != "blocked"
+            or continuation.current_node != "propose_repair"
+            or continuation.last_error_code != "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+            or continuation.state_version != expected_state_version
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair attempt is not in the exhausted proposal-less recovery state",
+            )
+        if any(
+            getattr(attempt, field)
+            for field in (
+                "proposal_artifact_id",
+                "proposal_checksum",
+                "proposer_invocation_id",
+                "review_artifact_id",
+                "review_checksum",
+                "reviewer_invocation_id",
+                "g10_gate_package_id",
+                "apply_ledger_artifact_id",
+                "apply_ledger_checksum",
+                "validation_summary_artifact_id",
+                "validation_summary_checksum",
+                "post_fingerprint",
+            )
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair attempt already has proposal, review, gate, apply, or validation evidence",
+            )
+        if (
+            context.get("failure_evidence_artifact_id")
+            != attempt.failure_evidence_artifact_id
+            or context.get("failure_evidence_checksum")
+            != attempt.failure_evidence_checksum
+            or context.get("context_pack_artifact_id")
+            != attempt.context_pack_artifact_id
+            or context.get("context_pack_checksum") != attempt.context_pack_checksum
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair evidence lineage changed",
+            )
+        stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+        if (
+            stage_plan is None
+            or stage_plan.run_id != run_id
+            or stage_plan.stage_id != attempt.stage_id
+            or stage_plan.checksum != continuation.stage_plan_checksum
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair stage-plan authority is missing or stale",
+            )
+        repair_policy = (stage_plan.stage_plan or {}).get("repair_policy") or {}
+        budget = repair_budget(session, run_id, attempt.stage_id, repair_policy)
+        try:
+            budget_exhausted = (
+                int(budget["consumed_attempts"]) >= int(budget["max_attempts"])
+                or int(budget["consumed_applied"]) >= int(budget["max_applied"])
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair budget authority is invalid",
+            ) from error
+        if budget_exhausted:
+            raise RepairApplicationError(
+                "REPAIR_LOOP_EXHAUSTED",
+                "Repair recovery limit has been reached",
+            )
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == run_id,
+                StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+        )
+        if binding is None:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Active repair workspace binding is missing",
+            )
+        try:
+            live_fingerprint = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+        except OSError as error:
+            raise RepairApplicationError(
+                "REPAIR_WORKSPACE_STALE",
+                "Repair workspace is unavailable",
+            ) from error
+        if (
+            live_fingerprint != binding.workspace_fingerprint
+            or binding.workspace_fingerprint != attempt.pre_fingerprint
+            or context.get("workspace_stored_fingerprint") != binding.workspace_fingerprint
+            or context.get("workspace_live_fingerprint") != live_fingerprint
+        ):
+            raise RepairApplicationError(
+                "REPAIR_WORKSPACE_STALE",
+                "Repair workspace authority changed",
+            )
+        checkpoint = (
+            session.get(StageCheckpointModel, attempt.checkpoint_id)
+            if attempt.checkpoint_id
+            else None
+        )
+        if (
+            checkpoint is None
+            or checkpoint.run_id != run_id
+            or checkpoint.stage_id != attempt.stage_id
+            or checkpoint.kind != "pre_repair"
+            or not checkpoint.safe_for_resume
+            or checkpoint.workspace_path != binding.workspace_path
+            or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Pre-repair checkpoint authority is missing or stale",
+            )
+        base_invocation_id = f"{attempt.id}:proposer"
+        retry_invocation_id = f"{base_invocation_id}:semantic-retry-1"
+        base_invocation = session.scalar(
+            select(LlmInvocationModel).where(
+                LlmInvocationModel.run_id == run_id,
+                LlmInvocationModel.idempotency_key == base_invocation_id,
+            )
+        )
+        retry_invocation = session.scalar(
+            select(LlmInvocationModel).where(
+                LlmInvocationModel.run_id == run_id,
+                LlmInvocationModel.idempotency_key == retry_invocation_id,
+            )
+        )
+        if (
+            base_invocation is None
+            or retry_invocation is None
+            or base_invocation.status != "failed"
+            or retry_invocation.status != "failed"
+            or retry_invocation.retries != 1
+            or retry_invocation.failure_stage != "repair_semantics"
+            or retry_invocation.failure_code not in _SEMANTIC_RETRY_CODES
+        ):
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Persisted semantic retry evidence is missing or invalid",
+            )
+        return {
+            "existing_child": None,
+            "attempt": attempt,
+            "continuation": continuation,
+            "stage_plan": stage_plan,
+            "binding": binding,
+            "checkpoint": checkpoint,
+        }
+
+    @staticmethod
+    def _semantic_recovery_child(session, run_id: str, attempt_id: str):
+        children = session.scalars(
+            select(RepairAttemptModel)
+            .where(
+                RepairAttemptModel.run_id == run_id,
+                RepairAttemptModel.parent_attempt_id == attempt_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number)
+        ).all()
+        if len(children) > 1:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_CONFLICT",
+                "Multiple semantic recovery children exist for one parent",
+            )
+        if children:
+            parent = session.get(RepairAttemptModel, attempt_id)
+            if (
+                parent is None
+                or children[0].run_id != run_id
+                or children[0].stage_id != parent.stage_id
+                or children[0].attempt_number != parent.attempt_number + 1
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_CONFLICT",
+                    "Semantic recovery child lineage is invalid",
+                )
+        return children[0] if children else None
+
+    @staticmethod
+    def _semantic_recovery_result(child, *, idempotent_replay: bool) -> dict[str, object]:
+        return {
+            "attempt_id": child.id,
+            "status": child.status,
+            "idempotent_replay": idempotent_replay,
+        }
+
+    @staticmethod
+    def _semantic_recovery_event_key(idempotency_key: str) -> str:
+        return "semantic-recovery:" + hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+    def _semantic_recovery_event(self, session, run_id: str, idempotency_key: str):
+        continuation = session.scalar(
+            select(TransformationContinuationModel).where(
+                TransformationContinuationModel.run_id == run_id,
+            )
+        )
+        if continuation is None:
+            return None
+        return session.scalar(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == run_id,
+                WorkflowEventModel.idempotency_key == (
+                    f"{continuation.id}:{self._semantic_recovery_event_key(idempotency_key)}"
+                ),
+            )
+        )
+
+    def _semantic_recovery_replay(
+        self,
+        run_id: str,
+        attempt_id: str,
+        idempotency_key: str,
+        request_checksum: str,
+    ) -> dict[str, object] | None:
+        with self._scope() as session:
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            if attempt is None:
+                raise RepairApplicationError(
+                    "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt is missing"
+                )
+            if attempt.run_id != run_id:
+                raise RepairApplicationError(
+                    "REPAIR_ATTEMPT_MISMATCH",
+                    "Repair attempt does not belong to the requested run",
+                )
+            event = self._semantic_recovery_event(session, run_id, idempotency_key)
+            if event is None:
+                return None
+            if (event.payload or {}).get("request_checksum") != request_checksum:
+                raise RepairApplicationError(
+                    "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                    "Semantic recovery key has a different payload",
+                )
+            child_id = str((event.payload or {}).get("child_attempt_id") or "")
+            child = session.get(RepairAttemptModel, child_id)
+            if child is None or child.parent_attempt_id != attempt_id:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_REPLAY_INVALID",
+                    "Semantic recovery replay child is missing",
+                )
+            return self._semantic_recovery_result(child, idempotent_replay=True)
 
     def request_revision(
         self,
@@ -1208,6 +1774,9 @@ class RepairApplicationService:
                 raise RepairApplicationError(
                     "REPAIR_OPERATION_INVALID", "Repair operation is unsupported"
                 )
+            if actions == {"replace_text"}:
+                for item in group:
+                    self._replacement_preimage(item)
             if "create_text_file" in actions:
                 if len(group) != 1 or target.exists() or group[0].get("content") is None:
                     raise RepairApplicationError(
@@ -1273,7 +1842,7 @@ class RepairApplicationService:
                 ):
                     after = replace_text_once(
                         current,
-                        str(group[0].get("old_text")),
+                        self._replacement_preimage(group[0]),
                         str(group[0].get("new_text")),
                     )
                     result.append(
@@ -1451,9 +2020,10 @@ class RepairApplicationService:
             after = current
             provenance = []
             for item in group:
+                old_text = self._replacement_preimage(item)
                 try:
                     after = replace_text_once(
-                        after, str(item.get("old_text")), str(item.get("new_text"))
+                        after, old_text, str(item.get("new_text"))
                     )
                 except RepairApplicationError:
                     raise
@@ -1461,7 +2031,7 @@ class RepairApplicationService:
                     {
                         "operation": "replace_text",
                         "path": relative,
-                        "old_text": str(item.get("old_text")),
+                        "old_text": old_text,
                         "new_text": str(item.get("new_text")),
                     }
                 )
@@ -1489,8 +2059,8 @@ class RepairApplicationService:
         ]
         if len(operations) != 1 or len(transitions) != 1:
             raise RepairApplicationError(
-                "REPAIR_OPERATION_AMBIGUOUS",
-                "dependency_transition requires exactly one operation and no other mutations",
+                _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE,
+                "dependency_transition must be the only repair operation",
             )
         operation = dict(transitions[0])
         expected_fields = {
@@ -1736,6 +2306,18 @@ class RepairApplicationService:
                     "REPAIR_PATH_INVALID",
                     f"operations.{index}.path must contain 1 to 500 characters",
                 )
+        transition_operations = [
+            operation
+            for operation in candidate.operations
+            if operation.operation == "dependency_transition"
+        ]
+        if transition_operations and (
+            len(candidate.operations) != 1 or candidate.unified_diff is not None
+        ):
+            raise RepairApplicationError(
+                _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE,
+                "dependency_transition must be the only repair operation",
+            )
         if candidate.proposal_format == "operations":
             if not candidate.operations or candidate.unified_diff is not None:
                 raise RepairApplicationError(
@@ -1769,6 +2351,262 @@ class RepairApplicationService:
         if any(item.get("operation") == "dependency_transition" for item in operations):
             return self._bind_dependency_transition(payload, context)
         return RepairProposal.model_validate(payload).model_dump(mode="json")
+
+    def _context_pack_excerpts(self, context: dict[str, object]) -> dict[str, object]:
+        try:
+            payload = json.loads(str(context["segments"][1]))
+        except (IndexError, TypeError, ValueError) as error:
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_INVALID", "Repair context pack is not valid JSON"
+            ) from error
+        excerpts = payload.get("file_excerpts") if isinstance(payload, dict) else None
+        if not isinstance(excerpts, dict):
+            raise RepairApplicationError(
+                "REPAIR_CONTEXT_INVALID", "Repair context pack file excerpts are missing"
+            )
+        return excerpts
+
+    @staticmethod
+    def _replacement_preimage(item: dict[str, object]) -> str:
+        old_text = item.get("old_text")
+        if not isinstance(old_text, str) or not old_text:
+            raise RepairApplicationError(
+                _REPLACEMENT_PREIMAGE_REQUIRED,
+                "replace_text requires a non-empty old_text copied from authoritative "
+                "repository content; null or missing preimages are forbidden.",
+            )
+        return old_text
+
+    def _hydrate_semantic_retry_context(
+        self, candidate: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object] | None:
+        authoritative = self._assert_fresh_authority(context, role="proposer")
+        try:
+            workspace = Path(str(authoritative["workspace_path"])).resolve(strict=True)
+        except OSError as error:
+            raise RepairApplicationError(
+                "REPAIR_WORKSPACE_MISSING", "Repair workspace is unavailable"
+            ) from error
+        excerpts = self._context_pack_excerpts(authoritative)
+        missing_paths: list[str] = []
+        for operation in candidate.get("operations") or []:
+            if not isinstance(operation, dict) or operation.get("operation") != "replace_text":
+                continue
+            path_value = operation.get("path")
+            if not isinstance(path_value, str) or not path_value:
+                raise RepairApplicationError(
+                    _REPLACEMENT_CONTEXT_INVALID,
+                    "replace_text target path cannot be hydrated safely",
+                )
+            try:
+                relative = self._safe_path(path_value, workspace)
+            except RepairApplicationError as error:
+                raise RepairApplicationError(
+                    _REPLACEMENT_CONTEXT_INVALID,
+                    "replace_text target path cannot be hydrated safely",
+                ) from error
+            entry = excerpts.get(relative)
+            if not (
+                isinstance(entry, dict)
+                and isinstance(entry.get("content"), str)
+                and entry.get("truncated") is False
+            ):
+                missing_paths.append(relative)
+        missing_paths = list(dict.fromkeys(missing_paths))
+        if not missing_paths:
+            return None
+
+        targets: list[dict[str, object]] = []
+        for relative in sorted(missing_paths):
+            current_path = workspace
+            for part in PurePosixPath(relative).parts:
+                current_path = current_path / part
+                if current_path.is_symlink():
+                    raise RepairApplicationError(
+                        _REPLACEMENT_CONTEXT_INVALID,
+                        "replace_text target path cannot traverse a symlink",
+                    )
+            target = workspace / relative
+            if target.is_symlink() or not target.is_file():
+                raise RepairApplicationError(
+                    _REPLACEMENT_CONTEXT_INVALID,
+                    "replace_text target is not a regular existing file",
+                )
+            try:
+                raw = target.read_bytes()
+                if len(raw) > CONTEXT_PACK_MAX_BYTES_PER_FILE:
+                    raise RepairApplicationError(
+                        _REPLACEMENT_CONTEXT_INVALID,
+                        "replace_text target is too large for safe semantic retry context",
+                    )
+                content = raw.decode("utf-8")
+            except RepairApplicationError:
+                raise
+            except (OSError, UnicodeDecodeError) as error:
+                raise RepairApplicationError(
+                    _REPLACEMENT_CONTEXT_INVALID,
+                    "replace_text target cannot be represented as repair text",
+                ) from error
+            targets.append(
+                {
+                    "content": content,
+                    "path": relative,
+                    "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                    "size_bytes": len(raw),
+                }
+            )
+
+        try:
+            live_fingerprint = StageSandboxCopier.fingerprint(workspace)
+        except OSError as error:
+            raise RepairApplicationError(
+                "REPAIR_WORKSPACE_MISSING", "Repair workspace is unavailable"
+            ) from error
+        if live_fingerprint != authoritative["workspace_stored_fingerprint"]:
+            raise RepairApplicationError(
+                "REPAIR_WORKSPACE_STALE", "Repair workspace fingerprint changed"
+            )
+        payload = {
+            "schema_version": _SEMANTIC_RETRY_CONTEXT_SCHEMA,
+            "targets": targets,
+            "workspace_fingerprint": authoritative["workspace_stored_fingerprint"],
+        }
+        segment = json.dumps(payload, sort_keys=True)
+        return {"segment": segment, "payload": payload}
+
+    def _load_semantic_retry_context(
+        self, context: dict[str, object]
+    ) -> dict[str, str] | None:
+        base_invocation_id = _invocation_key(
+            str(context["attempt_id"]), LlmRole.REPAIR_PROPOSER
+        )
+        with self._scope() as session:
+            invocation = session.scalar(
+                select(LlmInvocationModel).where(
+                    LlmInvocationModel.run_id == context["run_id"],
+                    LlmInvocationModel.idempotency_key == base_invocation_id,
+                )
+            )
+            if invocation is None:
+                return None
+            metadata = {
+                artifact_id: session.get(ArtifactMetadataModel, "metadata-" + artifact_id)
+                for artifact_id in invocation.artifact_ids or []
+            }
+            rejected_metadata = [
+                item
+                for item in metadata.values()
+                if item is not None
+                and PurePosixPath(item.relative_path).name.startswith(
+                    "rejected-proposer-candidate"
+                )
+            ]
+        if not rejected_metadata:
+            return None
+        root = Path(str(context["artifact_root"]))
+        store = LocalFilesystemArtifactStore(root.parent, fixed_run_root=root)
+        recovered = []
+        for metadata_item in rejected_metadata:
+            try:
+                stored = store.read_artifact(str(context["run_id"]), metadata_item.relative_path)
+                self._validate_artifact_envelope(
+                    stored,
+                    expected_run_id=context["run_id"],
+                    expected_stage_id=context["stage_id"],
+                    expected_attempt_id=context["attempt_id"],
+                    pre_attempt=False,
+                    metadata_checksum=metadata_item.checksum,
+                )
+                candidate_payload = json.loads(stored.content)
+                retry_payload = (
+                    candidate_payload.get("semantic_retry_context")
+                    if isinstance(candidate_payload, dict)
+                    else None
+                )
+                if retry_payload is not None:
+                    recovered.append(self._validate_semantic_retry_context(retry_payload, context))
+            except RepairApplicationError:
+                raise
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context cannot be loaded",
+                ) from error
+        if len(recovered) > 1:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Repair semantic retry context lineage is ambiguous",
+            )
+        if not recovered:
+            return None
+        payload = recovered[0]
+        return {
+            "segment": json.dumps(payload, sort_keys=True),
+            "checksum": self._request_checksum(payload),
+        }
+
+    def _validate_semantic_retry_context(
+        self, payload: object, context: dict[str, object]
+    ) -> dict[str, object]:
+        if not isinstance(payload, dict) or payload.get("schema_version") != _SEMANTIC_RETRY_CONTEXT_SCHEMA:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Repair semantic retry context schema is invalid",
+            )
+        if payload.get("workspace_fingerprint") != context["workspace_stored_fingerprint"]:
+            raise RepairApplicationError(
+                "REPAIR_WORKSPACE_STALE",
+                "Repair semantic retry context workspace fingerprint is stale",
+            )
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets:
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Repair semantic retry context targets are invalid",
+            )
+        paths = [item.get("path") for item in targets if isinstance(item, dict)]
+        if (
+            len(paths) != len(targets)
+            or not all(isinstance(path, str) for path in paths)
+            or paths != sorted(paths)
+            or len(set(paths)) != len(paths)
+        ):
+            raise RepairApplicationError(
+                "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                "Repair semantic retry context target ordering is invalid",
+            )
+        workspace = Path(str(context["workspace_path"])).resolve(strict=True)
+        for item in targets:
+            if not isinstance(item, dict):
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context target is invalid",
+                )
+            try:
+                relative = self._safe_path(str(item.get("path") or ""), workspace)
+            except (RepairApplicationError, OSError, ValueError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context target path is invalid",
+                ) from error
+            if relative != item.get("path"):
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context target path is not canonical",
+                )
+            target_content = item.get("content")
+            raw = target_content.encode("utf-8") if isinstance(target_content, str) else None
+            if (
+                raw is None
+                or len(raw) != item.get("size_bytes")
+                or len(raw) > CONTEXT_PACK_MAX_BYTES_PER_FILE
+                or item.get("sha256") != "sha256:" + hashlib.sha256(raw).hexdigest()
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                    "Repair semantic retry context target checksum is invalid",
+                )
+        return payload
 
     def _unified_diff_touched_files(self, diff: str | None, workspace: Path) -> list[str]:
         lines = (diff or "").splitlines()
@@ -3072,6 +3910,7 @@ class RepairApplicationService:
             invocation_key=context.get("invocation_key"),
             semantic_retry_count=context.get("semantic_retry_count"),
             retry_of_invocation_key=context.get("retry_of_invocation_key"),
+            semantic_retry_context_checksum=context.get("semantic_retry_context_checksum"),
             invocation_state_version=context.get("invocation_state_version"),
             authority_snapshot=context["authority_snapshot"],
             invocation_owner_state=context.get("invocation_owner_state"),
@@ -3303,6 +4142,10 @@ class RepairApplicationService:
             "schema:"
             + hashlib.sha256(json.dumps(schema.model_json_schema(), sort_keys=True).encode()).hexdigest(),
         ]
+        if context.get("semantic_retry_context_checksum"):
+            input_hashes.append(
+                "semantic_retry_context:" + str(context["semantic_retry_context_checksum"])
+            )
         if context.get("retry_of_invocation_key"):
             input_hashes.extend([
                 "retry_of:" + str(context["retry_of_invocation_key"]),
@@ -3334,7 +4177,20 @@ class RepairApplicationService:
                             semantic_retry_count=1,
                             retry_of_invocation_key=base_invocation_id,
                         )
-                        context["segments"].append(_SEMANTIC_RETRY_FEEDBACK)
+                        base_invocation = session.scalar(
+                            select(LlmInvocationModel).where(
+                                LlmInvocationModel.run_id == context["run_id"],
+                                LlmInvocationModel.idempotency_key == base_invocation_id,
+                            )
+                        )
+                        context["segments"].append(
+                            _semantic_retry_feedback(
+                                base_invocation.failure_code if base_invocation is not None else None
+                            )
+                        )
+                        request_checksum = self._logical_request_checksum(
+                            context["segments"], schema_name, prompt_version, schema_version
+                        )
                         invocation_id = prior_retry_id
                         input_hashes.extend([
                             "retry_of:" + base_invocation_id,
@@ -3368,6 +4224,17 @@ class RepairApplicationService:
                         )
                     )
                 context["invocation_key"] = invocation_id
+                if context.get("semantic_retry_count") and existing is not None:
+                    if existing.status == "failed":
+                        raise RepairApplicationError(
+                            "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                            "Repair semantic correction retry has already failed",
+                        )
+                    if existing.status == "in_progress" and existing.transport_started:
+                        raise RepairApplicationError(
+                            "REPAIR_INVOCATION_UNCERTAIN",
+                            "Repair semantic correction retry outcome is uncertain",
+                        )
                 if existing is None:
                     session.add(LlmInvocationModel(
                         id=invocation_id,
@@ -3520,6 +4387,11 @@ class RepairApplicationService:
                 context["invocation_key"] = invocation_id
                 if existing is None:
                     raise
+                if context.get("semantic_retry_count") and existing.status == "failed":
+                    raise RepairApplicationError(
+                        "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                        "Repair semantic correction retry has already failed",
+                    )
                 if existing.status == "in_progress" and existing.transport_started:
                     raise RepairApplicationError("REPAIR_INVOCATION_UNCERTAIN", "Repair LLM invocation outcome is uncertain")
                 legacy_v1 = existing.schema_version == "schema-registry-v1" and existing.prompt_version in {
@@ -3633,6 +4505,7 @@ class RepairApplicationService:
         failure_stage_override=None,
         response=None,
         rejected_candidate=None,
+        semantic_retry_context=None,
     ) -> None:
         kind = "propose-error" if role == LlmRole.REPAIR_PROPOSER else "review-error"
         cause = error.__cause__ if isinstance(error.__cause__, AzureGatewayError) else None
@@ -3672,20 +4545,23 @@ class RepairApplicationService:
         rejected_stored = None
         if rejected_candidate is not None and role == LlmRole.REPAIR_PROPOSER:
             parsed_candidate = RepairProposalCandidate.model_validate(rejected_candidate).model_dump(mode="json")
+            rejected_payload = {
+                "attempt_id": context["attempt_id"],
+                "candidate": parsed_candidate,
+                "prompt_version": context.get("prompt_version"),
+                "schema_version": context.get("schema_version"),
+                "candidate_checksum": self._request_checksum(parsed_candidate),
+                "context_checksum": context.get("context_pack_checksum"),
+                "semantic_failure_code": error.code,
+                "semantic_failure_message": _bounded_text(error.message, 512),
+                "provider_request_id": _bounded_text(request_id, 256),
+            }
+            if semantic_retry_context is not None:
+                rejected_payload["semantic_retry_context"] = semantic_retry_context
             rejected_stored = self._write(
                 context,
                 "rejected-proposer-candidate",
-                {
-                    "attempt_id": context["attempt_id"],
-                    "candidate": parsed_candidate,
-                    "prompt_version": context.get("prompt_version"),
-                    "schema_version": context.get("schema_version"),
-                    "candidate_checksum": self._request_checksum(parsed_candidate),
-                    "context_checksum": context.get("context_pack_checksum"),
-                    "semantic_failure_code": error.code,
-                    "semantic_failure_message": _bounded_text(error.message, 512),
-                    "provider_request_id": _bounded_text(request_id, 256),
-                },
+                rejected_payload,
             )
         now = self._now()
         with self._scope() as session:
@@ -3696,20 +4572,24 @@ class RepairApplicationService:
                 )
             )
             if invocation is None:
-                self._remove_uncommitted_artifact(stored)
-                if rejected_stored is not None:
-                    self._remove_uncommitted_artifact(rejected_stored)
+                for artifact in (stored, rejected_stored):
+                    if artifact is not None:
+                        self._remove_uncommitted_artifact(artifact)
                 return
             expected_state = context.get("invocation_state_version")
             if expected_state is None or invocation.state_version != expected_state or invocation.status != "in_progress":
-                self._remove_uncommitted_artifact(stored)
-                if rejected_stored is not None:
-                    self._remove_uncommitted_artifact(rejected_stored)
+                for artifact in (stored, rejected_stored):
+                    if artifact is not None:
+                        self._remove_uncommitted_artifact(artifact)
                 return
-            artifact_ids = list(dict.fromkeys([*(invocation.artifact_ids or []), stored.ref.artifact_id]))
-            artifact_checksums = {**(invocation.artifact_checksums or {}), stored.ref.artifact_id: stored.ref.checksum}
+            artifact_ids = list(invocation.artifact_ids or [])
+            artifact_checksums = dict(invocation.artifact_checksums or {})
+            if stored.ref.artifact_id not in artifact_ids:
+                artifact_ids.append(stored.ref.artifact_id)
+            artifact_checksums[stored.ref.artifact_id] = stored.ref.checksum
             if rejected_stored is not None:
-                artifact_ids.append(rejected_stored.ref.artifact_id)
+                if rejected_stored.ref.artifact_id not in artifact_ids:
+                    artifact_ids.append(rejected_stored.ref.artifact_id)
                 artifact_checksums[rejected_stored.ref.artifact_id] = rejected_stored.ref.checksum
             changed = session.execute(
                 update(LlmInvocationModel)
@@ -3740,9 +4620,9 @@ class RepairApplicationService:
                 )
             )
             if changed.rowcount != 1:
-                self._remove_uncommitted_artifact(stored)
-                if rejected_stored is not None:
-                    self._remove_uncommitted_artifact(rejected_stored)
+                for artifact in (stored, rejected_stored):
+                    if artifact is not None:
+                        self._remove_uncommitted_artifact(artifact)
                 return
             self._register_artifact_metadata(session, context, stored)
             if rejected_stored is not None:
@@ -3893,9 +4773,16 @@ class RepairApplicationService:
             elif action == "delete_text_file":
                 after = ""
             else:
+                old_text = operation.get("old_text")
+                if not isinstance(old_text, str) or not old_text:
+                    raise RepairApplicationError(
+                        _REPLACEMENT_PREIMAGE_REQUIRED,
+                        "replace_text requires a non-empty old_text copied from authoritative "
+                        "repository content; null or missing preimages are forbidden.",
+                    )
                 after = replace_text_once(
                     before,
-                    str(operation["old_text"]),
+                    old_text,
                     str(operation["new_text"]),
                 )
             diff = "".join(

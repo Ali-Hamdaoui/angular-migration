@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,6 +43,15 @@ LOCKFILE_GENERATION_FINGERPRINT_SCOPE = "lockfile-generation-mutation-v2"
 #: generation.  The successor idempotency key is derived from this suffix, so
 #: restarts reconstruct the same key and never queue endless successors.
 LOCKFILE_GENERATION_ATTEMPT_2_MARKER = ":attempt-2"
+LOCKFILE_GENERATION_ETARGET = "LOCKFILE_GENERATION_ETARGET"
+
+_NPM_ERROR_PREFIX = r"npm\s+(?:error|ERR!)"
+_NPM_ETARGET_CODE = re.compile(
+    rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+code\s+ETARGET\b"
+)
+_NPM_NO_MATCHING_VERSION = re.compile(
+    rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+notarget\s+No matching version found for\s+\S+"
+)
 
 
 class LockfileGenerationError(ValueError):
@@ -49,6 +59,19 @@ class LockfileGenerationError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def is_npm_etarget_failure(execution) -> bool:
+    """Recognize only persisted npm ETARGET dependency-resolution evidence."""
+    if (
+        execution is None
+        or execution.command_id != "npm-lockfile-generate"
+        or execution.status != "failed"
+        or execution.exit_code in (None, 0)
+    ):
+        return False
+    message = str(execution.failure_message or "")
+    return bool(_NPM_ETARGET_CODE.search(message) and _NPM_NO_MATCHING_VERSION.search(message))
 
 
 def _file_checksum(path: Path) -> str:
@@ -126,6 +149,11 @@ class LockfileGenerationRunner:
             self._stage._wait_for_command(session, continuation, execution.id)
             return "waiting"
         if execution.status != "succeeded" or execution.exit_code != 0:
+            if is_npm_etarget_failure(execution):
+                raise LockfileGenerationError(
+                    LOCKFILE_GENERATION_ETARGET,
+                    execution.failure_message or "npm reported an unavailable dependency version",
+                )
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_COMMAND_FAILED",
                 execution.failure_code or "npm-lockfile-generate did not succeed",

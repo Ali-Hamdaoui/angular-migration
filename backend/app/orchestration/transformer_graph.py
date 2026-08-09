@@ -66,6 +66,7 @@ from app.services.dependency_transition_runner import (
 )
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.lockfile_generation_runner import (
+    LOCKFILE_GENERATION_ETARGET,
     LockfileGenerationError,
     LockfileGenerationRunner,
 )
@@ -2585,7 +2586,18 @@ class TransformerOrchestrator:
                     session, continuation, next_node="repair_revalidate"
                 )
             except LockfileGenerationError as error:
-                self._block(session, continuation, error.code, error.message)
+                if error.code == LOCKFILE_GENERATION_ETARGET:
+                    self._validation_failure(
+                        session,
+                        continuation,
+                        error,
+                        event_reason=(
+                            "lockfile-generation command failed with ETARGET; "
+                            "failure classification queued"
+                        ),
+                    )
+                else:
+                    self._block(session, continuation, error.code, error.message)
 
     @staticmethod
     def _claim_current_continuation_for_apply(
@@ -3658,7 +3670,11 @@ class TransformerOrchestrator:
 
     @staticmethod
     def _validation_failure(
-        session, continuation, error: ValidationRunnerError
+        session,
+        continuation,
+        error: ValidationRunnerError | LockfileGenerationError,
+        *,
+        event_reason: str = "validation command failed; failure classification queued",
     ) -> None:
         expected_state_version = continuation.state_version
         continuation.status = "queued"
@@ -3675,7 +3691,7 @@ class TransformerOrchestrator:
             continuation,
             event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_FAILED,
             key=f"failed:{expected_state_version}:{error.code}",
-            reason="validation failure recorded; failure classification queued",
+            reason=event_reason,
             payload={
                 "last_error_code": error.code,
                 "expected_state_version": expected_state_version,

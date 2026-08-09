@@ -26,6 +26,7 @@ from app.llm_gateway import (
     PromptRegistry,
     PromptSchemaRegistry,
 )
+import app.orchestration.transformer_graph as transformer_graph_module
 from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -41,7 +42,10 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
-from app.services.lockfile_generation_runner import LockfileGenerationError
+from app.services.lockfile_generation_runner import (
+    LOCKFILE_GENERATION_ETARGET,
+    LockfileGenerationError,
+)
 from app.services.repair_application_service import (
     RepairApplicationService,
     RepairProposal,
@@ -1178,6 +1182,48 @@ def test_lockfile_generation_failure_blocks_with_precise_reason():
         "LOCKFILE_GENERATION_LOCKFILE_INVALID",
         "invalid generated lockfile",
     )
+
+
+def test_etarget_lockfile_failure_queues_governed_failure_classification(monkeypatch):
+    continuation = SimpleNamespace(
+        state_version=7,
+        status="running",
+        current_node="lockfile_generation",
+        last_error_code=None,
+        last_error_message=None,
+        worker_id="worker-1",
+        lease_expires_at="lease",
+        waiting_execution_id="exec-lock",
+    )
+    session = SimpleNamespace(flush=MagicMock())
+
+    @contextmanager
+    def scope():
+        yield session
+
+    error = LockfileGenerationError(
+        LOCKFILE_GENERATION_ETARGET,
+        "npm error code ETARGET\nnpm error notarget No matching version found for example-package@^1.2.3.",
+    )
+    advance = MagicMock(side_effect=error)
+    orchestrator = TransformerOrchestrator.__new__(TransformerOrchestrator)
+    orchestrator._scope = scope
+    orchestrator._owned = lambda _session, _continuation_id, _worker_id: continuation
+    orchestrator._lockfiles = SimpleNamespace(advance=advance)
+    orchestrator._block = MagicMock()
+    events = MagicMock()
+    monkeypatch.setattr(transformer_graph_module, "append_continuation_event", events)
+
+    orchestrator._lockfile_generation("cont-1", "worker-1")
+
+    assert continuation.status == "queued"
+    assert continuation.current_node == "classify_failure"
+    assert continuation.last_error_code == LOCKFILE_GENERATION_ETARGET
+    assert continuation.last_error_message == str(error)
+    assert continuation.waiting_execution_id == "exec-lock"
+    assert advance.call_count == 1
+    orchestrator._block.assert_not_called()
+    events.assert_called_once()
 
 
 def _reviewed_attempt_with_transport(factory, tmp_path: Path):

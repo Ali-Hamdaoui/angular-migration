@@ -25,6 +25,7 @@ from app.repositories.models import (
     LlmInvocationModel,
     MigrationRunModel,
     RepairAttemptModel,
+    StageCheckpointModel,
     StageExecutionPlanModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
@@ -41,6 +42,7 @@ from app.services.repair_application_service import (
     RepairProposalCandidate,
     RepairReview,
     RepairReviewCandidate,
+    replace_text_once,
     _translate_gateway_failure,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -89,6 +91,78 @@ def _proposal_candidate():
         "risk_level": "low",
         "validation_targets": ["build"],
         "limitations": [],
+    }
+
+
+def _dependency_transition_candidate(*operations):
+    return {
+        "proposal_format": "operations",
+        "operations": list(operations),
+        "unified_diff": None,
+        "rationale": ["Perform the governed dependency transition."],
+        "risk_level": "medium",
+        "validation_targets": ["build", "test"],
+        "limitations": [],
+    }
+
+
+def _dependency_transition_operation():
+    return {"operation": "dependency_transition", "path": "package.json"}
+
+
+def _dependency_transition_context(tmp_path: Path):
+    from app.services.dependency_closure_service import _COMPATIBLE_REINSTALL_BUNDLES
+
+    (package, target_major), authority = next(iter(_COMPATIBLE_REINSTALL_BUNDLES.items()))
+    target_version = next(version for name, version, _ in authority if name == package)
+    peer_package = "fixture-peer-dependency"
+    package_json = {
+        "name": "fixture",
+        "devDependencies": {package: "^1.2.3"},
+    }
+    package_lock = {
+        "name": "fixture",
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"devDependencies": {package: "^1.2.3"}},
+            f"node_modules/{package}": {
+                "version": "1.2.3",
+                "peerDependencies": {peer_package: ">=1.0.0 <3.0.0"},
+            },
+        },
+    }
+    package_metadata = {
+        "name": package,
+        "version": "1.2.3",
+        "peerDependencies": {peer_package: ">=1.0.0 <3.0.0"},
+    }
+    (tmp_path / "package.json").write_text(json.dumps(package_json), encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(json.dumps(package_lock), encoding="utf-8")
+    package_path = tmp_path / "node_modules" / package
+    package_path.mkdir(parents=True)
+    (package_path / "package.json").write_text(json.dumps(package_metadata), encoding="utf-8")
+    evidence = {
+        "normalized_failure": {
+            "command_id": "angular-update-exact",
+            "exit_code": 1,
+            "failure_diagnosis": {
+                "kind": "peer_dependency_conflict",
+                "package": package,
+                "installed_version": "14.1.0",
+                "required_ranges": {peer_package: ">=1.0.0 <3.0.0"},
+                "proposed_angular_version": f"{target_major}.0.0",
+            },
+        }
+    }
+    return {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+        "failure_evidence_artifact_id": "artifact-failure",
+        "checkpoint_id": "checkpoint-1",
+        "target_exact": f"{target_major}.0.0",
+        "expected_target_version": target_version,
+        "segments": [json.dumps(evidence)],
     }
 
 
@@ -374,6 +448,94 @@ def test_proposal_rejects_stale_preimage_duplicate_paths_and_mixed_formats(tmp_p
         service.validate_proposal(mixed, context)
 
 
+def test_mixed_dependency_transition_gets_specific_contract_error(tmp_path: Path):
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    candidate = _dependency_transition_candidate(
+        _dependency_transition_operation(),
+        {"operation": "replace_text", "path": "package.json", "old_text": "", "new_text": ""},
+    )
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert raised.value.code == "REPAIR_DEPENDENCY_TRANSITION_NOT_EXCLUSIVE"
+    assert raised.value.code != "REPAIR_OPERATION_AMBIGUOUS"
+
+
+def test_dependency_transition_retry_feedback_requires_exclusive_operation(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    invalid = _dependency_transition_candidate(
+        _dependency_transition_operation(),
+        {"operation": "replace_text", "path": "package.json", "old_text": "", "new_text": ""},
+    )
+    valid = _proposal_candidate()
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(invalid)), _responses_body(json.dumps(valid))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    proposal = service.propose(attempt_id)
+
+    assert proposal["operations"][0]["operation"] == "replace_text"
+    assert "REPAIR_DEPENDENCY_TRANSITION_NOT_EXCLUSIVE" in repair_application_service._SEMANTIC_RETRY_CODES
+    retry_request = json.loads(transport.calls[1]["payload"]["input"][0]["content"][0]["text"])
+    retry_text = "\n".join(
+        segment["content"]
+        for segment in retry_request["context"]
+        if isinstance(segment, dict) and isinstance(segment.get("content"), str)
+    )
+    for phrase in (
+        "dependency_transition is exclusive",
+        "exactly one operation",
+        'operation=\"dependency_transition\"',
+        'path=\"package.json\"',
+        "Do not emit replace_text",
+        "Do not emit dependency_add or dependency_change",
+        "Do not emit a package.json unified_diff",
+        "backend binds authoritative transition targets",
+        "same immutable failure/context evidence",
+    ):
+        assert phrase in retry_text
+    engine.dispose()
+
+
+def test_corrected_dependency_transition_retry_binds(tmp_path: Path):
+    context = _dependency_transition_context(tmp_path)
+    bound = RepairApplicationService(scope=None)._bind_proposal_candidate(
+        _dependency_transition_candidate(_dependency_transition_operation()), context
+    )
+
+    assert bound["operations"][0]["operation"] == "dependency_transition"
+    assert bound["operations"][0]["path"] == "package.json"
+    assert bound["operations"][0]["checkpoint_id"] == "checkpoint-1"
+    assert bound["operations"][0]["target_state"]["target_version"] == context["expected_target_version"]
+
+
+def test_generic_operation_ambiguity_remains_non_retryable(tmp_path: Path):
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    candidate = _proposal_candidate()
+    candidate["operations"][0]["path"] = "package.json"
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert raised.value.code == "REPAIR_OPERATION_AMBIGUOUS"
+    assert "REPAIR_OPERATION_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
+
+
 def test_proposal_rejects_lockfiles_and_binary_targets(tmp_path: Path):
     lockfile = tmp_path / "package-lock.json"
     lockfile.write_text("{}", encoding="utf-8")
@@ -485,7 +647,7 @@ def _gateway(transport, settings: Settings):
     )
 
 
-def _seed_service(factory, tmp_path: Path):
+def _seed_service(factory, tmp_path: Path, *, human_revision: dict | None = None):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
     (workspace / "src").mkdir(parents=True, exist_ok=True)
@@ -527,7 +689,12 @@ def _seed_service(factory, tmp_path: Path):
         "repair_policy": {},
         "forbidden_change_policy": {},
     }
-    context = FailureEvidenceService().write_context_pack(evidence, failure.ref.checksum)
+    context_kwargs = {}
+    if human_revision is not None:
+        context_kwargs["human_revision"] = human_revision
+    context = FailureEvidenceService().write_context_pack(
+        evidence, failure.ref.checksum, **context_kwargs
+    )
     session = factory()
     run = MigrationRunModel(
         id="run-1",
@@ -658,6 +825,351 @@ def _seed_failed_v1_invocation(factory, attempt_id: str):
     )
     session.commit()
     session.close()
+
+
+def _seed_exhausted_semantic_retry(
+    factory, tmp_path: Path, *, human_revision: dict | None = None
+):
+    store, attempt_id, app_ts, artifacts = _seed_service(
+        factory, tmp_path, human_revision=human_revision
+    )
+    session = factory()
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    attempt.pre_fingerprint = binding.workspace_fingerprint
+    checkpoint = StageCheckpointModel(
+        id="ckpt-pre",
+        run_id="run-1",
+        stage_id="stage-1",
+        kind="pre_repair",
+        sequence=1,
+        workspace_alias=binding.alias,
+        workspace_path=binding.workspace_path,
+        workspace_fingerprint=binding.workspace_fingerprint,
+        safe_for_resume=True,
+        sealed=False,
+        state_version=1,
+        created_at=NOW,
+    )
+    attempt.checkpoint_id = checkpoint.id
+    continuation.status = "blocked"
+    continuation.current_node = "propose_repair"
+    continuation.last_error_code = "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+    continuation.last_error_message = "Repair semantic correction retry has already failed"
+    continuation.worker_id = None
+    continuation.lease_expires_at = None
+
+    for retry_number, suffix in enumerate(("", ":semantic-retry-1")):
+        invocation_id = f"{attempt_id}:proposer{suffix}"
+        session.add(
+            LlmInvocationModel(
+                id=invocation_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                idempotency_key=invocation_id,
+                request_checksum=f"sha256:request-{retry_number}",
+                input_hashes=["sha256:failure", "sha256:context"],
+                correlation_id=invocation_id,
+                actor="transformer",
+                role="repair_proposer",
+                task_type="repair_diagnosis",
+                provider="azure_openai",
+                deployment_alias="azure-openai",
+                prompt_version="prompt-repair-proposer-candidate-v2",
+                schema_version="schema-registry-v1",
+                pricing_version="mvp-pricing-2026-01",
+                stage="repair",
+                redacted_summary=None,
+                status="failed",
+                failure_code="REPAIR_REPLACEMENT_MISSING",
+                artifact_ids=[],
+                artifact_checksums={},
+                state_version=1,
+                event_sequence=0,
+                retries=retry_number,
+                failure_stage="repair_semantics",
+                started_at=NOW,
+                completed_at=NOW,
+                created_at=NOW,
+            )
+        )
+    session.add(checkpoint)
+    session.commit()
+    session.close()
+    return store, attempt_id, app_ts, artifacts
+
+
+def _recovery_service(factory):
+    return RepairApplicationService(scope=_scope(factory), now_provider=lambda: NOW)
+
+
+def test_recover_exhausted_semantic_retry_creates_one_lineage_bound_child(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(factory, tmp_path)
+    session = factory()
+    parent_before = session.get(RepairAttemptModel, attempt_id)
+    old_context = store.read_artifact_by_id(parent_before.context_pack_artifact_id)
+    old_context_checksum = parent_before.context_pack_checksum
+    session.close()
+
+    result = _recovery_service(factory).recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-1",
+        actor="operator",
+    )
+
+    assert result == {
+        "attempt_id": "repair-stage-1-2",
+        "status": "evidence_frozen",
+        "idempotent_replay": False,
+    }
+    session = factory()
+    parent = session.get(RepairAttemptModel, attempt_id)
+    child = session.get(RepairAttemptModel, "repair-stage-1-2")
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    child_metadata = session.get(
+        ArtifactMetadataModel, "metadata-" + child.context_pack_artifact_id
+    )
+    assert parent.status == "superseded"
+    assert parent.completed_at == NOW.replace(tzinfo=None)
+    assert child.parent_attempt_id == attempt_id
+    assert child.run_id == parent.run_id == "run-1"
+    assert child.stage_id == parent.stage_id == "stage-1"
+    assert child.attempt_number == parent.attempt_number + 1
+    assert child.failure_evidence_artifact_id == parent.failure_evidence_artifact_id
+    assert child.failure_evidence_checksum == parent.failure_evidence_checksum
+    assert child.failure_route_artifact_id == parent.failure_route_artifact_id
+    assert child.failure_route_checksum == parent.failure_route_checksum
+    assert child.checkpoint_id == parent.checkpoint_id == "ckpt-pre"
+    assert child.pre_fingerprint == parent.pre_fingerprint
+    assert child.context_pack_artifact_id != old_context.ref.artifact_id
+    new_context = store.read_artifact_by_id(child.context_pack_artifact_id)
+    assert new_context.envelope.input_hashes["recovered_from"] == old_context_checksum
+    assert child_metadata.immutable is True
+    assert continuation.status == "queued"
+    assert continuation.current_node == "propose_repair"
+    assert continuation.last_error_code is None
+    assert continuation.last_error_message is None
+    assert continuation.worker_id is None
+    assert continuation.lease_expires_at is None
+    assert continuation.state_version == 4
+    assert continuation.wake_sequence == 1
+    session.close()
+
+    old_context_after = store.read_artifact_by_id(old_context.ref.artifact_id)
+    assert old_context_after.ref.checksum == old_context.ref.checksum
+    assert old_context_after.content == old_context.content
+    engine.dispose()
+
+
+def test_recovery_child_context_preserves_existing_human_revision(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    human_revision = {
+        "instruction": "Keep the existing test bootstrap migration intent.",
+        "parent_attempt_id": "repair-0",
+        "parent_proposal_id": "artifact-parent-proposal",
+        "parent_proposal_checksum": "sha256:parent-proposal",
+        "previous_proposal": {"operations": []},
+        "reviewer_output": {"decision": "request_changes"},
+        "grounding_instructions": "Use authoritative workspace files.",
+    }
+    store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(
+        factory, tmp_path, human_revision=human_revision
+    )
+    session = factory()
+    old_context = store.read_artifact_by_id(
+        session.get(RepairAttemptModel, attempt_id).context_pack_artifact_id
+    )
+    session.close()
+
+    _recovery_service(factory).recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-human-revision",
+        actor="operator",
+    )
+
+    session = factory()
+    child = session.get(RepairAttemptModel, "repair-stage-1-2")
+    new_context = store.read_artifact_by_id(child.context_pack_artifact_id)
+    assert json.loads(old_context.content)["human_revision"] == human_revision
+    assert json.loads(new_context.content)["human_revision"] == human_revision
+    assert new_context.envelope.input_hashes["recovered_from"] == old_context.ref.checksum
+    session.close()
+    engine.dispose()
+
+
+def test_recovery_child_has_fresh_proposer_identity_and_duplicate_calls_reuse_it(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(factory, tmp_path)
+    service = _recovery_service(factory)
+    first = service.recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-duplicate",
+        actor="operator",
+    )
+    replay = service.recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-duplicate",
+        actor="operator",
+    )
+    different_key = service.recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-different-key",
+        actor="operator",
+    )
+
+    assert first["attempt_id"] == replay["attempt_id"] == different_key["attempt_id"]
+    assert replay["idempotent_replay"] is True
+    assert different_key["idempotent_replay"] is True
+    session = factory()
+    children = (
+        session.query(RepairAttemptModel)
+        .filter(RepairAttemptModel.parent_attempt_id == attempt_id)
+        .all()
+    )
+    assert len(children) == 1
+    assert children[0].proposer_invocation_id is None
+    assert children[0].reviewer_invocation_id is None
+    assert session.query(LlmInvocationModel).filter(
+        LlmInvocationModel.id.like("repair-stage-1-2:%")
+    ).count() == 0
+    session.close()
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("proposal_artifact_id", "proposal"),
+        ("proposal_checksum", "sha256:proposal"),
+        ("review_artifact_id", "review"),
+        ("review_checksum", "sha256:review"),
+        ("g10_gate_package_id", "gate-package"),
+        ("apply_ledger_artifact_id", "apply-ledger"),
+        ("validation_summary_artifact_id", "validation"),
+        ("post_fingerprint", "sha256:post"),
+    ],
+)
+def test_recovery_rejects_proposed_reviewed_or_applied_parent(
+    tmp_path: Path, field: str, value: str
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(factory, tmp_path)
+    session = factory()
+    setattr(session.get(RepairAttemptModel, attempt_id), field, value)
+    session.commit()
+    session.close()
+
+    with pytest.raises(RepairApplicationError) as raised:
+        _recovery_service(factory).recover_exhausted_semantic_retry(
+            run_id="run-1",
+            attempt_id=attempt_id,
+            expected_state_version=3,
+            idempotency_key=f"recovery-rejected-{field}",
+            actor="operator",
+        )
+    assert raised.value.code == "REPAIR_RECOVERY_NOT_ELIGIBLE"
+    session = factory()
+    assert session.query(RepairAttemptModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "request_changes"),
+        ("current_node", "review_repair"),
+        ("last_error_code", "REPAIR_REPLACEMENT_MISSING"),
+    ],
+)
+def test_recovery_rejects_wrong_parent_or_continuation_state(
+    tmp_path: Path, field: str, value: str
+):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(factory, tmp_path)
+    session = factory()
+    target = (
+        session.get(RepairAttemptModel, attempt_id)
+        if field == "status"
+        else session.get(TransformationContinuationModel, "cont-1")
+    )
+    setattr(target, field, value)
+    session.commit()
+    session.close()
+
+    with pytest.raises(RepairApplicationError) as raised:
+        _recovery_service(factory).recover_exhausted_semantic_retry(
+            run_id="run-1",
+            attempt_id=attempt_id,
+            expected_state_version=3,
+            idempotency_key=f"recovery-state-{field}",
+            actor="operator",
+        )
+    assert raised.value.code == "REPAIR_RECOVERY_NOT_ELIGIBLE"
+    engine.dispose()
+
+
+def test_recovery_requires_persisted_semantic_retry_evidence(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(factory, tmp_path)
+    session = factory()
+    session.delete(session.get(LlmInvocationModel, f"{attempt_id}:proposer:semantic-retry-1"))
+    session.commit()
+    session.close()
+
+    with pytest.raises(RepairApplicationError) as raised:
+        _recovery_service(factory).recover_exhausted_semantic_retry(
+            run_id="run-1",
+            attempt_id=attempt_id,
+            expected_state_version=3,
+            idempotency_key="recovery-no-retry-evidence",
+            actor="operator",
+        )
+    assert raised.value.code == "REPAIR_RECOVERY_NOT_ELIGIBLE"
+    engine.dispose()
+
+
+def test_recovery_respects_repair_budget(tmp_path: Path, monkeypatch):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(factory, tmp_path)
+    monkeypatch.setattr(
+        repair_application_service,
+        "repair_budget",
+        lambda *args, **kwargs: {
+            "consumed_attempts": 3,
+            "consumed_applied": 2,
+            "max_attempts": 3,
+            "max_applied": 2,
+        },
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        _recovery_service(factory).recover_exhausted_semantic_retry(
+            run_id="run-1",
+            attempt_id=attempt_id,
+            expected_state_version=3,
+            idempotency_key="recovery-budget-exhausted",
+            actor="operator",
+        )
+    assert raised.value.code == "REPAIR_LOOP_EXHAUSTED"
+    session = factory()
+    assert session.query(RepairAttemptModel).count() == 1
+    session.close()
+    engine.dispose()
 
 
 def test_proposer_candidate_schema_rejects_backend_authority_fields():
@@ -1010,6 +1522,152 @@ def test_failed_then_successful_proposer_replay_retains_failure_evidence(tmp_pat
     }
     session.close()
     engine.dispose()
+
+
+def test_dependency_transition_semantic_retry_remains_bounded(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    invalid = _dependency_transition_candidate(
+        _dependency_transition_operation(),
+        {"operation": "replace_text", "path": "package.json", "old_text": "", "new_text": ""},
+    )
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(invalid)), _responses_body(json.dumps(invalid))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairApplicationError) as first:
+        service.propose(attempt_id)
+    assert first.value.code == "REPAIR_DEPENDENCY_TRANSITION_NOT_EXCLUSIVE"
+    assert len(transport.calls) == 2
+
+    with pytest.raises(RepairApplicationError) as exhausted:
+        service.propose(attempt_id)
+    assert exhausted.value.code == "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+    assert len(transport.calls) == 2
+    engine.dispose()
+
+
+def test_missing_replace_target_hydrates_authoritative_retry_context(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    initial = _proposal_candidate()
+    initial["operations"][0]["old_text"] = "old\n"
+    corrected = _proposal_candidate()
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(initial)), _responses_body(json.dumps(corrected))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    context_artifact_id = attempt.context_pack_artifact_id
+    session.close()
+    original_context = store.read_artifact_by_id(context_artifact_id)
+
+    proposal = service.propose(attempt_id)
+
+    assert len(transport.calls) == 2
+    assert proposal["operations"][0]["old_text"] == "old"
+    retry_request = json.loads(transport.calls[1]["payload"]["input"][0]["content"][0]["text"])
+    retry_segments = retry_request["context"]
+    retry_text = "\n".join(
+        segment["content"]
+        for segment in retry_segments
+        if isinstance(segment, dict) and isinstance(segment.get("content"), str)
+    )
+    assert "The requested replace_text target was not present in the authoritative" in retry_text
+    assert "Regenerate old_text from that authoritative content." in retry_text
+    hydrated = next(
+        json.loads(segment["content"])
+        for segment in retry_segments
+        if isinstance(segment, dict)
+        and isinstance(segment.get("content"), str)
+        and segment["content"].startswith('{"schema_version": "repair-semantic-retry-context-v1"')
+    )
+    assert hydrated["targets"] == [
+        {
+            "content": "old",
+            "path": "src/app.ts",
+            "sha256": "sha256:" + hashlib.sha256(b"old").hexdigest(),
+            "size_bytes": 3,
+        }
+    ]
+
+    current_context = store.read_artifact_by_id(context_artifact_id)
+    assert current_context.ref.checksum == original_context.ref.checksum
+    assert current_context.content == original_context.content
+
+    session = factory()
+    invocation = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+    rejected = next(
+        store.read_artifact_by_id(artifact_id)
+        for artifact_id in invocation.artifact_ids
+        if store.read_artifact_by_id(artifact_id).ref.relative_path.endswith(
+            "rejected-proposer-candidate.json"
+        )
+    )
+    session.close()
+    rejected_payload = json.loads(rejected.content)
+    assert rejected_payload["candidate"]["operations"][0]["old_text"] == "old\n"
+    engine.dispose()
+
+
+def test_hydrated_exact_preimage_without_final_newline_binds(tmp_path: Path):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir()
+    target.write_bytes(b"old")
+    candidate = _proposal_candidate()
+    candidate["operations"][0]["old_text"] = "old"
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    bound = RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert bound["operations"][0]["old_text"] == "old"
+    assert bound["operations"][0]["preimage_sha256"] == (
+        "sha256:" + hashlib.sha256(b"old").hexdigest()
+    )
+
+
+def test_replace_text_null_preimage_is_rejected_without_none_coercion(tmp_path: Path):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir()
+    target.write_bytes(b"old")
+    candidate = _proposal_candidate()
+    candidate["operations"][0]["old_text"] = None
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+    }
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(candidate, context)
+
+    assert raised.value.code == "REPAIR_REPLACEMENT_PREIMAGE_REQUIRED"
+    assert raised.value.message == (
+        "replace_text requires a non-empty old_text copied from authoritative "
+        "repository content; null or missing preimages are forbidden."
+    )
+    assert "None" not in raised.value.message
+
+
+def test_strict_replacement_matcher_still_rejects_incorrect_preimage():
+    with pytest.raises(RepairApplicationError) as raised:
+        replace_text_once("old", "old\n", "new")
+
+    assert raised.value.code == "REPAIR_REPLACEMENT_MISSING"
+    assert raised.value.message == (
+        "Replacement preimage must occur exactly once; found zero matches"
+    )
 
 
 def test_unknown_reviewer_target_persists_no_review_artifact(tmp_path: Path):

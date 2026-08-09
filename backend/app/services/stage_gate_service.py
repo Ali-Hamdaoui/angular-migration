@@ -27,9 +27,14 @@ from app.repositories.models import (
     StageGatePackageModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.services.artifact_binding import canonical_artifact_set_checksum
-from app.services.repair_application_service import RepairProposal, RepairReview
+from app.services.repair_application_service import (
+    RepairProposal,
+    RepairReview,
+    _SEMANTIC_RETRY_CODES,
+)
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import (
     append_continuation_event,
@@ -52,6 +57,8 @@ _NEXT_NODE = {
     StageGateId.G11.value: TransformationNode.SEAL_STAGE.value,
     StageGateId.G12.value: TransformationNode.SEAL_STAGE.value,
 }
+
+_SEMANTIC_RECOVERY_REASON = "semantic retry exhausted recovery requested"
 
 
 def _canonical_revision_payload(value: object, *, review: bool) -> dict | None:
@@ -386,6 +393,113 @@ class StageGateService:
         return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
     @classmethod
+    def _validate_recovery_parent_lineage(
+        cls,
+        session: Session,
+        continuation,
+        attempt: RepairAttemptModel,
+        parent: RepairAttemptModel,
+        package: dict[str, object],
+    ) -> None:
+        """Prove the narrow proposal-less semantic-recovery parent path.
+
+        Ordinary human-revision children still use the proposal/review lineage
+        below. This branch is valid only for a parent terminalized by the
+        governed semantic-recovery action, with its persisted retry evidence,
+        immutable continuation event, and no proposal/review/apply evidence.
+        """
+        if (
+            parent.run_id != attempt.run_id
+            or parent.stage_id != attempt.stage_id
+            or parent.attempt_number >= attempt.attempt_number
+            or parent.status != "superseded"
+            or parent.completed_at is None
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery parent lineage is invalid",
+            )
+        if any(
+            getattr(parent, field)
+            for field in (
+                "proposal_artifact_id",
+                "proposal_checksum",
+                "review_artifact_id",
+                "review_checksum",
+                "reviewer_invocation_id",
+                "g10_gate_package_id",
+                "apply_ledger_artifact_id",
+                "apply_ledger_checksum",
+                "validation_summary_artifact_id",
+                "validation_summary_checksum",
+                "post_fingerprint",
+            )
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery parent carries post-proposal evidence",
+            )
+        if (
+            package.get("parent_attempt_id") != parent.id
+            or package.get("parent_review_artifact_id") is not None
+            or package.get("parent_review_checksum") is not None
+            or attempt.parent_review_artifact_id is not None
+            or attempt.parent_review_checksum is not None
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery child carries a parent review reference",
+            )
+        recovery_event = session.scalars(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == continuation.run_id,
+                WorkflowEventModel.event_type
+                == WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED.value,
+            )
+        ).all()
+        if not any(
+            event.reason == _SEMANTIC_RECOVERY_REASON
+            and isinstance(event.payload, dict)
+            and event.payload.get("attempt_id") == parent.id
+            and event.payload.get("child_attempt_id") == attempt.id
+            for event in recovery_event
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery ancestry event is missing or stale",
+            )
+        base_invocation = session.scalar(
+            select(LlmInvocationModel).where(
+                LlmInvocationModel.run_id == attempt.run_id,
+                LlmInvocationModel.stage_id == attempt.stage_id,
+                LlmInvocationModel.id == f"{parent.id}:proposer",
+                LlmInvocationModel.idempotency_key == f"{parent.id}:proposer",
+            )
+        )
+        retry_invocation = session.scalar(
+            select(LlmInvocationModel).where(
+                LlmInvocationModel.run_id == attempt.run_id,
+                LlmInvocationModel.stage_id == attempt.stage_id,
+                LlmInvocationModel.id == f"{parent.id}:proposer:semantic-retry-1",
+                LlmInvocationModel.idempotency_key
+                == f"{parent.id}:proposer:semantic-retry-1",
+            )
+        )
+        if (
+            base_invocation is None
+            or retry_invocation is None
+            or base_invocation.status != "failed"
+            or retry_invocation.status != "failed"
+            or retry_invocation.retries != 1
+            or retry_invocation.failure_stage != "repair_semantics"
+            or retry_invocation.failure_code not in _SEMANTIC_RETRY_CODES
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery semantic-retry evidence is missing or stale",
+            )
+
+    @classmethod
     def _validate_repair_lineage(
         cls,
         session: Session,
@@ -488,6 +602,8 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 package attempt binding is stale")
         parent_proposal_payload = None
         parent_review_payload = None
+        parent = None
+        recovery_parent = False
         if attempt.parent_attempt_id is not None:
             parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
             if (
@@ -495,85 +611,94 @@ class StageGateService:
                 or parent.run_id != attempt.run_id
                 or parent.stage_id != attempt.stage_id
                 or parent.attempt_number >= attempt.attempt_number
-                or not parent.proposal_artifact_id
-                or not parent.proposal_checksum
-                or not parent.review_artifact_id
-                or not parent.review_checksum
             ):
                 raise StageGateError(
                     "REPAIR_PARENT_LINEAGE_INVALID",
                     "G10 child repair parent lineage is invalid",
                 )
-            if (
-                package.get("parent_attempt_id") != parent.id
-                or package.get("parent_review_artifact_id") != parent.review_artifact_id
-                or package.get("parent_review_checksum") != parent.review_checksum
+            if not any(
+                (
+                    parent.proposal_artifact_id,
+                    parent.proposal_checksum,
+                    parent.review_artifact_id,
+                    parent.review_checksum,
+                )
             ):
-                raise StageGateError(
-                    "REPAIR_PARENT_LINEAGE_INVALID",
-                    "G10 parent review reference does not match authoritative state",
+                cls._validate_recovery_parent_lineage(
+                    session, continuation, attempt, parent, package
                 )
-            parent_metadata = session.get(
-                ArtifactMetadataModel, "metadata-" + str(parent.review_artifact_id)
-            )
-            parent_proposal_metadata = session.get(
-                ArtifactMetadataModel, "metadata-" + str(parent.proposal_artifact_id)
-            )
-            if (
-                parent_metadata is None
-                or parent_proposal_metadata is None
-                or parent_metadata.run_id != continuation.run_id
-                or parent_proposal_metadata.run_id != continuation.run_id
-                or parent_metadata.stage_id != continuation.current_stage_id
-                or parent_proposal_metadata.stage_id != continuation.current_stage_id
-                or parent_metadata.checksum != parent.review_checksum
-                or parent_proposal_metadata.checksum != parent.proposal_checksum
-            ):
-                raise StageGateError(
-                    "REPAIR_PARENT_LINEAGE_INVALID",
-                    "G10 parent review artifact binding is invalid",
-                )
-            try:
-                stored_parent_review = store.read_artifact(
-                    continuation.run_id, parent_metadata.relative_path
-                )
-                stored_parent_proposal = store.read_artifact(
-                    continuation.run_id, parent_proposal_metadata.relative_path
-                )
+                recovery_parent = True
+            else:
                 if (
-                    stored_parent_review.ref.artifact_id != parent.review_artifact_id
-                    or stored_parent_review.ref.checksum != parent.review_checksum
-                    or stored_parent_proposal.ref.artifact_id != parent.proposal_artifact_id
-                    or stored_parent_proposal.ref.checksum != parent.proposal_checksum
+                    package.get("parent_attempt_id") != parent.id
+                    or package.get("parent_review_artifact_id") != parent.review_artifact_id
+                    or package.get("parent_review_checksum") != parent.review_checksum
                 ):
                     raise StageGateError(
                         "REPAIR_PARENT_LINEAGE_INVALID",
-                        "G10 parent review artifact identity changed",
+                        "G10 parent review reference does not match authoritative state",
                     )
-                parent_review_payload = json.loads(stored_parent_review.content)
-                parent_proposal_payload = json.loads(stored_parent_proposal.content)
-            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
-                raise StageGateError(
-                    "REPAIR_PARENT_LINEAGE_INVALID",
-                    "G10 parent review artifact cannot be verified",
-                ) from error
-            parent_envelope = stored_parent_review.envelope
-            parent_proposal_envelope = stored_parent_proposal.envelope
-            if (
-                parent_envelope is None
-                or parent_proposal_envelope is None
-                or parent_envelope.run_id != continuation.run_id
-                or parent_proposal_envelope.run_id != continuation.run_id
-                or parent_envelope.stage_id != continuation.current_stage_id
-                or parent_proposal_envelope.stage_id != continuation.current_stage_id
-                or parent_envelope.attempt_id != parent.id
-                or parent_proposal_envelope.attempt_id != parent.id
-                or parent_review_payload.get("decision") not in {"request_changes", "accept"}
-            ):
-                raise StageGateError(
-                    "REPAIR_PARENT_LINEAGE_INVALID",
-                    "G10 parent review lineage is not revisable",
+                parent_metadata = session.get(
+                    ArtifactMetadataModel, "metadata-" + str(parent.review_artifact_id)
                 )
+                parent_proposal_metadata = session.get(
+                    ArtifactMetadataModel, "metadata-" + str(parent.proposal_artifact_id)
+                )
+                if (
+                    parent_metadata is None
+                    or parent_proposal_metadata is None
+                    or parent_metadata.run_id != continuation.run_id
+                    or parent_proposal_metadata.run_id != continuation.run_id
+                    or parent_metadata.stage_id != continuation.current_stage_id
+                    or parent_proposal_metadata.stage_id != continuation.current_stage_id
+                    or parent_metadata.checksum != parent.review_checksum
+                    or parent_proposal_metadata.checksum != parent.proposal_checksum
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 parent review artifact binding is invalid",
+                    )
+                try:
+                    stored_parent_review = store.read_artifact(
+                        continuation.run_id, parent_metadata.relative_path
+                    )
+                    stored_parent_proposal = store.read_artifact(
+                        continuation.run_id, parent_proposal_metadata.relative_path
+                    )
+                    if (
+                        stored_parent_review.ref.artifact_id != parent.review_artifact_id
+                        or stored_parent_review.ref.checksum != parent.review_checksum
+                        or stored_parent_proposal.ref.artifact_id != parent.proposal_artifact_id
+                        or stored_parent_proposal.ref.checksum != parent.proposal_checksum
+                    ):
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 parent review artifact identity changed",
+                        )
+                    parent_review_payload = json.loads(stored_parent_review.content)
+                    parent_proposal_payload = json.loads(stored_parent_proposal.content)
+                except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 parent review artifact cannot be verified",
+                    ) from error
+                parent_envelope = stored_parent_review.envelope
+                parent_proposal_envelope = stored_parent_proposal.envelope
+                if (
+                    parent_envelope is None
+                    or parent_proposal_envelope is None
+                    or parent_envelope.run_id != continuation.run_id
+                    or parent_proposal_envelope.run_id != continuation.run_id
+                    or parent_envelope.stage_id != continuation.current_stage_id
+                    or parent_proposal_envelope.stage_id != continuation.current_stage_id
+                    or parent_envelope.attempt_id != parent.id
+                    or parent_proposal_envelope.attempt_id != parent.id
+                    or parent_review_payload.get("decision") not in {"request_changes", "accept"}
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 parent review lineage is not revisable",
+                    )
         elif (
             package.get("parent_attempt_id") is not None
             or package.get("parent_review_artifact_id") is not None
@@ -705,47 +830,107 @@ class StageGateService:
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
             elif role == "context_pack" and attempt.parent_attempt_id is not None:
                 revision = payload.get("human_revision")
-                if (
-                    not isinstance(revision, dict)
-                    or not str(revision.get("instruction") or "").strip()
-                    or revision.get("parent_attempt_id") != attempt.parent_attempt_id
-                    or revision.get("parent_proposal_id") != parent.proposal_artifact_id
-                    or revision.get("parent_proposal_checksum") != parent.proposal_checksum
-                ):
-                    raise StageGateError(
-                        "REPAIR_PARENT_LINEAGE_INVALID",
-                        "G10 human revision context is incomplete or stale",
+                if recovery_parent:
+                    if (
+                        not isinstance(revision, dict)
+                        or not str(revision.get("instruction") or "").strip()
+                        or not envelope.input_hashes
+                        or envelope.input_hashes.get("recovered_from")
+                        != parent.context_pack_checksum
+                    ):
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 recovery context lineage is incomplete or stale",
+                        )
+                    parent_context_metadata = session.get(
+                        ArtifactMetadataModel,
+                        "metadata-" + str(parent.context_pack_artifact_id),
                     )
-                try:
-                    canonical_revision_proposal = _canonical_revision_payload(
-                        revision.get("previous_proposal"), review=False
-                    )
-                    canonical_parent_proposal = _canonical_revision_payload(
-                        parent_proposal_payload, review=False
-                    )
-                    canonical_revision_review = _canonical_revision_payload(
-                        revision.get("reviewer_output"), review=True
-                    )
-                    canonical_parent_review = _canonical_revision_payload(
-                        parent_review_payload, review=True
-                    )
-                except ValidationError as error:
-                    raise StageGateError(
-                        "REPAIR_PARENT_LINEAGE_INVALID",
-                        "G10 human revision lineage payload is invalid",
-                    ) from error
-                if (
-                    canonical_revision_proposal is None
-                    or canonical_parent_proposal is None
-                    or canonical_revision_proposal != canonical_parent_proposal
-                    or canonical_revision_review is None
-                    or canonical_parent_review is None
-                    or canonical_revision_review != canonical_parent_review
-                ):
-                    raise StageGateError(
-                        "REPAIR_PARENT_LINEAGE_INVALID",
-                        "G10 human revision context is incomplete or stale",
-                    )
+                    try:
+                        if (
+                            parent_context_metadata is None
+                            or parent_context_metadata.run_id != continuation.run_id
+                            or parent_context_metadata.stage_id != continuation.current_stage_id
+                            or parent_context_metadata.checksum != parent.context_pack_checksum
+                        ):
+                            raise StageGateError(
+                                "REPAIR_PARENT_LINEAGE_INVALID",
+                                "G10 recovery parent context binding is invalid",
+                            )
+                        stored_parent_context = store.read_artifact(
+                            continuation.run_id, parent_context_metadata.relative_path
+                        )
+                        if (
+                            stored_parent_context.ref.artifact_id
+                            != parent.context_pack_artifact_id
+                            or stored_parent_context.ref.checksum
+                            != parent.context_pack_checksum
+                            or stored_parent_context.envelope is None
+                            or stored_parent_context.envelope.run_id
+                            != continuation.run_id
+                            or stored_parent_context.envelope.stage_id
+                            != continuation.current_stage_id
+                        ):
+                            raise StageGateError(
+                                "REPAIR_PARENT_LINEAGE_INVALID",
+                                "G10 recovery parent context identity changed",
+                            )
+                        parent_context_payload = json.loads(stored_parent_context.content)
+                    except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 recovery parent context cannot be verified",
+                        ) from error
+                    if (
+                        not isinstance(parent_context_payload, dict)
+                        or parent_context_payload.get("human_revision") != revision
+                    ):
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 recovery human revision context is incomplete or stale",
+                        )
+                else:
+                    if (
+                        not isinstance(revision, dict)
+                        or not str(revision.get("instruction") or "").strip()
+                        or revision.get("parent_attempt_id") != attempt.parent_attempt_id
+                        or revision.get("parent_proposal_id") != parent.proposal_artifact_id
+                        or revision.get("parent_proposal_checksum") != parent.proposal_checksum
+                    ):
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 human revision context is incomplete or stale",
+                        )
+                    try:
+                        canonical_revision_proposal = _canonical_revision_payload(
+                            revision.get("previous_proposal"), review=False
+                        )
+                        canonical_parent_proposal = _canonical_revision_payload(
+                            parent_proposal_payload, review=False
+                        )
+                        canonical_revision_review = _canonical_revision_payload(
+                            revision.get("reviewer_output"), review=True
+                        )
+                        canonical_parent_review = _canonical_revision_payload(
+                            parent_review_payload, review=True
+                        )
+                    except ValidationError as error:
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 human revision lineage payload is invalid",
+                        ) from error
+                    if (
+                        canonical_revision_proposal is None
+                        or canonical_parent_proposal is None
+                        or canonical_revision_proposal != canonical_parent_proposal
+                        or canonical_revision_review is None
+                        or canonical_parent_review is None
+                        or canonical_revision_review != canonical_parent_review
+                    ):
+                        raise StageGateError(
+                            "REPAIR_PARENT_LINEAGE_INVALID",
+                            "G10 human revision context is incomplete or stale",
+                        )
             elif role == "review":
                 decision = payload.get("decision")
                 if (

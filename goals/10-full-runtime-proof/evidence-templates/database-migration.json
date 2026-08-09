@@ -1,9 +1,0 @@
-{
-  "goal_id": "G10",
-  "revisions": [],
-  "tables": [],
-  "heads_before": [],
-  "heads_after": [],
-  "upgrade_test": "NOT_RUN",
-  "downgrade_test": "NOT_RUN"
-}

@@ -289,6 +289,60 @@ def test_classify_failure_repairable_commits_exactly_three_metadata_rows_once(
     engine.dispose()
 
 
+def test_lockfile_etarget_freezes_a_new_attempt_without_mutating_failed_execution(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    workspace, _artifacts = _seed(factory, tmp_path, angular=False)
+    session = factory()
+    execution = session.get(CommandExecutionModel, "exec-1")
+    execution.command_id = "npm-lockfile-generate"
+    execution.exit_code = 1
+    execution.failure_code = "COMMAND_EXIT_NONZERO"
+    execution.failure_message = (
+        "npm error code ETARGET\n"
+        "npm error notarget No matching version found for example-package@^1.2.3."
+    )
+    execution.artifact_ids = ["historical-command-artifact"]
+    before = {
+        "command_id": execution.command_id,
+        "exit_code": execution.exit_code,
+        "failure_code": execution.failure_code,
+        "failure_message": execution.failure_message,
+        "artifact_ids": list(execution.artifact_ids),
+    }
+    step = session.query(StageStepModel).one()
+    step.name = "lockfile_generation-0"
+    step.status = "FAILED"
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    binding.workspace_fingerprint = StageSandboxCopier.fingerprint(workspace)
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.last_error_code = "LOCKFILE_GENERATION_ETARGET"
+    continuation.last_error_message = execution.failure_message
+    session.commit()
+    session.close()
+
+    _orchestrator(factory)._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    attempts = session.query(RepairAttemptModel).all()
+    assert len(attempts) == 1
+    assert attempts[0].status == "evidence_frozen"
+    assert attempts[0].failure_fingerprint
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.current_node == "propose_repair"
+    persisted = session.get(CommandExecutionModel, "exec-1")
+    assert {
+        "command_id": persisted.command_id,
+        "exit_code": persisted.exit_code,
+        "failure_code": persisted.failure_code,
+        "failure_message": persisted.failure_message,
+        "artifact_ids": list(persisted.artifact_ids),
+    } == before
+    session.close()
+    engine.dispose()
+
+
 def test_classify_failure_repairable_restores_pre_update_checkpoint_before_repair(
     tmp_path: Path,
 ):

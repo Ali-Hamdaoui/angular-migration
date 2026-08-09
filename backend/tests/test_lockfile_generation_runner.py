@@ -23,9 +23,11 @@ from app.repositories.models import (
 from app.repositories.models.base import Base
 from app.services.lockfile_generation_runner import (
     LOCKFILE_GENERATION_ATTEMPT_2_MARKER,
+    LOCKFILE_GENERATION_ETARGET,
     LOCKFILE_GENERATION_FINGERPRINT_SCOPE,
     LockfileGenerationError,
     LockfileGenerationRunner,
+    is_npm_etarget_failure,
     workspace_excluding_governed_volatile_fingerprint,
 )
 from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
@@ -306,6 +308,90 @@ def _complete_execution(session, workspace: Path, execution_id: str = "exec-lock
 
 def _runner():
     return LockfileGenerationRunner(stage_service=_FakeStageService(), now_provider=lambda: NOW)
+
+
+ETARGET_FAILURE = """npm error code ETARGET
+npm error notarget No matching version found for example-package@^1.2.3.
+npm error notarget In most cases you or one of your dependencies are requesting
+npm error notarget a package version that doesn't exist.
+"""
+
+
+def _mark_lockfile_execution_failed(session, message: str) -> dict[str, object]:
+    execution = session.get(CommandExecutionModel, "exec-lock")
+    execution.status = "failed"
+    execution.exit_code = 1
+    execution.failure_code = "COMMAND_EXIT_NONZERO"
+    execution.failure_message = message
+    execution.artifact_ids = ["historical-command-artifact"]
+    before = {
+        "status": execution.status,
+        "exit_code": execution.exit_code,
+        "failure_code": execution.failure_code,
+        "failure_message": execution.failure_message,
+        "artifact_ids": list(execution.artifact_ids),
+        "arguments": list(execution.arguments),
+    }
+    return before
+
+
+def test_persisted_etarget_routes_as_distinct_lockfile_failure_without_retrying(
+    tmp_path: Path,
+):
+    engine, factory, _workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+
+    before = _mark_lockfile_execution_failed(session, ETARGET_FAILURE)
+    execution = session.get(CommandExecutionModel, "exec-lock")
+    assert is_npm_etarget_failure(execution)
+    execution.failure_message = (
+        "npm ERR! code ETARGET\n"
+        "npm ERR! notarget No matching version found for another-package@^9.8.7."
+    )
+    assert is_npm_etarget_failure(execution)
+    execution.failure_message = before["failure_message"]
+
+    with pytest.raises(LockfileGenerationError) as raised:
+        _runner().advance(session, continuation, next_node="repair_revalidate")
+
+    assert raised.value.code == LOCKFILE_GENERATION_ETARGET
+    assert session.query(CommandExecutionModel).count() == 1
+    persisted = session.get(CommandExecutionModel, "exec-lock")
+    assert {
+        "status": persisted.status,
+        "exit_code": persisted.exit_code,
+        "failure_code": persisted.failure_code,
+        "failure_message": persisted.failure_message,
+        "artifact_ids": list(persisted.artifact_ids),
+        "arguments": list(persisted.arguments),
+    } == before
+    session.close()
+    engine.dispose()
+
+
+def test_unrelated_persisted_lockfile_failure_remains_fail_closed(tmp_path: Path):
+    engine, factory, _workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+
+    _mark_lockfile_execution_failed(
+        session,
+        "npm error code ERESOLVE\nnpm error Could not resolve dependency tree",
+    )
+    execution = session.get(CommandExecutionModel, "exec-lock")
+    assert not is_npm_etarget_failure(execution)
+
+    with pytest.raises(LockfileGenerationError) as raised:
+        _runner().advance(session, continuation, next_node="repair_revalidate")
+
+    assert raised.value.code == "LOCKFILE_GENERATION_COMMAND_FAILED"
+    session.close()
+    engine.dispose()
 
 
 def test_governed_scope_excludes_root_lockfile_and_node_modules(tmp_path: Path):
