@@ -1,7 +1,7 @@
 # Angular Migration Factory Journey Command Center Design
 
 **Date:** 2026-08-09  
-**Status:** Selected visual direction; written specification awaiting user review  
+**Status:** Approved for implementation
 **Selected direction:** Option 1 — Journey Command Center
 
 ![Selected Journey Command Center reference](assets/2026-08-09-journey-command-center/selected-journey-command-center.png)
@@ -212,7 +212,7 @@ The presentation adapter uses this deterministic priority:
 5. A verified complete state.
 6. Unknown/unavailable.
 
-This priority selects which authoritative fact receives visual emphasis. It does not change or reconcile backend records. If projections conflict or have incompatible versions, the UI displays “Authoritative state is refreshing” and exposes both records in Diagnostics instead of fabricating a merged state.
+This priority selects which authoritative fact receives visual emphasis. It does not change or reconcile backend records. Run and transformation `state_version` values belong to different projections and must never be compared for equality. A mismatch is shown only when the backend reports an event gap, stale binding, incompatible shared identifier, or failed refresh. In that case, the UI displays “Authoritative state is refreshing” and exposes both records in Diagnostics instead of fabricating a merged state.
 
 ### Global action registry
 
