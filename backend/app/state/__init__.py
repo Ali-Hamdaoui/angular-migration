@@ -1,6 +1,8 @@
 """State transition service package."""
 
 from app.state.transition_service import (
+    IdempotencyPayloadMismatchError,
+    IllegalRunTransitionError,
     LeaseRequiredError,
     ResumeRejectedError,
     StaleStateVersionError,
@@ -8,9 +10,12 @@ from app.state.transition_service import (
     TransitionError,
     TransitionRequest,
     TransitionResult,
+    canonical_request_checksum,
 )
 
 __all__ = [
+    "IdempotencyPayloadMismatchError",
+    "IllegalRunTransitionError",
     "LeaseRequiredError",
     "ResumeRejectedError",
     "StaleStateVersionError",
@@ -18,4 +23,5 @@ __all__ = [
     "TransitionError",
     "TransitionRequest",
     "TransitionResult",
+    "canonical_request_checksum",
 ]

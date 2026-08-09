@@ -53,6 +53,7 @@ def test_resolution_persists_artifacts_events_and_replays():
     with sessions() as s:
         record=s.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id=='run-1')); events=list(s.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id=='run-1').order_by(WorkflowEventModel.sequence)))
         assert record and len(record.artifact_ids)==7
+        assert s.get(MigrationRunModel, "run-1").source_version_detected == "18.2.3"
         assert [e.event_type for e in events]==['EXECUTION_PROFILE_RESOLUTION_STARTED','EXECUTION_PROFILE_RESOLVED']
     engine.dispose()
 

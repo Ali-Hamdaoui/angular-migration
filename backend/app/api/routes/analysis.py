@@ -46,6 +46,7 @@ def retry_analysis(run_id: str, payload: AnalysisRetryRequest, request: Request,
 @router.post("/runs/{run_id}/approvals/G04/decisions", response_model=G04DecisionResponse)
 def decide_g04(run_id: str, payload: G04DecisionApiRequest, request: Request, actor: str = Depends(authenticated_actor), service: AnalysisEvidenceApplicationService = Depends(get_service)):
     try:
-        return service.decide_g04(run_id, payload, actor)
+        result = service.decide_g04(run_id, payload, actor)
+        return result
     except AnalysisEvidenceError as error:
         return _error(request, error)

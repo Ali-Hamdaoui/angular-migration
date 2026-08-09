@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -14,7 +15,7 @@ from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, Ll
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings, get_settings
 from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
-from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptSchemaRegistry, decide_budget
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmBudgetAction, LlmContextSegment, LlmRequest, LlmRole, LlmTaskType, PromptRegistry, PromptSchemaRegistry, StructuredOutputValidationError, decide_budget, production_prompt_policy_gaps
 from app.repositories.models import ArtifactMetadataModel, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StaleStateVersionError, StateTransitionService, TransitionRequest
@@ -23,6 +24,33 @@ from app.state.transition_service import StaleStateVersionError, StateTransition
 class _SmokeResponse(BaseModel):
     model_config = ConfigDict(extra='forbid')
     answer: str
+
+
+class _AssistantCitation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    artifact_id: str
+    checksum: str
+    stage_id: str | None
+
+
+class _AssistantResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    answer: str
+    citations: list[_AssistantCitation]
+
+
+@dataclass(frozen=True)
+class AssistantInvocationRequest:
+    run_id: str
+    expected_state_version: int
+    idempotency_key: str
+    correlation_id: str
+    question: str
+    context: list[LlmContextSegment]
+    role: str = 'assistant'
+    max_output_tokens: int = 20_000
 
 
 class LlmEvidenceError(ValueError):
@@ -53,9 +81,106 @@ class LlmEvidenceApplicationService:
     def _registry() -> PromptSchemaRegistry:
         registry = PromptSchemaRegistry()
         registry.register('llm_smoke_v1', _SmokeResponse)
+        registry.register('assistant-response-v1', _AssistantResponse)
         return registry
 
-    def readiness(self) -> LlmReadinessResponse:
+    def assistant(self, request: AssistantInvocationRequest, *, actor: str = 'local-operator') -> LlmInvocationResponse:
+        canonical = {"run_id": request.run_id, "expected_state_version": request.expected_state_version, "idempotency_key": request.idempotency_key, "question": request.question, "context": [item.model_dump(mode="json") for item in request.context]}
+        checksum = 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with self.scope() as session:
+            run = session.get(MigrationRunModel, request.run_id)
+            if run is None:
+                raise LlmEvidenceError('RUN_NOT_FOUND', 'Migration run does not exist.', 404)
+            existing = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.run_id == request.run_id, LlmInvocationModel.idempotency_key == request.idempotency_key))
+            if existing:
+                if existing.request_checksum != checksum:
+                    raise LlmEvidenceError('IDEMPOTENCY_KEY_REUSED', 'Idempotency key was used with a different payload.', 409)
+                return self._dto(session, existing, replay=True)
+            if run.state_version != request.expected_state_version:
+                raise LlmEvidenceError('STALE_STATE_VERSION', 'The run state version is stale.', 409)
+            prior_usage = list(session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == request.run_id)))
+            if prior_usage and (sum(item.total_tokens for item in prior_usage) >= self.settings.llm_token_budget > 0 or sum(item.total_cost_usd for item in prior_usage) >= self.settings.llm_cost_budget_usd > 0):
+                budget_blocked = True
+            else:
+                budget_blocked = False
+            now = self.now()
+            invocation_id = 'llm-invocation-' + uuid4().hex[:12]
+            row = LlmInvocationModel(id=invocation_id, run_id=run.id, idempotency_key=request.idempotency_key, request_checksum=checksum, correlation_id=request.correlation_id, actor=actor, role=LlmRole.ASSISTANT.value, task_type=LlmTaskType.ASSISTANT_RESPONSE.value, provider='governed_gateway', deployment_alias='assistant', prompt_version='assistant-response-v1', schema_version=self.settings.llm_schema_registry_version, pricing_version=self.settings.llm_pricing_version, stage=None, input_hashes=[checksum], redacted_summary=None, status='in_progress', artifact_ids=[], artifact_checksums={}, state_version=run.state_version, event_sequence=0, retries=0, started_at=now, created_at=now)
+            session.add(row)
+            session.flush()
+        if budget_blocked:
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_BUDGET_BLOCKED', 'The configured LLM budget blocks new Assistant calls.'), actor=actor)
+        response = None
+        provider_usage = None
+        started_monotonic = self.clock()
+        try:
+            response = self._gateway().complete(LlmRequest(request_id=invocation_id, run_id=request.run_id, agent_kind=AgentKind.ASSISTANT, task_type=LlmTaskType.ASSISTANT_RESPONSE, role=LlmRole.ASSISTANT, prompt_name='assistant-response-v1', system_policy='Answer the user read-only question from the authoritative workflow projection, validated evidence segments, and recent conversation. Cite only supplied artifact IDs and checksums. State clearly when a fact is unavailable. Never invent facts, execute actions, approve gates, or mutate workflow state.', context=request.context + [LlmContextSegment(segment_id='question', label='user question', content=request.question)], response_schema='assistant-response-v1', max_output_tokens=request.max_output_tokens))
+            provider_usage = response.usage
+            validated = self._registry().validate('assistant-response-v1', response.structured_output) if response.structured_output else {}
+            return self._complete_assistant(request, checksum, invocation_id, response, validated, actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except StructuredOutputValidationError as error:
+            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except AzureGatewayError as error:
+            return self._fail_assistant(request, checksum, invocation_id, error, actor=actor, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000))
+        except Exception as error:
+            return self._fail_assistant(request, checksum, invocation_id, LlmEvidenceError('LLM_STRUCTURED_RESPONSE_INVALID' if response is not None else 'LLM_PROVIDER_FAILURE', 'Assistant governed invocation failed.'), actor=actor, usage=provider_usage, latency_ms=int(max(0.0, self.clock() - started_monotonic) * 1000), diagnostic=f'exception_type={type(error).__name__}')
+
+    def _complete_assistant(self, request, checksum, invocation_id, response, validated, actor, *, latency_ms):
+        with self.scope() as session:
+            row = session.get(LlmInvocationModel, invocation_id)
+            run = session.get(MigrationRunModel, request.run_id)
+            artifact_root = Path(run.artifact_root or self.settings.artifact_root)
+            store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
+            artifacts = [self._artifact(session, store, request.run_id, '04_workflow_state/llm_response_validated.json', json.dumps(validated, sort_keys=True))]
+            artifacts.append(self._artifact(session, store, request.run_id, '04_workflow_state/llm_usage_cost.json', json.dumps(response.usage.model_dump(mode='json'), sort_keys=True)))
+            row.status = 'completed'; row.completed_at = self.now(); row.latency_ms = latency_ms; row.retries = response.usage.retry_count; row.deployment_alias = response.model_deployment_alias; row.artifact_ids = [a.ref.artifact_id for a in artifacts]; row.artifact_checksums = {a.ref.artifact_id: a.ref.checksum for a in artifacts}; row.redacted_summary = self._assistant_summary(request, response); row.state_version = run.state_version
+            session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=response.pricing_version or self.settings.llm_pricing_version, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens, total_tokens=response.usage.total_tokens, input_price_per_million=response.usage.input_price_per_million, output_price_per_million=response.usage.output_price_per_million, input_cost_usd=response.usage.input_cost_usd, output_cost_usd=response.usage.output_cost_usd, total_cost_usd=response.usage.total_cost_usd, created_at=self.now()))
+            session.flush()
+            result = self._dto(session, row)
+            return result.model_copy(update={'structured_output': validated})
+
+    @staticmethod
+    def _assistant_summary(request, response) -> str:
+        labels = [segment.label for segment in request.context if segment.label]
+        return json.dumps({
+            'run_id': request.run_id,
+            'role': response.role.value if hasattr(response.role, 'value') else str(response.role),
+            'task_type': response.task_type.value if hasattr(response.task_type, 'value') else str(response.task_type),
+            'prompt_version': response.prompt_version,
+            'schema_version': response.schema_version,
+            'context_segment_count': len(request.context),
+            'context_labels': labels[:32],
+        }, sort_keys=True, separators=(',', ':'))[:360]
+
+    def _fail_assistant(self, request, checksum, invocation_id, error, *, actor, usage=None, latency_ms=None, diagnostic=None):
+        with self.scope() as session:
+            row = session.get(LlmInvocationModel, invocation_id); run = session.get(MigrationRunModel, request.run_id)
+            row.status = 'failed'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.completed_at = self.now(); row.latency_ms = latency_ms
+            if isinstance(error, AzureGatewayError):
+                row.deployment_alias = error.deployment_alias or row.deployment_alias
+                row.provider_http_status = error.provider_status
+                row.provider_error_code = error.provider_code
+                row.sanitized_provider_message = error.provider_message
+                row.provider_request_id = error.provider_request_id
+                row.failure_stage = error.failure_stage
+                row.failure_subtype = error.failure_subtype
+                row.retries = error.retry_count
+                row.retryable = error.retryable
+                row.response_received = error.response_received
+                row.response_content_type = error.response_content_type
+                row.response_bytes = error.response_bytes
+                row.response_sha256 = error.response_sha256
+                row.response_kind = error.response_kind
+                row.transport_started = error.transport_started
+                row.transport_exception_type = type(error.__cause__).__name__ if error.__cause__ else None
+            provider_diagnostic = getattr(error, 'provider_code', None) or getattr(error, 'provider_message', None)
+            row.redacted_summary = ('Assistant provider rejected the request: ' + ': '.join(filter(None, [getattr(error, 'provider_code', None), getattr(error, 'provider_message', None)])))[:360] if provider_diagnostic else (f'Assistant invocation failed; {diagnostic}.' if diagnostic else 'Assistant invocation failed; provider details redacted.')
+            if usage is not None or row.failure_code == 'LLM_STRUCTURED_RESPONSE_INVALID':
+                usage = usage or type('Usage', (), {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0, 'input_price_per_million': 0.0, 'output_price_per_million': 0.0, 'input_cost_usd': 0.0, 'output_cost_usd': 0.0, 'total_cost_usd': 0.0})()
+                session.add(UsageCostRecordModel(id='usage-cost-' + uuid4().hex[:12], invocation_id=row.id, run_id=request.run_id, stage_id=None, pricing_version=self.settings.llm_pricing_version, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, total_tokens=usage.total_tokens, input_price_per_million=usage.input_price_per_million, output_price_per_million=usage.output_price_per_million, input_cost_usd=usage.input_cost_usd, output_cost_usd=usage.output_cost_usd, total_cost_usd=usage.total_cost_usd, created_at=self.now()))
+            return self._dto(session, row)
+
+    def readiness(self, *, registry: PromptRegistry | None = None) -> LlmReadinessResponse:
         endpoint = bool(self.settings.azure_openai_endpoint)
         deployment = bool(self.settings.azure_openai_deployment)
         auth = bool(self.settings.azure_openai_api_key)
@@ -64,6 +189,8 @@ class LlmEvidenceApplicationService:
             status, error = 'disabled', None
         elif not configured:
             status, error = 'configuration_incomplete', 'LLM_CONFIGURATION_INCOMPLETE'
+        elif production_prompt_policy_gaps(registry):
+            status, error = 'configuration_incomplete', 'LLM_PROMPT_POLICY_MISSING'
         else:
             status, error = 'configured_unverified', 'LLM_SMOKE_NOT_VERIFIED'
         return LlmReadinessResponse(status=status, deployment_configured=deployment, model_capability='responses_json_schema' if configured else 'unknown', error_code=error, llm_enabled=self.settings.llm_enabled, endpoint_configured=endpoint, authentication_configured=auth, schema_capability_configured=configured)
@@ -150,7 +277,9 @@ class LlmEvidenceApplicationService:
             message = 'LLM invocation failed.'
             details = {'error_code': error.code.value if isinstance(error, AzureGatewayError) else error.code, 'message': message}
             if isinstance(error, AzureGatewayError):
-                details.update({'provider_http_status': error.provider_status, 'provider_error_code': error.provider_code, 'provider_message': error.provider_message, 'provider_request_id': error.provider_request_id, 'failure_subtype': error.failure_subtype, 'resolved_deployment': row.deployment_alias})
+                details.update({'provider_http_status': error.provider_status, 'provider_error_code': error.provider_code, 'provider_message': error.provider_message, 'provider_request_id': error.provider_request_id, 'resolved_deployment': row.deployment_alias})
+                if error.failure_subtype is not None:
+                    details['failure_subtype'] = error.failure_subtype
             artifact = self._artifact(session, store, request.run_id, '04_workflow_state/llm_error_redacted.json', json.dumps(details, sort_keys=True))
             row.status = 'failed'; row.redacted_summary = 'LLM invocation failed; provider details redacted.'; row.failure_code = error.code.value if isinstance(error, AzureGatewayError) else error.code; row.retries = error.retry_count if isinstance(error, AzureGatewayError) else 0; row.completed_at = self.now(); row.latency_ms = latency; row.artifact_ids = [artifact.ref.artifact_id]; row.artifact_checksums = {artifact.ref.artifact_id: artifact.ref.checksum}
             if isinstance(error, AzureGatewayError):
@@ -170,4 +299,17 @@ class LlmEvidenceApplicationService:
 
     def _dto(self, session, row, replay=False):
         usage = session.scalar(select(UsageCostRecordModel).where(UsageCostRecordModel.invocation_id == row.id))
-        return LlmInvocationResponse(invocation_id=row.id, run_id=row.run_id, status=row.status, role=row.role, task_type=row.task_type, provider=row.provider, deployment_alias=row.deployment_alias, model_capability='responses_json_schema', artifact_ids=row.artifact_ids, artifact_checksums=row.artifact_checksums, artifact_links={a: f'/api/v1/artifacts/{a}' for a in row.artifact_ids}, correlation_id=row.correlation_id, prompt_version=row.prompt_version, schema_version=row.schema_version, pricing_version=row.pricing_version, stage=row.stage, input_hashes=row.input_hashes or [], redacted_summary=row.redacted_summary, input_tokens=usage.input_tokens if usage else 0, output_tokens=usage.output_tokens if usage else 0, total_tokens=usage.total_tokens if usage else 0, input_cost_usd=usage.input_cost_usd if usage else 0, output_cost_usd=usage.output_cost_usd if usage else 0, total_cost_usd=usage.total_cost_usd if usage else 0, retries=row.retries, latency_ms=row.latency_ms, failure_code=row.failure_code, provider_http_status=row.provider_http_status, provider_error_code=row.provider_error_code, sanitized_provider_message=row.sanitized_provider_message, provider_request_id=row.provider_request_id, failure_stage=row.failure_stage, failure_subtype=row.failure_subtype, retryable=bool(row.retryable), response_received=row.response_received, response_content_type=row.response_content_type, response_bytes=row.response_bytes, response_sha256=row.response_sha256, response_kind=row.response_kind, transport_started=row.transport_started, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay)
+        structured_output = {}
+        run = session.get(MigrationRunModel, row.run_id)
+        artifact_metadata_ids = ['metadata-' + artifact_id for artifact_id in (row.artifact_ids or [])]
+        response_artifact = session.scalar(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == row.run_id, ArtifactMetadataModel.id.in_(artifact_metadata_ids), ArtifactMetadataModel.relative_path.like('%/llm_response_validated%')).order_by(ArtifactMetadataModel.created_at.desc())) if run is not None and artifact_metadata_ids else None
+        if response_artifact is not None and run is not None:
+            try:
+                artifact_root = Path(run.artifact_root or self.settings.artifact_root)
+                store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
+                loaded = json.loads(store.read_artifact(row.run_id, response_artifact.relative_path).content)
+                if isinstance(loaded, dict):
+                    structured_output = loaded
+            except (OSError, TypeError, ValueError):
+                structured_output = {}
+        return LlmInvocationResponse(invocation_id=row.id, run_id=row.run_id, status=row.status, role=row.role, task_type=row.task_type, provider=row.provider, deployment_alias=row.deployment_alias, model_capability='responses_json_schema', artifact_ids=row.artifact_ids, artifact_checksums=row.artifact_checksums, artifact_links={a: f'/api/v1/artifacts/{a}' for a in row.artifact_ids}, correlation_id=row.correlation_id, prompt_version=row.prompt_version, schema_version=row.schema_version, pricing_version=row.pricing_version, stage=row.stage, input_hashes=row.input_hashes or [], redacted_summary=row.redacted_summary, input_tokens=usage.input_tokens if usage else 0, output_tokens=usage.output_tokens if usage else 0, total_tokens=usage.total_tokens if usage else 0, input_cost_usd=usage.input_cost_usd if usage else 0, output_cost_usd=usage.output_cost_usd if usage else 0, total_cost_usd=usage.total_cost_usd if usage else 0, retries=row.retries, latency_ms=row.latency_ms, failure_code=row.failure_code, provider_http_status=row.provider_http_status, provider_error_code=row.provider_error_code, sanitized_provider_message=row.sanitized_provider_message, provider_request_id=row.provider_request_id, failure_stage=row.failure_stage, failure_subtype=row.failure_subtype, retryable=bool(row.retryable), response_received=row.response_received, response_content_type=row.response_content_type, response_bytes=row.response_bytes, response_sha256=row.response_sha256, response_kind=row.response_kind, transport_started=row.transport_started, state_version=row.state_version, event_sequence=row.event_sequence, idempotent_replay=replay, structured_output=structured_output)

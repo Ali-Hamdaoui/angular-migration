@@ -84,7 +84,7 @@ def test_queue_route_uses_authenticated_actor_not_client_requested_by(
             )
 
         def dispatch_execution(self, execution_id):
-            calls["dispatched"] = execution_id
+            raise AssertionError("API process must not dispatch migration commands")
 
     monkeypatch.setattr(run_commands, "session_scope", scoped_session)
     result = run_commands.queue_command(
@@ -101,7 +101,7 @@ def test_queue_route_uses_authenticated_actor_not_client_requested_by(
     )
 
     assert result.execution_id == "exec-1"
-    assert calls == {"requested_by": "alice", "dispatched": "exec-1"}
+    assert calls == {"requested_by": "alice"}
 
 
 def test_command_retrieval_route_rejects_cross_actor_access(

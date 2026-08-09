@@ -281,12 +281,16 @@ class BaselineInstallApplicationService:
         store = LocalFilesystemArtifactStore(root, fixed_run_root=root)
         with self._lock:
             buffers = self._output_buffers.pop(execution_id, {"stdout": [], "stderr": []})
+        security = self._dependency_security_summary(
+            "".join((*buffers.get("stdout", []), *buffers.get("stderr", [])))
+        )
         artifacts = [
             self._write_artifact(store, run, "04_workflow_state/command_logs/npm-ci-bootstrap-failure.json", json.dumps({"command_id": "npm-ci-bootstrap", "status": "FAILED", "blocker": blocker, "environment_blocker": environment_blocker, "detail": detail}, indent=2), ArtifactType.COMMAND_LOG, request),
             self._write_artifact(store, run, "04_workflow_state/command_logs/npm-ci-bootstrap-failure.stdout.log", "".join(buffers.get("stdout", [])), ArtifactType.TEXT_LOG, request),
             self._write_artifact(store, run, "04_workflow_state/command_logs/npm-ci-bootstrap-failure.stderr.log", "".join(buffers.get("stderr", [])), ArtifactType.TEXT_LOG, request),
             self._write_artifact(store, run, "01_baseline/lockfile_post_install_verification.json", json.dumps({"package_json": asdict(after[0]), "lockfile": asdict(after[1]), "unchanged": after == before}, indent=2, default=str), ArtifactType.JSON, request),
-            self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": "failed", "blockers": [blocker], "environment_blocker": environment_blocker, "fingerprints": {"start": {"package_json": asdict(before[0]), "lockfile": asdict(before[1])}, "end": {"package_json": asdict(after[0]), "lockfile": asdict(after[1])}}, "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/dependency-security-summary.json", json.dumps(security, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": "failed", "blockers": [blocker], "risks": security["risks"], "environment_blocker": environment_blocker, "fingerprints": {"start": {"package_json": asdict(before[0]), "lockfile": asdict(before[1])}, "end": {"package_json": asdict(after[0]), "lockfile": asdict(after[1])}}, "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/npm_ci_authorization.json", json.dumps({"status": "authorized", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/npm_ci_command_manifest.json", json.dumps({"command_id": "npm-ci-bootstrap", "executable": "npm", "arguments": ["ci"], "working_directory_alias": "BASELINE_SANDBOX", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/npm_ci_result.json", json.dumps({"status": "failed", "blockers": [blocker], "environment_blocker": environment_blocker, "detail": detail}, indent=2), ArtifactType.JSON, request),
@@ -355,6 +359,13 @@ class BaselineInstallApplicationService:
         command_manifest = {"command_id": "npm-ci-bootstrap", "executable": executable, "arguments": ["ci"], "working_directory_alias": "BASELINE_SANDBOX", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}
         dependency_tree = asdict(result.inspection.dependency_tree) if result.inspection.dependency_tree else {"status": "not_run"}
         result_payload = {"status": result.command.result.status.value, "exit_code": result.command.result.exit_code, "timed_out": result.command.timed_out, "cancelled": result.command.cancelled, "blockers": list(result.inspection.blockers)}
+        security = self._dependency_security_summary(
+            "\n".join(
+                artifact.content
+                for artifact in (result.command.stdout_artifact, result.command.stderr_artifact)
+                if artifact is not None
+            )
+        )
         artifacts.extend([
             self._write_artifact(store, run, "01_baseline/npm_ci_authorization.json", json.dumps({"status": "authorized", "runtime_profile_id": request.runtime_profile_id, "runtime_checksum": request.runtime_checksum}, indent=2), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/npm_ci_command_manifest.json", json.dumps(command_manifest, indent=2), ArtifactType.JSON, request),
@@ -363,7 +374,8 @@ class BaselineInstallApplicationService:
             self._write_artifact(store, run, "01_baseline/dependency_tree_verification.json", json.dumps(dependency_tree, indent=2, default=str), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/npm_ci_result.json", json.dumps(result_payload, indent=2, default=str), ArtifactType.JSON, request),
             self._write_artifact(store, run, "01_baseline/lockfile_post_install_verification.json", json.dumps({"package_json": asdict(result.inspection.package_json), "lockfile": asdict(result.inspection.lockfile), "unchanged": not result.inspection.blockers}, indent=2, default=str), ArtifactType.JSON, request),
-            self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": result.inspection.status, "blockers": list(result.inspection.blockers), "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/dependency-security-summary.json", json.dumps(security, indent=2), ArtifactType.JSON, request),
+            self._write_artifact(store, run, "01_baseline/baseline_install_summary.json", json.dumps({"status": result.inspection.status, "blockers": list(result.inspection.blockers), "risks": security["risks"], "reconstruction": reconstruction}, indent=2, default=str), ArtifactType.JSON, request),
         ])
         if result.command.stdout_artifact:
             artifacts.append(self._write_artifact(store, run, "01_baseline/npm_ci_stdout.log", result.command.stdout_artifact.content, ArtifactType.TEXT_LOG, request))
@@ -378,6 +390,38 @@ class BaselineInstallApplicationService:
         self._register_artifacts(session, run, artifacts)
         with self._lock: self._output_buffers.pop(execution_id, None)
         return [a.ref.artifact_id for a in artifacts]
+
+    @staticmethod
+    def _dependency_security_summary(output: str) -> dict[str, object]:
+        severity_counts = {"low": 0, "moderate": 0, "high": 0, "critical": 0}
+        summary = re.search(r"(?im)^\s*(?:found\s+)?(\d+)\s+vulnerabilit(?:y|ies)\b(?:\s*\(([^)]*)\))?", output)
+        if summary is None:
+            return {
+                "source": "npm-ci-output",
+                "status": "not_reported",
+                "total": 0,
+                "severity_counts": severity_counts,
+                "policy_decision": "report_only",
+                "risks": [],
+                "blockers": [],
+            }
+        for count, severity in re.findall(
+            r"(\d+)\s+(low|moderate|high|critical)\b",
+            summary.group(2) or "",
+            re.IGNORECASE,
+        ):
+            severity_counts[severity.lower()] = int(count)
+        total = int(summary.group(1))
+        risks = ["DEPENDENCY_VULNERABILITIES_REPORTED"] if total else []
+        return {
+            "source": "npm-ci-output",
+            "status": "risk_detected" if total else "no_risk_detected",
+            "total": total,
+            "severity_counts": severity_counts,
+            "policy_decision": "report_only",
+            "risks": risks,
+            "blockers": [],
+        }
     def _worker(self, run, runtime_profile_id, executable="npm", environment_overrides=None):
         if self._worker_factory is not None: return self._worker_factory(run)
         baseline = Path((run.workspace_aliases or {})["BASELINE_SANDBOX"]).resolve(); root = Path(run.artifact_root).resolve(); store = LocalFilesystemArtifactStore(root, fixed_run_root=root)

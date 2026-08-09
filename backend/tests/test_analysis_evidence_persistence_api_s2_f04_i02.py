@@ -7,7 +7,7 @@ from app.api.analysis_contracts import AnalysisCreateRequest, G04DecisionApiRequ
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.analysis import AnalysisPackage, AnalysisNarrative, AnalysisReview, G04Decision, G04DecisionResult
 from app.domain.contracts import ArtifactType
-from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, ParityBaselineEvidenceModel, WorkflowEventModel
+from app.repositories.models import ArtifactMetadataModel, Base, DiscoveryEvidenceModel, G03ApprovalModel, LlmInvocationModel, MigrationRunModel, ParityBaselineEvidenceModel, PlanningJobModel, WorkflowEventModel
 from app.repositories.session import create_database_engine
 from app.services.analysis_evidence_application_service import AnalysisEvidenceApplicationService, AnalysisEvidenceError
 from app.api.routes import analysis as analysis_routes
@@ -92,7 +92,7 @@ def setup(tmp_path: Path, *, agent=None):
         return managed()
 
     service = AnalysisEvidenceApplicationService(session_scope_factory=scope, analysis_agent=agent or FakeAnalysisAgent(), now_provider=lambda: NOW)
-    payload = AnalysisCreateRequest(expected_state_version=1, idempotency_key="analysis-1", prerequisite_artifacts=[{"artifact_id": source.ref.artifact_id, "checksum": source.ref.checksum}], workspace_fingerprint="sha256:" + "5" * 64, correlation_id="corr-1")
+    payload = AnalysisCreateRequest(expected_state_version=1, idempotency_key="analysis-1", prerequisite_artifacts=[{"artifact_id": source.ref.artifact_id, "checksum": source.ref.checksum}], workspace_fingerprint=None, correlation_id="corr-1")
     return service, payload, sessions, source
 
 
@@ -103,6 +103,7 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
 
     assert result.status == "completed"
     assert result.gate_status == "pending"
+    assert result.package["workspace_fingerprint"] == "sha256:" + "3" * 64
     assert len(result.artifact_ids) == 8
     assert all(checksum.startswith("sha256:") for checksum in result.artifact_checksums.values())
     with sessions() as session:
@@ -119,6 +120,19 @@ def test_analysis_persists_immutable_evidence_invocation_gate_and_events(tmp_pat
     assert "raw_content_stored" in store.read_artifact_by_id(result.artifact_ids[0]).content
 
 
+def test_analysis_rejects_workspace_fingerprint_that_differs_from_approved_g03(tmp_path):
+    service, payload, _, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+
+    with pytest.raises(AnalysisEvidenceError) as error:
+        service.generate(
+            "run-1",
+            payload.model_copy(update={"workspace_fingerprint": "sha256:" + "9" * 64}),
+            "operator",
+        )
+
+    assert error.value.code == "ANALYSIS_WORKSPACE_FINGERPRINT_MISMATCH"
+
+
 def test_analysis_replays_identical_request_and_rejects_changed_payload(tmp_path):
     agent = FakeAnalysisAgent()
     service, payload, _, _ = setup(tmp_path, agent=agent)
@@ -130,7 +144,7 @@ def test_analysis_replays_identical_request_and_rejects_changed_payload(tmp_path
     assert replay.analysis_id == first.analysis_id
     assert agent.calls == 1
     with pytest.raises(AnalysisEvidenceError, match="different payload"):
-        service.generate("run-1", payload.model_copy(update={"workspace_fingerprint": "sha256:" + "6" * 64}), "operator")
+        service.generate("run-1", payload.model_copy(update={"plan_version": "plan-v2"}), "operator")
 
 
 def test_analysis_rejects_stale_or_tampered_prerequisite_before_provider(tmp_path):
@@ -163,6 +177,25 @@ def test_g04_decision_is_append_only_bound_and_idempotent(tmp_path):
     assert stale.value.code == "STALE_STATE_VERSION"
 
 
+def test_approved_g04_creates_one_durable_planning_job_and_updates_run_projection(tmp_path):
+    service, payload, sessions, _ = setup(tmp_path, agent=FakeAnalysisAgent())
+    analysis = service.generate("run-1", payload, "operator")
+    decision = G04DecisionApiRequest(
+        expected_state_version=analysis.state_version,
+        idempotency_key="g04-planning-job",
+        gate_version=analysis.gate_version,
+        package_checksum=analysis.package_checksum,
+        workspace_fingerprint=analysis.package["workspace_fingerprint"],
+        plan_version=analysis.package["plan_version"],
+        decision=G04Decision.APPROVE,
+    )
+
+    service.decide_g04("run-1", decision, "operator")
+    with sessions() as session:
+        run = session.query(MigrationRunModel).one()
+        job = session.query(PlanningJobModel).one()
+        assert (run.run_phase, run.status, run.phase_status, run.approval_status) == ("FEASIBILITY_PLANNING", "PLANNING_RUNNING", "running", "approved")
+        assert (job.status, job.current_step) == ("queued_after_g04", "resolving_feasibility")
 def test_analysis_dependency_failure_preserves_redacted_failure_evidence(tmp_path):
     service, payload, sessions, _ = setup(tmp_path, agent=FakeAnalysisAgent(failure=RuntimeError("secret-provider-detail")))
 

@@ -11,29 +11,48 @@ import type {
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
-export function getBaseline(runId: string, client: ApiClient = apiClient): Promise<BaselineResponse> {
-  return client.get<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline`);
+function normalizeBaseline(value: BaselineResponse): BaselineResponse {
+  return {
+    ...value,
+    sources: Array.isArray(value.sources) ? value.sources : [],
+    scripts: Array.isArray(value.scripts) ? value.scripts : [],
+    blockers: Array.isArray(value.blockers) ? value.blockers : [],
+    warnings: Array.isArray(value.warnings) ? value.warnings : [],
+    artifact_ids: Array.isArray(value.artifact_ids) ? value.artifact_ids : [],
+  };
 }
 
-export function createBaselineWorkspace(runId: string, request: BaselineWorkspaceRequest, client: ApiClient = apiClient): Promise<BaselineResponse> {
-  return client.post<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/workspace`, request);
+function normalizeInstallation(value: BaselineInstallResponse): BaselineInstallResponse {
+  return {
+    ...value,
+    blockers: Array.isArray(value.blockers) ? value.blockers : [],
+    artifact_ids: Array.isArray(value.artifact_ids) ? value.artifact_ids : [],
+  };
 }
 
-export function prequalifyBaseline(runId: string, request: BaselinePrequalifyRequest, client: ApiClient = apiClient): Promise<BaselineResponse> {
-  return client.post<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/prequalify`, request);
+export async function getBaseline(runId: string, client: ApiClient = apiClient): Promise<BaselineResponse> {
+  return normalizeBaseline(await client.get<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline`));
 }
 
-export function authorizeBaselineInstall(runId: string, request: BaselineInstallAuthorizationRequest, client: ApiClient = apiClient): Promise<BaselineResponse> {
-  return client.post<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/install-authorizations`, request);
+export async function createBaselineWorkspace(runId: string, request: BaselineWorkspaceRequest, client: ApiClient = apiClient): Promise<BaselineResponse> {
+  return normalizeBaseline(await client.post<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/workspace`, request));
 }
 
-export function installBaseline(runId: string, request: BaselineInstallRequest, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
-  return client.post<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/install`, request);
+export async function prequalifyBaseline(runId: string, request: BaselinePrequalifyRequest, client: ApiClient = apiClient): Promise<BaselineResponse> {
+  return normalizeBaseline(await client.post<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/prequalify`, request));
 }
 
-export function getBaselineCommand(runId: string, executionId: string, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
-  return client.get<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}`);
+export async function authorizeBaselineInstall(runId: string, request: BaselineInstallAuthorizationRequest, client: ApiClient = apiClient): Promise<BaselineResponse> {
+  return normalizeBaseline(await client.post<BaselineResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/install-authorizations`, request));
 }
-export function cancelBaseline(runId: string, executionId: string, request: BaselineInstallCancelRequest, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
-  return client.post<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/cancel`, request);
+
+export async function installBaseline(runId: string, request: BaselineInstallRequest, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
+  return normalizeInstallation(await client.post<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/baseline/install`, request));
+}
+
+export async function getBaselineCommand(runId: string, executionId: string, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
+  return normalizeInstallation(await client.get<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}`));
+}
+export async function cancelBaseline(runId: string, executionId: string, request: BaselineInstallCancelRequest, client: ApiClient = apiClient): Promise<BaselineInstallResponse> {
+  return normalizeInstallation(await client.post<BaselineInstallResponse>(`/api/v1/runs/${encodeURIComponent(runId)}/commands/${encodeURIComponent(executionId)}/cancel`, request));
 }

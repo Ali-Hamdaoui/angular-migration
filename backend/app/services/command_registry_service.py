@@ -20,6 +20,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
+    ANGULAR_UPDATE_V3_RENDERER,
     AuthorizationCheckResult,
     AuthorizationDecision,
     AuthorizationRequest,
@@ -28,7 +30,11 @@ from app.domain.command import (
     CommandTemplate,
     CommandTemplateStatus,
     DEFAULT_COMMAND_TEMPLATES,
+    NPM_DEPENDENCY_INSTALL_RENDERER,
+    NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NetworkProfile,
+    command_arguments_match,
 )
 from app.domain.contracts import (
     CommandTemplateDto,
@@ -37,6 +43,20 @@ from app.domain.contracts import (
     CommandPolicyValidateResponseDto,
     WorkflowEventType,
 )
+from app.services.path_validation_service import is_portable_absolute_path
+from app.services.dependency_closure_service import (
+    compatible_reinstall_bundle,
+    installed_dependency_version,
+    is_exact_version,
+    validate_dependency_transition_evidence,
+    verify_dependency_transition_state,
+)
+from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.repair_application_service import (
+    BlockingDependencyCandidate,
+    TargetStateCandidate,
+)
+from app.state.event_sequencer import append_workflow_event
 
 
 class CommandRegistryError(ValueError):
@@ -113,13 +133,14 @@ class CommandRegistryService:
         """Seed default command templates if the registry is empty."""
         from app.repositories.models.workflow import CommandTemplateModel
 
-        existing = session.scalar(select(CommandTemplateModel).limit(1))
-        if existing is not None:
-            return self.list_templates(session).templates
-
         now = datetime.now(UTC)
-        seeded: list[CommandTemplateDto] = []
+        existing_pairs = {
+            (row.id, row.version)
+            for row in session.query(CommandTemplateModel).all()
+        }
         for tpl in DEFAULT_COMMAND_TEMPLATES:
+            if (tpl.template_id, tpl.version) in existing_pairs:
+                continue
             row = CommandTemplateModel(
                 id=tpl.template_id,
                 command_id=tpl.command_id,
@@ -135,9 +156,8 @@ class CommandRegistryService:
                 updated_at=now,
             )
             session.add(row)
-            seeded.append(self._model_to_dto(row))
         session.flush()
-        return seeded
+        return self.list_templates(session).templates
 
     @staticmethod
     def _model_to_dto(row: Any) -> CommandTemplateDto:
@@ -197,6 +217,9 @@ class CommandPolicyEngineService:
         self,
         session: Session,
         request: CommandPolicyValidateRequestDto,
+        *,
+        supersedes_authorization_id: str | None = None,
+        repair_transition_attempt_id: str | None = None,
     ) -> CommandPolicyValidateResponseDto:
         """Run all policy checks and return an authorization decision."""
         from app.repositories.models.workflow import CommandAuthorizationAuditModel, MigrationRunModel
@@ -278,12 +301,20 @@ class CommandPolicyEngineService:
             else:
                 checks.append(AuthorizationCheckResult(passed=True, rule_name="executable_matches_template"))
 
-            # 4. Arguments match template (exact match)
-            if list(template.arguments) != request.arguments:
+            # 4. Arguments match template (version-bound when specified)
+            if request.template_id and request.template_version is not None:
+                version_template = self.registry.find_registered_template(
+                    session, template_id=request.template_id, command_id=request.command_id,
+                    version=request.template_version,
+                )
+                match_args = tuple(version_template.arguments) if version_template else tuple(template.arguments)
+            else:
+                match_args = tuple(template.arguments)
+            if not command_arguments_match(match_args, tuple(request.arguments)):
                 checks.append(AuthorizationCheckResult(
                     passed=False,
                     rule_name="arguments_match_template",
-                    reason=f"arguments {request.arguments} do not match template {template.arguments}",
+                    reason=f"arguments {request.arguments} do not match template {match_args}",
                 ))
                 reasons.append("argument mismatch")
             else:
@@ -308,7 +339,12 @@ class CommandPolicyEngineService:
             reasons.append(timeout_check.reason or "timeout rejected")
 
         # 8. Plan membership if required
-        plan_check = self._check_plan_membership(session, request)
+        plan_check = self._check_plan_membership(
+            session,
+            request,
+            supersedes_authorization_id=supersedes_authorization_id,
+            repair_transition_attempt_id=repair_transition_attempt_id,
+        )
         checks.append(plan_check)
         if not plan_check.passed:
             reasons.append(plan_check.reason or "plan membership rejected")
@@ -413,27 +449,19 @@ class CommandPolicyEngineService:
             audit.artifact_ids = [stored.ref.artifact_id]
 
         # Emit authorization event
-        from app.repositories.models.workflow import WorkflowEventModel
-        latest = session.scalar(
-            select(WorkflowEventModel)
-            .where(WorkflowEventModel.run_id == request.run_id)
-            .order_by(WorkflowEventModel.sequence.desc())
-            .limit(1)
-        )
         event_type = (
             WorkflowEventType.COMMAND_AUTHORIZATION_ACCEPTED
             if decision.value == "accepted"
             else WorkflowEventType.COMMAND_AUTHORIZATION_REJECTED
         )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        event = append_workflow_event(
+            session,
             run_id=request.run_id,
             stage_id=request.stage_id,
             event_type=event_type.value,
             idempotency_key=request.idempotency_key,
             actor=request.requested_by or "system",
             reason=f"command authorization {decision.value}",
-            sequence=(latest.sequence + 1) if latest else 1,
             payload={
                 "authorization_id": authorization_id,
                 "command_id": request.command_id,
@@ -453,10 +481,10 @@ class CommandPolicyEngineService:
                 "request_payload_hash": payload_hash,
                 "artifact_ids": list(audit.artifact_ids),
                 "artifact_checksums": ({audit.artifact_ids[0]: stored.ref.checksum} if audit.artifact_ids else {}),
+                "supersedes_authorization_id": supersedes_authorization_id,
             },
             occurred_at=now,
         )
-        session.add(event)
         session.flush()
 
         return self._response_from_audit(audit, replay=False)
@@ -530,6 +558,9 @@ class CommandPolicyEngineService:
         self,
         session: Session,
         request: CommandPolicyValidateRequestDto,
+        *,
+        supersedes_authorization_id: str | None = None,
+        repair_transition_attempt_id: str | None = None,
     ) -> AuthorizationCheckResult:
         """Verify every client-supplied binding against the current approved plan."""
         from app.repositories.models.workflow import MigrationRunModel
@@ -573,26 +604,48 @@ class CommandPolicyEngineService:
 
         refs = [ref for group in (stage_data.get("commands") or {}).values() for ref in group]
         planned = next((ref for ref in refs if ref.get("command_id") == request.command_id), None)
+        repair_transition = bool(
+            repair_transition_attempt_id
+            and self._valid_repair_dependency_transition(
+                session,
+                request,
+                supersedes_authorization_id=repair_transition_attempt_id,
+            )
+        )
         if planned is None:
-            return reject("COMMAND_NOT_IN_APPROVED_PLAN", "command template is not in the approved plan")
-        if planned.get("working_directory_alias") != request.working_directory_alias:
+            if not repair_transition:
+                return reject("COMMAND_NOT_IN_APPROVED_PLAN", "command template is not in the approved plan")
+        elif planned.get("working_directory_alias") != request.working_directory_alias:
             return reject("WORKSPACE_NOT_APPROVED", "workspace alias does not match the approved planned command")
         if request.cwd_alias is not None and request.cwd_alias != request.working_directory_alias:
             return reject("WORKSPACE_NOT_APPROVED", "cwd alias does not match the approved workspace alias")
-        if planned.get("network_profile") != request.network_profile:
+        if planned is not None and planned.get("network_profile") != request.network_profile:
             return reject("NETWORK_PROFILE_NOT_ALLOWED", "network profile is not explicitly permitted by the plan")
-        if (
-            planned.get("executable") != request.executable
-            or list(planned.get("arguments") or []) != list(request.arguments)
-            or planned.get("shell", False) is not False
-            or request.template_id is None
+        command_matches_plan = (
+            planned is not None
+            and (
+                planned.get("executable") != request.executable
+                or list(planned.get("arguments") or []) != list(request.arguments)
+                or planned.get("shell", False) is not False
+                or request.template_id is None
+            )
+        ) is False
+        if not command_matches_plan and supersedes_authorization_id and self._valid_angular_update_supersession(
+            session,
+            request,
+            planned,
+            supersedes_authorization_id,
         ):
-            return reject("COMMAND_NOT_IN_APPROVED_PLAN", "structured command does not match the approved planned command")
+            command_matches_plan = True
+        if not command_matches_plan:
+            if not repair_transition:
+                return reject("COMMAND_NOT_IN_APPROVED_PLAN", "structured command does not match the approved planned command")
+            command_matches_plan = True
         if request.shell is not False:
             return reject("SHELL_EXECUTION_FORBIDDEN", "shell execution is forbidden")
-        if planned.get("timeout_seconds") != request.timeout_seconds:
+        if planned is not None and planned.get("timeout_seconds") != request.timeout_seconds:
             return reject("COMMAND_NOT_IN_APPROVED_PLAN", "timeout does not match the approved planned command")
-        if planned.get("cancellation_policy") is not None and planned.get("cancellation_policy") != request.cancellation_policy:
+        if planned is not None and planned.get("cancellation_policy") is not None and planned.get("cancellation_policy") != request.cancellation_policy:
             return reject("COMMAND_NOT_IN_APPROVED_PLAN", "cancellation policy does not match the approved planned command")
 
         aliases = run.workspace_aliases or {}
@@ -604,8 +657,344 @@ class CommandPolicyEngineService:
         try:
             root = Path(str(aliases[alias])).resolve(strict=False)
             candidate_input = Path(request.working_directory)
+            if is_portable_absolute_path(str(request.working_directory)) and not candidate_input.is_absolute():
+                return reject("WORKSPACE_CONFINEMENT_VIOLATION", "working directory uses an absolute path from another host")
             candidate = (root / candidate_input).resolve(strict=False) if not candidate_input.is_absolute() else candidate_input.resolve(strict=False)
             candidate.relative_to(root)
         except (OSError, ValueError, RuntimeError, TypeError):
             return reject("WORKSPACE_CONFINEMENT_VIOLATION", "working directory is outside the run-owned workspace")
         return AuthorizationCheckResult(True, "plan_membership")
+
+    @staticmethod
+    def _valid_angular_update_supersession(
+        session: Session,
+        request: CommandPolicyValidateRequestDto,
+        planned: dict[str, Any],
+        superseded_authorization_id: str,
+    ) -> bool:
+        """Allow only the immutable v2->v3 stage retry transition."""
+        from app.repositories.models.workflow import CommandAuthorizationAuditModel
+
+        if (
+            request.command_id != "angular-update-exact"
+            or request.template_id != ANGULAR_UPDATE_V3_RENDERER.template_id
+            or request.template_version != 3
+            or planned.get("template_id") != ANGULAR_UPDATE_V2_RENDERER.template_id
+            or planned.get("template_version") != 2
+        ):
+            return False
+        parent = session.get(CommandAuthorizationAuditModel, superseded_authorization_id)
+        if (
+            parent is None
+            or parent.run_id != request.run_id
+            or parent.stage_id != request.stage_id
+            or parent.plan_id != request.plan_id
+            or parent.plan_version != request.plan_version
+            or parent.command_id != request.command_id
+            or parent.template_id != ANGULAR_UPDATE_V2_RENDERER.template_id
+            or parent.template_version != 2
+            or list(parent.arguments or []) != list(planned.get("arguments") or [])
+        ):
+            return False
+        try:
+            expected_v2 = ANGULAR_UPDATE_V2_RENDERER.render_arguments(
+                planned.get("parameter_bindings") or {}
+            )
+            expected_v3 = ANGULAR_UPDATE_V3_RENDERER.render_arguments(
+                planned.get("parameter_bindings") or {}
+            )
+        except (TypeError, ValueError):
+            return False
+        return (
+            tuple(parent.arguments or []) == expected_v2
+            and tuple(request.arguments) == expected_v3
+        )
+
+    @staticmethod
+    def _valid_repair_dependency_transition(
+        session: Session,
+        request: CommandPolicyValidateRequestDto,
+        supersedes_authorization_id: str | None,
+    ) -> bool:
+        """Allow only the detach/update/reattach commands bound to an applied repair.
+
+        The superseded id is the RepairAttemptModel id of an applied attempt
+        whose committed proposal artifact is exactly one dependency_transition
+        operation; the requested command must match the renderer bound to the
+        proposal's blocking package and target version. Install commands are
+        authorized only for packages and exact versions owned by the
+        backend-approved transition bundle resolved from the active workspace.
+        """
+        from app.artifact_store import (
+            ArtifactNotFoundError,
+            ArtifactStoreError,
+            LocalFilesystemArtifactStore,
+        )
+        from app.repositories.models.workflow import (
+            ArtifactMetadataModel,
+            MigrationRunModel,
+            RepairAttemptModel,
+            StageWorkspaceBindingModel,
+            TransformationContinuationModel,
+        )
+        from app.repositories.planning_models import StageExecutionPlanModel
+
+        attempt = session.get(RepairAttemptModel, supersedes_authorization_id)
+        if (
+            attempt is None
+            or attempt.run_id != request.run_id
+            or attempt.stage_id != request.stage_id
+            or attempt.status not in {
+                "approved_pending_execution",
+                "executing",
+                "uninstall",
+                "angular_update",
+                "reinstall",
+                "npm_ci",
+                "dependency_closure",
+            }
+            or not attempt.proposal_artifact_id
+            or not attempt.proposal_checksum
+        ):
+            return False
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id)
+        run = session.get(MigrationRunModel, request.run_id)
+        if metadata is None or run is None or not run.artifact_root:
+            return False
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root), fixed_run_root=Path(run.artifact_root)
+            )
+            stored = store.read_artifact(request.run_id, metadata.relative_path)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError):
+            return False
+        if (
+            stored.ref.checksum != attempt.proposal_checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != request.run_id
+            or stored.envelope.stage_id != request.stage_id
+            or stored.envelope.attempt_id != attempt.id
+        ):
+            return False
+        try:
+            proposal = json.loads(stored.content)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if not isinstance(proposal, dict):
+            return False
+        operations = proposal.get("operations")
+        if not isinstance(operations, list) or len(operations) != 1:
+            return False
+        operation = operations[0]
+        if not isinstance(operation, dict) or operation.get("operation") != "dependency_transition":
+            return False
+        if operation.get("schema_version") != "transformer-repair-v2":
+            return False
+        if operation.get("repair_kind") != "dependency_transition":
+            return False
+        if operation.get("strategy") != "detach_update_reattach":
+            return False
+        if operation.get("failure_type") != "peer_dependency_conflict":
+            return False
+        blocking = operation.get("blocking_dependency")
+        target = operation.get("target_state")
+        try:
+            blocking_candidate = BlockingDependencyCandidate.model_validate(blocking)
+            target_candidate = TargetStateCandidate.model_validate(target)
+        except (TypeError, ValueError):
+            return False
+        if target_candidate.package != blocking_candidate.package:
+            return False
+        blocking_package = blocking_candidate.package
+        target_version = target_candidate.target_version
+        target_major = target_candidate.angular_major
+        if not is_exact_version(target_version) or not isinstance(target_major, int):
+            return False
+
+        evidence_metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(attempt.failure_evidence_artifact_id)
+        )
+        if (
+            evidence_metadata is None
+            or evidence_metadata.checksum != attempt.failure_evidence_checksum
+        ):
+            return False
+        try:
+            evidence = json.loads(
+                LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent,
+                    fixed_run_root=Path(run.artifact_root),
+                ).read_artifact(request.run_id, evidence_metadata.relative_path).content
+            )
+            normalized = evidence.get("normalized_failure")
+            diagnosis = normalized.get("failure_diagnosis") if isinstance(normalized, dict) else None
+            if (
+                isinstance(normalized, dict)
+                and (
+                    not isinstance(diagnosis, dict)
+                    or not isinstance(diagnosis.get("package"), str)
+                    or not diagnosis.get("required_ranges")
+                )
+            ):
+                reparsed = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+                if reparsed is not None:
+                    evidence = {**evidence, "normalized_failure": {**normalized, "failure_diagnosis": reparsed}}
+            authority = validate_dependency_transition_evidence(
+                evidence,
+                package=blocking_package,
+                target_major=target_major,
+                installed_version=blocking_candidate.installed_version,
+                artifact_id=attempt.failure_evidence_artifact_id,
+            )
+            if (
+                blocking_candidate.installed_version != authority["installed_version"]
+                or {
+                    item.package: item.version_range
+                    for item in blocking_candidate.required_peer_ranges
+                }
+                != authority["peer_ranges"]
+                or target_version != authority["target_version"]
+            ):
+                return False
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError):
+            return False
+
+        continuation = session.scalar(
+            select(TransformationContinuationModel)
+            .where(TransformationContinuationModel.run_id == request.run_id)
+            .order_by(TransformationContinuationModel.created_at.desc())
+            .limit(1)
+        )
+        stage_plan = (
+            session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            if continuation is not None
+            else None
+        )
+        stage_data = (stage_plan.stage_plan or {}) if stage_plan is not None else {}
+        angular_ref = next(
+            (
+                ref
+                for group in (stage_data.get("commands") or {}).values()
+                for ref in group
+                if ref.get("command_id") == "angular-update-exact"
+            ),
+            None,
+        )
+        planned_alias = angular_ref.get("working_directory_alias") if angular_ref is not None else None
+        if planned_alias is not None and request.working_directory_alias != planned_alias:
+            return False
+
+        angular_bindings = (angular_ref or {}).get("parameter_bindings") or {}
+        target_exact = angular_bindings.get("target_exact") or stage_data.get("target_exact")
+        if not is_exact_version(target_exact):
+            return False
+        if not isinstance(target_major, int) or not target_exact.startswith(f"{target_major}."):
+            return False
+        if request.command_id == NPM_DEPENDENCY_UNINSTALL_RENDERER.command_id:
+            try:
+                binding = session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == request.run_id,
+                        StageWorkspaceBindingModel.stage_id == request.stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if binding is None:
+                    return False
+                workspace = Path(binding.workspace_path).resolve(strict=False)
+                verify_dependency_transition_state(
+                    workspace,
+                    package=blocking_package,
+                    installed_version=blocking_candidate.installed_version,
+                    peer_ranges=authority["peer_ranges"],
+                )
+            except (KeyError, TypeError, ValueError, OSError):
+                return False
+
+        if request.command_id == NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id:
+            try:
+                binding = session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == request.run_id,
+                        StageWorkspaceBindingModel.stage_id == request.stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if binding is None:
+                    return False
+                patch = installed_dependency_version(
+                    Path(binding.workspace_path).resolve(strict=True), "@angular/core"
+                )
+                return (
+                    request.template_id == NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.template_id
+                    and request.template_version == 2
+                    and request.executable == "npm"
+                    and tuple(request.arguments)
+                    == NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.render_arguments(
+                        {"target_angular_patch": patch}
+                    )
+                )
+            except (KeyError, TypeError, ValueError, OSError):
+                return False
+
+        try:
+            if request.command_id == NPM_DEPENDENCY_UNINSTALL_RENDERER.command_id:
+                return (
+                    request.template_id == NPM_DEPENDENCY_UNINSTALL_RENDERER.template_id
+                    and request.template_version == 1
+                    and request.executable == "npm"
+                    and tuple(request.arguments)
+                    == NPM_DEPENDENCY_UNINSTALL_RENDERER.render_arguments(
+                        {"package": blocking_package}
+                    )
+                )
+            if request.command_id == NPM_DEPENDENCY_INSTALL_RENDERER.command_id:
+                try:
+                    binding = session.scalar(
+                        select(StageWorkspaceBindingModel).where(
+                            StageWorkspaceBindingModel.run_id == request.run_id,
+                            StageWorkspaceBindingModel.stage_id == request.stage_id,
+                            StageWorkspaceBindingModel.active.is_(True),
+                        )
+                    )
+                    if binding is None:
+                        return False
+                    bundle = compatible_reinstall_bundle(
+                        blocking_package, target_major, Path(binding.workspace_path)
+                    )
+                    approved_arguments = {
+                        NPM_DEPENDENCY_INSTALL_RENDERER.render_arguments(
+                            {
+                                "package": member.package,
+                                "target_version": member.exact_version,
+                            }
+                        )
+                        for member in bundle.members
+                    }
+                except (KeyError, TypeError, ValueError, OSError):
+                    return False
+                return (
+                    request.template_id == NPM_DEPENDENCY_INSTALL_RENDERER.template_id
+                    and request.template_version == 1
+                    and request.executable == "npm"
+                    and tuple(request.arguments) in approved_arguments
+                )
+            if request.command_id == ANGULAR_UPDATE_V3_RENDERER.command_id:
+                if (
+                    angular_ref is None
+                    or angular_ref.get("template_id") != ANGULAR_UPDATE_V3_RENDERER.template_id
+                    or angular_ref.get("template_version") != 3
+                ):
+                    return False
+                expected = ANGULAR_UPDATE_V3_RENDERER.render_arguments(
+                    angular_ref.get("parameter_bindings") or {}
+                )
+                return (
+                    request.template_id == ANGULAR_UPDATE_V3_RENDERER.template_id
+                    and request.template_version == 3
+                    and request.executable == "npx"
+                    and tuple(request.arguments) == expected
+                )
+        except (TypeError, ValueError):
+            return False
+        return False
