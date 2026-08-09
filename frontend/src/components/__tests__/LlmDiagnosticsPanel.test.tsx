@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach } from "vitest";
 import { ApiClientError } from "@/api/client";
 import { LlmDiagnosticsPanel } from "@/components/LlmDiagnosticsPanel";
 import { getLlmActivity, getLlmReadiness, getLlmUsage, invokeLlmSmoke } from "@/api/llm";
@@ -14,11 +15,15 @@ describe("LlmDiagnosticsPanel", () => {
     vi.mocked(getLlmUsage).mockResolvedValue({ run_id: "run-1", invocation_count: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15, input_cost_usd: 0.00001, output_cost_usd: 0.00002, total_cost_usd: 0.00003, pricing_versions: ["pricing-v1"], records: [] });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.resetAllMocks();
+  });
+
   it("renders provenance, token cost, and invokes through the typed backend contract", async () => {
     vi.mocked(invokeLlmSmoke).mockResolvedValue(invocation);
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
-    expect(await screen.findByText("Estimated total cost")).toBeInTheDocument();
-    expect(screen.getByText("$0.000030")).toBeInTheDocument();
+    expect(await screen.findByText("$0.000030")).toBeInTheDocument();
     expect(screen.getByText("phase_proposer")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Run governed smoke check" }));
     await waitFor(() => expect(invokeLlmSmoke).toHaveBeenCalledWith(expect.objectContaining({ run_id: "run-1", expected_state_version: 2 })));
@@ -29,7 +34,10 @@ describe("LlmDiagnosticsPanel", () => {
     vi.mocked(getLlmUsage).mockResolvedValue({ run_id: "run-1", invocation_count: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, input_cost_usd: 0, output_cost_usd: 0, total_cost_usd: 0, pricing_versions: [], records: [] });
     vi.mocked(invokeLlmSmoke).mockRejectedValue(new ApiClientError("stale", 409));
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run governed smoke check" }));
+    await screen.findByText("azure_openai");
+    const smokeCheck = screen.getByRole("button", { name: "Run governed smoke check" });
+    await waitFor(() => expect(smokeCheck).toBeEnabled());
+    fireEvent.click(smokeCheck);
     expect(await screen.findByRole("alert")).toHaveTextContent("run changed");
   });
 
@@ -37,7 +45,7 @@ describe("LlmDiagnosticsPanel", () => {
     vi.mocked(getLlmActivity).mockRejectedValue(new ApiClientError("activity failed", 500, "GET", "/activity", JSON.stringify({ correlation_id: "corr-activity" })));
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
     expect(await screen.findByText("azure_openai")).toBeInTheDocument();
-    expect(screen.getByText("Activity: The backend could not load this diagnostics section.")).toBeInTheDocument();
+    expect(await screen.findByText("Activity: The backend could not load this diagnostics section.")).toBeInTheDocument();
     expect(screen.getByText("$0.000030")).toBeInTheDocument();
   });
 
@@ -45,7 +53,7 @@ describe("LlmDiagnosticsPanel", () => {
     vi.mocked(getLlmUsage).mockRejectedValue(new ApiClientError("usage failed", 500));
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
     expect(await screen.findByText("phase_proposer")).toBeInTheDocument();
-    expect(screen.getByText("Usage: The backend could not load this diagnostics section.")).toBeInTheDocument();
+    expect(await screen.findByText("Usage: The backend could not load this diagnostics section.")).toBeInTheDocument();
   });
 
   it("debounces rapid authoritative state updates into one refresh", async () => {
@@ -53,8 +61,10 @@ describe("LlmDiagnosticsPanel", () => {
     rerender(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
     rerender(<LlmDiagnosticsPanel runId="run-1" stateVersion={3} />);
     await screen.findByText("Estimated total cost");
-    expect(getLlmReadiness).toHaveBeenCalledTimes(1);
-    expect(getLlmActivity).toHaveBeenCalledTimes(1);
-    expect(getLlmUsage).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(getLlmReadiness).toHaveBeenCalledTimes(1);
+      expect(getLlmActivity).toHaveBeenCalledTimes(1);
+      expect(getLlmUsage).toHaveBeenCalledTimes(1);
+    });
   });
 });

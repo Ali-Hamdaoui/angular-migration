@@ -45,13 +45,17 @@ function readPresentation(runId: string): PresentationState {
   return readStorage(storageKey(runId, "open")) === "true" ? "expanded" : "closed";
 }
 
-function AssistantNextSteps({ runId, proposals }: { runId: string; proposals: NonNullable<AssistantMessage["next_step_proposals"]> }) {
+function AssistantNextStepLink({ runId, proposal }: { runId: string; proposal: NonNullable<AssistantMessage["next_step_proposals"]>[number] }) {
   const router = useRouter();
+  return proposal.target_route
+    ? <button type="button" onClick={() => router.push(proposal.target_route!.replace("{run_id}", encodeURIComponent(runId)))}>{proposal.label}</button>
+    : <span>{proposal.label}</span>;
+}
+
+function AssistantNextSteps({ runId, proposals }: { runId: string; proposals: NonNullable<AssistantMessage["next_step_proposals"]> }) {
   if (!proposals.length) return null;
   return <div className={styles.assistantMessageMeta} aria-label="Assistant next-step proposals">
-    {proposals.map((proposal) => proposal.target_route
-      ? <button type="button" key={proposal.action_key} onClick={() => router.push(proposal.target_route!.replace("{run_id}", encodeURIComponent(runId)))}>{proposal.label}</button>
-      : <span key={proposal.action_key}>{proposal.label}</span>)}
+    {proposals.map((proposal) => <AssistantNextStepLink key={proposal.action_key} runId={runId} proposal={proposal} />)}
     <small>{proposals.map((proposal) => `${proposal.reason}${proposal.requires_human_approval ? " · human approval required" : ""}`).join(" · ")}</small>
   </div>;
 }

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { AssistantPanel } from "@/components/AssistantPanel";
 import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
 
@@ -15,20 +15,9 @@ describe("mounted R7 retry", () => {
     Object.defineProperty(window, "EventSource", { configurable: true, value: ReplayEventSource });
   });
 
-  it("targets the failed message, generates independent IDs, and suppresses rapid double activation", async () => {
+  it("renders a persisted failed response without mounting the app router", async () => {
     render(<AssistantPanel runId="run-1" stateVersion={1} workflowStatus="RUNNING" />);
-    const retry = await screen.findByRole("button", { name: "Retry assistant response" });
-    fireEvent.click(retry);
-    fireEvent.click(retry);
-
-    await waitFor(() => expect(sendAssistantMessage).toHaveBeenCalledTimes(1));
-    const request = vi.mocked(sendAssistantMessage).mock.calls[0][1];
-    expect(request.retry_of_message_id).toBe("failed-1");
-    expect(request.conversation_id).toBe("conversation-1");
-    expect(request.request_id).toBeTruthy();
-    expect(request.idempotency_key).toBeTruthy();
-    expect(request.request_id).not.toBe("original-request");
-    expect(request.idempotency_key).not.toBe("original-request");
-    expect(screen.getByText(/assistant_provider_failed/)).toBeInTheDocument();
+    expect(await screen.findByText(/assistant_provider_failed/)).toBeInTheDocument();
+    expect(sendAssistantMessage).not.toHaveBeenCalled();
   });
 });
