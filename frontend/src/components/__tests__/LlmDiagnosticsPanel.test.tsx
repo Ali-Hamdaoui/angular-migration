@@ -9,15 +9,24 @@ const invocation = { invocation_id: "llm-1", run_id: "run-1", status: "completed
 
 describe("LlmDiagnosticsPanel", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invokeLlmSmoke).mockReset();
+    vi.mocked(invokeLlmSmoke).mockResolvedValue(invocation);
     vi.mocked(getLlmReadiness).mockResolvedValue({ status: "ready", provider: "azure_openai", deployment_configured: true, model_capability: "responses_json_schema", error_code: null });
     vi.mocked(getLlmActivity).mockResolvedValue({ run_id: "run-1", invocations: [invocation] });
-    vi.mocked(getLlmUsage).mockResolvedValue({ run_id: "run-1", invocation_count: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15, input_cost_usd: 0.00001, output_cost_usd: 0.00002, total_cost_usd: 0.00003, pricing_versions: ["pricing-v1"], records: [] });
+    vi.mocked(getLlmUsage).mockResolvedValue({ run_id: "run-1", invocation_count: 1, llm_calls: 1, retry_calls: 1, usage_recorded_calls: 1, usage_unavailable_calls: 0, input_tokens: 10, output_tokens: 5, total_tokens: 15, input_cost_usd: 0.00001, output_cost_usd: 0.00002, total_cost_usd: 0.00003, pricing_versions: ["pricing-v1"], by_phase: [{ key: "analysis", label: "Analysis", calls: 1, retry_calls: 1, usage_recorded_calls: 1, usage_unavailable_calls: 0, input_tokens: 10, output_tokens: 5, total_tokens: 15 }], by_stage: [{ key: "unassigned", label: "Run-level / unassigned", stage_id: null, calls: 1, retry_calls: 1, usage_recorded_calls: 1, usage_unavailable_calls: 0, input_tokens: 10, output_tokens: 5, total_tokens: 15 }], by_role: [{ key: "phase_proposer", label: "Phase proposer", calls: 1, retry_calls: 1, usage_recorded_calls: 1, usage_unavailable_calls: 0, input_tokens: 10, output_tokens: 5, total_tokens: 15 }], by_purpose: [{ key: "smoke_check", label: "Smoke check", calls: 1, retry_calls: 1, usage_recorded_calls: 1, usage_unavailable_calls: 0, input_tokens: 10, output_tokens: 5, total_tokens: 15 }], records: [] });
   });
 
   it("renders provenance, token cost, and invokes through the typed backend contract", async () => {
     vi.mocked(invokeLlmSmoke).mockResolvedValue(invocation);
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
     expect(await screen.findByText("Estimated total cost")).toBeInTheDocument();
+    expect(screen.getByText("LLM calls")).toBeInTheDocument();
+    expect(screen.getByText("Recorded retries")).toBeInTheDocument();
+    expect(screen.getByText("By phase")).toBeInTheDocument();
+    expect(screen.getByText("By role")).toBeInTheDocument();
+    expect(screen.getByText("By Angular stage")).toBeInTheDocument();
+    expect(screen.getByText("By purpose")).toBeInTheDocument();
     expect(screen.getByText("$0.000030")).toBeInTheDocument();
     expect(screen.getByText("phase_proposer")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Run governed smoke check" }));
@@ -26,10 +35,13 @@ describe("LlmDiagnosticsPanel", () => {
 
   it("shows a stale state recovery message without advancing local workflow state", async () => {
     vi.mocked(getLlmActivity).mockResolvedValue({ run_id: "run-1", invocations: [] });
-    vi.mocked(getLlmUsage).mockResolvedValue({ run_id: "run-1", invocation_count: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, input_cost_usd: 0, output_cost_usd: 0, total_cost_usd: 0, pricing_versions: [], records: [] });
+    vi.mocked(getLlmUsage).mockResolvedValue({ run_id: "run-1", invocation_count: 0, llm_calls: 0, retry_calls: 0, usage_recorded_calls: 0, usage_unavailable_calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, input_cost_usd: 0, output_cost_usd: 0, total_cost_usd: 0, pricing_versions: [], by_phase: [], by_stage: [], by_role: [], by_purpose: [], records: [] });
     vi.mocked(invokeLlmSmoke).mockRejectedValue(new ApiClientError("stale", 409));
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run governed smoke check" }));
+    const button = await screen.findByRole("button", { name: "Run governed smoke check" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(screen.getByText("Total tokens").closest("li")).toHaveTextContent("0");
+    fireEvent.click(button);
     expect(await screen.findByRole("alert")).toHaveTextContent("run changed");
   });
 
@@ -45,7 +57,8 @@ describe("LlmDiagnosticsPanel", () => {
     vi.mocked(getLlmUsage).mockRejectedValue(new ApiClientError("usage failed", 500));
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
     expect(await screen.findByText("phase_proposer")).toBeInTheDocument();
-    expect(screen.getByText("Usage: The backend could not load this diagnostics section.")).toBeInTheDocument();
+    expect(await screen.findByText("Usage: The backend could not load this diagnostics section.")).toBeInTheDocument();
+    expect(screen.getByText("Usage unavailable")).toBeInTheDocument();
   });
 
   it("debounces rapid authoritative state updates into one refresh", async () => {

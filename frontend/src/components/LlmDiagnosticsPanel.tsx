@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError } from "@/api/client";
 import { getLlmActivity, getLlmReadiness, getLlmUsage, invokeLlmSmoke } from "@/api/llm";
-import type { LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmUsageResponse } from "@/types/llm";
+import type { LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmUsageBreakdown, LlmUsageResponse } from "@/types/llm";
 import type { AuthoritativeConnectionStatus } from "@/hooks/useAuthoritativeRun";
 import styles from "./ControlTowerShell.module.css";
 
@@ -26,6 +26,12 @@ function connectionLabel(status: Props["connectionStatus"]) {
   if (status === "recovering") return "Refreshing authoritative LLM state...";
   if (status === "failed") return "Unable to refresh authoritative LLM state";
   return "Connecting to authoritative LLM state...";
+}
+
+function UsageBreakdown({ title, rows, collapsible = false }: { title: string; rows: LlmUsageBreakdown[]; collapsible?: boolean }) {
+  if (!rows.length) return null;
+  const content = <ul className={styles.list}>{rows.map((row) => <li key={row.key}><span>{row.label}</span><strong>{row.total_tokens.toLocaleString()}</strong><span>{row.calls.toLocaleString()} {row.calls === 1 ? "call" : "calls"}</span></li>)}</ul>;
+  return collapsible ? <details className={styles.activityGroup}><summary>{title}</summary>{content}</details> : <div className={styles.activityGroup}><h3>{title}</h3>{content}</div>;
 }
 
 export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, refreshAuthoritativeState, workflowEvents }: Props) {
@@ -60,7 +66,10 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
         : "This diagnostics section could not be loaded.";
       if (index === 0) errors.readiness = message;
       if (index === 1) errors.activity = message;
-      if (index === 2) errors.usage = message;
+      if (index === 2) {
+        errors.usage = message;
+        setUsage(null);
+      }
       if (item.reason instanceof ApiClientError) {
         if (item.reason.status === 409) setStale(true);
         setCorrelationId(correlationFrom(item.reason));
@@ -124,14 +133,23 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
       <div><dt>Prompt</dt><dd>{latest?.prompt_version ?? "unknown"}</dd></div><div><dt>Schema</dt><dd>{latest?.schema_version ?? "unknown"}</dd></div><div><dt>Pricing</dt><dd>{latest?.pricing_version ?? "unknown"}</dd></div>
        <div><dt>Budget</dt><dd>{budgetStatus}</dd></div><div><dt>Provider status</dt><dd>{latest?.provider_http_status ?? "none"}</dd></div><div><dt>Provider code</dt><dd>{latest?.provider_error_code ?? "none"}</dd></div><div><dt>Provider message</dt><dd>{latest?.sanitized_provider_message ?? "none"}</dd></div><div><dt>Provider request</dt><dd>{latest?.provider_request_id ?? "none"}</dd></div><div><dt>Failure stage</dt><dd>{latest?.failure_stage ?? "none"}</dd></div>
     </div>
-    <ul className={styles.metricList} aria-label="LLM usage totals">
-      <li><span>Input tokens</span><strong>{(usage?.input_tokens ?? latest?.input_tokens ?? 0).toLocaleString()}</strong></li>
-      <li><span>Output tokens</span><strong>{(usage?.output_tokens ?? latest?.output_tokens ?? 0).toLocaleString()}</strong></li>
-      <li><span>Total tokens</span><strong>{(usage?.total_tokens ?? latest?.total_tokens ?? 0).toLocaleString()}</strong></li>
-      <li><span>Estimated input cost</span><strong>{formatCost(usage?.input_cost_usd ?? latest?.input_cost_usd ?? 0)}</strong></li>
-      <li><span>Estimated output cost</span><strong>{formatCost(usage?.output_cost_usd ?? latest?.output_cost_usd ?? 0)}</strong></li>
-      <li><span>Estimated total cost</span><strong>{formatCost(usage?.total_cost_usd ?? latest?.total_cost_usd ?? 0)}</strong></li>
-    </ul>
+    {usage ? <>
+      <ul className={styles.metricList} aria-label="LLM usage totals">
+        <li><span>Input tokens</span><strong>{usage.input_tokens.toLocaleString()}</strong></li>
+        <li><span>Output tokens</span><strong>{usage.output_tokens.toLocaleString()}</strong></li>
+        <li><span>Total tokens</span><strong>{usage.total_tokens.toLocaleString()}</strong></li>
+        <li><span>LLM calls</span><strong>{usage.llm_calls.toLocaleString()}</strong></li>
+        <li><span>Recorded retries</span><strong>{usage.retry_calls.toLocaleString()}</strong></li>
+        <li><span>Estimated input cost</span><strong>{formatCost(usage.input_cost_usd)}</strong></li>
+        <li><span>Estimated output cost</span><strong>{formatCost(usage.output_cost_usd)}</strong></li>
+        <li><span>Estimated total cost</span><strong>{formatCost(usage.total_cost_usd)}</strong></li>
+      </ul>
+      {usage.usage_unavailable_calls > 0 ? <p role="alert">Usage unavailable for {usage.usage_unavailable_calls.toLocaleString()} {usage.usage_unavailable_calls === 1 ? "call" : "calls"}.</p> : null}
+      <UsageBreakdown title="By phase" rows={usage.by_phase} />
+      <UsageBreakdown title="By role" rows={usage.by_role} />
+      <UsageBreakdown title="By Angular stage" rows={usage.by_stage} />
+      <UsageBreakdown title="By purpose" rows={usage.by_purpose} collapsible />
+    </> : sectionErrors.usage ? <p role="alert">Usage unavailable</p> : null}
     {latest ? <div className={styles.previewPanel}><p className={styles.note}>Status: {formatLabel(latest.status)} · retries: {latest.retries} · latency: {latest.latency_ms ?? "not available"} ms · state version: {latest.state_version} · event sequence: {latest.event_sequence}</p>{latest.failure_code ? <p role="alert">Failure code: {latest.failure_code}</p> : null}<p className={styles.note}>Correlation ID: <code>{latest.correlation_id ?? "none"}</code></p><p className={styles.note}>Artifacts: {latest.artifact_ids.length ? latest.artifact_ids.map((id) => <a key={id} href={latest.artifact_links?.[id] ?? `/api/v1/artifacts/${id}`} target="_blank" rel="noreferrer">{id}</a>) : "none"}</p></div> : null}
     {correlationId ? <p className={styles.note}>Correlation/invocation ID: <code>{correlationId}</code></p> : null}
     <div className={styles.previewHeader}><span className={styles.note}>Evidence is read from the backend snapshot and durable events.</span><button type="button" onClick={() => void invoke()} disabled={working || loading || readiness?.status !== "ready"}>{running ? "Invoking..." : "Run governed smoke check"}</button></div>

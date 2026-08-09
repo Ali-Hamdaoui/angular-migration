@@ -18,15 +18,14 @@ from app.repositories.models import (
     CommandExecutionModel,
     ExecutionProfileModel,
     G02ApprovalModel,
-    LlmInvocationModel,
     MigrationRunModel,
     MigrationStageModel,
     StageStepModel,
     SourceSnapshotModel,
-    UsageCostRecordModel,
     WorkflowEventModel,
 )
 from app.services.assistant_capabilities import build_next_step_proposals
+from app.services.llm_evidence_application_service import aggregate_run_llm_usage
 
 _PHASES = ["Preflight Snapshot", "Baseline", "Planning", "Transformation", "Validation", "Completion"]
 _PHASE_LABELS = {
@@ -97,8 +96,7 @@ class WorkflowProjectionService:
         steps = list(session.scalars(select(StageStepModel).where(StageStepModel.run_id == run_id).order_by(StageStepModel.id)))
         events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).order_by(WorkflowEventModel.sequence)))
         commands = list(session.scalars(select(CommandExecutionModel).where(CommandExecutionModel.run_id == run_id).order_by(CommandExecutionModel.requested_at, CommandExecutionModel.id)))
-        invocations = list(session.scalars(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id).order_by(LlmInvocationModel.created_at, LlmInvocationModel.id)))
-        usage = {item.invocation_id: item for item in session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == run_id))}
+        llm_usage = aggregate_run_llm_usage(session, run_id)
         artifacts = list(session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id).order_by(ArtifactMetadataModel.created_at, ArtifactMetadataModel.id)))
         snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
         g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
@@ -113,10 +111,8 @@ class WorkflowProjectionService:
         counts: dict[str, int] = {}
         for command in commands:
             counts[command.status] = counts.get(command.status, 0) + 1
-        role_counts: dict[str, int] = {}
-        for invocation in invocations:
-            role_counts[invocation.role] = role_counts.get(invocation.role, 0) + 1
-        records = [usage[item.id] for item in invocations if item.status == "completed" and item.id in usage]
+        role_counts = {item.key: item.calls for item in llm_usage.by_role}
+        usage_available = llm_usage.usage_recorded_calls > 0
         stats = AssistantOperationalStatisticsDto(
             run_start_timestamp=run.created_at,
             recorded_workflow_duration_seconds=duration,
@@ -127,12 +123,12 @@ class WorkflowProjectionService:
             failed_commands=sum(value for key, value in counts.items() if key in {"failed", "timed_out", "rejected", "interrupted"}) if commands else None,
             relevant_command_ids=[item.id for item in commands],
             llm_calls_by_role=role_counts or None,
-            input_tokens=sum(item.input_tokens for item in records) if records else None,
-            output_tokens=sum(item.output_tokens for item in records) if records else None,
-            total_tokens=sum(item.total_tokens for item in records) if records else None,
-            input_cost_usd=sum(item.input_cost_usd for item in records) if records else None,
-            output_cost_usd=sum(item.output_cost_usd for item in records) if records else None,
-            total_cost_usd=sum(item.total_cost_usd for item in records) if records else None,
+            input_tokens=llm_usage.input_tokens if usage_available else None,
+            output_tokens=llm_usage.output_tokens if usage_available else None,
+            total_tokens=llm_usage.total_tokens if usage_available else None,
+            input_cost_usd=llm_usage.input_cost_usd if usage_available else None,
+            output_cost_usd=llm_usage.output_cost_usd if usage_available else None,
+            total_cost_usd=llm_usage.total_cost_usd if usage_available else None,
         )
 
         referenced_artifact_ids = [artifact_id for event in events for artifact_id in (event.payload.get("artifact_ids", []) if isinstance(event.payload.get("artifact_ids", []), list) else [])]
@@ -229,7 +225,7 @@ class WorkflowProjectionService:
             operational_event_sequence=current_event.sequence if current_event else 0,
             phase_duration_seconds=_value(duration, supported=duration is not None),
             stage_duration_seconds=_value(_seconds(current_stage.started_at, current_stage.completed_at) if current_stage else None, supported=current_stage is not None),
-            pricing_availability=_value("available" if records else None, supported=bool(records)),
+            pricing_availability=_value("available" if usage_available else None, supported=usage_available),
             workflow_state_version=run.state_version,
             operational_statistics=stats,
             evidence_references=evidence,

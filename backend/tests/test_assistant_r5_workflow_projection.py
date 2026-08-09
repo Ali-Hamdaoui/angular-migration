@@ -135,6 +135,22 @@ def test_missing_pricing_is_not_presented_as_free(tmp_path):
     assert projection.operational_statistics.total_cost_usd is None
 
 
+def test_projection_uses_usage_aggregate_for_non_completed_invocation(tmp_path):
+    sessions = _scope(tmp_path)
+    now = datetime.now(UTC)
+    with sessions() as session:
+        _run(session, "non-completed-usage-run")
+        session.add(LlmInvocationModel(id="failed-invocation", run_id="non-completed-usage-run", idempotency_key="failed-key", request_checksum="checksum", input_hashes=[], correlation_id="corr", actor="owner", role="assistant", task_type="assistant_response", provider="test", deployment_alias="test", prompt_version="v1", schema_version="v1", pricing_version="pricing", status="failed", state_version=7, event_sequence=1, retries=2, started_at=now, completed_at=now, created_at=now))
+        session.add(UsageCostRecordModel(id="failed-usage", invocation_id="failed-invocation", run_id="non-completed-usage-run", stage_id=None, pricing_version="pricing", input_tokens=9, output_tokens=3, total_tokens=17, input_price_per_million=1.0, output_price_per_million=2.0, input_cost_usd=0.000009, output_cost_usd=0.000006, total_cost_usd=0.000015, created_at=now))
+        session.commit()
+        projection = WorkflowProjectionService().build(session, "non-completed-usage-run")
+    assert projection.operational_statistics.llm_calls_by_role == {"assistant": 1}
+    assert projection.operational_statistics.input_tokens == 9
+    assert projection.operational_statistics.output_tokens == 3
+    assert projection.operational_statistics.total_tokens == 17
+    assert projection.operational_statistics.total_cost_usd == 0.000015
+
+
 def test_latest_command_is_deterministic_and_missing_pricing_is_unavailable(tmp_path):
     sessions = _scope(tmp_path)
     now = datetime.now(UTC)
