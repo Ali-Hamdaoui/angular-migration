@@ -22,13 +22,12 @@ describe("AnalysisReviewPanel", () => {
     render(<AnalysisReviewPanel {...props} />); await screen.findByText("Analysis is queued automatically after parity completion."); fireEvent.click(screen.getByRole("button", { name: "Start analysis" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("analysis state is stale"); expect(generateAnalysis).toHaveBeenCalledWith("run-1", expect.objectContaining({ expected_state_version: 4 }));
   });
-  it("submits only persisted discovery artifacts when the run has many artifacts", async () => {
+  it("does not send frontend-selected prerequisite artifacts when starting queued analysis", async () => {
     vi.mocked(getAnalysis).mockRejectedValue(new ApiClientError("missing", 404)); vi.mocked(generateAnalysis).mockRejectedValue(new ApiClientError("stale", 409));
-    const discovery = Array.from({ length: 7 }, (_, index) => ({ ...props.artifacts[0], artifact_id: `discovery-${index}` }));
-    const events = [...analysisPrerequisites, ...discovery.map((artifact, index) => ({ ...analysisPrerequisites[2], event_id: `scanner-${index}`, event_type: "SCANNER_COMPLETED", sequence: index + 5, payload: { artifact_id: artifact.artifact_id } }))];
-    render(<AnalysisReviewPanel {...props} artifacts={[...Array.from({ length: 40 }, (_, index) => ({ ...props.artifacts[0], artifact_id: `run-${index}` })), ...discovery]} workflowEvents={events} />);
+    render(<AnalysisReviewPanel {...props} />);
     await screen.findByText("Analysis is queued automatically after parity completion."); fireEvent.click(screen.getByRole("button", { name: "Start analysis" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("analysis state is stale"); expect(generateAnalysis).toHaveBeenCalledWith("run-1", expect.objectContaining({ expected_state_version: 4 }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("analysis state is stale");
+    expect(vi.mocked(generateAnalysis).mock.calls.at(-1)?.[1]).not.toHaveProperty("prerequisite_artifacts");
   });
   it("renders backend failure with a correlation ID", async () => {
     vi.mocked(getAnalysis).mockRejectedValue(new ApiClientError("failed", 500, "GET", "/analysis", JSON.stringify({ correlation_id: "corr-4" })));

@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { AssistantPanel } from "@/components/AssistantPanel";
-import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+import { getAssistantMessages } from "@/api/assistant";
 
 vi.mock("@/api/assistant", () => ({ getAssistantMessages: vi.fn(), sendAssistantMessage: vi.fn() }));
 
@@ -10,7 +10,6 @@ const failed = { ...user, message_id: "failed-1", message_order: 2, role: "assis
 describe("mounted R7 retry", () => {
   beforeEach(() => {
     vi.mocked(getAssistantMessages).mockResolvedValue({ run_id: "run-1", conversation_id: "conversation-1", messages: [user, failed] } as never);
-    vi.mocked(sendAssistantMessage).mockResolvedValue({ ...failed, message_id: "success-1", message_order: 4, response_status: "completed", failure_reason: null, error_code: null, retry_of_message_id: "failed-1", request_id: "retry-request" } as never);
     class ReplayEventSource { addEventListener() {} removeEventListener() {} close() {} }
     Object.defineProperty(window, "EventSource", { configurable: true, value: ReplayEventSource });
   });
@@ -18,6 +17,6 @@ describe("mounted R7 retry", () => {
   it("renders a persisted failed response without mounting the app router", async () => {
     render(<AssistantPanel runId="run-1" stateVersion={1} workflowStatus="RUNNING" />);
     expect(await screen.findByText(/assistant_provider_failed/)).toBeInTheDocument();
-    expect(sendAssistantMessage).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });
