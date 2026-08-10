@@ -146,3 +146,50 @@ Duration: 42.01s
 ```
 
 Review-fix self-review found no open concern: stale evidence has no decision or run controls, recovered authority is exact-snapshot only, every decision candidate is validation- and binding-safe, no race can regress a newer terminal/version/history, the route retains exactly one `h1`, embedded reviews render none, dynamic heading styling is preserved, and the diff remains inside the Task 5 allowlist.
+
+## Review fix round 2/5
+
+The two Important findings were reproduced before this correction with the exact focused command: wrong initial route identity left the panel bound to the returned snapshot rather than the requested route identity, and a higher-version decision response outside the pre-transition decision contract was accepted. The recorded RED result was 2 failed and 59 passed.
+
+The correction makes the route-owned `preflightId` an explicit `expectedPreflightId` boundary. A mismatched initial payload now starts unavailable and non-actionable; the event subscription and all evidence reloads use the requested route ID, and only an authoritative package for that ID may recover the panel. Refresh replacement bypasses version ordering only while the initial payload is route-mismatched, so valid requested-route evidence can replace it without allowing arbitrary later regressions.
+
+Decision-response acceptance now requires the exact submitted pre-transition `state_version`, in addition to the existing preflight, gate, checksum, decision, current-pending, unique decision-ID, and complete-package checks. A higher response version is treated as superseded evidence and cannot create a local terminal outcome.
+
+Final verification from the round-2 code:
+
+```text
+npm test -- src/components/gates/__tests__/GateReview.test.tsx src/components/__tests__/G01ReviewPanel.test.tsx
+Test Files: 2 passed (2)
+Tests: 61 passed (61)
+Exit code: 0
+Duration: 12.14s
+
+npm run typecheck
+tsc --noEmit
+Exit code: 0
+
+npm run lint
+eslint .
+Exit code: 0
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+
+npm test
+Test Files: 57 passed (57)
+Tests: 420 passed (420)
+Exit code: 0
+Duration: 44.55s
+```
+
+### Fix-round-2 self-review
+
+- Route identity: the requested route ID, rather than an untrusted initial snapshot ID, owns initial authority, refreshes, and the event callback. A mismatched payload renders zero decision/run controls until an exact route-bound refresh succeeds.
+- Decision contract: only an equal pre-transition response version can be locally reflected; newer, lower, malformed, duplicate, wrongly bound, or stale responses remain non-authoritative.
+- Terminal and run safety: this narrow change leaves the terminal-control removal, exact run authorization, 409 reconciliation, and monotonic refresh behavior intact.
+- Scope: only `page.tsx`, `G01ReviewPanel.tsx`, its focused test, this report, and the ledger checkpoint are packaged. No API, backend, unrelated route, or style changes were introduced.
+
+## Concerns (round 2)
+
+No open concern. Git continues to report expected LF-to-CRLF working-copy notices for the three edited frontend files; `git diff --check` is clean.

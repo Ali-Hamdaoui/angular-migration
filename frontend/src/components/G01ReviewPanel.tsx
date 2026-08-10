@@ -275,17 +275,21 @@ function buildReview(
 
 export function G01ReviewPanel({
   actor = 'control-tower',
+  expectedPreflightId,
   preflight,
 }: {
   actor?: string;
+  expectedPreflightId: string;
   preflight: ProductionPreflight;
 }) {
   const router = useRouter();
-  const expectedPreflightId = preflight.snapshot.preflight_id;
+  const initialFreshness: EvidenceFreshness = preflight.snapshot.preflight_id === expectedPreflightId
+    ? 'current'
+    : 'reload_required';
   const [current, setCurrent] = useState(preflight);
   const currentRef = useRef(preflight);
-  const [freshness, setFreshness] = useState<EvidenceFreshness>('current');
-  const freshnessRef = useRef<EvidenceFreshness>('current');
+  const [freshness, setFreshness] = useState<EvidenceFreshness>(initialFreshness);
+  const freshnessRef = useRef<EvidenceFreshness>(initialFreshness);
   const [comment, setComment] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState<G01Decision | null>(null);
@@ -296,7 +300,8 @@ export function G01ReviewPanel({
   const acceptRefresh = useCallback((incoming: ProductionPreflight): boolean => {
     if (!isValidG01Package(incoming.snapshot)) return false;
     if (incoming.snapshot.preflight_id !== expectedPreflightId) return false;
-    if (!shouldReplace(currentRef.current, incoming)) return false;
+    if (currentRef.current.snapshot.preflight_id === expectedPreflightId
+      && !shouldReplace(currentRef.current, incoming)) return false;
     currentRef.current = incoming;
     setCurrent(incoming);
     freshnessRef.current = 'current';
@@ -308,7 +313,7 @@ export function G01ReviewPanel({
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const accepted = acceptRefresh(await getProductionPreflight(preflight.snapshot.preflight_id));
+      const accepted = acceptRefresh(await getProductionPreflight(expectedPreflightId));
       if (!accepted) {
         setNotice({
           tone: 'error',
@@ -322,9 +327,9 @@ export function G01ReviewPanel({
     } finally {
       setRefreshing(false);
     }
-  }, [acceptRefresh, preflight.snapshot.preflight_id]);
+  }, [acceptRefresh, expectedPreflightId]);
 
-  const stream = usePreflightEvents(preflight.snapshot.preflight_id, refresh);
+  const stream = usePreflightEvents(expectedPreflightId, refresh);
   const { snapshot } = current;
   const status = freshness === 'current' ? reviewStatus(snapshot, now) : 'unknown';
   const canStart = status === 'approved'
@@ -393,6 +398,7 @@ export function G01ReviewPanel({
         && latest.snapshot.input_checksum === submitted.input_checksum
         && latest.snapshot.artifact_set_checksum === submitted.artifact_set_checksum
         && Number.isInteger(result.state_version)
+        && result.state_version === submitted.state_version
         && result.state_version >= latest.snapshot.state_version
         && latestStatus === 'pending'
         && !latest.snapshot.decision_history.some((entry) => entry.decision_id === result.decision_id)

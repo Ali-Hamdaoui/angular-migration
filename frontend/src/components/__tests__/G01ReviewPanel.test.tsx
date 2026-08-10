@@ -1,18 +1,21 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { ApiClientError } from '@/api/client';
 import { decideG01, getProductionPreflight } from '@/api/preflights';
 import { createAuthoritativeRun, getAuthoritativeRunState, startAuthoritativeRun } from '@/api/runs';
-import { G01ReviewPanel } from '@/components/G01ReviewPanel';
+import { G01ReviewPanel as G01ReviewPanelView } from '@/components/G01ReviewPanel';
 import type { G01DecisionResponse, ProductionPreflight } from '@/types/preflight';
 
 const push = vi.fn();
 let eventRefresh: (() => void) | null = null;
+let subscribedPreflightId: string | null = null;
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('@/api/preflights', () => ({ decideG01: vi.fn(), getProductionPreflight: vi.fn() }));
 vi.mock('@/api/runs', () => ({ createAuthoritativeRun: vi.fn(), getAuthoritativeRunState: vi.fn(), startAuthoritativeRun: vi.fn() }));
 vi.mock('@/hooks/usePreflightEvents', () => ({
-  usePreflightEvents: (_preflightId: string, onEvent: () => void) => {
+  usePreflightEvents: (preflightId: string, onEvent: () => void) => {
+    subscribedPreflightId = preflightId;
     eventRefresh = onEvent;
     return { status: 'open', lastEventId: 7 };
   },
@@ -99,6 +102,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type TestPanelProps = Omit<ComponentProps<typeof G01ReviewPanelView>, 'expectedPreflightId'> & {
+  expectedPreflightId?: string;
+};
+
+function G01ReviewPanel({ expectedPreflightId = 'preflight-1', ...props }: TestPanelProps) {
+  return <G01ReviewPanelView expectedPreflightId={expectedPreflightId} {...props} />;
+}
+
 function expectNoDecisionButtons() {
   expect(screen.queryByRole('button', { name: 'Approve G01' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Request modification' })).not.toBeInTheDocument();
@@ -119,6 +130,7 @@ describe('G01ReviewPanel', () => {
     window.localStorage.clear();
     push.mockReset();
     eventRefresh = null;
+    subscribedPreflightId = null;
   });
 
   afterEach(() => {
@@ -385,6 +397,29 @@ describe('G01ReviewPanel', () => {
     expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
   });
 
+  it('binds initial authority, refresh, and events to the requested route preflight', async () => {
+    const routeIdentityProps = { expectedPreflightId: 'preflight-A' };
+    vi.mocked(getProductionPreflight).mockResolvedValue(fixture({
+      preflight_id: 'preflight-A',
+      state_version: 4,
+      warnings: ['RECOVERED_ROUTE_A'],
+    }));
+    render(<G01ReviewPanel {...routeIdentityProps} preflight={fixture({
+      preflight_id: 'preflight-B',
+      state_version: 20,
+    })} />);
+
+    expect(screen.getByText('Unknown status')).toBeInTheDocument();
+    expectNoDecisionButtons();
+    expectNoRunButton();
+    expect(subscribedPreflightId).toBe('preflight-A');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+    expect(await screen.findByText('RECOVERED_ROUTE_A')).toBeInTheDocument();
+    expect(getProductionPreflight).toHaveBeenCalledWith('preflight-A');
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+  });
+
   it('ignores a successful response for a decision other than the submitted decision', async () => {
     vi.mocked(decideG01).mockResolvedValue(decision({ decision: 'rejected' }));
     render(<G01ReviewPanel preflight={fixture()} />);
@@ -397,6 +432,16 @@ describe('G01ReviewPanel', () => {
 
   it('rejects a decision response that would construct a malformed evidence package', async () => {
     vi.mocked(decideG01).mockResolvedValue(decision({ actor: '', decided_at: 'invalid-time' }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+
+    expect(await screen.findByText('A newer G01 state superseded this decision response.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
+  });
+
+  it('rejects a decision response newer than the submitted pre-transition version', async () => {
+    vi.mocked(decideG01).mockResolvedValue(decision({ state_version: 4 }));
     render(<G01ReviewPanel preflight={fixture()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
 
@@ -498,7 +543,7 @@ describe('G01ReviewPanel', () => {
   it('does not let an older refresh regress a newer terminal decision to pending', async () => {
     const refreshResult = deferred<ProductionPreflight>();
     vi.mocked(getProductionPreflight).mockReturnValue(refreshResult.promise);
-    vi.mocked(decideG01).mockResolvedValue(decision({ state_version: 5 }));
+    vi.mocked(decideG01).mockResolvedValue(decision({ state_version: 3 }));
     render(<G01ReviewPanel preflight={fixture()} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
@@ -506,7 +551,7 @@ describe('G01ReviewPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
     expect(await screen.findByRole('heading', { name: 'Approved' })).toBeInTheDocument();
 
-    refreshResult.resolve(fixture({ state_version: 4, approval_status: 'pending' }));
+    refreshResult.resolve(fixture({ state_version: 2, approval_status: 'pending' }));
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Approved' })).toBeInTheDocument());
     expectNoDecisionButtons();
