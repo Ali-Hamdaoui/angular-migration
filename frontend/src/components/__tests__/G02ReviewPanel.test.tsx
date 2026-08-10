@@ -39,6 +39,22 @@ describe("G02ReviewPanel", () => {
     expect(await screen.findByText(/Baseline input boundary/)).toBeInTheDocument();
   });
 
+  it("keeps an embedded successful decision closed while the authoritative binding catches up", async () => {
+    const approvedReview = { ...(review as Record<string, unknown>), status: "approved", decision: "approved", baseline_input_boundary: "snapshot-1", event_sequence: 7 } as unknown as G02ReviewResponse;
+    vi.mocked(decideG02).mockResolvedValue(approvedReview);
+    const view = render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+
+    expect(await screen.findByText(/Baseline input boundary/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    view.rerender(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
+    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    view.rerender(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "loading" }} />);
+    expect(screen.getByText("Loading G02 review package")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+  });
+
   it("fails closed on a stale G02 decision and preserves the reviewer draft", async () => {
     vi.mocked(getG02Review).mockResolvedValue(review);
     vi.mocked(decideG02).mockRejectedValue(new ApiClientError("stale", 409));

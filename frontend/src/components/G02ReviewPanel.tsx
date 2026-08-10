@@ -19,11 +19,16 @@ function latestG02Event(events: WorkflowEventDto[]) {
   return [...events].reverse().find((event) => ["G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE", "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED"].includes(event.event_type));
 }
 
+function reviewBinding(review: G02ReviewResponse): string {
+  return `${review.run_id}|${review.package.package_checksum}|${review.event_sequence}|${review.state_version}`;
+}
+
 export function G02ReviewPanel({ runId, initialState, authoritativeReview, headingLevel = 2 }: { runId: string; initialState: AuthoritativeRunStateDto; authoritativeReview?: AuthoritativePackageLoad<G02ReviewResponse>; headingLevel?: PanelHeadingLevel }) {
   const Heading = headingTag(headingLevel);
   const Subheading = headingTag(headingLevel, 1);
   const externallyLoaded = authoritativeReview !== undefined;
   const [localReview, setReview] = useState<G02ReviewResponse | null>(null);
+  const [decisionOverride, setDecisionOverride] = useState<{ binding: string; value: G02ReviewResponse } | null>(null);
   const [loading, setLoading] = useState(!externallyLoaded);
   const [submitting, setSubmitting] = useState(false);
   const [selectedDecision, setSelectedDecision] = useState<G02Decision>("approved");
@@ -42,8 +47,10 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
 
   useEffect(() => { if (!externallyLoaded) refresh(); }, [event?.sequence, externallyLoaded, refresh]);
 
+  const externalReview = externallyLoaded && authoritativeReview.status === "ready" ? authoritativeReview.value : null;
+  const externalBinding = externalReview ? reviewBinding(externalReview) : null;
   const review = externallyLoaded
-    ? authoritativeReview.status === "ready" ? authoritativeReview.value : null
+    ? decisionOverride?.binding === externalBinding ? decisionOverride.value : externalReview
     : localReview;
   const reviewLoading = externallyLoaded ? authoritativeReview.status === "loading" : loading;
   const reviewMissing = externallyLoaded ? false : missing;
@@ -65,7 +72,9 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
         idempotency_key: `g02-${runId}-${selectedDecision}-${review?.package.package_checksum ?? "new"}`,
         actor: "control-tower", decision: selectedDecision, comment: comment.trim() || null, gate_id: "G02",
       });
-      setReview(result); setMissing(false);
+      if (externallyLoaded && externalBinding) setDecisionOverride({ binding: externalBinding, value: result });
+      else setReview(result);
+      setMissing(false);
     } catch (reason: unknown) {
       setError(reason instanceof ApiClientError && reason.status === 409 ? "G02 is stale. Refresh the authoritative run state before deciding." : "The G02 decision could not be recorded.");
     } finally { setSubmitting(false); }

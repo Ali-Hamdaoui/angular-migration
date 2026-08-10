@@ -206,3 +206,45 @@ Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors
 ```
 
 The narrow fix diff was self-reviewed for explicit load-state exhaustiveness, same-run/package identity, immediate stale-response omission, request cancellation, GET-only recovery, suppression of package-creation/qualification mutations, successful Review/action recovery, unchanged package request deduplication, hook ownership, payload authority, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 2 is implemented pending re-review and is not marked complete.
+
+## Independent review fix round 3
+
+Task 7 review fix round 3 was implemented from clean reviewed HEAD `1223cec549da968b28a609b1531891a73fea256b`. The verified embedded G02 decision-refresh race is addressed and the task remains pending independent re-review.
+
+An embedded G02 panel now consumes a successful `decideG02` response immediately instead of discarding it behind the still-pending dashboard prop. The response override is valid only for the exact source review binding: run ID, package checksum, event sequence, and state version. Re-renders with the unchanged authoritative pending review therefore keep terminal controls closed, while loading or any changed authoritative binding immediately ignores the override and cannot disclose stale review data. The standalone panel, exact decision payload, checksum/version binding, reviewer draft, and 409 fail-closed behavior are unchanged.
+
+### Strict RED/GREEN evidence
+
+```text
+npm test -- src/components/__tests__/G02ReviewPanel.test.tsx -t "keeps an embedded successful decision closed"
+RED: Test Files 1 failed (1); Tests 1 failed, 6 skipped
+GREEN: Test Files 1 passed (1); Tests 1 passed, 6 skipped
+```
+
+### Final verification
+
+```text
+npm test -- src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx src/components/__tests__/G02ReviewPanel.test.tsx src/components/__tests__/AnalysisReviewPanel.test.tsx src/components/__tests__/FeasibilityPanel.test.tsx src/components/__tests__/MigrationPlanPanel.test.tsx src/components/__tests__/PlanReviewPanel.test.tsx
+Test Files: 6 passed (6)
+Tests: 70 passed (70)
+
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/presentation/__tests__/currentAction.test.ts src/components/__tests__/SourceSnapshotPanel.test.tsx src/components/__tests__/BaselineParityPanel.test.tsx
+Test Files: 4 passed (4)
+Tests: 63 passed (63)
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+npm test
+Test Files: 58 passed (58)
+Tests: 479 passed (479)
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+```
+
+The narrow fix diff was self-reviewed for exact override identity, immediate post-decision control closure, stale-data omission across binding changes, unchanged G02 payload and 409 behavior, standalone compatibility, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 3 is implemented pending re-review and is not marked complete.
