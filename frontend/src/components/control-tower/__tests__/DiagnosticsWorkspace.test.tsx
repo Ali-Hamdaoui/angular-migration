@@ -101,6 +101,13 @@ describe("DiagnosticsWorkspace", () => {
     expect(headings.indexOf("Blocker")).toBeLessThan(headings.indexOf("Summary"));
   });
 
+  it("ignores stale transformation errors when the projection is completed", () => {
+    renderWorkspace({
+      transformation: projection({ status: "completed", stage_status: "completed", active_error: { code: "STALE", message: "Old error" } }),
+    });
+    expect(screen.getByRole("region", { name: "Current blocker" })).toHaveTextContent("Not available");
+  });
+
   it("humanizes workflow events while exposing raw identifiers in technical details", () => {
     renderWorkspace();
     const events = screen.getByRole("region", { name: "Authoritative workflow events" });

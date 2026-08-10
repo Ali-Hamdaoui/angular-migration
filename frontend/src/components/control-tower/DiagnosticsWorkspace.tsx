@@ -32,10 +32,10 @@ const CONNECTION_LABELS: Record<AuthoritativeConnectionStatus, string> = {
 };
 
 function blocker(run: AuthoritativeRunStateDto, transformation: TransformationProjection | null): { title: string; summary: string } | null {
-  const error = transformation?.active_error;
-  if (error) return { title: presentStatus(error.code).label, summary: error.message };
   if (transformation && !["blocked", "failed"].includes(transformation.status.toLowerCase())) return null;
   if (!transformation && !["BLOCKED", "FAILED"].includes(run.status)) return null;
+  const error = transformation?.active_error;
+  if (error) return { title: presentStatus(error.code).label, summary: error.message };
   const failed = [...run.workflow_events].reverse().find((event) => /FAIL|BLOCKED|REJECTED/.test(event.event_type));
   if (!failed) return null;
   return {
