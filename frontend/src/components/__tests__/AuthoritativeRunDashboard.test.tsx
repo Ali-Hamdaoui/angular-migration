@@ -4,6 +4,7 @@ import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboar
 
 let planReviewShouldThrow = false;
 let baselineInstallationShouldThrow = false;
+let migrationTimingShouldThrow = false;
 
 vi.mock("@/hooks/useAuthoritativeRun", () => ({
   useAuthoritativeRun: (_runId: string, initialState: AuthoritativeRunStateDto) => ({
@@ -26,6 +27,10 @@ vi.mock("@/components/BaselineInstallationPanel", () => ({ BaselineInstallationP
 } }));
 vi.mock("@/components/TransformationPanel", () => ({ TransformationPanel: ({ onActionRequiredChange }: { onActionRequiredChange?: (required: boolean) => void }) => <div aria-label="mock-transformation-panel">transformation-panel<button type="button" onClick={() => onActionRequiredChange?.(true)}>Require Transformer action</button></div> }));
 vi.mock("@/components/AssistantPanel", () => ({ AssistantDock: () => <button type="button">Open Assistant</button> }));
+vi.mock("@/components/MigrationTimingPanel", () => ({ MigrationTimingPanel: () => {
+  if (migrationTimingShouldThrow) throw new Error("timing projection unavailable");
+  return <h2>timing-panel</h2>;
+} }));
 
 const initialState: AuthoritativeRunStateDto = {
   run_id: "run-authoritative-1",
@@ -65,6 +70,23 @@ describe("AuthoritativeRunDashboard", () => {
   beforeEach(() => {
     planReviewShouldThrow = false;
     baselineInstallationShouldThrow = false;
+    migrationTimingShouldThrow = false;
+  });
+
+  it("mounts the migration timing panel in Overview", () => {
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+
+    expect(screen.getByText("timing-panel")).toBeInTheDocument();
+  });
+
+  it("keeps Overview available when migration timing projection fails", () => {
+    migrationTimingShouldThrow = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Migration timing is temporarily unavailable");
+    consoleError.mockRestore();
   });
 
   it("always exposes and mounts the dedicated Transformation destination", () => {

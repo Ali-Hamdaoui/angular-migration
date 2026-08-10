@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -1150,6 +1150,45 @@ class AuthoritativeRunMutationResultDto(ContractModel):
     graph_thread_id: str
     idempotent_replay: bool = False
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
+
+
+class TimingActivityDto(ContractModel):
+    duration_seconds: float | None = Field(default=None, ge=0)
+    measured_count: int = Field(ge=0)
+    unmeasured_count: int = Field(ge=0)
+    active_count: int = Field(default=0, ge=0)
+    measurement_status: Literal["complete", "partial", "unavailable"]
+
+
+class TimingSpanDto(ContractModel):
+    key: str
+    label: str
+    status: Literal["not_started", "running", "completed", "unavailable"]
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+
+
+class RunTimingActivityDto(ContractModel):
+    llm: TimingActivityDto
+    commands: TimingActivityDto
+    human_approval_wait: TimingActivityDto
+    repair: TimingActivityDto
+    validation: TimingActivityDto
+    sealing: TimingActivityDto
+
+
+class RunTimingDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    as_of: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    total_duration_seconds: float | None = Field(default=None, ge=0)
+    total_measurement_status: Literal["running", "complete", "unavailable"]
+    activity: RunTimingActivityDto
+    phases: list[TimingSpanDto] = Field(default_factory=list)
+    stages: list[TimingSpanDto] = Field(default_factory=list)
 
 
 class ProjectionValue(ContractModel):
