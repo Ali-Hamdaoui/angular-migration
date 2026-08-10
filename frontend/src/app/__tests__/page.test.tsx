@@ -59,5 +59,6 @@ describe("HomePage authoritative run restoration", () => {
     render(<HomePage />);
     expect(await screen.findByRole("alert")).toHaveTextContent("active run is preserved");
     expect(window.localStorage.getItem("amfa.activeRunId")).toBe("run-offline"); expect(screen.getByRole("button", { name: "Retry restoration" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Resume active migration" })).toHaveAttribute("href", "/?run_id=run-offline");
   });
 });

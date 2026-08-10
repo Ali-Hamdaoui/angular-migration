@@ -67,3 +67,24 @@ Exit code: 0
 ```
 
 The full frontend suite remains intentionally unrun.
+
+## Review fix round 2
+
+Route failures preserve the requested run identity with a dedicated `Retry this migration` link alongside `Return to migrations`. Home restoration derives the candidate from the query string before local storage, then local storage, preserves it during backend-unavailable recovery, and only renders Resume active migration with the encoded candidate. Empty landing state keeps Resume hidden.
+
+```text
+npm test -- --run src/app/__tests__/page.test.tsx src/app/__tests__/migrationRunPage.test.tsx src/components/__tests__/ControlTowerShell.test.tsx
+Test Files: 3 passed
+Tests: 12 passed
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+The full frontend suite remains intentionally unrun.

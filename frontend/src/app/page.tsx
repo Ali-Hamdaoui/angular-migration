@@ -56,6 +56,7 @@ export default function HomePage() {
       setRestoration("prepare");
       return;
     }
+    setResumeRunId(candidate);
     setRestoration("restoring");
     getAuthoritativeRunState(candidate).then((state) => {
       try { window.localStorage.setItem(ACTIVE_RUN_STORAGE_KEY, candidate); } catch { /* storage is optional */ }
@@ -79,7 +80,7 @@ export default function HomePage() {
 
   if (restoration === "restoring") return <main role="status" aria-live="polite"><p>Restoring authoritative migration...</p></main>;
   if (restoration === "loaded" && run) return <AuthoritativeRunDashboard runId={run.run_id} initialState={run} />;
-  if (restoration === "unavailable") return <main role="alert"><p>The authoritative migration could not be reached. Your active run is preserved.</p><button type="button" onClick={restore}>Retry restoration</button></main>;
+  if (restoration === "unavailable") return <main role="alert"><p>The authoritative migration could not be reached. Your active run is preserved.</p><div className="landingActions"><button type="button" onClick={restore}>Retry restoration</button>{resumeRunId ? <Link className="secondaryButton" href={`/?run_id=${encodeURIComponent(resumeRunId)}`}>Resume active migration</Link> : null}</div></main>;
   if (restoration === "not-found") return preparePage("The requested migration run was not found. You can prepare a new migration.", resumeRunId);
   return preparePage(undefined, resumeRunId);
 }

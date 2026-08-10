@@ -16,7 +16,7 @@ export default async function MigrationRunPage({ params }: { params: Promise<{ r
         <RunDashboard runId={runId} initialRun={mockRun} mode="mock" />
       </div>;
     } catch {
-      return <main role="alert" className="routeError"><p>Demo migration data is unavailable. Try again or return to migrations.</p><a href="/">Return to migrations</a></main>;
+      return <main role="alert" className="routeError"><p>Demo migration data is unavailable. Try again or return to migrations.</p><div><a href={`/?run_id=${encodeURIComponent(runId)}`}>Retry this migration</a><a href="/">Return to migrations</a></div></main>;
     }
   }
   try {
@@ -26,6 +26,6 @@ export default async function MigrationRunPage({ params }: { params: Promise<{ r
     const message = error instanceof ApiClientError && error.status === 404
       ? "This migration run was not found. Return to migrations and choose another run."
       : "Authoritative run state could not be loaded. Retry from migrations.";
-    return <main role="alert" className="routeError"><p>{message}</p><a href="/">Return to migrations</a></main>;
+    return <main role="alert" className="routeError"><p>{message}</p><div><a href={`/?run_id=${encodeURIComponent(runId)}`}>Retry this migration</a><a href="/">Return to migrations</a></div></main>;
   }
 }

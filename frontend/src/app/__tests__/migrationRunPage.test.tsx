@@ -35,6 +35,15 @@ describe("mock migration route", () => {
     vi.mocked(getMockMigrationState).mockRejectedValueOnce(new Error("offline"));
     render(await MigrationRunPage({ params: Promise.resolve({ runId: "mock-offline" }) }));
     expect(screen.getByRole("alert")).toHaveTextContent(/demo migration data is unavailable/i);
+    expect(screen.getByRole("link", { name: "Retry this migration" })).toHaveAttribute("href", "/?run_id=mock-offline");
+    expect(screen.getByRole("link", { name: "Return to migrations" })).toHaveAttribute("href", "/");
+  });
+
+  it("keeps an authoritative retry bound to the requested run", async () => {
+    const { getAuthoritativeRunState } = await import("@/api/runs");
+    vi.mocked(getAuthoritativeRunState).mockRejectedValueOnce(new Error("offline"));
+    render(await MigrationRunPage({ params: Promise.resolve({ runId: "run-offline" }) }));
+    expect(screen.getByRole("link", { name: "Retry this migration" })).toHaveAttribute("href", "/?run_id=run-offline");
     expect(screen.getByRole("link", { name: "Return to migrations" })).toHaveAttribute("href", "/");
   });
 });
