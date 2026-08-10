@@ -33,6 +33,7 @@ export interface JourneyMilestone {
 }
 
 export type TransformationLoadStatus = "disabled" | "loading" | "ready" | "empty" | "failed";
+type AuthoritativeRouteStatus = StageStatus | "sealed";
 
 const JOURNEY_LABELS: Record<JourneyKey, string> = {
   setup: "Setup",
@@ -68,11 +69,12 @@ const ROUTE_STATUS_STATES = {
   PASSED: "complete",
   passed_with_known_baseline_failures: "complete",
   passed_with_manual_items: "complete",
+  sealed: "complete",
   FAILED: "blocked",
   ROLLED_BACK: "blocked",
   CANCELLED: "blocked",
   DIAGNOSTIC_HOLD: "blocked",
-} satisfies Record<StageStatus, JourneyState>;
+} satisfies Record<AuthoritativeRouteStatus, JourneyState>;
 
 function milestone(key: JourneyKey, state: JourneyState = "not-reached"): JourneyMilestone {
   return { key, label: JOURNEY_LABELS[key], state };
@@ -120,7 +122,7 @@ function routeKey(source: string | null, target: string | null): JourneyKey | nu
 
 function routeState(rawStatus: string): JourneyState {
   return Object.prototype.hasOwnProperty.call(ROUTE_STATUS_STATES, rawStatus)
-    ? ROUTE_STATUS_STATES[rawStatus as StageStatus]
+    ? ROUTE_STATUS_STATES[rawStatus as AuthoritativeRouteStatus]
     : "unavailable";
 }
 

@@ -208,6 +208,7 @@ describe("buildJourney", () => {
     ["PASSED", "complete"],
     ["passed_with_known_baseline_failures", "complete"],
     ["passed_with_manual_items", "complete"],
+    ["sealed", "complete"],
     ["FAILED", "blocked"],
     ["ROLLED_BACK", "blocked"],
     ["CANCELLED", "blocked"],
@@ -224,6 +225,20 @@ describe("buildJourney", () => {
     );
 
     expect(stateOf(journey, "18-to-19").state).toBe(expectedState);
+  });
+
+  it("keeps a sealed lookalike unavailable", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        route_stages: [
+          { stage_id: "stage-sealed-candidate", source_version: "18", target_version: "19", status: "sealed_candidate" },
+        ],
+      }),
+      "ready",
+    );
+
+    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
   });
 
   it("marks all route milestones unavailable when a ready projection has no route entries", () => {
