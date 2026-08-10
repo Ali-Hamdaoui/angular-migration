@@ -46,13 +46,16 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   const [stale, setStale] = useState(false);
 
   const refreshing = useRef(false);
+  const refreshGeneration = useRef(0);
   const refresh = useCallback(async (force = false) => {
     if (refreshing.current && !force) return;
+    const generation = ++refreshGeneration.current;
     refreshing.current = true;
     setLoading(true);
     setError(null);
     setSectionErrors({ readiness: null, activity: null, usage: null });
     const result = await Promise.allSettled([getLlmReadiness(), getLlmActivity(runId), getLlmUsage(runId)]);
+    if (generation !== refreshGeneration.current) return;
     const errors = { readiness: null as string | null, activity: null as string | null, usage: null as string | null };
     result.forEach((item, index) => {
       if (item.status === "fulfilled") {
@@ -82,8 +85,15 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   }, [runId]);
 
   useEffect(() => {
+    setUsage(null);
+    refreshGeneration.current += 1;
+    refreshing.current = false;
     const timer = window.setTimeout(() => { void refresh(); }, 50);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      refreshGeneration.current += 1;
+      refreshing.current = false;
+    };
   }, [refresh, stateVersion]);
 
   const latest: LlmInvocationResponse | null = activity?.invocations.at(-1) ?? null;

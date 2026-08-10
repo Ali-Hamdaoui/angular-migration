@@ -2,10 +2,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ApiClientError } from "@/api/client";
 import { LlmDiagnosticsPanel } from "@/components/LlmDiagnosticsPanel";
 import { getLlmActivity, getLlmReadiness, getLlmUsage, invokeLlmSmoke } from "@/api/llm";
+import type { LlmUsageResponse } from "@/types/llm";
 
 vi.mock("@/api/llm", () => ({ getLlmActivity: vi.fn(), getLlmReadiness: vi.fn(), getLlmUsage: vi.fn(), invokeLlmSmoke: vi.fn() }));
 
 const invocation = { invocation_id: "llm-1", run_id: "run-1", status: "completed" as const, role: "phase_proposer", task_type: "smoke_check", provider: "azure_openai", deployment_alias: "azure-openai", artifact_ids: ["artifact-usage"], artifact_checksums: { "artifact-usage": "sha256:usage" }, input_tokens: 10, output_tokens: 5, total_tokens: 15, input_cost_usd: 0.00001, output_cost_usd: 0.00002, total_cost_usd: 0.00003, retries: 1, latency_ms: 250, failure_code: null, state_version: 3, event_sequence: 4, idempotent_replay: false };
+
+function usageResponse(runId: string, totalTokens: number): LlmUsageResponse {
+  return { run_id: runId, invocation_count: 1, llm_calls: 1, retry_calls: 0, usage_recorded_calls: 1, usage_unavailable_calls: 0, input_tokens: totalTokens, output_tokens: 0, total_tokens: totalTokens, input_cost_usd: 0, output_cost_usd: 0, total_cost_usd: 0, pricing_versions: ["pricing-v1"], by_phase: [], by_stage: [], by_role: [], by_purpose: [], records: [] };
+}
 
 describe("LlmDiagnosticsPanel", () => {
   beforeEach(() => {
@@ -59,6 +64,22 @@ describe("LlmDiagnosticsPanel", () => {
     expect(await screen.findByText("phase_proposer")).toBeInTheDocument();
     expect(await screen.findByText("Usage: The backend could not load this diagnostics section.")).toBeInTheDocument();
     expect(screen.getByText("Usage unavailable")).toBeInTheDocument();
+  });
+
+  it("refreshes the new run and ignores the previous run response", async () => {
+    let resolveFirst: ((response: LlmUsageResponse) => void) | undefined;
+    const firstUsage = new Promise<LlmUsageResponse>((resolve) => { resolveFirst = resolve; });
+    vi.mocked(getLlmActivity).mockImplementation(async (requestedRunId) => ({ run_id: requestedRunId, invocations: requestedRunId === "run-1" ? [invocation] : [] }));
+    vi.mocked(getLlmUsage).mockImplementation((requestedRunId) => requestedRunId === "run-1" ? firstUsage : Promise.resolve(usageResponse("run-2", 99)));
+    const { rerender } = render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
+    await waitFor(() => expect(getLlmUsage).toHaveBeenCalledWith("run-1"));
+
+    rerender(<LlmDiagnosticsPanel runId="run-2" stateVersion={2} />);
+
+    await waitFor(() => expect(getLlmUsage).toHaveBeenCalledWith("run-2"));
+    await waitFor(() => expect(screen.getByText("Total tokens").closest("li")).toHaveTextContent("99"));
+    resolveFirst?.(usageResponse("run-1", 1));
+    await waitFor(() => expect(screen.getByText("Total tokens").closest("li")).toHaveTextContent("99"));
   });
 
   it("debounces rapid authoritative state updates into one refresh", async () => {
