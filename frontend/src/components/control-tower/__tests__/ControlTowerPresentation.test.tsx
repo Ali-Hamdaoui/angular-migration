@@ -339,7 +339,8 @@ describe("control tower presentation state", () => {
     const events = [event("RUN_CREATED", 1), event("SNAPSHOT_CREATED", 2), event("RUN_FAILED", 3)];
     render(<WorkflowEventsSection events={events} />);
     fireEvent.change(screen.getByRole("textbox", { name: "Search events" }), { target: { value: "snapshot" } });
-    expect(screen.getAllByText("SNAPSHOT_CREATED")).toHaveLength(2);
+    expect(screen.getByText("Snapshot created", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("SNAPSHOT_CREATED", { selector: "code" })).not.toBeVisible();
     expect(screen.queryByRole("listitem", { name: /RUN_CREATED/ })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "Search events" }), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Newest first" }));

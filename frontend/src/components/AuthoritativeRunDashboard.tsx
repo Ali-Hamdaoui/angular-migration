@@ -26,7 +26,6 @@ import { PlanReviewPanel } from "./PlanReviewPanel";
 import { TransformationPanel } from "./TransformationPanel";
 import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
 import { AssistantDock } from "./AssistantPanel";
-import { LlmDiagnosticsPanel } from "./LlmDiagnosticsPanel";
 import { ControlTowerHeader } from "./control-tower/ControlTowerHeader";
 import { ControlTowerSidebar, type ControlTowerSection } from "./control-tower/ControlTowerSidebar";
 import { OperatorOverview } from "./control-tower/OperatorOverview";
@@ -34,7 +33,7 @@ import { PipelineSection } from "./control-tower/PipelineSection";
 import type { PipelineStageContent } from "./control-tower/PipelineStageDetail";
 import type { AuthoritativePackageLoad } from "./control-tower/authoritativePackageLoad";
 import { TechnicalDetails } from "./control-tower/TechnicalDetails";
-import { WorkflowEventsSection } from "./control-tower/WorkflowEventsSection";
+import { DiagnosticsWorkspace } from "./control-tower/DiagnosticsWorkspace";
 import { EvidenceWorkspace } from "./control-tower/EvidenceWorkspace";
 import styles from "./ControlTowerShell.module.css";
 import "./control-tower/ControlTowerLayout.module.css";
@@ -491,23 +490,17 @@ export function AuthoritativeRunDashboard({
 
           {activeSection === "diagnostics" ? (
             <section className="controlTowerSection" aria-labelledby="diagnostics-navigation-item">
-              <div className="controlTowerSectionIntro">
-                <div><h2>Diagnostics</h2><p>Connection, blockers, events, commands, and provider evidence.</p></div>
-              </div>
-              <section className={styles.panel} aria-label="Connection diagnostics">
-                <h3>Authoritative connection</h3>
-                <p className={styles.note}>{CONNECTION_LABELS[status]}</p>
-                {error ? <p role="alert">{error}</p> : null}
-                {transformation.loadError ? <p role="alert">Transformation state could not be loaded.</p> : null}
-                {transformation.refreshError ? <p role="status">{transformation.refreshError}</p> : null}
-              </section>
-              <WorkflowEventsSection events={state.workflow_events} />
-              <LlmDiagnosticsPanel
+              <DiagnosticsWorkspace
+                run={state}
                 runId={runId}
-                stateVersion={state.state_version}
                 connectionStatus={status}
+                connectionError={error ?? transformation.refreshError}
+                transformation={transformation.projection}
+                transformationStatus={transformation.status}
+                executions={transformation.executions}
+                executionStatus={transformation.executionStatus}
+                refreshTransformation={transformation.refresh}
                 refreshAuthoritativeState={refresh}
-                workflowEvents={state.workflow_events}
               />
               <TechnicalDetails title="Run controls">
                 <AuthoritativeRunCancellationPanel runId={runId} state={state} refresh={refresh} />

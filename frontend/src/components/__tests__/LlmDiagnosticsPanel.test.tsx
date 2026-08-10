@@ -67,4 +67,12 @@ describe("LlmDiagnosticsPanel", () => {
       expect(getLlmUsage).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("leads with the invocation outcome and keeps provider metadata behind Response details", async () => {
+    render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
+    expect(await screen.findByRole("heading", { name: "Outcome: completed" })).toBeInTheDocument();
+    expect(screen.getByText("azure_openai")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Response details"));
+    expect(screen.getByText("azure_openai")).toBeVisible();
+  });
 });
