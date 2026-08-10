@@ -174,7 +174,7 @@ function outcomeFor(snapshot: Snapshot, status: GateReviewStatus): GateReviewMod
     case 'approved':
       return {
         label: snapshot.approval_status === 'approved_with_comment' ? 'Approved with comment' : 'Approved',
-        consequence: 'G01 approval authorizes creation and start of the authoritative run.',
+        consequence: 'Production readiness approval authorizes creation and start of the authoritative run.',
         comment,
       };
     case 'rejected':
@@ -255,13 +255,13 @@ function buildReview(
     model: {
       gateId: 'G01',
       status,
-      title: 'G01 production readiness',
+      title: 'Production readiness',
       purpose: definition.purpose,
       consequence: 'Approval permits a separate action that creates a backend-owned run while the source remains read-only.',
       requiredDecision: status === 'pending'
         ? definition.decision
         : status === 'unknown'
-          ? 'Decision authority is unavailable until a complete, current G01 evidence package is loaded.'
+          ? 'Decision authority is unavailable until a complete, current production-readiness evidence package is loaded.'
           : 'The backend has recorded a terminal outcome; no further reviewer decision is permitted.',
       verified,
       blockers: isStringArray(snapshot.blockers) ? snapshot.blockers : [],
@@ -317,13 +317,13 @@ export function G01ReviewPanel({
       if (!accepted) {
         setNotice({
           tone: 'error',
-          title: 'Refreshed G01 evidence was not authoritative.',
+          title: 'Refreshed production-readiness evidence was not authoritative.',
           detail: 'The returned evidence was incomplete, inconsistent, or older than the currently displayed state.',
-          reloadLabel: 'Reload G01 evidence',
+          reloadLabel: 'Reload production-readiness evidence',
         });
       }
     } catch (error) {
-      setNotice(detailFor(error, 'Unable to refresh G01 evidence.', 'Reload G01 evidence'));
+      setNotice(detailFor(error, 'Unable to refresh production-readiness evidence.', 'Reload production-readiness evidence'));
     } finally {
       setRefreshing(false);
     }
@@ -351,10 +351,10 @@ export function G01ReviewPanel({
       <main className={styles.page}>
         <div className={styles.content}>
           <section className={styles.notice} data-tone="error" role="alert">
-            <h1>G01 evidence unavailable</h1>
-            <p>G01 evidence is unavailable for this route. Reload the authoritative evidence before reviewing G01.</p>
+            <h1>Production-readiness evidence unavailable</h1>
+            <p>Production-readiness evidence is unavailable for this route. Reload the authoritative evidence before reviewing it.</p>
             <button type="button" onClick={() => void refresh()} disabled={refreshing}>
-              {refreshing ? 'Reloading G01 evidence...' : 'Reload G01 evidence'}
+              {refreshing ? 'Reloading production-readiness evidence...' : 'Reload production-readiness evidence'}
             </button>
           </section>
         </div>
@@ -423,7 +423,7 @@ export function G01ReviewPanel({
         && !latest.snapshot.decision_history.some((entry) => entry.decision_id === result.decision_id)
         && isValidG01Package(updated.snapshot);
       if (!resultIsCurrent) {
-        setNotice({ tone: 'info', title: 'A newer G01 state superseded this decision response.' });
+        setNotice({ tone: 'info', title: 'A newer production-readiness state superseded this decision response.' });
         return;
       }
       currentRef.current = updated;
@@ -432,7 +432,7 @@ export function G01ReviewPanel({
       setFreshness('current');
       setNotice({
         tone: 'success',
-        title: `G01 ${result.decision.replaceAll('_', ' ')}${result.idempotent_replay ? ' (replayed)' : ''}.`,
+        title: `Production readiness ${result.decision.replaceAll('_', ' ')}${result.idempotent_replay ? ' (replayed)' : ''}.`,
       });
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
@@ -444,21 +444,21 @@ export function G01ReviewPanel({
           } else {
             freshnessRef.current = 'reload_required';
             setFreshness('reload_required');
-            setNotice({ tone: 'error', title: 'Updated G01 evidence was not authoritative.', reloadLabel: 'Reload G01 evidence' });
+            setNotice({ tone: 'error', title: 'Updated production-readiness evidence was not authoritative.', reloadLabel: 'Reload production-readiness evidence' });
           }
         } catch (reloadError) {
           freshnessRef.current = 'reload_required';
           setFreshness('reload_required');
           setNotice(detailFor(
             reloadError,
-            'Updated G01 evidence could not be loaded.',
-            'Reload G01 evidence',
+            'Updated production-readiness evidence could not be loaded.',
+            'Reload production-readiness evidence',
           ));
         } finally {
           setRefreshing(false);
         }
       } else {
-        setNotice(detailFor(error, 'G01 decision could not be recorded. Refresh evidence and retry.', 'Reload G01 evidence'));
+        setNotice(detailFor(error, 'Production-readiness decision could not be recorded. Refresh evidence and retry.', 'Reload production-readiness evidence'));
       }
     } finally {
       setBusy(null);
@@ -540,7 +540,7 @@ export function G01ReviewPanel({
             <h2 id="run-title">Create and start the authoritative run</h2>
             <p>
               {canStart
-                ? 'G01 is approved. This action creates and starts the backend-owned run; the source stays read-only and output is run-owned.'
+                ? 'Production readiness is approved. This action creates and starts the backend-owned run; the source stays read-only and output is run-owned.'
                 : 'This terminal outcome does not authorize creation or start of an authoritative run.'}
             </p>
             <button
@@ -563,7 +563,7 @@ export function G01ReviewPanel({
             {notice.detail ? <p>{notice.detail}</p> : null}
             {notice.reloadLabel ? (
               <button type="button" onClick={() => void refresh()} disabled={refreshing}>
-                {refreshing ? 'Reloading G01 evidence...' : notice.reloadLabel}
+                {refreshing ? 'Reloading production-readiness evidence...' : notice.reloadLabel}
               </button>
             ) : null}
           </section>

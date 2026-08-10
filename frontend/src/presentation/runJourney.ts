@@ -41,7 +41,7 @@ const JOURNEY_LABELS: Record<JourneyKey, string> = {
   readiness: "Readiness",
   g01: "Production readiness",
   baseline: "Baseline",
-  discovery: "Discovery",
+  discovery: "Application analysis",
   feasibility: "Feasibility",
   plan: "Migration plan",
   "18-to-19": "Angular 18 to 19",

@@ -17,11 +17,11 @@ interface JourneyWindowItem {
 }
 
 const STATE_LABELS: Record<JourneyState, string> = {
-  complete: "Complete",
-  current: "Current",
-  "action-required": "Action required",
+  complete: "Completed",
+  current: "Running",
+  "action-required": "Waiting for approval",
   blocked: "Blocked",
-  "not-reached": "Not reached",
+  "not-reached": "Not started",
   unavailable: "Not available",
 };
 

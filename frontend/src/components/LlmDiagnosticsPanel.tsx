@@ -16,7 +16,7 @@ type Props = {
 };
 
 function formatCost(value: number) { return `$${value.toFixed(6)}`; }
-function formatLabel(value: string) { return value.replaceAll("_", " "); }
+function formatLabel(value: string) { const label = value.replaceAll("_", " "); return label.charAt(0).toUpperCase() + label.slice(1); }
 function operationKey(runId: string) { return `llm-smoke-${runId}-${Date.now()}`; }
 function correlationFrom(error: ApiClientError) { try { return (JSON.parse(error.responseBody ?? '{}') as { correlation_id?: string }).correlation_id ?? null; } catch { return null; } }
 
@@ -125,7 +125,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   }
 
   return <section className={styles.panel} aria-labelledby="llm-diagnostics-title">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S2-F03</p><h2 id="llm-diagnostics-title">LLM diagnostics and usage</h2><p className={styles.note}>Governed Azure OpenAI smoke invocation with estimated cost from the configured pricing snapshot.</p></div><span className={styles.status}>{readiness?.status ?? "not loaded"}</span></div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>LLM usage</p><h2 id="llm-diagnostics-title">LLM diagnostics and usage</h2><p className={styles.note}>Calls and tokens come from the backend; cost remains backend-estimated from its pricing snapshot.</p></div><span className={styles.status}>{readiness ? formatLabel(readiness.status) : "Loading"}</span></div>
     {connectionStatus ? <div className={styles.connectionBar} role="status" aria-live="polite">{connectionLabel(connectionStatus)}</div> : null}
     {loading ? <p role="status">Loading LLM diagnostics...</p> : null}
     {error ? <p role="alert">{error}</p> : null}
@@ -137,8 +137,16 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
     {readiness?.status === "blocked" ? <p role="alert">Azure OpenAI is not ready: {readiness.error_code ?? "configuration is incomplete"}.</p> : null}
     {!loading && !sectionErrors.activity && !activity?.invocations.length ? <p className={styles.note}>Not available — no governed LLM invocations have been recorded.</p> : null}
     {latest ? <section aria-label="LLM outcome"><h3>{latest.status === "completed" ? "Outcome: completed" : latest.status === "failed" ? "Outcome: failed" : `Outcome: ${formatLabel(latest.status)}`}</h3><p className={styles.note}>Workflow operation: {formatLabel(latest.task_type)} · {latest.role}</p>{latest.failure_code ? <p role="alert">Blocker: {latest.failure_code}. {latest.sanitized_provider_message ?? "Review the backend evidence before retrying."}</p> : null}<p className={styles.note}>{latest.status === "failed" ? "Retry is available after the authoritative state is refreshed." : "The governed invocation is recorded in durable backend state."}</p></section> : null}
+    {usage ? <section aria-label="LLM usage summary"><h3>Usage summary</h3><ul className={`${styles.metricList} ${styles.usageSummary}`}>
+      <li><span>Input tokens</span><strong>{usage.input_tokens.toLocaleString()}</strong></li>
+      <li><span>Output tokens</span><strong>{usage.output_tokens.toLocaleString()}</strong></li>
+      <li><span>Total tokens</span><strong>{usage.total_tokens.toLocaleString()}</strong></li>
+      <li><span>LLM calls</span><strong>{usage.llm_calls.toLocaleString()}</strong></li>
+      <li><span>Recorded retries</span><strong>{usage.retry_calls.toLocaleString()}</strong></li>
+      <li><span>Backend-estimated total cost</span><strong>{formatCost(usage.total_cost_usd)}</strong></li>
+    </ul></section> : null}
     <details>
-      <summary>Response details</summary>
+      <summary>Provider and breakdown details</summary>
     <div className={styles.metadataGrid} aria-label="LLM provenance">
       <div><dt>Provider</dt><dd>{latest?.provider ?? readiness?.provider ?? "unknown"}</dd></div>
       <div><dt>Deployment</dt><dd>{latest?.deployment_alias ?? "unknown"}</dd></div><div><dt>Capability</dt><dd>{latest?.model_capability ?? readiness?.model_capability ?? "unknown"}</dd></div>
@@ -148,16 +156,6 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
        <div><dt>Budget</dt><dd>{budgetStatus}</dd></div><div><dt>Provider status</dt><dd>{latest?.provider_http_status ?? "none"}</dd></div><div><dt>Provider code</dt><dd>{latest?.provider_error_code ?? "none"}</dd></div><div><dt>Provider message</dt><dd>{latest?.sanitized_provider_message ?? "none"}</dd></div><div><dt>Provider request</dt><dd>{latest?.provider_request_id ?? "none"}</dd></div><div><dt>Failure stage</dt><dd>{latest?.failure_stage ?? "none"}</dd></div>
     </div>
     {usage ? <>
-      <ul className={styles.metricList} aria-label="LLM usage totals">
-        <li><span>Input tokens</span><strong>{usage.input_tokens.toLocaleString()}</strong></li>
-        <li><span>Output tokens</span><strong>{usage.output_tokens.toLocaleString()}</strong></li>
-        <li><span>Total tokens</span><strong>{usage.total_tokens.toLocaleString()}</strong></li>
-        <li><span>LLM calls</span><strong>{usage.llm_calls.toLocaleString()}</strong></li>
-        <li><span>Recorded retries</span><strong>{usage.retry_calls.toLocaleString()}</strong></li>
-        <li><span>Estimated input cost</span><strong>{formatCost(usage.input_cost_usd)}</strong></li>
-        <li><span>Estimated output cost</span><strong>{formatCost(usage.output_cost_usd)}</strong></li>
-        <li><span>Estimated total cost</span><strong>{formatCost(usage.total_cost_usd)}</strong></li>
-      </ul>
       {usage.usage_unavailable_calls > 0 ? <p role="alert">Usage unavailable for {usage.usage_unavailable_calls.toLocaleString()} {usage.usage_unavailable_calls === 1 ? "call" : "calls"}.</p> : null}
       <UsageBreakdown title="By phase" rows={usage.by_phase} />
       <UsageBreakdown title="By role" rows={usage.by_role} />

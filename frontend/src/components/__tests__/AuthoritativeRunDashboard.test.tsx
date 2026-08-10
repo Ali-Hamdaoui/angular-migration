@@ -523,7 +523,7 @@ describe("AuthoritativeRunDashboard", () => {
   });
 
   it.each([
-    ["G02", "readiness", "Loading G02 review package", "Initialize G02 review"],
+    ["G02", "readiness", "Loading source snapshot review package", "Initialize source snapshot review"],
     ["G03", "baseline", "Loading baseline qualification package", "Qualify baseline"],
   ] as const)("keeps %s package mutation unavailable while the authoritative GET is pending", async (gate, key, loadingText, unsafeAction) => {
     if (key === "readiness") {
@@ -560,8 +560,8 @@ describe("AuthoritativeRunDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Pipeline/ }));
     await waitFor(() => expect(api).toHaveBeenCalledOnce());
     const panelView = render(<>{reviewPanelFor(key)}</>);
-    const retryName = gate === "G02" ? "Retry G02 review" : "Retry baseline qualification";
-    const unsafeAction = gate === "G02" ? "Initialize G02 review" : "Qualify baseline";
+    const retryName = gate === "G02" ? "Retry source snapshot review" : "Retry baseline qualification";
+    const unsafeAction = gate === "G02" ? "Initialize source snapshot review" : "Qualify baseline";
 
     expect(panelView.getByText(/could not be loaded|is unavailable/)).toBeInTheDocument();
     expect(panelView.queryByRole("button", { name: unsafeAction })).not.toBeInTheDocument();
@@ -572,7 +572,7 @@ describe("AuthoritativeRunDashboard", () => {
     await waitFor(() => expect(latestPipelineProps?.stageContent.find((content) => content.milestone.key === key)?.evidenceCount).toBe(1));
     panelView.rerender(<>{reviewPanelFor(key)}</>);
 
-    expect(panelView.getByRole("button", { name: gate === "G02" ? "Record G02 decision" : "Approve G03" })).toBeInTheDocument();
+    expect(panelView.getByRole("button", { name: gate === "G02" ? "Record source snapshot decision" : "Approve baseline qualification" })).toBeInTheDocument();
     expect(panelView.queryByRole("button", { name: unsafeAction })).not.toBeInTheDocument();
   });
 
@@ -589,14 +589,14 @@ describe("AuthoritativeRunDashboard", () => {
     await waitFor(() => expect(getG02Review).toHaveBeenCalledOnce());
     const panelView = render(<>{reviewPanelFor("readiness")}</>);
 
-    expect(panelView.getByText("G02 review package is unavailable because the response was invalid.")).toBeInTheDocument();
-    expect(panelView.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
-    expect(panelView.queryByRole("button", { name: "Initialize G02 review" })).not.toBeInTheDocument();
-    fireEvent.click(panelView.getByRole("button", { name: "Retry G02 review" }));
+    expect(panelView.getByText("The source snapshot review package is unavailable because the response was invalid.")).toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: "Initialize source snapshot review" })).not.toBeInTheDocument();
+    fireEvent.click(panelView.getByRole("button", { name: "Retry source snapshot review" }));
     await waitFor(() => expect(getG02Review).toHaveBeenCalledTimes(2));
     panelView.rerender(<>{reviewPanelFor("readiness")}</>);
 
-    expect(panelView.getByRole("button", { name: "Record G02 decision" })).toBeInTheDocument();
+    expect(panelView.getByRole("button", { name: "Record source snapshot decision" })).toBeInTheDocument();
   });
 
   it("renders one route heading, a skip link, human evidence, and closed technical details", () => {

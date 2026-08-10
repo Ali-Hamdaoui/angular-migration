@@ -33,11 +33,11 @@ const DEFAULT_GROUP_BY_KEY: Record<JourneyKey, PipelineGroup> = {
 };
 
 const STATE_LABELS: Record<JourneyState, string> = {
-  complete: "Complete",
-  current: "Current",
-  "action-required": "Action required",
+  complete: "Completed",
+  current: "Running",
+  "action-required": "Waiting for approval",
   blocked: "Blocked",
-  "not-reached": "Not reached",
+  "not-reached": "Not started",
   unavailable: "Not available",
 };
 
@@ -66,6 +66,17 @@ function automaticKey(journey: JourneyMilestone[]): JourneyKey | undefined {
 
 function stageClass(state: JourneyState): string {
   return `${styles.stageRow} ${STAGE_CLASS_BY_STATE[state]}`;
+}
+
+function formatOccurredAt(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function defaultExpandedKey(journey: JourneyMilestone[]): JourneyKey | undefined {
+  return journey.find((milestone) => milestone.state === "not-reached" || milestone.state === "unavailable")?.key
+    ?? [...journey].reverse().find((milestone) => milestone.state === "complete")?.key
+    ?? journey[0]?.key;
 }
 
 export function PipelineSection({
@@ -101,7 +112,7 @@ export function PipelineSection({
     [contentByKey, journey],
   );
   const authoritativeKey = automaticKey(journey);
-  const initialKey = focusStage ?? authoritativeKey ?? journey[0]?.key;
+  const initialKey = focusStage ?? authoritativeKey ?? defaultExpandedKey(journey);
   const [internalExpandedKey, setInternalExpandedKey] = useState<JourneyKey | undefined>(initialKey);
   const expandedKey = controlledExpandedKey ?? internalExpandedKey;
   const setExpandedKey = useCallback((key: JourneyKey | undefined) => {
@@ -127,7 +138,7 @@ export function PipelineSection({
 
   useEffect(() => {
     if (expandedKey && journey.some((milestone) => milestone.key === expandedKey)) return;
-    setExpandedKey(authoritativeKey ?? journey[0]?.key);
+    setExpandedKey(authoritativeKey ?? defaultExpandedKey(journey));
   }, [authoritativeKey, expandedKey, journey, setExpandedKey]);
 
   const expanded = stages.find((stage) => stage.milestone.key === expandedKey);
@@ -173,7 +184,7 @@ export function PipelineSection({
                           <strong>{milestone.label}</strong>
                           <small>
                             {statusLabel}
-                            {stage.occurredAt ? ` · ${stage.occurredAt}` : ""}
+                            {stage.occurredAt ? ` · ${formatOccurredAt(stage.occurredAt)}` : ""}
                             {stage.evidenceCount != null ? ` · ${stage.evidenceCount} evidence item${stage.evidenceCount === 1 ? "" : "s"}` : ""}
                           </small>
                         </span>

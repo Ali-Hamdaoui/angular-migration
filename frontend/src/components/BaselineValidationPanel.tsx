@@ -58,7 +58,7 @@ export function BaselineValidationPanel({ runId, stateVersion, connectionStatus,
   const connectionLabel = connectionStatus === "open" ? "Live baseline validation state" : connectionStatus === "reconnecting" ? "Connection lost. Reconnecting..." : connectionStatus === "recovering" ? "Refreshing authoritative validation state..." : connectionStatus === "failed" ? "Unable to refresh validation state" : "Connecting to validation events...";
   const targetsByKind = useMemo(() => kinds.map((kind) => ({ kind, targets: inventory?.targets.filter((target) => target.kind === kind) ?? [] })), [inventory]);
   return <section className={styles.panel} aria-labelledby="baseline-validation-title">
-    <div className={styles.header}><div><p className={styles.kicker}>S1-F12</p><h2 id="baseline-validation-title">Baseline build, test, and lint matrix</h2><p className={styles.note}>Authoritative target status and evidence from the clean baseline sandbox.</p></div><span className={styles.status}>{inventory ? "discovered" : "not loaded"}</span></div>
+    <div className={styles.header}><div><p className={styles.kicker}>Baseline validation</p><h2 id="baseline-validation-title">Baseline build, test, and lint matrix</h2><p className={styles.note}>Authoritative target status and evidence from the clean baseline sandbox.</p></div><span className={styles.status}>{inventory ? "discovered" : "not loaded"}</span></div>
     <div className={styles.connectionBar} role="status" aria-live="polite">{connectionLabel}</div>
     {loading ? <p role="status">Loading baseline validation targets...</p> : null}
     {error ? <p role="alert">{error}</p> : null}

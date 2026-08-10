@@ -534,7 +534,7 @@ export function MigrationSetupForm() {
     project: isChecking ? "Completed; readiness is running" : "Current",
     readiness: isChecking ? "Current" : hasChecked ? isOutdated ? "Outdated" : "Completed" : "Waiting",
     sourceReview: sourceAnalysis ? isOutdated ? "Outdated" : "Available" : "Locked",
-    createRun: "Locked pending G01 review and approval",
+    createRun: "Locked pending production readiness review and approval",
   };
 
   const targetBoundary = pathValidation?.snapshot.resolved_output_root || "the reserved external target shown after readiness";
@@ -545,7 +545,7 @@ export function MigrationSetupForm() {
         <header className={styles.header}>
           <p className={styles.kicker}>Migration preparation</p>
           <h1>Prepare an authoritative migration</h1>
-          <p>Verify the read-only source boundary, collect readiness evidence, and hand the exact production preflight to G01 review.</p>
+          <p>Verify the read-only source boundary, collect readiness evidence, and hand the exact production preflight to the production readiness review.</p>
         </header>
 
         <nav className={styles.journey} aria-label="Migration preparation journey">
@@ -667,9 +667,9 @@ export function MigrationSetupForm() {
         <section className={`${styles.section} ${styles.lockedSection}`} aria-labelledby="create-run-heading">
           <div className={styles.sectionHeading}>
             <div><p className={styles.stepLabel}>Step 4</p><h2 id="create-run-heading">Create run</h2></div>
-            <span className={styles.lockedLabel}>Locked pending G01</span>
+            <span className={styles.lockedLabel}>Locked pending production readiness approval</span>
           </div>
-          <p>G01 review and approval on the production readiness route unlocks authoritative run creation. This setup page does not approve G01 and does not create a run.</p>
+          <p>Production readiness review and approval on the production readiness route unlocks authoritative run creation. This setup page does not approve production readiness and does not create a run.</p>
           <p>The source remains read-only. After approval, run-owned output is created only under <strong className={styles.technical}>{targetBoundary}</strong>.</p>
         </section>
 

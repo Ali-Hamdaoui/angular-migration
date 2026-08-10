@@ -47,9 +47,9 @@ export function GateDecisionPanel({
         disabled={busy}
       />
       <div className={styles.decisionActions}>
-        <button type="button" onClick={onApprove} disabled={busy || approveDisabled}>Approve G01</button>
-        <button type="button" onClick={onRequestModification} disabled={busy || modificationDisabled}>Request modification</button>
-        <button type="button" onClick={onReject} disabled={busy || rejectDisabled}>Reject G01</button>
+        <button type="button" onClick={onApprove} disabled={busy || approveDisabled}>Approve production readiness</button>
+        <button type="button" onClick={onRequestModification} disabled={busy || modificationDisabled}>Request readiness changes</button>
+        <button type="button" onClick={onReject} disabled={busy || rejectDisabled}>Reject production readiness</button>
       </div>
     </section>
   );

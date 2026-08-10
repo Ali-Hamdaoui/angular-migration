@@ -111,9 +111,9 @@ function G01ReviewPanel({ expectedPreflightId = 'preflight-1', ...props }: TestP
 }
 
 function expectNoDecisionButtons() {
-  expect(screen.queryByRole('button', { name: 'Approve G01' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Request modification' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Reject G01' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Approve production readiness' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Request readiness changes' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject production readiness' })).not.toBeInTheDocument();
 }
 
 function expectNoRunButton() {
@@ -140,7 +140,7 @@ describe('G01ReviewPanel', () => {
   it('presents the source/target boundary, exact findings, human artifact title/link, and collapsed checksums', () => {
     render(<G01ReviewPanel preflight={fixture({ blockers: ['SOURCE_PATH_NOT_FOUND'] })} />);
 
-    expect(screen.getByRole('heading', { name: 'G01 production readiness' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Production readiness' })).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByText('Source is read-only: C:/external/source')).toBeInTheDocument();
     expect(screen.getByText('Target is reserved output: C:/external/target/angular-21')).toBeInTheDocument();
@@ -160,7 +160,7 @@ describe('G01ReviewPanel', () => {
     vi.mocked(decideG01).mockResolvedValue(decision());
     render(<G01ReviewPanel preflight={fixture()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
 
     await waitFor(() => expect(decideG01).toHaveBeenCalledWith('preflight-1', {
       gate_id: 'G01',
@@ -179,7 +179,7 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture()} />);
     fireEvent.change(screen.getByLabelText('Reviewer comment'), { target: { value: ' ready ' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
 
     await waitFor(() => expect(decideG01).toHaveBeenCalledWith('preflight-1', expect.objectContaining({
       decision: 'approved_with_comment',
@@ -189,9 +189,9 @@ describe('G01ReviewPanel', () => {
 
   it('keeps modification and rejection legal while a blocked pending review disables approval', () => {
     render(<G01ReviewPanel preflight={fixture({ status: 'blocked', blockers: ['SOURCE_PATH_NOT_FOUND'] })} />);
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Request modification' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Reject G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Request readiness changes' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Reject production readiness' })).toBeEnabled();
   });
 
   it('renders an initially approved gate as terminal with run creation enabled', () => {
@@ -205,7 +205,7 @@ describe('G01ReviewPanel', () => {
     vi.mocked(decideG01).mockResolvedValue(decision({ decision: 'approved_with_comment', comment: 'Evidence accepted.' }));
     render(<G01ReviewPanel preflight={fixture()} />);
     fireEvent.change(screen.getByLabelText('Reviewer comment'), { target: { value: 'Evidence accepted.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
 
     expect(await screen.findByRole('heading', { name: 'Approved with comment' })).toBeInTheDocument();
     expect(screen.getByText('Evidence accepted.')).toBeInTheDocument();
@@ -246,7 +246,7 @@ describe('G01ReviewPanel', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-17T10:00:00Z'));
     render(<G01ReviewPanel preflight={fixture({ expires_at: '2026-07-17T10:00:01Z' })} />);
-    const approve = screen.getByRole('button', { name: 'Approve G01' });
+    const approve = screen.getByRole('button', { name: 'Approve production readiness' });
 
     vi.setSystemTime(new Date('2026-07-17T10:00:02Z'));
     fireEvent.click(approve);
@@ -293,9 +293,9 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture({ expires_at: '2026-09-17T10:00:00Z' })} />);
 
     act(() => { vi.advanceTimersByTime(2_147_483_647); });
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
     act(() => { vi.advanceTimersByTime(2_147_483_647); });
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
     act(() => { vi.runOnlyPendingTimers(); });
 
     expect(screen.getByRole('heading', { name: 'Expired' })).toBeInTheDocument();
@@ -360,7 +360,7 @@ describe('G01ReviewPanel', () => {
       generated_output_name: '',
       resolved_output_root: '',
     })} />);
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
   });
 
   it('renders unavailable instead of crashing for malformed decision history', () => {
@@ -377,12 +377,12 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture()} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
-    expect(await screen.findByText('Refreshed G01 evidence was not authoritative.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(await screen.findByText('Refreshed production-readiness evidence was not authoritative.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reload G01 evidence' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload production-readiness evidence' }));
     expect(await screen.findByText('VALID_RECOVERY')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
   });
 
   it('rejects refreshed evidence bound to another preflight', async () => {
@@ -391,10 +391,10 @@ describe('G01ReviewPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
 
-    expect(await screen.findByText('Refreshed G01 evidence was not authoritative.')).toBeInTheDocument();
+    expect(await screen.findByText('Refreshed production-readiness evidence was not authoritative.')).toBeInTheDocument();
     expect(screen.getByText('preflight-1')).toBeInTheDocument();
     expect(screen.queryByText('different-preflight')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
   });
 
   it('isolates a mismatched initial payload until requested-route evidence recovers it', async () => {
@@ -414,9 +414,9 @@ describe('G01ReviewPanel', () => {
       warnings: ['WRONG_ROUTE_WARNING'],
     })} />);
 
-    expect(screen.getByRole('alert')).toHaveTextContent('G01 evidence is unavailable for this route.');
-    expect(screen.getByRole('heading', { level: 1, name: 'G01 evidence unavailable' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'G01 production readiness' })).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Production-readiness evidence is unavailable for this route.');
+    expect(screen.getByRole('heading', { level: 1, name: 'Production-readiness evidence unavailable' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Production readiness' })).not.toBeInTheDocument();
     expect(screen.queryByText('C:/wrong-route/source')).not.toBeInTheDocument();
     expect(screen.queryByText('C:/wrong-route/output')).not.toBeInTheDocument();
     expect(screen.queryByText('sha256:wrong-route-input')).not.toBeInTheDocument();
@@ -427,39 +427,39 @@ describe('G01ReviewPanel', () => {
     expectNoRunButton();
     expect(subscribedPreflightId).toBe('preflight-A');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reload G01 evidence' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload production-readiness evidence' }));
     expect(await screen.findByText('RECOVERED_ROUTE_A')).toBeInTheDocument();
     expect(getProductionPreflight).toHaveBeenCalledWith('preflight-A');
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
   });
 
   it('ignores a successful response for a decision other than the submitted decision', async () => {
     vi.mocked(decideG01).mockResolvedValue(decision({ decision: 'rejected' }));
     render(<G01ReviewPanel preflight={fixture()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
 
-    expect(await screen.findByText('A newer G01 state superseded this decision response.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(await screen.findByText('A newer production-readiness state superseded this decision response.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
     expect(screen.queryByRole('heading', { name: 'Rejected' })).not.toBeInTheDocument();
   });
 
   it('rejects a decision response that would construct a malformed evidence package', async () => {
     vi.mocked(decideG01).mockResolvedValue(decision({ actor: '', decided_at: 'invalid-time' }));
     render(<G01ReviewPanel preflight={fixture()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
 
-    expect(await screen.findByText('A newer G01 state superseded this decision response.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(await screen.findByText('A newer production-readiness state superseded this decision response.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
     expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
   });
 
   it('rejects a decision response newer than the submitted pre-transition version', async () => {
     vi.mocked(decideG01).mockResolvedValue(decision({ state_version: 4 }));
     render(<G01ReviewPanel preflight={fixture()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
 
-    expect(await screen.findByText('A newer G01 state superseded this decision response.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(await screen.findByText('A newer production-readiness state superseded this decision response.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
     expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
   });
 
@@ -469,7 +469,7 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture()} />);
     fireEvent.change(screen.getByLabelText('Reviewer comment'), { target: { value: 'Keep this note' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reject G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reject production readiness' }));
 
     await waitFor(() => expect(getProductionPreflight).toHaveBeenCalledWith('preflight-1'));
     expect(await screen.findByText('Evidence changed. Review the updated evidence and decide again.')).toBeInTheDocument();
@@ -485,19 +485,19 @@ describe('G01ReviewPanel', () => {
       .mockResolvedValueOnce(fixture({ state_version: 4, warnings: ['RECOVERED_WARNING'] }));
     render(<G01ReviewPanel preflight={fixture()} />);
     fireEvent.change(screen.getByLabelText('Reviewer comment'), { target: { value: 'Keep this note' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Reject G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reject production readiness' }));
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('Updated G01 evidence could not be loaded');
+    expect(alert).toHaveTextContent('Updated production-readiness evidence could not be loaded');
     expectNoDecisionButtons();
     expectNoRunButton();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reload G01 evidence' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload production-readiness evidence' }));
 
     expect(await screen.findByText('RECOVERED_WARNING')).toBeInTheDocument();
     expect(screen.getByLabelText('Reviewer comment')).toHaveValue('Keep this note');
-    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
-    expect(screen.queryByText('Updated G01 evidence could not be loaded.')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled();
+    expect(screen.queryByText('Updated production-readiness evidence could not be loaded.')).not.toBeInTheDocument();
   });
 
   it('ignores a late decision result after newer terminal evidence already contains it', async () => {
@@ -517,7 +517,7 @@ describe('G01ReviewPanel', () => {
     }));
     render(<G01ReviewPanel preflight={fixture()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
     eventRefresh?.();
     expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeInTheDocument();
 
@@ -540,12 +540,12 @@ describe('G01ReviewPanel', () => {
     }));
     render(<G01ReviewPanel preflight={fixture()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
     eventRefresh?.();
     await waitFor(() => expect(getProductionPreflight).toHaveBeenCalledTimes(1));
     await act(async () => { post.resolve(decision({ state_version: 4 })); });
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve production readiness' })).toBeEnabled());
     expect(screen.queryByRole('heading', { name: 'Approved' })).not.toBeInTheDocument();
     expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Technical details'));
@@ -561,7 +561,7 @@ describe('G01ReviewPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
     await waitFor(() => expect(getProductionPreflight).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve production readiness' }));
     expect(await screen.findByRole('heading', { name: 'Approved' })).toBeInTheDocument();
 
     refreshResult.resolve(fixture({ state_version: 2, approval_status: 'pending' }));

@@ -25,7 +25,7 @@ describe("FeasibilityPanel", () => {
 
   it("renders a subordinate heading when embedded in a pipeline stage", () => {
     render(<FeasibilityPanel {...props} headingLevel={4} />);
-    expect(screen.getByRole("heading", { name: "Feasibility and G05", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Migration readiness", level: 4 })).toBeInTheDocument();
   });
 
   it("renders the authoritative ladder, support, exact profile, evidence, and G05 controls", async () => {
@@ -35,7 +35,7 @@ describe("FeasibilityPanel", () => {
     expect(screen.getByText("angular-18.x → angular-19.x")).toBeInTheDocument();
     expect(screen.getByText("19.0.0 / 19.0.0")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "package-1" })).toHaveAttribute("href", "/api/v1/artifacts/package-1");
-    expect(screen.getByRole("heading", { name: "G05: pending" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Migration readiness" })).toBeInTheDocument();
   });
 
   it("renders empty state and reloads the authoritative snapshot after a stale resolve", async () => {
@@ -44,7 +44,7 @@ describe("FeasibilityPanel", () => {
     render(<FeasibilityPanel {...props} />);
     expect(await screen.findByText("No feasibility package is available yet.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Resolve route and Stage 1 profile" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("feasibility or G05 state is stale");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The migration-readiness state is stale");
     expect(queueFeasibilityResolution).toHaveBeenCalledWith("run-1", { expected_state_version: 3, idempotency_key: expect.any(String) });
   });
 
@@ -74,9 +74,9 @@ describe("FeasibilityPanel", () => {
   it("renders blocked state and keeps G05 unavailable", async () => {
     vi.mocked(getFeasibility).mockResolvedValue({ ...response, status: "blocked", blockers: ["NO_COMPATIBLE_STAGE1_PROFILE"], gate_status: "blocked" });
     render(<FeasibilityPanel {...props} />);
-    expect(await screen.findByText("Feasibility is blocked; G05 cannot approve this route.")).toBeInTheDocument();
+    expect(await screen.findByText("Feasibility is blocked; migration readiness cannot approve this route.")).toBeInTheDocument();
     expect(screen.getByText("NO_COMPATIBLE_STAGE1_PROFILE")).toBeInTheDocument();
-    expect(screen.getByText("G05 is blocked until the feasibility evidence is renewed.")).toBeInTheDocument();
+    expect(screen.getByText("Migration readiness approval is blocked until the feasibility evidence is renewed.")).toBeInTheDocument();
   });
 
   it("renders backend failure guidance with the correlation ID", async () => {
@@ -90,7 +90,7 @@ describe("FeasibilityPanel", () => {
     render(<FeasibilityPanel {...props} />);
     await screen.findByText("Major-stage ladder");
     fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } });
-    fireEvent.click(screen.getByRole("button", { name: "Record G05 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record migration readiness decision" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Add a comment");
     expect(decideG05).not.toHaveBeenCalled();
   });
@@ -103,9 +103,9 @@ describe("FeasibilityPanel", () => {
     await screen.findByText("Major-stage ladder");
     fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } });
     fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Preserve the feasibility draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Record G05 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record migration readiness decision" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("feasibility or G05 state is stale");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The migration-readiness state is stale");
     expect(decideG05).toHaveBeenCalledWith("run-1", {
       expected_state_version: 5,
       idempotency_key: expect.stringMatching(/^g05-run-1-/),
@@ -118,6 +118,6 @@ describe("FeasibilityPanel", () => {
       comment: "Preserve the feasibility draft",
     });
     expect(screen.getByLabelText("Review comment")).toHaveValue("Preserve the feasibility draft");
-    expect(screen.queryByText(/G05 was accepted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Migration readiness was approved/)).not.toBeInTheDocument();
   });
 });

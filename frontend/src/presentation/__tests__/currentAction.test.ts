@@ -217,6 +217,32 @@ describe("selectCurrentAction", () => {
     expect(action).toMatchObject({ kind: "running", title: "Analysis running" });
   });
 
+  it("derives a running action from a journey current milestone instead of the unavailable fallback", () => {
+    const action = selectCurrentAction(
+      makeAuthoritativeRun({
+        status: "CREATED",
+        phase_status: "not_started",
+        workflow_events: [makeEvent("RUN_CREATED", 1)],
+      }),
+      makeTransformation({
+        status: "running",
+        stage_status: "RUNNING",
+        route_stages: [
+          { stage_id: "stage-18-19", source_version: "18", target_version: "19", status: "RUNNING" },
+        ],
+      }),
+      "ready",
+      "open",
+    );
+
+    expect(action).toMatchObject({
+      kind: "running",
+      title: "Angular 18 to 19 running",
+      section: "pipeline",
+      stageKey: "18-to-19",
+    });
+  });
+
   it("selects completion only when final durable verification exists", () => {
     const action = selectCurrentAction(
       makeAuthoritativeRun({
@@ -339,7 +365,7 @@ describe("selectCurrentAction", () => {
     expect(action).toMatchObject({
       kind: "gate",
       gateId: "G06",
-      title: "Migration plan acceptance required",
+      title: "Migration plan approval required",
       evidenceIds: ["event-2-g06_created", "plan-artifact"],
     });
   });
@@ -458,7 +484,7 @@ describe("buildRunWorkspaceProjection", () => {
 
     expect(projection.now).toBe("Analysis running");
     expect(projection.completed).toBe("Setup, Readiness, Production readiness");
-    expect(projection.next).toBe("Discovery");
+    expect(projection.next).toBe("Application analysis");
     expect(projection.journey).toHaveLength(12);
   });
 
@@ -497,6 +523,6 @@ describe("buildRunWorkspaceProjection", () => {
     );
 
     expect(projection.currentAction.kind).toBe("unavailable");
-    expect(projection.next).toBe("Next milestone unavailable");
+    expect(projection.next).toBe("No next milestone confirmed");
   });
 });

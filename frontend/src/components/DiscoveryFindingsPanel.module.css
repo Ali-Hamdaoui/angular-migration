@@ -1,0 +1,7 @@
+.scannerList { margin: 0; padding: 0; list-style: none; display: grid; gap: .8rem; }
+.scannerList li { display: grid; gap: .4rem; min-width: 0; border-top: 1px solid var(--color-border); padding: .6rem 0; }
+.findingSummary { margin: 0; padding: 0; list-style: none; display: grid; gap: .3rem; }
+.findingSummary li { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: .5rem; border: 0; padding: 0; }
+.findingSummary code, .findingSummary span, .rawFindings code, .rawFindings small, .rawFindings div { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.rawFindings { display: grid; gap: .3rem; min-width: 0; }
+.rawFindings summary { cursor: pointer; font-weight: 700; }

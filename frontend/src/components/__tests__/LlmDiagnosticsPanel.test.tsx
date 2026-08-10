@@ -31,7 +31,7 @@ describe("LlmDiagnosticsPanel", () => {
   it("renders provenance, token cost, and invokes through the typed backend contract", async () => {
     vi.mocked(invokeLlmSmoke).mockResolvedValue(invocation);
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
-    expect(await screen.findByText("Estimated total cost")).toBeInTheDocument();
+    expect(await screen.findByText("Backend-estimated total cost")).toBeInTheDocument();
     expect(screen.getByText("LLM calls")).toBeInTheDocument();
     expect(screen.getByText("Recorded retries")).toBeInTheDocument();
     expect(screen.getByText("By phase")).toBeInTheDocument();
@@ -92,7 +92,7 @@ describe("LlmDiagnosticsPanel", () => {
     const { rerender } = render(<LlmDiagnosticsPanel runId="run-1" stateVersion={1} />);
     rerender(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} />);
     rerender(<LlmDiagnosticsPanel runId="run-1" stateVersion={3} />);
-    await screen.findByText("Estimated total cost");
+    await screen.findByText("Backend-estimated total cost");
     await waitFor(() => {
       expect(getLlmReadiness).toHaveBeenCalledTimes(1);
       expect(getLlmActivity).toHaveBeenCalledTimes(1);
@@ -100,11 +100,11 @@ describe("LlmDiagnosticsPanel", () => {
     });
   });
 
-  it("leads with the invocation outcome and keeps provider metadata behind Response details", async () => {
+  it("leads with the invocation outcome and keeps provider metadata behind provider details", async () => {
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
     expect(await screen.findByRole("heading", { name: "Outcome: completed" })).toBeInTheDocument();
     expect(screen.getByText("azure_openai")).not.toBeVisible();
-    fireEvent.click(screen.getByText("Response details"));
+    fireEvent.click(screen.getByText("Provider and breakdown details"));
     expect(screen.getByText("azure_openai")).toBeVisible();
   });
 
@@ -114,11 +114,11 @@ describe("LlmDiagnosticsPanel", () => {
     expect(smokeCheck).toBeDisabled();
   });
 
-  it("keeps the correlation identifier inside Response details", async () => {
+  it("keeps the correlation identifier inside provider details", async () => {
     render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
     await screen.findByRole("heading", { name: "Outcome: completed" });
     expect(screen.getByText("Correlation ID:", { exact: false })).not.toBeVisible();
-    fireEvent.click(screen.getByText("Response details"));
+    fireEvent.click(screen.getByText("Provider and breakdown details"));
     expect(screen.getByText("Correlation ID:", { exact: false })).toBeVisible();
   });
 });

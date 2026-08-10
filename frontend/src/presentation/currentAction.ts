@@ -286,12 +286,27 @@ function verifiedCompleteAction(run: AuthoritativeRunStateDto): CurrentAction | 
   });
 }
 
+function journeyCurrentAction(journey: JourneyMilestone[]): CurrentAction | null {
+  const milestone = journey.find((item) => item.state === "current");
+  if (!milestone) return null;
+  return confirmedAction({
+    kind: "running",
+    title: `${milestone.label} running`,
+    summary: "Authoritative journey state shows work active in this stage.",
+    section: "pipeline",
+    stageKey: milestone.key,
+    evidenceIds: [],
+    rawSource: `journey:${milestone.key}:current`,
+  });
+}
+
 export function selectCurrentAction(
   run: AuthoritativeRunStateDto,
   transformation: TransformationProjection | null,
   transformationStatus: TransformationLoadStatus,
   connection: AuthoritativeConnectionStatus,
   freshness: CurrentAction["authority"]["freshness"] = "current",
+  journey: JourneyMilestone[] = buildJourney(run, transformation, transformationStatus),
 ): CurrentAction {
   if (connection === "recovering" || connection === "failed") return refreshAction(`connection:${connection}`);
   if (freshness === "refreshing") return refreshAction("transformation:refresh_error");
@@ -320,6 +335,7 @@ export function selectCurrentAction(
   return runBlockerAction(run)
     ?? activeRunAction(run)
     ?? verifiedCompleteAction(run)
+    ?? journeyCurrentAction(journey)
     ?? confirmedAction({
       kind: "unavailable",
       title: "Current action unavailable",
@@ -339,7 +355,7 @@ export function summarizeNext(journey: JourneyMilestone[], currentAction: Curren
   if (currentAction.kind === "complete") return "No further milestone";
   const next = journey.find((milestone) => milestone.state === "blocked")
     ?? journey.find((milestone) => milestone.state === "action-required" || milestone.state === "current");
-  return next?.label ?? "Next milestone unavailable";
+  return next?.label ?? "No next milestone confirmed";
 }
 
 export function buildRunWorkspaceProjection(
@@ -350,7 +366,7 @@ export function buildRunWorkspaceProjection(
   freshness: CurrentAction["authority"]["freshness"] = "current",
 ): RunWorkspaceProjection {
   const journey = buildJourney(run, transformation, transformationStatus);
-  const currentAction = selectCurrentAction(run, transformation, transformationStatus, connection, freshness);
+  const currentAction = selectCurrentAction(run, transformation, transformationStatus, connection, freshness, journey);
   return {
     journey,
     currentAction,

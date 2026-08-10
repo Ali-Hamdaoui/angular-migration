@@ -13,7 +13,7 @@ const props = { runId: "run-1", stateVersion: 4, connectionStatus: "open", artif
 describe("AnalysisReviewPanel", () => {
   it("renders a subordinate heading when embedded in a pipeline stage", () => {
     render(<AnalysisReviewPanel {...props} headingLevel={4} />);
-    expect(screen.getByRole("heading", { name: "AI-assisted analysis and G04 review", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Application analysis", level: 4 })).toBeInTheDocument();
   });
 
   it("renders split facts, interpretation, provenance, evidence, and G04 controls", async () => {
@@ -46,7 +46,7 @@ describe("AnalysisReviewPanel", () => {
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
   it("requires a comment for approval with comment", async () => {
-    vi.mocked(getAnalysis).mockResolvedValue(response as never); render(<AnalysisReviewPanel {...props} />); await screen.findByText("Review the deterministic findings."); fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } }); fireEvent.click(screen.getByRole("button", { name: "Record G04 decision" })); expect(await screen.findByRole("alert")).toHaveTextContent("Add a comment"); expect(decideG04).not.toHaveBeenCalled();
+    vi.mocked(getAnalysis).mockResolvedValue(response as never); render(<AnalysisReviewPanel {...props} />); await screen.findByText("Review the deterministic findings."); fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } }); fireEvent.click(screen.getByRole("button", { name: "Record analysis decision" })); expect(await screen.findByRole("alert")).toHaveTextContent("Add a comment"); expect(decideG04).not.toHaveBeenCalled();
   });
 
   it("sends the checksum and workspace-bound G04 decision and fails closed on 409", async () => {
@@ -57,7 +57,7 @@ describe("AnalysisReviewPanel", () => {
     await screen.findByText("Review the deterministic findings.");
     fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } });
     fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Preserve the analysis draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Record G04 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record analysis decision" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("analysis state is stale");
     expect(decideG04).toHaveBeenCalledWith("run-1", {
@@ -71,6 +71,6 @@ describe("AnalysisReviewPanel", () => {
       comment: "Preserve the analysis draft",
     });
     expect(screen.getByLabelText("Review comment")).toHaveValue("Preserve the analysis draft");
-    expect(screen.queryByText(/G04 was accepted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/analysis review was accepted/)).not.toBeInTheDocument();
   });
 });

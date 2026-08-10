@@ -82,7 +82,7 @@ export function SourceSnapshotPanel({
     <section className={styles.panel} aria-label="Immutable source snapshot">
       <div className={styles.previewHeader}>
         <div>
-          <p className={styles.kicker}>S1-F07</p>
+          <p className={styles.kicker}>Source snapshot</p>
           <Heading>Immutable source snapshot</Heading>
         </div>
         {canCreate ? (

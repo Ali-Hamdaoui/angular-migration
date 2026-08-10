@@ -70,6 +70,15 @@ describe("presentArtifact", () => {
     expect(sortArtifactPresentations([older, gate, newer]).map((item) => item.artifact.artifact_id)).toEqual(["gate", "newer", "older"]);
   });
 
+  it("labels the 03_analysis stage compactly as Analysis", () => {
+    const presentation = presentArtifact(makeArtifact({
+      artifact_type: "json",
+      relative_path: "03_analysis/findings.json",
+    }));
+
+    expect(presentation.stageLabel).toBe("Analysis");
+  });
+
   it.each([
     "reporter_notes.json",
     "errorless.json",

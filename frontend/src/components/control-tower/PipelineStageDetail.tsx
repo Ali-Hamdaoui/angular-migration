@@ -14,7 +14,7 @@ export interface PipelineStageContent {
   tabs: Array<{ id: PipelineTab; label: string; panel: ReactNode }>;
 }
 
-const EMPTY_SUMMARY = <p>Not available from the authoritative state</p>;
+const EMPTY_SUMMARY = <p>Not started yet — no work has reached this stage</p>;
 
 export function PipelineStageDetail({ content }: { content: PipelineStageContent }) {
   const tabs = useMemo(() => {

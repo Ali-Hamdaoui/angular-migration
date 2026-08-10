@@ -16,7 +16,7 @@ export function MigrationPlanPanel({ runId, initialState, connectionStatus, work
   const { plan, status, error } = usePlanProjection({ runId, stateVersion: initialState.state_version, planningJob: initialState.planning_job, workflowEvents, connectionStatus, refreshAuthoritativeState });
   const [tab, setTab] = useState<Tab>("Commands");
   const previousPlanChecksum = useRef<string | null>(null);
-  const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "queued" ? "Planning queued" : status === "resolving_feasibility" ? "Resolving feasibility" : status === "waiting_g05" ? "Waiting for G05 approval" : status === "generating_plan" ? "Generating migration plan" : status === "running_planning_review" ? "Reviewing migration plan" : status === "waiting_retry" ? "Planning retry scheduled" : status === "technical_failed" ? "Planning failed" : status === "completed_blocked" ? "Feasibility blocked" : status === "waiting_g06" ? "Waiting for G06 approval" : status === "completed" ? "Planning approved" : status === "running" ? "Generating plan..." : status;
+  const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "queued" ? "Planning queued" : status === "resolving_feasibility" ? "Resolving feasibility" : status === "waiting_g05" ? "Waiting for migration readiness approval" : status === "generating_plan" ? "Generating migration plan" : status === "running_planning_review" ? "Reviewing migration plan" : status === "waiting_retry" ? "Planning retry scheduled" : status === "technical_failed" ? "Planning failed" : status === "completed_blocked" ? "Feasibility blocked" : status === "waiting_g06" ? "Waiting for migration plan approval" : status === "completed" ? "Planning approved" : status === "running" ? "Generating plan..." : status;
 
   useEffect(() => {
     if (status !== "success" || !plan?.plan_checksum) return;
@@ -28,7 +28,7 @@ export function MigrationPlanPanel({ runId, initialState, connectionStatus, work
   const stage = plan?.stage_plan;
   const route = useMemo(() => plan?.plan.route ?? [], [plan]);
   return <section className={styles.panel} aria-labelledby="migration-plan-title">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S2-F06</p><Heading id="migration-plan-title">Migration plan</Heading><p className={styles.note}>Backend-owned plan projection; no local workflow advancement.</p></div><span className={styles.status}>{statusLabel}</span></div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>Migration plan</p><Heading id="migration-plan-title">Migration plan</Heading><p className={styles.note}>Backend-owned plan projection; no local workflow advancement.</p></div><span className={styles.status}>{statusLabel}</span></div>
     {error ? <p role="alert">{error}</p> : null}
     {status === "authorization" ? <p role="alert">You are not authorized to inspect this run’s plan.</p> : null}
     {status === "blocked" ? <p role="alert">Plan evidence is blocked or failed integrity validation. Refresh the authoritative run and review the backend guidance.</p> : null}

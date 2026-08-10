@@ -39,6 +39,11 @@ function matchesFilter(presentation: ArtifactPresentation, filter: EvidenceFilte
   return presentation.category === categoryByFilter[filter];
 }
 
+function formatArtifactDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Timestamp unavailable" : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 export function EvidenceWorkspace({ artifacts, loadArtifact }: EvidenceWorkspaceProps) {
   const presentations = useMemo(() => sortArtifactPresentations(asPresentations(artifacts)), [artifacts]);
   const [query, setQuery] = useState("");
@@ -128,8 +133,8 @@ export function EvidenceWorkspace({ artifacts, loadArtifact }: EvidenceWorkspace
                     onClick={() => setSelectedId(presentation.artifact.artifact_id)}
                   >
                     <strong>{presentation.title}</strong>
-                    <span>{presentation.stageLabel} · {presentation.category}</span>
-                    <code>{presentation.rawPath}</code>
+                    <span>{presentation.stageLabel} · {presentation.category} · {formatArtifactDate(presentation.artifact.created_at)}</span>
+                    <code className={styles.resultPath} title={presentation.rawPath}>{presentation.rawPath}</code>
                   </button>
                 </li>
               ))}

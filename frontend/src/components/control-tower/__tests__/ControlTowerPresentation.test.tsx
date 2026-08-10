@@ -239,6 +239,18 @@ describe("control tower presentation state", () => {
     expect(layoutCss).toMatch(/@media \(max-width: 420px\)[^{]*\{[\s\S]*:global\(\.controlTowerSummary\)/);
   });
 
+  it("switches the journey strip to the window pattern below the desktop strip width", () => {
+    expect(layoutCss).toMatch(/@media \(max-width: 979px\)[^{]*\{[\s\S]*\.journeyDesktop\s*\{[^}]*display:\s*none/);
+    expect(layoutCss).toMatch(/@media \(max-width: 979px\)[^{]*\{[\s\S]*\.journeyMobile\s*\{[^}]*display:\s*grid/);
+    expect(layoutCss).toMatch(/\.journeyMilestone\[data-state="current"\] \.journeyMarker[^{]*\{[^}]*box-shadow:/);
+  });
+
+  it("animates the running action indicator with an accent border and honors reduced motion", () => {
+    expect(layoutCss).toMatch(/\.currentActionCard\[data-kind="running"\][^{]*\{[^}]*border-color:\s*var\(--color-accent\)/);
+    expect(layoutCss).toContain("@keyframes currentActionSpin");
+    expect(layoutCss).toMatch(/@media \(prefers-reduced-motion: reduce\)[^{]*\{[\s\S]*\.currentActionCard\[data-kind="running"\] \.currentActionIcon svg\s*\{[^}]*animation:\s*none/);
+  });
+
   it("gives links a 44px wrapping interaction box", () => {
     expect(globalsCss).toMatch(/a\[href\]\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*min-height:\s*44px;[^}]*max-width:\s*100%;[^}]*overflow-wrap:\s*anywhere/);
   });
@@ -257,7 +269,7 @@ describe("control tower presentation state", () => {
   });
 
   it.each([
-    ["action-required", "Action required"],
+    ["action-required", "Waiting for approval"],
     ["blocked", "Blocked"],
   ] as const)("uses a warning tone for a %s pipeline summary", (state, label) => {
     const tonedJourney = pipelineJourney.map((milestone) => ({
@@ -352,18 +364,18 @@ describe("control tower presentation state", () => {
     render(<RunJourneyStrip journey={journey} />);
 
     const migrationJourney = screen.getByRole("list", { name: "Migration journey" });
-    expect(within(migrationJourney).getByRole("listitem", { name: "Setup: Complete" })).toBeInTheDocument();
+    expect(within(migrationJourney).getByRole("listitem", { name: "Setup: Completed" })).toBeInTheDocument();
     expect(within(migrationJourney).getByRole("listitem", { name: "Angular 20 to 21: Blocked" })).toBeInTheDocument();
-    expect(within(migrationJourney).getAllByText("Not reached")).toHaveLength(2);
+    expect(within(migrationJourney).getAllByText("Not started")).toHaveLength(2);
   });
 
   it("provides a typed mobile Previous Current Next window and a full-journey disclosure", () => {
     render(<RunJourneyStrip journey={fullJourney} />);
 
     const mobileWindow = screen.getByLabelText("Current migration window");
-    expect(within(mobileWindow).getByRole("listitem", { name: "Previous: Angular 19 to 20: Complete" })).toBeInTheDocument();
+    expect(within(mobileWindow).getByRole("listitem", { name: "Previous: Angular 19 to 20: Completed" })).toBeInTheDocument();
     expect(within(mobileWindow).getByRole("listitem", { name: "Current: Angular 20 to 21: Blocked" })).toBeInTheDocument();
-    expect(within(mobileWindow).getByRole("listitem", { name: "Next: Validate: Not reached" })).toBeInTheDocument();
+    expect(within(mobileWindow).getByRole("listitem", { name: "Next: Validate: Not started" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Show full migration journey"));
     expect(within(screen.getByLabelText("Full migration journey")).getAllByRole("listitem", { hidden: true })).toHaveLength(12);

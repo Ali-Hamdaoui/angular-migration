@@ -16,7 +16,7 @@ const review = { run_id: "run-1", gate_id: "G02", gate_version: "g02-v1", status
 describe("G02ReviewPanel", () => {
   it("renders a subordinate heading when embedded in a pipeline stage", () => {
     render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} headingLevel={4} />);
-    expect(screen.getByRole("heading", { name: "G02 source-integrity boundary", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Source snapshot integrity review", level: 4 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Immutable evidence", level: 5 })).toBeInTheDocument();
     expect(getG02Review).not.toHaveBeenCalled();
   });
@@ -35,9 +35,9 @@ describe("G02ReviewPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("alert")).toHaveTextContent("G02 review state could not be validated");
-    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh G02 review" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("The source snapshot review state could not be validated");
+    expect(screen.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh source snapshot review" }));
     expect(refreshAuthoritativeState).toHaveBeenCalledOnce();
   });
 
@@ -47,7 +47,7 @@ describe("G02ReviewPanel", () => {
     render(<G02ReviewPanel runId="run-1" initialState={state} />);
 
     expect(await screen.findByText(/evidence is finalized and verified/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record source snapshot decision" }));
     await waitFor(() => expect(decideG02).toHaveBeenCalledWith("run-1", {
       expected_state_version: 4,
       idempotency_key: "g02-run-1-approved-sha256:package",
@@ -64,15 +64,15 @@ describe("G02ReviewPanel", () => {
     vi.mocked(decideG02).mockResolvedValue(approvedReview);
     const view = render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record source snapshot decision" }));
 
     expect(await screen.findByText(/Baseline input boundary/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
     view.rerender(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
-    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
     view.rerender(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "loading" }} />);
-    expect(screen.getByText("Loading G02 review package")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(screen.getByText("Loading source snapshot review package")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -105,11 +105,11 @@ describe("G02ReviewPanel", () => {
     vi.mocked(decideG02).mockResolvedValue(response as unknown as G02ReviewResponse);
     render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} refreshAuthoritativeState={refreshAuthoritativeState} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record source snapshot decision" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("G02 decision response could not be validated");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The source snapshot decision response could not be validated");
     expect(refreshAuthoritativeState).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Baseline input boundary/)).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "global/wrong-artifact.json" })).not.toBeInTheDocument();
   });
@@ -125,10 +125,10 @@ describe("G02ReviewPanel", () => {
     render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
 
     fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "modification_requested" } });
-    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record source snapshot decision" }));
 
-    expect(await screen.findByText("G02 is modification_requested; the workflow will not continue until a new valid evidence package is created.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(await screen.findByText("The source snapshot review is modification_requested; the workflow will not continue until a new valid evidence package is created.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record source snapshot decision" })).not.toBeInTheDocument();
   });
 
   it("fails closed on a stale G02 decision and preserves the reviewer draft", async () => {
@@ -139,9 +139,9 @@ describe("G02ReviewPanel", () => {
     await screen.findByText(/evidence is finalized and verified/);
     fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approved_with_comment" } });
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Keep this review draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record source snapshot decision" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("G02 is stale");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The source snapshot review is stale");
     expect(screen.getByLabelText("Comment")).toHaveValue("Keep this review draft");
     expect(screen.queryByText(/Baseline input boundary: immutable snapshot/)).not.toBeInTheDocument();
   });
@@ -150,7 +150,7 @@ describe("G02ReviewPanel", () => {
     vi.mocked(getG02Review).mockResolvedValue({ ...review, package: { ...review.package, integrity: { ...review.package.integrity, source_read_only_verified: false } } });
     render(<G02ReviewPanel runId="run-1" initialState={state} />);
 
-    const button = await screen.findByRole("button", { name: "Record G02 decision" });
+    const button = await screen.findByRole("button", { name: "Record source snapshot decision" });
     expect(button).toBeDisabled();
     expect(screen.getByText(/blocked while source-integrity evidence is being finalized/)).toBeInTheDocument();
   });
@@ -181,7 +181,7 @@ describe("BaselineQualificationPanel G03 authority", () => {
 
   it("renders a subordinate heading when embedded in a pipeline stage", () => {
     render(<BaselineQualificationPanel runId="run-1" stateVersion={7} authoritativeAssessment={{ status: "ready", value: assessment }} headingLevel={4} />);
-    expect(screen.getByRole("heading", { name: "Baseline qualification / G03", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Baseline qualification", level: 4 })).toBeInTheDocument();
     expect(getBaselineSummary).not.toHaveBeenCalled();
   });
 
@@ -190,7 +190,7 @@ describe("BaselineQualificationPanel G03 authority", () => {
     vi.mocked(decideG03).mockResolvedValue({ ...assessment, g03_decision: "approved" });
     render(<BaselineQualificationPanel runId="run-1" stateVersion={7} workflowEvents={[{ event_type: "G03_CREATED" }]} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Approve G03" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve baseline qualification" }));
 
     await waitFor(() => expect(decideG03).toHaveBeenCalledWith("run-1", {
       expected_state_version: 8,

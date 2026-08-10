@@ -91,12 +91,12 @@ const PIPELINE_GROUP_BY_KEY: Record<JourneyKey, PipelineStageContent["group"]> =
 
 const PIPELINE_SUMMARIES: Record<JourneyKey, string> = {
   setup: "Prepare the source boundary for authoritative migration work.",
-  readiness: "Confirm the immutable source snapshot and G02 source-snapshot decision.",
+  readiness: "Confirm the immutable source snapshot and source-snapshot decision.",
   g01: "Production readiness was reviewed before this run was created.",
-  baseline: "Establish and accept the known pre-migration baseline through G03.",
-  discovery: "Review discovery, parity anchors, and the G04 analysis decision.",
-  feasibility: "Resolve compatibility and decide whether the route may proceed through G05.",
-  plan: "Review the checksum-bound migration plan and G06 execution contract.",
+  baseline: "Establish and accept the known pre-migration baseline.",
+  discovery: "Review the application analysis, parity anchors, and the analysis decision.",
+  feasibility: "Resolve compatibility and decide whether migration readiness may proceed.",
+  plan: "Review the checksum-bound migration plan and execution contract.",
   "18-to-19": "Angular 18 to 19 transformation details are available when the backend exposes them.",
   "19-to-20": "Angular 19 to 20 transformation details are available when the backend exposes them.",
   "20-to-21": "Angular 20 to 21 transformation details are available when the backend exposes them.",
@@ -373,7 +373,11 @@ export function AuthoritativeRunDashboard({
             refreshAuthoritativeState={refresh}
           />
         ) : <div className="pipelineHumanSummary">
-          <p>{milestone.state === "unavailable" ? "Not available from the authoritative state" : PIPELINE_SUMMARIES[milestone.key]}</p>
+          <p>{milestone.state === "unavailable"
+            ? transformation.status === "failed"
+              ? "Not available from the authoritative state"
+              : "Not started yet — no work has reached this stage"
+            : PIPELINE_SUMMARIES[milestone.key]}</p>
           {milestone.key === "setup" && hasEvent(state, "SOURCE_INTAKE_FAILED") ? (
             <>
               {retryError ? <p role="alert">{retryError}</p> : null}

@@ -25,18 +25,18 @@ describe("PlanReviewPanel", () => {
 
   it("renders subordinate headings when embedded in a pipeline stage", () => {
     render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} headingLevel={4} />);
-    expect(screen.getByRole("heading", { name: "Review and approve MigrationPlan", level: 4 })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "G06 decision", level: 5 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Migration plan approval", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Migration plan decision", level: 5 })).toBeInTheDocument();
   });
 
   it("renders immutable diff, separated explanation, evidence, and accessible G06 controls", () => {
     render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} />);
-    expect(screen.getByRole("heading", { name: "Review and approve MigrationPlan" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Migration plan approval" })).toBeInTheDocument();
     expect(screen.getByLabelText("Plan version")).toBeInTheDocument();
     expect(screen.getByText("Immutable version diff")).toBeInTheDocument();
     expect(screen.getByText("Advisory explanation")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "artifact-1" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve G06" })).toBeEnabled();
+    expect(screen.getByRole("link", { name: "Evidence item 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve migration plan" })).toBeEnabled();
   });
 
   it.each([
@@ -53,8 +53,8 @@ describe("PlanReviewPanel", () => {
   it("keeps G06 actions disabled when the evidence package is unavailable", () => {
     vi.mocked(usePlanReview).mockReturnValue({ ...baseResult, review: { ...review, package_checksum: null } });
     render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Approve G06" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Request modification" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Approve migration plan" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Request plan changes" })).toBeDisabled();
   });
 
   it("exposes stale and backend failure states without advancing workflow locally", () => {
@@ -70,10 +70,10 @@ describe("PlanReviewPanel", () => {
     render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} />);
 
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Keep the exact execution contract" } });
-    fireEvent.click(screen.getByRole("button", { name: "Approve G06" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve migration plan" }));
 
     expect(decide).toHaveBeenCalledWith("approve", "Keep the exact execution contract");
-    expect(screen.getByText("pending")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting approval")).toBeInTheDocument();
   });
 
   it("keeps every G06 API binding and reloads authoritative state after a 409", async () => {

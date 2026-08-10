@@ -95,15 +95,15 @@ function ArtifactPreviewContent({ artifact, presentation, initialContent, initia
         <details className={styles.technicalDetails}>
           <summary>Technical details</summary>
           <dl className={styles.metadataGrid}>
-            <div><dt>ID</dt><dd>{artifact.artifact_id}</dd></div>
+            <div><dt>ID</dt><dd title={artifact.artifact_id}>{artifact.artifact_id}</dd></div>
             <div><dt>Type</dt><dd>{artifact.artifact_type}</dd></div>
             <div><dt>Category</dt><dd>{presented.category}</dd></div>
             <div><dt>Stage</dt><dd>{artifact.stage_id ?? "global"}</dd></div>
             <div><dt>Attempt</dt><dd>{attempt ?? presented.attemptLabel ?? "none"}</dd></div>
             <div><dt>Producer</dt><dd>{createdBy?.trim() || "Unavailable"}</dd></div>
-            <div><dt>Timestamp</dt><dd>{new Date(artifact.created_at).toISOString()}</dd></div>
-            <div><dt>Relative path</dt><dd><code>{presented.rawPath}</code></dd></div>
-            <div><dt>Checksum</dt><dd><code>{artifact.checksum}</code></dd></div>
+            <div><dt>Timestamp</dt><dd>{new Date(artifact.created_at).toLocaleString()}</dd></div>
+            <div><dt>Relative path</dt><dd title={presented.rawPath}><code>{presented.rawPath}</code></dd></div>
+            <div><dt>Checksum</dt><dd title={artifact.checksum}><code>{artifact.checksum}</code></dd></div>
           </dl>
         </details>
       </details>

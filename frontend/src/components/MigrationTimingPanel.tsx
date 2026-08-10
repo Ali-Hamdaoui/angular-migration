@@ -14,7 +14,7 @@ const activityLabels: Array<[keyof RunTimingActivityDto, string]> = [
   ["sealing", "Sealing activity"],
 ];
 
-function formatDuration(seconds: number | null): string {
+export function formatDuration(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "—";
   const rounded = Math.round(seconds);
   const hours = Math.floor(rounded / 3600);
@@ -25,7 +25,7 @@ function formatDuration(seconds: number | null): string {
   return `${remaining}s`;
 }
 
-function formatTimestamp(value: string | null): string {
+export function formatTimestamp(value: string | null): string {
   return value ? new Date(value).toLocaleString() : "—";
 }
 

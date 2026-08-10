@@ -14,7 +14,8 @@
 .resultButton:hover, .resultButton:focus-visible, .resultButton[data-selected="true"] { border-color: var(--color-accent); }
 .resultButton strong, .resultButton span, .resultButton code { min-width: 0; overflow-wrap: anywhere; }
 .resultButton span { color: var(--color-text-muted); font-size: .875rem; }
-.resultButton code { color: var(--color-accent); font-size: .75rem; }
+.resultButton code { display: block; max-width: 100%; color: var(--color-text-muted); font-size: .75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.resultButton .resultPath { opacity: .72; }
 .empty, .placeholder { margin: 0; color: var(--color-text-muted); }
 .detailPane { min-height: 460px; padding: 1rem; }
 .placeholder { display: grid; min-height: 420px; place-content: center; justify-items: center; gap: .35rem; text-align: center; }

@@ -6,6 +6,7 @@ import type { RunWorkspaceProjection } from "@/presentation/currentAction";
 import type { JourneyKey, TransformationLoadStatus } from "@/presentation/runJourney";
 import type { ControlTowerSection } from "./ControlTowerSidebar";
 import { CurrentActionCard } from "./CurrentActionCard";
+import { OperationalSummarySlot } from "./OperationalSummarySlot";
 import { RunJourneyStrip } from "./RunJourneyStrip";
 import { TechnicalDetails } from "./TechnicalDetails";
 import styles from "./ControlTowerLayout.module.css";
@@ -34,15 +35,15 @@ export function OperatorOverview({
   return (
     <section className={styles.operatorOverview} aria-labelledby="overview-heading">
       <h2 className={styles.visuallyHidden} id="overview-heading">Overview</h2>
-      <RunJourneyStrip journey={projection.journey} />
       {error ? <p className={styles.overviewAlert} role="alert">{error}</p> : null}
       <CurrentActionCard action={projection.currentAction} onNavigate={onNavigate} />
+      <RunJourneyStrip journey={projection.journey} />
+      <OperationalSummarySlot runId={run.run_id} run={run} />
 
       <section className={styles.journeyStory} aria-labelledby="journey-story-title">
-        <h2 className={styles.visuallyHidden} id="journey-story-title">Completed, now, and next</h2>
+        <h2 className={styles.visuallyHidden} id="journey-story-title">Completed and next</h2>
         <ol>
           <li data-story="completed"><span>Completed</span><strong>{projection.completed}</strong></li>
-          <li data-story="now"><span>Now</span><strong>{projection.now}</strong></li>
           <li data-story="next"><span>Next</span><strong>{projection.next}</strong></li>
         </ol>
       </section>

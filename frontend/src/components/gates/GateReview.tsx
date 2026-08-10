@@ -98,7 +98,7 @@ export function GateReview({
     <article className={styles.review} aria-labelledby={ids.title}>
       <header className={styles.hero}>
         <div>
-          <p className={styles.eyebrow}>{model.gateId} governed review</p>
+          <p className={styles.eyebrow}>{model.status === 'pending' ? 'Human approval' : 'Review record'}</p>
           <TitleHeading id={ids.title}>{model.title}</TitleHeading>
         </div>
         <StatusPill status={status} />

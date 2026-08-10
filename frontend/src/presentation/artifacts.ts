@@ -75,7 +75,7 @@ function stageLabel(artifact: ArtifactRefDto): string {
   if (normalized.includes("00_job_setup")) return "Setup";
   if (normalized.includes("01_source_snapshot")) return "Source snapshot";
   if (normalized.includes("02_baseline")) return "Baseline";
-  if (normalized.includes("03_analysis")) return "Discovery";
+  if (normalized.includes("03_analysis")) return "Analysis";
   if (normalized.includes("04_feasibility")) return "Feasibility";
   if (normalized.includes("05_plan")) return "Migration plan";
   return "Run";

@@ -19,11 +19,11 @@ const ACTION_ICONS: Record<CurrentAction["kind"], LucideIcon> = {
   unavailable: CircleHelp,
 };
 
-const ACTION_LABELS: Record<CurrentAction["kind"], string> = {
-  gate: "Action required",
-  blocked: "Action required",
-  running: "Work in progress",
-  complete: "Migration complete",
+export const ACTION_LABELS: Record<CurrentAction["kind"], string> = {
+  gate: "Waiting for approval",
+  blocked: "Blocked",
+  running: "Running",
+  complete: "Completed",
   unavailable: "State unavailable",
 };
 
