@@ -33,15 +33,24 @@ function humanize(raw: string): string {
   return words ? `${words[0].toUpperCase()}${words.slice(1)}` : "Untitled artifact";
 }
 
+function hasTokenSequence(tokens: string[], left: string, right: string): boolean {
+  return tokens.some((token, index) => token === left && tokens[index + 1] === right);
+}
+
 function categoryFromStableSegments(artifact: ArtifactRefDto): ArtifactCategory {
-  const source = `${artifact.stage_id ?? ""}/${artifact.relative_path}`.toLowerCase();
-  if (/(?:^|[/_.-])g(?:0[1-9]|1[0-2])(?:[/_.-]|$)|gate[_/-]|approval[_/-]?package/.test(source)) return "gate";
-  if (/command|stdout|stderr|execution[_/-]?log|npm[_/-]?ci/.test(source)) return "command";
-  if (/validation|parity|assurance|test[_/-]?result|build[_/-]?result/.test(source)) return "validation";
-  if (/report|delivery|migration[_/-]?summary/.test(source)) return "report";
-  if (/diff|patch|change[_/-]?set/.test(source)) return "diff";
-  if (/snapshot|source[_/-]?manifest|inventory|fingerprint/.test(source)) return "snapshot";
-  if (/diagnostic|failure|error|worker[_/-]?loss/.test(source)) return "diagnostic";
+  const tokens = `${artifact.stage_id ?? ""}/${artifact.relative_path}`
+    .toLowerCase()
+    .split(/[\\/._-]+/)
+    .filter(Boolean);
+  const hasAny = (...candidates: string[]) => candidates.some((candidate) => tokens.includes(candidate));
+
+  if (tokens.some((token) => /^g(?:0[1-9]|1[0-2])$/.test(token)) || hasAny("gate") || hasTokenSequence(tokens, "approval", "package")) return "gate";
+  if (hasAny("command", "commands", "stdout", "stderr") || hasTokenSequence(tokens, "execution", "log") || hasTokenSequence(tokens, "npm", "ci")) return "command";
+  if (hasAny("validation", "parity", "assurance") || hasTokenSequence(tokens, "test", "result") || hasTokenSequence(tokens, "build", "result")) return "validation";
+  if (hasAny("report", "reports", "delivery") || hasTokenSequence(tokens, "migration", "summary")) return "report";
+  if (hasAny("diff", "patch") || hasTokenSequence(tokens, "change", "set")) return "diff";
+  if (hasAny("snapshot", "inventory", "fingerprint") || hasTokenSequence(tokens, "source", "manifest")) return "snapshot";
+  if (hasAny("diagnostic", "diagnostics", "failure", "error") || hasTokenSequence(tokens, "worker", "loss")) return "diagnostic";
   return "other";
 }
 

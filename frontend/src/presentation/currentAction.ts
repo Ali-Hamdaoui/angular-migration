@@ -32,6 +32,8 @@ export interface RunWorkspaceProjection {
 
 const RUN_GATE_IDS = ["G02", "G03", "G04", "G05", "G06"] as const;
 const TRANSFORMATION_GATE_IDS: GateId[] = ["G07", "G08", "G09", "G10", "G11", "G12"];
+const BLOCKING_TRANSFORMATION_STATUSES = ["blocked", "failed"];
+const BLOCKING_STAGE_STATUSES = ["FAILED", "ROLLED_BACK", "CANCELLED", "DIAGNOSTIC_HOLD"];
 const TERMINAL_GATE_SUFFIXES = [
   "APPROVED",
   "APPROVED_WITH_RISK",
@@ -55,12 +57,12 @@ function stageKeyForTransformation(transformation: TransformationProjection): Jo
   return undefined;
 }
 
-function stageKeyForGate(gateId: GateId): JourneyKey {
+function stageKeyForGate(gateId: GateId): JourneyKey | undefined {
   if (gateId === "G02" || gateId === "G03") return "baseline";
   if (gateId === "G04") return "discovery";
   if (gateId === "G05") return "feasibility";
   if (gateId === "G06") return "plan";
-  return "18-to-19";
+  return undefined;
 }
 
 function stringArray(value: unknown): string[] {
@@ -96,7 +98,7 @@ function gateAction(
   gateId: GateId,
   rawSource: string,
   evidenceIds: string[],
-  stageKey: JourneyKey,
+  stageKey?: JourneyKey,
 ): CurrentAction {
   const definition = gateDefinition(gateId);
   return {
@@ -106,7 +108,7 @@ function gateAction(
     summary: definition.purpose,
     consequence: definition.decision,
     section: gateId === "G01" ? "overview" : "pipeline",
-    stageKey,
+    ...(stageKey ? { stageKey } : {}),
     evidenceIds,
     rawSource,
   };
@@ -129,7 +131,7 @@ function transformationGateAction(transformation: TransformationProjection): Cur
     transformation.active_gate,
     `transformation:${transformation.continuation_id}:${transformation.active_gate}`,
     [transformation.continuation_id, transformation.stage_id],
-    stageKeyForTransformation(transformation) ?? stageKeyForGate(transformation.active_gate),
+    stageKeyForTransformation(transformation),
   );
 }
 
@@ -154,7 +156,7 @@ function transformationAction(transformation: TransformationProjection): Current
     evidenceIds: [transformation.continuation_id, transformation.stage_id],
   };
 
-  if (status.includes("blocked") || status.includes("failed") || ["blocked", "failed"].includes(transformation.stage_status.toLowerCase())) {
+  if (BLOCKING_TRANSFORMATION_STATUSES.includes(status) || BLOCKING_STAGE_STATUSES.includes(transformation.stage_status)) {
     return {
       ...common,
       kind: "blocked",
@@ -318,11 +320,8 @@ export function summarizeCompleted(journey: JourneyMilestone[]): string {
 
 export function summarizeNext(journey: JourneyMilestone[], currentAction: CurrentAction): string {
   if (currentAction.kind === "complete") return "No further milestone";
-  const next = journey.find((milestone) =>
-    milestone.state === "action-required"
-    || milestone.state === "current"
-    || milestone.state === "not-reached",
-  );
+  const next = journey.find((milestone) => milestone.state === "blocked")
+    ?? journey.find((milestone) => milestone.state === "action-required" || milestone.state === "current");
   return next?.label ?? "Next milestone unavailable";
 }
 

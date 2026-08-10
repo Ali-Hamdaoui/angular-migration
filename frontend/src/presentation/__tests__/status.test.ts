@@ -33,4 +33,11 @@ describe("presentStatus", () => {
       raw: "FUTURE_BACKEND_VALUE",
     });
   });
+
+  it.each([
+    ["toString", "Tostring"],
+    ["constructor", "Constructor"],
+  ] as const)("treats prototype key %s as an unknown neutral backend value", (raw, label) => {
+    expect(presentStatus(raw)).toEqual({ label, tone: "neutral", raw });
+  });
 });

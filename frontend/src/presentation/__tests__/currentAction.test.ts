@@ -87,6 +87,27 @@ describe("selectCurrentAction", () => {
   });
 
   it.each([
+    ["missing", null, null],
+    ["unsupported", "17", "18"],
+  ] as const)("omits stage attribution for a %s transformation route", (_case, sourceVersion, targetVersion) => {
+    const action = selectCurrentAction(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        status: "waiting_gate",
+        active_gate: "G07",
+        active_gate_package_checksum: "sha256:g07",
+        source_version: sourceVersion,
+        target_version: targetVersion,
+      }),
+      "ready",
+      "open",
+    );
+
+    expect(action).toMatchObject({ kind: "gate", gateId: "G07" });
+    expect(action).not.toHaveProperty("stageKey");
+  });
+
+  it.each([
     [
       "blocked",
       { status: "blocked", active_error: { code: "POLICY_BLOCKED", message: "Policy blocked the stage." } },
@@ -120,6 +141,17 @@ describe("selectCurrentAction", () => {
     );
 
     expect(action).toMatchObject({ title, kind, section: "pipeline" });
+  });
+
+  it.each(["unblocked", "failed_over"])("does not infer a blocker from unknown transformation status %s", (status) => {
+    const action = selectCurrentAction(
+      makeAuthoritativeRun({ status: "CREATED", phase_status: "not_started", workflow_events: [] }),
+      makeTransformation({ status, stage_status: "RUNNING" }),
+      "ready",
+      "open",
+    );
+
+    expect(action).toMatchObject({ kind: "unavailable", title: "Current action unavailable" });
   });
 
   it.each([
@@ -347,7 +379,45 @@ describe("buildRunWorkspaceProjection", () => {
 
     expect(projection.now).toBe("Analysis running");
     expect(projection.completed).toBe("Setup, Readiness, Production readiness");
-    expect(projection.next).toBe("Baseline");
+    expect(projection.next).toBe("Discovery");
     expect(projection.journey).toHaveLength(12);
+  });
+
+  it("keeps a rejected G06 blocker as next instead of advancing to transformation", () => {
+    const projection = buildRunWorkspaceProjection(
+      makeAuthoritativeRun({
+        status: "WAITING_PLAN_APPROVAL",
+        phase_status: "blocked",
+        approval_status: "rejected",
+        workflow_events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("G06_CREATED", 2),
+          makeEvent("G06_REJECTED", 3),
+        ],
+      }),
+      null,
+      "empty",
+      "open",
+    );
+
+    expect(projection.next).toBe("Migration plan");
+    expect(projection.journey.find((item) => item.key === "18-to-19")?.state).toBe("not-reached");
+  });
+
+  it("withholds next when no authoritative current, action, or blocker fact exists", () => {
+    const projection = buildRunWorkspaceProjection(
+      makeAuthoritativeRun({
+        status: "CREATED",
+        phase_status: "not_started",
+        preflight_id: "",
+        workflow_events: [],
+      }),
+      null,
+      "empty",
+      "open",
+    );
+
+    expect(projection.currentAction.kind).toBe("unavailable");
+    expect(projection.next).toBe("Next milestone unavailable");
   });
 });

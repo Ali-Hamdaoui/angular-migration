@@ -61,4 +61,21 @@ describe("presentArtifact", () => {
       rawPath: "future_backend/new_evidence_shape.json",
     });
   });
+
+  it.each([
+    "reporter_notes.json",
+    "errorless.json",
+    "commandments.json",
+    "patchouli.json",
+    "validationish.json",
+    "snapshotting.json",
+    "different.json",
+  ])("does not promote ambiguous filename token %s", (filename) => {
+    const presentation = presentArtifact(makeArtifact({
+      artifact_type: "json",
+      relative_path: `future_backend/${filename}`,
+    }));
+
+    expect(presentation.category).toBe("other");
+  });
 });

@@ -39,7 +39,9 @@ function sentenceCase(raw: string): string {
 }
 
 export function presentStatus(raw: string): StatusPresentation {
-  const explicit = STATUS_PRESENTATIONS[raw];
+  const explicit = Object.prototype.hasOwnProperty.call(STATUS_PRESENTATIONS, raw)
+    ? STATUS_PRESENTATIONS[raw]
+    : undefined;
   return explicit
     ? { ...explicit, raw }
     : { label: sentenceCase(raw), tone: "neutral", raw };

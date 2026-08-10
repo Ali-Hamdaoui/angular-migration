@@ -94,6 +94,32 @@ describe("buildJourney", () => {
     }
   });
 
+  it("does not invent a current milestone when no authoritative current fact exists", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun({ status: "CREATED", phase_status: "not_started" }),
+      null,
+      "empty",
+    );
+
+    expect(stateOf(journey, "baseline").state).toBe("not-reached");
+    expect(journey.some((item) => item.state === "current")).toBe(false);
+  });
+
+  it("marks Discovery current only from explicit ANALYSIS_RUNNING authority", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun({
+        status: "ANALYSIS_RUNNING",
+        run_phase: "DISCOVERY_BASELINE",
+        phase_status: "running",
+      }),
+      null,
+      "empty",
+    );
+
+    expect(stateOf(journey, "baseline").state).toBe("not-reached");
+    expect(stateOf(journey, "discovery").state).toBe("current");
+  });
+
   it.each([
     ["G02", "baseline"],
     ["G03", "baseline"],
@@ -160,9 +186,9 @@ describe("buildJourney", () => {
       makeAuthoritativeRun(),
       makeTransformation({
         route_stages: [
-          { stage_id: "stage-a", source_version: "18.2.0", target_version: "19.1.0", status: "completed" },
-          { stage_id: "stage-b", source_version: "19", target_version: "20", status: "running" },
-          { stage_id: "stage-c", source_version: "20.x", target_version: "21.x", status: "blocked" },
+          { stage_id: "stage-a", source_version: "18.2.0", target_version: "19.1.0", status: "PASSED" },
+          { stage_id: "stage-b", source_version: "19", target_version: "20", status: "RUNNING" },
+          { stage_id: "stage-c", source_version: "20.x", target_version: "21.x", status: "FAILED" },
         ],
       }),
       "ready",
@@ -171,6 +197,73 @@ describe("buildJourney", () => {
     expect(stateOf(journey, "18-to-19")).toMatchObject({ state: "complete", stageId: "stage-a" });
     expect(stateOf(journey, "19-to-20")).toMatchObject({ state: "current", stageId: "stage-b" });
     expect(stateOf(journey, "20-to-21")).toMatchObject({ state: "blocked", stageId: "stage-c" });
+  });
+
+  it.each([
+    ["PENDING", "not-reached"],
+    ["preparing", "current"],
+    ["RUNNING", "current"],
+    ["WAITING_APPROVAL", "action-required"],
+    ["REPAIRING", "current"],
+    ["PASSED", "complete"],
+    ["passed_with_known_baseline_failures", "complete"],
+    ["passed_with_manual_items", "complete"],
+    ["FAILED", "blocked"],
+    ["ROLLED_BACK", "blocked"],
+    ["CANCELLED", "blocked"],
+    ["DIAGNOSTIC_HOLD", "blocked"],
+  ] as const)("maps authoritative route status %s to %s", (status, expectedState) => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        route_stages: [
+          { stage_id: `stage-${status}`, source_version: "18", target_version: "19", status },
+        ],
+      }),
+      "ready",
+    );
+
+    expect(stateOf(journey, "18-to-19").state).toBe(expectedState);
+  });
+
+  it("marks all route milestones unavailable when a ready projection has no route entries", () => {
+    const journey = buildJourney(makeAuthoritativeRun(), makeTransformation({ route_stages: [] }), "ready");
+
+    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
+    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
+    expect(stateOf(journey, "20-to-21").state).toBe("unavailable");
+  });
+
+  it("marks absent route milestones unavailable in a partial ready projection", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        route_stages: [
+          { stage_id: "stage-18-19", source_version: "18", target_version: "19", status: "RUNNING" },
+        ],
+      }),
+      "ready",
+    );
+
+    expect(stateOf(journey, "18-to-19").state).toBe("current");
+    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
+    expect(stateOf(journey, "20-to-21").state).toBe("unavailable");
+  });
+
+  it("marks route milestones unavailable when ready entries cannot map to the supported route", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        route_stages: [
+          { stage_id: "stage-17-18", source_version: "17", target_version: "18", status: "RUNNING" },
+        ],
+      }),
+      "ready",
+    );
+
+    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
+    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
+    expect(stateOf(journey, "20-to-21").state).toBe("unavailable");
   });
 
   it("marks missing transformation data unavailable when durable transformation evidence exists", () => {

@@ -1,4 +1,4 @@
-import type { AuthoritativeRunStateDto, WorkflowEventDto } from "@/types/generated/api";
+import type { AuthoritativeRunStateDto, StageStatus, WorkflowEventDto } from "@/types/generated/api";
 import type { TransformationProjection } from "@/types/transformation";
 import type { GateId } from "@/presentation/gates";
 
@@ -59,6 +59,20 @@ const TERMINAL_SUFFIXES = [
   "EXPIRED",
   "CANCELLED",
 ] as const;
+const ROUTE_STATUS_STATES = {
+  PENDING: "not-reached",
+  preparing: "current",
+  RUNNING: "current",
+  WAITING_APPROVAL: "action-required",
+  REPAIRING: "current",
+  PASSED: "complete",
+  passed_with_known_baseline_failures: "complete",
+  passed_with_manual_items: "complete",
+  FAILED: "blocked",
+  ROLLED_BACK: "blocked",
+  CANCELLED: "blocked",
+  DIAGNOSTIC_HOLD: "blocked",
+} satisfies Record<StageStatus, JourneyState>;
 
 function milestone(key: JourneyKey, state: JourneyState = "not-reached"): JourneyMilestone {
   return { key, label: JOURNEY_LABELS[key], state };
@@ -105,23 +119,18 @@ function routeKey(source: string | null, target: string | null): JourneyKey | nu
 }
 
 function routeState(rawStatus: string): JourneyState {
-  const status = rawStatus.trim().toLowerCase();
-  if (["completed", "complete", "passed", "sealed", "succeeded"].includes(status)) return "complete";
-  if (["running", "active", "in_progress", "preparing"].includes(status)) return "current";
-  if (status.startsWith("waiting") || status === "action_required") return "action-required";
-  if (["blocked", "failed", "cancelled", "rolled_back"].includes(status)) return "blocked";
-  if (["pending", "not_started", "queued"].includes(status)) return "not-reached";
-  return "unavailable";
+  return Object.prototype.hasOwnProperty.call(ROUTE_STATUS_STATES, rawStatus)
+    ? ROUTE_STATUS_STATES[rawStatus as StageStatus]
+    : "unavailable";
 }
 
 function hasTransformationEvidence(events: WorkflowEventDto[]): boolean {
   return events.some((event) => /^(G(?:0[7-9]|1[0-2])_|TRANSFORMATION_|STAGE(?:D)?_|FINAL_TARGET_|CLI_|VERSION_|REPAIR_)/.test(event.event_type));
 }
 
-function applyCurrentMarker(journey: JourneyMilestone[]): void {
-  if (journey.some((item) => item.state === "current" || item.state === "action-required" || item.state === "blocked")) return;
-  const firstNotReached = journey.find((item) => item.state === "not-reached");
-  if (firstNotReached) firstNotReached.state = "current";
+function applyExplicitRunCurrent(run: AuthoritativeRunStateDto, byKey: Map<JourneyKey, JourneyMilestone>): void {
+  const key = run.status === "ANALYSIS_RUNNING" ? "discovery" : null;
+  if (key && byKey.get(key)?.state === "not-reached") byKey.get(key)!.state = "current";
 }
 
 export function buildJourney(
@@ -159,6 +168,7 @@ export function buildJourney(
   const planBlocked = byKey.get("plan")!.state === "blocked";
   if (!planBlocked) {
     if (transformation && transformation.run_id === run.run_id && transformationStatus === "ready") {
+      for (const key of routeKeys) byKey.get(key)!.state = "unavailable";
       for (const stage of transformation.route_stages) {
         const key = routeKey(stage.source_version, stage.target_version);
         if (!key) continue;
@@ -182,7 +192,6 @@ export function buildJourney(
     Object.assign(byKey.get("complete")!, { state: "complete", evidenceEvent: stagedMigrationCompleted.event_id });
   }
 
-  const journey = JOURNEY_ORDER.map((key) => byKey.get(key)!);
-  applyCurrentMarker(journey);
-  return journey;
+  applyExplicitRunCurrent(run, byKey);
+  return JOURNEY_ORDER.map((key) => byKey.get(key)!);
 }
