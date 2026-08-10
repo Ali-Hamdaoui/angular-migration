@@ -21,6 +21,26 @@ describe("G02ReviewPanel", () => {
     expect(getG02Review).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["unknown status", { status: "unexpected", decision: null }],
+    ["inconsistent status and decision", { status: "pending", decision: "approved" }],
+  ])("never exposes decision controls for an authoritative G02 review with %s", async (_case, invalidState) => {
+    const refreshAuthoritativeState = vi.fn().mockResolvedValue(undefined);
+    render(
+      <G02ReviewPanel
+        runId="run-1"
+        initialState={state}
+        authoritativeReview={{ status: "ready", value: { ...review, ...invalidState } as unknown as G02ReviewResponse }}
+        refreshAuthoritativeState={refreshAuthoritativeState}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("G02 review state could not be validated");
+    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh G02 review" }));
+    expect(refreshAuthoritativeState).toHaveBeenCalledOnce();
+  });
+
   it("shows the blocked next step and records approval", async () => {
     vi.mocked(getG02Review).mockResolvedValue(review);
     vi.mocked(decideG02).mockResolvedValue({ ...(review as Record<string, unknown>), status: "approved", decision: "approved", baseline_input_boundary: "snapshot-1" } as never);

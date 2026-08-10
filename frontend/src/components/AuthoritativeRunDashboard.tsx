@@ -16,7 +16,7 @@ import { getG02Review } from "@/api/g02";
 import { getBaselineSummary } from "@/api/baselineG03";
 import { getBackendBaseUrl } from "@/api/client";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
-import { G02ReviewPanel } from "./G02ReviewPanel";
+import { G02ReviewPanel, validG02StatusDecision } from "./G02ReviewPanel";
 import { BaselineQualificationPanel } from "./BaselineQualificationPanel";
 import { BaselineParityPanel } from "./BaselineParityPanel";
 import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
@@ -133,6 +133,7 @@ function latestGateEventId(events: WorkflowEventDto[], gateId: "G02" | "G03", cr
 function validG02Review(value: G02ReviewResponse, runId: string, packageChecksum: string): boolean {
   return value.run_id === runId
     && value.gate_id === "G02"
+    && validG02StatusDecision(value)
     && value.package?.run_id === runId
     && value.package.gate_id === "G02"
     && value.package.package_checksum === packageChecksum

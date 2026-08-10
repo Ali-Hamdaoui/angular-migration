@@ -567,6 +567,29 @@ describe("AuthoritativeRunDashboard", () => {
     expect(panelView.queryByRole("button", { name: unsafeAction })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["unknown status", { status: "unexpected", decision: null }],
+    ["inconsistent status and decision", { status: "pending", decision: "approved" }],
+  ])("fails closed and GET-retries a same-run/checksum G02 response with %s", async (_case, invalidState) => {
+    const validReview = g02Review("sha256:g02-package", "g02-package-artifact");
+    vi.mocked(getG02Review)
+      .mockResolvedValueOnce({ ...validReview, ...invalidState } as unknown as G02ReviewResponse)
+      .mockResolvedValueOnce(validReview);
+    renderDashboard(gatePackageRun("readiness"));
+    fireEvent.click(screen.getByRole("button", { name: /^Pipeline/ }));
+    await waitFor(() => expect(getG02Review).toHaveBeenCalledOnce());
+    const panelView = render(<>{reviewPanelFor("readiness")}</>);
+
+    expect(panelView.getByText("G02 review package is unavailable because the response was invalid.")).toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: "Initialize G02 review" })).not.toBeInTheDocument();
+    fireEvent.click(panelView.getByRole("button", { name: "Retry G02 review" }));
+    await waitFor(() => expect(getG02Review).toHaveBeenCalledTimes(2));
+    panelView.rerender(<>{reviewPanelFor("readiness")}</>);
+
+    expect(panelView.getByRole("button", { name: "Record G02 decision" })).toBeInTheDocument();
+  });
+
   it("renders one route heading, a skip link, human evidence, and closed technical details", () => {
     const run = makeAuthoritativeRun({
       artifacts: [makeArtifact({ relative_path: "00_job_setup/create_run_request.json" })],
