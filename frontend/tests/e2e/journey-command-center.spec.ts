@@ -212,7 +212,6 @@ test.describe("Journey Command Center real-service journeys", () => {
     const transformation = page.getByRole("button", { name: /20.*21|Transform/i }).first();
     if (await transformation.count()) await transformation.click();
     await page.setViewportSize(viewport.mobile);
-    console.log("mobile sidebar state", await page.locator(".controlTowerSidebar").getAttribute("class"), await page.locator(".controlTowerSidebar").evaluate((element) => getComputedStyle(element).transform));
     await page.screenshot({ path: screenshotPath("built-transformation-mobile.png") });
     await page.setViewportSize(viewport.desktop);
     await selectSection(page, "Evidence");
