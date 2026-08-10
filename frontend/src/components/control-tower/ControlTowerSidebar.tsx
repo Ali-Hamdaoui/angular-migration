@@ -58,7 +58,7 @@ export function ControlTowerSidebar({
             >
               <Icon aria-hidden="true" size={20} />
               <span>{item.label}</span>
-              {itemActionRequired ? <span className="controlTowerNavAction" aria-hidden="true">Action required</span> : null}
+              {itemActionRequired ? <> <span className="controlTowerNavAction">Action required</span></> : null}
             </button>
           );
         })}

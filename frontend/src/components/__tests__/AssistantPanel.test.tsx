@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AssistantDock, AssistantPanel } from "@/components/AssistantPanel";
 import { getAssistantMessages, sendAssistantMessage, streamAssistantEvents } from "@/api/assistant";
 import { ApiClientError } from "@/api/client";
+
+const shellCss = readFileSync("src/components/ControlTowerShell.module.css", "utf8");
+const layoutCss = readFileSync("src/components/control-tower/ControlTowerLayout.module.css", "utf8");
 
 vi.mock("@/api/assistant", () => ({
   getAssistantMessages: vi.fn().mockResolvedValue({ run_id: "run-1", conversation_id: "conversation-1", messages: [{
@@ -61,6 +65,24 @@ describe("AssistantPanel authoritative rendering", () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { name: "Migration Follow-up Assistant", hidden: true })).toHaveLength(1);
     expect(getAssistantMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps closed and minimized launchers in the sidebar flow while the expanded dialog stays fixed", async () => {
+    const { container } = render(
+      <aside className="controlTowerSidebar">
+        <nav aria-label="Run sections" />
+        <div className="controlTowerAssistantSlot"><AssistantDock runId="run-1" /></div>
+      </aside>,
+    );
+
+    const slot = container.querySelector(".controlTowerAssistantSlot") as HTMLElement;
+    expect(slot).toContainElement(screen.getByRole("button", { name: "Open Assistant" }));
+    expect(layoutCss).toMatch(/:global\(\.controlTowerAssistantSlot\) \[data-assistant-presentation\][^{]*\{[^}]*position:\s*static/);
+    expect(layoutCss).toMatch(/@media \(max-width: 767px\)[^{]*\{[\s\S]*:global\(\.controlTowerAssistantSlot\) \[data-assistant-presentation\][^{]*\{[^}]*width:\s*100%/);
+    expect(shellCss).toMatch(/\.assistantPopup\s*\{[^}]*position:\s*fixed/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Assistant" }));
+    expect(await screen.findByRole("dialog", { name: "Migration Follow-up Assistant" })).toBeInTheDocument();
   });
 
   it("keeps the composer outside one scrollable conversation region", async () => {

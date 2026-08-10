@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import type { JourneyKey } from "@/presentation/runJourney";
 import { getBackendBaseUrl } from "@/api/client";
 import styles from "./ControlTowerLayout.module.css";
 
@@ -23,6 +24,21 @@ const steps: Step[] = [
   { label: "G03 readiness", started: [], completed: ["G03_CREATED"], failed: [], blocked: [] },
 ];
 
+const FOCUS_STAGE_LABELS: Record<JourneyKey, string> = {
+  setup: "Source intake",
+  readiness: "Source review & G02",
+  g01: "Source review & G02",
+  baseline: "Baseline qualification",
+  discovery: "G03 readiness",
+  feasibility: "G03 readiness",
+  plan: "G03 readiness",
+  "18-to-19": "G03 readiness",
+  "19-to-20": "G03 readiness",
+  "20-to-21": "G03 readiness",
+  validate: "G03 readiness",
+  complete: "G03 readiness",
+};
+
 function relevant(step: Step, event: Event) { return [...step.started, ...step.completed, ...step.failed, ...step.blocked].includes(event.event_type) && (event.event_type !== "COMMAND_OUTPUT_CHUNK" || !step.kind || event.payload.kind === step.kind); }
 function state(step: Step, events: Event[], actionRequired = false): { status: PipelineStatus; event?: Event } {
   const history = events.filter((event) => relevant(step, event)).sort((a, b) => a.sequence - b.sequence);
@@ -35,11 +51,11 @@ function state(step: Step, events: Event[], actionRequired = false): { status: P
 function command(event?: Event) { const value = event?.payload.command; return typeof value === "string" ? value : null; }
 function artifacts(event?: Event) { return [event?.payload.artifact_id, event?.payload.stdout_artifact_id, event?.payload.stderr_artifact_id].filter((value): value is string => typeof value === "string"); }
 
-export function PipelineSection({ state: run, retryError, onRetry, retrying, qualificationAvailable = false, qualificationActionRequired = false, g02ActionRequired = false, focusStage, children }: { state: AuthoritativeRunStateDto; retryError: string | null; onRetry: () => void; retrying: boolean; qualificationAvailable?: boolean; qualificationActionRequired?: boolean; g02ActionRequired?: boolean; focusStage?: string; children?: (selectedStage: string | undefined) => ReactNode }) {
+export function PipelineSection({ state: run, retryError, onRetry, retrying, qualificationAvailable = false, qualificationActionRequired = false, g02ActionRequired = false, focusStage, children }: { state: AuthoritativeRunStateDto; retryError: string | null; onRetry: () => void; retrying: boolean; qualificationAvailable?: boolean; qualificationActionRequired?: boolean; g02ActionRequired?: boolean; focusStage?: JourneyKey; children?: (selectedStage: string | undefined) => ReactNode }) {
   const visible = qualificationAvailable || run.workflow_events.some((event) => ["BASELINE_QUALIFIED", "BASELINE_QUALIFIED_WITH_KNOWN_FAILURES", "G03_CREATED"].includes(event.event_type)) ? steps : steps.slice(0, -1);
   const statuses = visible.map((step) => state(step, run.workflow_events, g02ActionRequired));
   const qualificationIndex = visible.findIndex((step) => step.label === "Baseline qualification");
-  const focusIndex = visible.findIndex((step) => step.label === focusStage);
+  const focusIndex = focusStage == null ? -1 : visible.findIndex((step) => step.label === FOCUS_STAGE_LABELS[focusStage]);
   const g02Index = visible.findIndex((step) => step.label === "Source review & G02");
   const [selected, setSelected] = useState(focusIndex >= 0 ? focusIndex : qualificationActionRequired ? qualificationIndex : g02Index >= 0 && statuses[g02Index].status === "action required" ? g02Index : statuses.findIndex((item) => item.status === "running" || item.status === "failed"));
   const selectedIndex = selected >= 0 && selected < visible.length ? selected : Math.max(0, statuses.findIndex((item) => item.status === "pending"));

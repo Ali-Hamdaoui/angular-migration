@@ -174,4 +174,26 @@ describe("useTransformation", () => {
     expect(result.current.status).toBe("disabled");
     expect(result.current.projection).toBeNull();
   });
+
+  it("restores confirmed ready status immediately when the same run is re-enabled with a stalled refresh", async () => {
+    const confirmed = makeTransformation("run-re-enabled");
+    const stalledProjection = deferred<TransformationProjection>();
+    vi.mocked(getTransformation)
+      .mockResolvedValueOnce(confirmed)
+      .mockReturnValueOnce(stalledProjection.promise);
+    vi.mocked(listCommandExecutions).mockImplementation(async () => commandList("run-re-enabled"));
+    const { rerender, result } = renderHook(
+      ({ enabled }) => useTransformation("run-re-enabled", { enabled }),
+      { initialProps: { enabled: true } },
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    rerender({ enabled: false });
+    await waitFor(() => expect(result.current.status).toBe("disabled"));
+    rerender({ enabled: true });
+
+    expect(result.current.projection).toBe(confirmed);
+    expect(result.current.status).toBe("ready");
+    expect(result.current.executionStatus).toBe("loading");
+  });
 });

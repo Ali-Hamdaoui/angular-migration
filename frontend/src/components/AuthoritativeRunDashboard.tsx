@@ -9,6 +9,7 @@ import {
 } from "@/hooks/useAuthoritativeRun";
 import { useTransformation } from "@/hooks/useTransformation";
 import { buildRunWorkspaceProjection } from "@/presentation/currentAction";
+import type { JourneyKey } from "@/presentation/runJourney";
 import { presentArtifact } from "@/presentation/artifacts";
 import { retryAuthoritativeSourceIntake } from "@/api/runs";
 import { getBackendBaseUrl } from "@/api/client";
@@ -65,18 +66,24 @@ export function AuthoritativeRunDashboard({
     refreshKey: transformationRefreshKey,
   });
   const workspace = useMemo(
-    () => buildRunWorkspaceProjection(state, transformation.projection, transformation.status, status),
-    [state, status, transformation.projection, transformation.status],
+    () => buildRunWorkspaceProjection(
+      state,
+      transformation.projection,
+      transformation.status,
+      status,
+      transformation.refreshError ? "refreshing" : "current",
+    ),
+    [state, status, transformation.projection, transformation.refreshError, transformation.status],
   );
   const artifactPresentations = useMemo(() => state.artifacts.map(presentArtifact), [state.artifacts]);
 
   const [activeSection, setActiveSection] = useState<ControlTowerSection>("overview");
-  const [focusStage, setFocusStage] = useState<string | undefined>();
+  const [focusStage, setFocusStage] = useState<JourneyKey | undefined>();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [retryingSourceIntake, setRetryingSourceIntake] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
-  const navigate = useCallback((section: ControlTowerSection, stageKey?: string) => {
+  const navigate = useCallback((section: ControlTowerSection, stageKey?: JourneyKey) => {
     if (stageKey) setFocusStage(stageKey);
     setActiveSection(section);
   }, []);

@@ -41,7 +41,8 @@ export function CurrentActionCard({
   onNavigate: (section: ControlTowerSection, stageKey?: JourneyKey) => void;
 }) {
   const Icon = ACTION_ICONS[action.kind];
-  const refreshing = action.title === "Authoritative state is refreshing";
+  const refreshing = action.authority.freshness === "refreshing";
+  const navigationWithheld = action.authority.navigation === "withheld";
   const navigationLabel = action.section === "overview" ? null : NAVIGATION_LABELS[action.section];
 
   return (
@@ -59,7 +60,7 @@ export function CurrentActionCard({
         <p>{action.summary}</p>
         {action.consequence ? <p className={styles.actionConsequence}>{action.consequence}</p> : null}
       </div>
-      {refreshing ? (
+      {navigationWithheld ? (
         <button className={styles.actionButton} type="button" disabled>
           Waiting for authoritative refresh
         </button>

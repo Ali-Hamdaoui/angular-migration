@@ -69,6 +69,61 @@ function pendingG06Run() {
   });
 }
 
+function blockedTransformation(runId: string): TransformationProjection {
+  return {
+    run_id: runId,
+    continuation_id: "continuation-1",
+    stage_id: "stage-20-21",
+    status: "blocked",
+    current_node: "stage_transformation",
+    state_version: 9,
+    stage_status: "blocked",
+    source_version: "20",
+    target_version: "21",
+    checkpoint_kind: null,
+    workspace_fingerprint: "sha256:workspace",
+    active_gate: null,
+    active_gate_package_checksum: null,
+    active_command_id: null,
+    active_command_status: null,
+    active_prompt_id: null,
+    active_prompt_checksum: null,
+    active_prompt_text: null,
+    active_prompt_options: [],
+    active_prompt_explanation: null,
+    repair_attempt_id: null,
+    repair_attempt_number: null,
+    repair_status: null,
+    repair_risk_level: null,
+    repair_proposal_checksum: null,
+    repair_review_checksum: null,
+    repair_proposal_id: null,
+    repair_base_checksum: null,
+    repair_safe_diff: null,
+    repair_review: null,
+    repair_rationale: [],
+    repair_apply_checksum: null,
+    repair_validation_checksum: null,
+    workflow_step: "stage_transformation",
+    active_command_phase: null,
+    stage_start_fingerprint: "sha256:workspace",
+    repair_contract: null,
+    dependency_operation: null,
+    completed_transition_phases: [],
+    repair_verification: null,
+    dependency_closure: null,
+    validation_results: {},
+    active_error: { code: "POLICY_BLOCKED", message: "Policy blocked the stage." },
+    historical_diagnostics: [],
+    route_stages: [],
+    sealed_chain_hash: null,
+    last_error_code: null,
+    last_error_message: null,
+    runtime_profile_binding: null,
+    cancel_requested_at: null,
+  };
+}
+
 describe("AuthoritativeRunDashboard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -125,7 +180,7 @@ describe("AuthoritativeRunDashboard", () => {
 
   it("highlights Pipeline for an action without changing the operator's active destination", () => {
     renderDashboard(pendingG06Run());
-    const pipeline = screen.getByRole("button", { name: "Pipeline" });
+    const pipeline = screen.getByRole("button", { name: "Pipeline Action required" });
 
     expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page");
     expect(pipeline).toHaveAttribute("data-action-required", "true");
@@ -140,7 +195,7 @@ describe("AuthoritativeRunDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "View in pipeline" }));
 
-    expect(screen.getByRole("button", { name: "Pipeline" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Pipeline Action required" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByLabelText("Pipeline workspace")).toHaveTextContent("Focused stage: plan");
   });
 
@@ -175,6 +230,32 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByRole("heading", { name: "Authoritative state is refreshing" })).toBeInTheDocument();
     expect(screen.getByText(/Setup, Readiness, Production readiness/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Waiting for authoritative refresh" })).toBeDisabled();
+  });
+
+  it("withholds same-run transformation navigation after a background refresh failure until recovery", () => {
+    const run = makeAuthoritativeRun({ run_phase: "STAGED_MIGRATION" });
+    const projection = blockedTransformation(run.run_id);
+    vi.mocked(useTransformation).mockReturnValue(transformationHook({
+      projection,
+      status: "ready",
+      executionStatus: "ready",
+      refreshError: "Background refresh failed; showing the last authoritative state.",
+    }));
+    const view = renderDashboard(run);
+
+    expect(screen.getByRole("heading", { name: "Authoritative state is refreshing" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting for authoritative refresh" })).toBeDisabled();
+
+    vi.mocked(useTransformation).mockReturnValue(transformationHook({
+      projection,
+      status: "ready",
+      executionStatus: "ready",
+      refreshError: null,
+    }));
+    view.rerender(<AuthoritativeRunDashboard runId={run.run_id} initialState={run} />);
+
+    expect(screen.getByRole("heading", { name: "Transformation blocked" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View in pipeline" })).toBeEnabled();
   });
 
   it("presents reconnecting quietly without hiding the confirmed Overview", () => {

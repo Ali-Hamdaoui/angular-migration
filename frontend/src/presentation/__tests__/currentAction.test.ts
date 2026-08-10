@@ -64,6 +64,29 @@ function makeTransformation(
 }
 
 describe("selectCurrentAction", () => {
+  it("attributes G02 review to the typed readiness journey stage", () => {
+    const action = selectCurrentAction(
+      makeAuthoritativeRun({
+        state_version: 3,
+        workflow_events: [
+          makeEvent("G02_CREATED", 1, {
+            payload: {
+              gate_id: "G02",
+              package_checksum: "sha256:g02",
+              expected_state_version: 3,
+              permitted_decisions: ["approved", "rejected"],
+            },
+          }),
+        ],
+      }),
+      null,
+      "disabled",
+      "open",
+    );
+
+    expect(action).toMatchObject({ gateId: "G02", stageKey: "readiness" });
+  });
+
   it("selects a backend-valid pending human gate before transformation and run blockers", () => {
     const action = selectCurrentAction(
       makeAuthoritativeRun({ status: "FAILED", phase_status: "failed" }),
@@ -365,6 +388,24 @@ describe("selectCurrentAction", () => {
 });
 
 describe("buildRunWorkspaceProjection", () => {
+  it("withholds action navigation while same-run transformation authority is refreshing", () => {
+    const projection = buildRunWorkspaceProjection(
+      makeAuthoritativeRun(),
+      makeTransformation({
+        status: "blocked",
+        active_error: { code: "POLICY_BLOCKED", message: "Policy blocked the stage." },
+      }),
+      "ready",
+      "open",
+      "refreshing",
+    );
+
+    expect(projection.currentAction).toMatchObject({
+      title: "Authoritative state is refreshing",
+      authority: { freshness: "refreshing", navigation: "withheld" },
+    });
+  });
+
   it("composes journey summaries from the same pure authoritative inputs", () => {
     const projection = buildRunWorkspaceProjection(
       makeAuthoritativeRun({

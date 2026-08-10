@@ -89,6 +89,7 @@ export function useTransformation(
       return;
     }
 
+    if (loadedRunIdRef.current === runId) setStatus("ready");
     void refresh();
     return () => {
       requestGenerationRef.current += 1;

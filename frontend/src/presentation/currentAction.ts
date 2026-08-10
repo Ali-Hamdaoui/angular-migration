@@ -20,6 +20,10 @@ export interface CurrentAction {
   stageKey?: JourneyKey;
   evidenceIds: string[];
   rawSource: string;
+  authority: {
+    freshness: "current" | "refreshing";
+    navigation: "permitted" | "withheld";
+  };
 }
 
 export interface RunWorkspaceProjection {
@@ -44,6 +48,15 @@ const TERMINAL_GATE_SUFFIXES = [
   "CANCELLED",
 ] as const;
 
+const CURRENT_AUTHORITY = {
+  freshness: "current",
+  navigation: "permitted",
+} as const;
+
+function confirmedAction(action: Omit<CurrentAction, "authority">): CurrentAction {
+  return { ...action, authority: CURRENT_AUTHORITY };
+}
+
 function versionMajor(version: string | null): number | null {
   const match = version?.match(/\d+/);
   return match ? Number(match[0]) : null;
@@ -58,7 +71,8 @@ function stageKeyForTransformation(transformation: TransformationProjection): Jo
 }
 
 function stageKeyForGate(gateId: GateId): JourneyKey | undefined {
-  if (gateId === "G02" || gateId === "G03") return "baseline";
+  if (gateId === "G02") return "readiness";
+  if (gateId === "G03") return "baseline";
   if (gateId === "G04") return "discovery";
   if (gateId === "G05") return "feasibility";
   if (gateId === "G06") return "plan";
@@ -101,7 +115,7 @@ function gateAction(
   stageKey?: JourneyKey,
 ): CurrentAction {
   const definition = gateDefinition(gateId);
-  return {
+  return confirmedAction({
     kind: "gate",
     gateId,
     title: `${definition.label} required`,
@@ -111,7 +125,7 @@ function gateAction(
     ...(stageKey ? { stageKey } : {}),
     evidenceIds,
     rawSource,
-  };
+  });
 }
 
 function transformationGateAction(transformation: TransformationProjection): CurrentAction | null {
@@ -144,6 +158,7 @@ function refreshAction(rawSource: string): CurrentAction {
     section: "diagnostics",
     evidenceIds: [],
     rawSource,
+    authority: { freshness: "refreshing", navigation: "withheld" },
   };
 }
 
@@ -157,29 +172,29 @@ function transformationAction(transformation: TransformationProjection): Current
   };
 
   if (BLOCKING_TRANSFORMATION_STATUSES.includes(status) || BLOCKING_STAGE_STATUSES.includes(transformation.stage_status)) {
-    return {
+    return confirmedAction({
       ...common,
       kind: "blocked",
       title: "Transformation blocked",
       summary: transformation.active_error?.message || transformation.last_error_message || "The backend has blocked transformation work.",
       consequence: "Inspect the authoritative blocker before attempting to continue.",
       rawSource: transformation.active_error?.code || transformation.last_error_code || `transformation:${status}`,
-    };
+    });
   }
 
   if (status === "waiting_gate") {
-    return {
+    return confirmedAction({
       ...common,
       kind: "unavailable",
       title: "Transformation gate bindings unavailable",
       summary: "A human gate is pending, but its exact backend decision bindings are unavailable.",
       consequence: "Decision controls remain withheld until the package bindings are complete.",
       rawSource: `transformation:${status}:${transformation.active_gate ?? "unknown_gate"}`,
-    };
+    });
   }
 
   if (status === "waiting_prompt" || transformation.active_prompt_id) {
-    return {
+    return confirmedAction({
       ...common,
       kind: "blocked",
       title: "Command input required",
@@ -187,19 +202,19 @@ function transformationAction(transformation: TransformationProjection): Current
       consequence: "Transformation remains paused until the prompt is resolved.",
       evidenceIds: [...common.evidenceIds, ...(transformation.active_prompt_id ? [transformation.active_prompt_id] : [])],
       rawSource: `transformation:${status}:prompt`,
-    };
+    });
   }
 
   const commandStatus = transformation.active_command_status?.toLowerCase();
   if (transformation.active_command_id && commandStatus && ["queued", "pending", "running"].includes(commandStatus)) {
-    return {
+    return confirmedAction({
       ...common,
       kind: "running",
       title: "Migration command running",
       summary: "The backend is executing the current migration command.",
       evidenceIds: [...common.evidenceIds, transformation.active_command_id],
       rawSource: `command:${transformation.active_command_id}:${commandStatus}`,
-    };
+    });
   }
 
   return null;
@@ -212,7 +227,7 @@ function runBlockerAction(run: AuthoritativeRunStateDto): CurrentAction | null {
     || phaseStatus === "blocked"
     || ["FAILED", "DIAGNOSTIC_HOLD", "ORPHANED", "WORKER_LOST", "CLEANUP_FAILED", "TIMED_OUT"].includes(status);
   if (failure) {
-    return {
+    return confirmedAction({
       kind: "blocked",
       title: "Run failed",
       summary: "The authoritative run snapshot reports blocked or failed work.",
@@ -220,10 +235,10 @@ function runBlockerAction(run: AuthoritativeRunStateDto): CurrentAction | null {
       section: "diagnostics",
       evidenceIds: [],
       rawSource: `run:${status}:${run.phase_status}`,
-    };
+    });
   }
   if (run.approval_status === "pending" || phaseStatus === "waiting_approval") {
-    return {
+    return confirmedAction({
       kind: "blocked",
       title: "Run approval required",
       summary: "The backend reports a pending approval without a complete decision binding package.",
@@ -231,7 +246,7 @@ function runBlockerAction(run: AuthoritativeRunStateDto): CurrentAction | null {
       section: "pipeline",
       evidenceIds: [],
       rawSource: `run:${status}:${run.approval_status}`,
-    };
+    });
   }
   return null;
 }
@@ -245,20 +260,20 @@ function activeRunAction(run: AuthoritativeRunStateDto): CurrentAction | null {
   if (!active) return null;
 
   const presented = presentStatus(status);
-  return {
+  return confirmedAction({
     kind: "running",
     title: presented.label,
     summary: `Authoritative run work is active in ${presentStatus(run.run_phase).label}.`,
     section: "pipeline",
     evidenceIds: [],
     rawSource: `run:${status}:${run.run_phase}:${run.phase_status}`,
-  };
+  });
 }
 
 function verifiedCompleteAction(run: AuthoritativeRunStateDto): CurrentAction | null {
   const eventTypes = new Set(run.workflow_events.map((event) => event.event_type));
   if (!eventTypes.has("STAGED_MIGRATION_COMPLETED") || !eventTypes.has("FINAL_TARGET_VERIFIED")) return null;
-  return {
+  return confirmedAction({
     kind: "complete",
     title: "Migration verified complete",
     summary: "The staged migration and final target verification are durably recorded.",
@@ -268,7 +283,7 @@ function verifiedCompleteAction(run: AuthoritativeRunStateDto): CurrentAction | 
       .filter((event) => event.event_type === "STAGED_MIGRATION_COMPLETED" || event.event_type === "FINAL_TARGET_VERIFIED")
       .map((event) => event.event_id),
     rawSource: "STAGED_MIGRATION_COMPLETED+FINAL_TARGET_VERIFIED",
-  };
+  });
 }
 
 export function selectCurrentAction(
@@ -276,8 +291,10 @@ export function selectCurrentAction(
   transformation: TransformationProjection | null,
   transformationStatus: TransformationLoadStatus,
   connection: AuthoritativeConnectionStatus,
+  freshness: CurrentAction["authority"]["freshness"] = "current",
 ): CurrentAction {
   if (connection === "recovering" || connection === "failed") return refreshAction(`connection:${connection}`);
+  if (freshness === "refreshing") return refreshAction("transformation:refresh_error");
   if (transformation && transformation.run_id !== run.run_id) return refreshAction("incompatible_run_id");
 
   if (transformation && transformationStatus === "ready") {
@@ -303,14 +320,14 @@ export function selectCurrentAction(
   return runBlockerAction(run)
     ?? activeRunAction(run)
     ?? verifiedCompleteAction(run)
-    ?? {
+    ?? confirmedAction({
       kind: "unavailable",
       title: "Current action unavailable",
       summary: "No current action can be confirmed from the authoritative facts available.",
       section: "diagnostics",
       evidenceIds: [],
       rawSource: `run:${run.status}:${run.phase_status}:unavailable`,
-    };
+    });
 }
 
 export function summarizeCompleted(journey: JourneyMilestone[]): string {
@@ -330,9 +347,10 @@ export function buildRunWorkspaceProjection(
   transformation: TransformationProjection | null,
   transformationStatus: TransformationLoadStatus,
   connection: AuthoritativeConnectionStatus,
+  freshness: CurrentAction["authority"]["freshness"] = "current",
 ): RunWorkspaceProjection {
   const journey = buildJourney(run, transformation, transformationStatus);
-  const currentAction = selectCurrentAction(run, transformation, transformationStatus, connection);
+  const currentAction = selectCurrentAction(run, transformation, transformationStatus, connection, freshness);
   return {
     journey,
     currentAction,

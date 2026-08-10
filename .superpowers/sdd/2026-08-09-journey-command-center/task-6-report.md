@@ -92,3 +92,65 @@ The final scoped scan found no competing hook subscription, old primary navigati
 ## Concerns
 
 No open Task 6 implementation concern. Expected LF-to-CRLF working-copy notices remain informational; `git diff --check` is clean. Task 6 is implemented pending independent review and is not marked complete.
+
+## Review fix round 1/5
+
+The five Important findings and one Minor finding were verified against commit `495c3446378dbf555fd22e6473b4c758db7fbb06`, then reproduced before their production corrections:
+
+```text
+Authority/background refresh: 2 failed, 37 skipped across 2 files.
+JourneyKey pipeline focus: 2 failed, 22 skipped; exact G02/G03/route follow-up: 3 failed, 22 skipped.
+Disable/re-enable stalled refresh: 1 failed, 6 skipped.
+Assistant sidebar flow: 1 failed, 11 skipped.
+Mobile journey window/disclosure: 1 failed, 23 skipped.
+Accessible Pipeline badge: 1 failed, 23 skipped.
+Exact G02 readiness attribution follow-up: 1 failed, 26 skipped.
+```
+
+The failures showed that same-run transformation refresh errors left navigation enabled, typed journey keys were compared to display labels, confirmed same-run state remained visually disabled during a stalled re-enable, the subordinate Assistant launcher remained fixed, mobile rendered no Previous/Current/Next view or full disclosure, the action badge was excluded from the accessible name, and G02/G03 shared an imprecise stage key.
+
+The narrow correction adds typed current-action authority with `current | refreshing` freshness and `permitted | withheld` navigation. `buildRunWorkspaceProjection` now receives transformation freshness explicitly, so a same-run background failure keeps the confirmed journey while withholding action navigation until the hook clears its refresh error after a successful refresh. `CurrentActionCard` uses the typed permission rather than matching title text.
+
+`focusStage` is now `JourneyKey`. The legacy Pipeline maps typed keys deterministically without expanding Task 7 scope: G02/readiness opens **Source review & G02**, G03/baseline opens **Baseline qualification**, and later planning/transformation/validation keys open the available **G03 readiness** handoff row. G02 and G03 now receive distinct typed keys from the Task 2 presentation module.
+
+Re-enabling transformation for the same run immediately restores confirmed `ready` status while the new projection request is still pending. The request remains generation-safe, and disabled or changed-run late responses retain their existing protections.
+
+The Assistant slot now overrides the dock container into normal sidebar flow at desktop and mobile widths while the existing expanded popup remains fixed and the Assistant state machine remains unchanged. The mobile journey uses a typed Previous/Current/Next window anchored on the first action-required, blocked, or current milestone, plus a native disclosure containing the complete authoritative journey. No viewport sniffing was added. The Pipeline badge is visible text in the accessible button name.
+
+Final review-fix verification:
+
+```text
+npm test -- src/hooks/__tests__/useTransformation.test.tsx src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx src/presentation/__tests__/currentAction.test.ts src/components/__tests__/AssistantPanel.test.tsx
+Test Files: 5 passed (5)
+Tests: 84 passed (84)
+Exit code: 0
+
+npm run typecheck
+tsc --noEmit
+Exit code: 0
+
+npm run lint
+eslint .
+Exit code: 0
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+
+npm test
+Test Files: 58 passed (58)
+Tests: 443 passed (443)
+Exit code: 0
+Duration: 79.02s
+```
+
+### Review-fix consolidated narrow self-review
+
+- Authority: connection recovery, incompatible run IDs, and transformation background refresh failure all create explicit refreshing/withheld presentation authority. Successful same-run recovery removes only the refresh error and restores the confirmed action/navigation.
+- Pipeline: dashboard state, current-action callbacks, and Pipeline props share `JourneyKey`; no display string crosses that boundary. The compatibility table is limited to existing legacy rows and preserves the Task 7 rewrite boundary.
+- Hook lifecycle: confirmed same-run projection identity is retained across disable/re-enable, status becomes ready immediately, and the stalled request cannot bypass generation guards.
+- Assistant: closed/minimized launchers remain after the four primary controls in normal sidebar flow on desktop/mobile; the expanded dialog continues to use the existing fixed popup and state machine.
+- Journey/accessibility: the full desktop strip remains semantic; mobile exposes typed Previous/Current/Next labels and a native full-journey disclosure; the action-required badge participates in the control name. Controls retain 44 px targets and no JavaScript viewport branching was introduced.
+- Scope: the diff contains only the Task 6 shell/hook/presentation files, the authorized Task 2 presentation module/tests, the existing Assistant test, this report, and the ledger. No backend, API, deployment, domain mutation, hidden fetching wall, palette, or navigation-model change was introduced.
+
+No open review-fix concern. Task 6 remains implemented pending independent re-review and is not marked complete.
