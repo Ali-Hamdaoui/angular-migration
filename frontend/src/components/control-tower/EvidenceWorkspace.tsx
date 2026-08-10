@@ -20,7 +20,7 @@ const FILTER_LABELS: Array<{ value: EvidenceFilter; label: string }> = [
   { value: "failures", label: "Failures" },
   { value: "commands", label: "Commands" },
   { value: "reports", label: "Reports" },
-  { value: "all", label: "All evidence" },
+  { value: "all", label: "All" },
 ];
 
 function asPresentations(artifacts: EvidenceWorkspaceProps["artifacts"]): ArtifactPresentation[] {
