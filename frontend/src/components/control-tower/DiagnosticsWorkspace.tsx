@@ -34,6 +34,8 @@ const CONNECTION_LABELS: Record<AuthoritativeConnectionStatus, string> = {
 function blocker(run: AuthoritativeRunStateDto, transformation: TransformationProjection | null): { title: string; summary: string } | null {
   const error = transformation?.active_error;
   if (error) return { title: presentStatus(error.code).label, summary: error.message };
+  if (transformation && !["blocked", "failed"].includes(transformation.status.toLowerCase())) return null;
+  if (!transformation && !["BLOCKED", "FAILED"].includes(run.status)) return null;
   const failed = [...run.workflow_events].reverse().find((event) => /FAIL|BLOCKED|REJECTED/.test(event.event_type));
   if (!failed) return null;
   return {
@@ -72,14 +74,14 @@ export function DiagnosticsWorkspace({
     </div>
     <div className={styles.connection} role="status" aria-live="polite">{CONNECTION_LABELS[connectionStatus]}{connectionError ? <span> · {connectionError}</span> : null}</div>
 
-    <section className={styles.card} aria-labelledby="diagnostics-summary-title">
-      <h3 id="diagnostics-summary-title">Summary</h3>
-      <dl className={styles.summaryGrid}><div><dt>Run status</dt><dd>{presentStatus(run.status).label}</dd></div><div><dt>Workflow phase</dt><dd>{presentStatus(run.run_phase).label}</dd></div><div><dt>State version</dt><dd>{run.state_version}</dd></div><div><dt>Events recorded</dt><dd>{run.workflow_events.length}</dd></div></dl>
-    </section>
-
     <section className={styles.card} aria-label="Current blocker">
       <h3 id="diagnostics-blocker-title">Blocker</h3>
       {currentBlocker ? <p role="alert"><strong>{currentBlocker.title}</strong><br />{currentBlocker.summary}</p> : <p className={styles.note}>Not available — no active blocker is recorded.</p>}
+    </section>
+
+    <section className={styles.card} aria-labelledby="diagnostics-summary-title">
+      <h3 id="diagnostics-summary-title">Summary</h3>
+      <dl className={styles.summaryGrid}><div><dt>Run status</dt><dd>{presentStatus(run.status).label}</dd></div><div><dt>Workflow phase</dt><dd>{presentStatus(run.run_phase).label}</dd></div><div><dt>State version</dt><dd>{run.state_version}</dd></div><div><dt>Events recorded</dt><dd>{run.workflow_events.length}</dd></div></dl>
     </section>
 
     <section className={styles.card} aria-label="Commands and logs" aria-labelledby="diagnostics-commands-title">

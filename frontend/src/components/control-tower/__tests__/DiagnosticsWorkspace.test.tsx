@@ -90,6 +90,17 @@ describe("DiagnosticsWorkspace", () => {
     expect(screen.getByText(/"run_id": "run-1"/)).toBeInTheDocument();
   });
 
+  it("does not promote historical failures after the authoritative run is complete", () => {
+    renderWorkspace({
+      run: run([event("RUN_FAILED", 1, { message: "An earlier attempt failed." })]),
+      transformation: projection({ status: "completed", stage_status: "completed", active_error: null, last_error_code: null, last_error_message: null }),
+    });
+    const blocker = screen.getByRole("region", { name: "Current blocker" });
+    expect(blocker).toHaveTextContent("Not available");
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent);
+    expect(headings.indexOf("Blocker")).toBeLessThan(headings.indexOf("Summary"));
+  });
+
   it("humanizes workflow events while exposing raw identifiers in technical details", () => {
     renderWorkspace();
     const events = screen.getByRole("region", { name: "Authoritative workflow events" });
@@ -98,6 +109,13 @@ describe("DiagnosticsWorkspace", () => {
     fireEvent.click(within(events).getAllByText("Technical details")[1]);
     expect(within(events).getAllByText("TRANSFORMATION_CONTINUATION_BLOCKED", { selector: "code" })[0]).toBeVisible();
     expect(within(events).getByText("Sequence 2")).toBeInTheDocument();
+  });
+
+  it("searches workflow events by their human label", () => {
+    renderWorkspace({ run: run([event("SNAPSHOT_CREATED", 1), event("RUN_FAILED", 2)]) });
+    fireEvent.change(screen.getByRole("textbox", { name: "Search events" }), { target: { value: "snapshot created" } });
+    expect(screen.getByText("Snapshot created", { selector: "span" })).toBeInTheDocument();
+    expect(screen.queryByText("Run failed", { selector: "span" })).not.toBeInTheDocument();
   });
 
   it("links command logs and provides explicit unavailable states", () => {

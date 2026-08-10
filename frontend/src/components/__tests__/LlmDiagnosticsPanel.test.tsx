@@ -75,4 +75,18 @@ describe("LlmDiagnosticsPanel", () => {
     fireEvent.click(screen.getByText("Response details"));
     expect(screen.getByText("azure_openai")).toBeVisible();
   });
+
+  it("keeps smoke actions disabled while authoritative state is recovering", async () => {
+    render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="recovering" />);
+    const smokeCheck = await screen.findByRole("button", { name: "Run governed smoke check" });
+    expect(smokeCheck).toBeDisabled();
+  });
+
+  it("keeps the correlation identifier inside Response details", async () => {
+    render(<LlmDiagnosticsPanel runId="run-1" stateVersion={2} connectionStatus="open" />);
+    await screen.findByRole("heading", { name: "Outcome: completed" });
+    expect(screen.getByText("Correlation ID:", { exact: false })).not.toBeVisible();
+    fireEvent.click(screen.getByText("Response details"));
+    expect(screen.getByText("Correlation ID:", { exact: false })).toBeVisible();
+  });
 });

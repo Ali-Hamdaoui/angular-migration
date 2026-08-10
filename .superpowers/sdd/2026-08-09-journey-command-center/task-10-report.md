@@ -32,3 +32,35 @@ Exit code: 0
 ```
 
 The full frontend suite was intentionally not run. No backend files or API contracts changed.
+
+## Review fix round 1
+
+The review fix prevents historical failure events from resurfacing as a current blocker after a completed transformation, searches event rows by both raw and humanized names, blocks governed LLM smoke actions while the authoritative connection is recovering, and keeps correlation/invocation identifiers inside Response details.
+
+### Strict RED evidence
+
+Before the fixes, the added review tests failed for historical blocker promotion and human-label event search:
+
+```text
+Test Files: 1 failed, 1 passed
+Tests: 2 failed, 12 passed
+```
+
+### Focused GREEN evidence
+
+```text
+npm test -- src/components/control-tower/__tests__/DiagnosticsWorkspace.test.tsx src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx src/components/__tests__/LlmDiagnosticsPanel.test.tsx src/components/__tests__/AuthoritativeRunDashboard.test.tsx
+Test Files: 4 passed
+Tests: 71 passed
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+The full frontend suite remains intentionally unrun.
