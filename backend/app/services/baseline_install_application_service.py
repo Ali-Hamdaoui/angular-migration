@@ -163,8 +163,30 @@ class BaselineInstallApplicationService:
         """Recover orphaned executions using persisted fingerprints and leases."""
         recovered = 0
         with self._scope() as session:
-            records = session.scalars(select(CommandExecutionModel).where(CommandExecutionModel.status.in_([CommandStatus.PENDING.value, CommandStatus.RUNNING.value]))).all()
+            records = session.scalars(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.status.in_(
+                        [CommandStatus.PENDING.value, CommandStatus.RUNNING.value]
+                    ),
+                    CommandExecutionModel.stage_id.is_(None),
+                    CommandExecutionModel.authorization_id.is_(None),
+                    CommandExecutionModel.command_id == "npm-ci-bootstrap",
+                    CommandExecutionModel.working_directory_alias == "BASELINE_SANDBOX",
+                    CommandExecutionModel.baseline_checksum.is_not(None),
+                )
+            ).all()
             for record in records:
+                lease = session.scalar(
+                    select(WorkerLeaseModel)
+                    .where(WorkerLeaseModel.execution_id == record.id)
+                    .order_by(WorkerLeaseModel.acquired_at.desc())
+                )
+                if (
+                    lease is not None
+                    and lease.backend_instance_id == self._backend_instance_id
+                    and lease.expires_at > self._now()
+                ):
+                    continue
                 run = self._run(session, record.run_id)
                 request = BaselineInstallRequest(expected_state_version=record.state_version, idempotency_key=record.idempotency_key or f"supervisor-recovery:{record.id}", actor="baseline-supervisor", runtime_profile_id=record.runtime_profile_id or "unknown", runtime_checksum=record.runtime_checksum or "unknown", timeout_seconds=record.timeout_seconds or 3600)
                 action = "reconstruct"

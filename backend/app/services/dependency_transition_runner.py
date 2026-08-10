@@ -52,9 +52,10 @@ from app.services.dependency_closure_service import (
     compatible_reinstall_version,
     is_exact_version,
     verify_dependency_closure,
-    verify_dependency_transition_state,
+    verify_dependency_transition_evidence_for_source,
     installed_dependency_version,
 )
+from app.services.failure_evidence_service import FailureEvidenceService
 
 from app.services.repair_application_service import RepairProposal
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
@@ -332,6 +333,9 @@ class DependencyTransitionRunner:
                 "The bound stage workspace is unavailable or outside the run root",
             ) from error
         intent = self._intent(session, continuation, run, attempt, stage_plan, plan, workspace)
+        intent["evidence_diagnosis"] = self._evidence_diagnosis(
+            session, continuation, run, attempt
+        )
         return {
             "run": run,
             "attempt": attempt,
@@ -341,6 +345,43 @@ class DependencyTransitionRunner:
             "plan": plan,
             "intent": intent,
         }
+
+    @staticmethod
+    def _evidence_diagnosis(session, continuation, run, attempt) -> dict[str, object]:
+        if not attempt.failure_evidence_artifact_id or not attempt.failure_evidence_checksum:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_EVIDENCE_INVALID",
+                "Dependency-transition failure evidence is missing",
+            )
+        metadata = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(attempt.failure_evidence_artifact_id),
+        )
+        if metadata is None or metadata.checksum != attempt.failure_evidence_checksum:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_EVIDENCE_INVALID",
+                "Dependency-transition failure evidence binding is stale",
+            )
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            ).read_artifact(continuation.run_id, metadata.relative_path)
+            if (
+                stored.ref.artifact_id != attempt.failure_evidence_artifact_id
+                or stored.ref.checksum != attempt.failure_evidence_checksum
+            ):
+                raise ValueError("Dependency-transition failure evidence identity changed")
+            evidence, diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
+                json.loads(stored.content)
+            )
+            if not isinstance(evidence, dict) or not isinstance(diagnosis, dict):
+                raise ValueError("Dependency-transition failure diagnosis is missing")
+            return diagnosis
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError) as error:
+            raise DependencyTransitionError(
+                "DEPENDENCY_TRANSITION_EVIDENCE_INVALID", str(error)
+            ) from error
 
     def _intent(
         self,
@@ -603,37 +644,14 @@ class DependencyTransitionRunner:
             return None
         return normalized if normalize_at > install_at else None
 
-    def _completed_uninstall(self, session, continuation, context, arguments):
-        executions = session.scalars(
-            select(CommandExecutionModel)
-            .where(
-                CommandExecutionModel.run_id == context["run"].id,
-                CommandExecutionModel.stage_id == continuation.current_stage_id,
-                CommandExecutionModel.command_id == "npm-dependency-uninstall",
-                CommandExecutionModel.status == "succeeded",
-                CommandExecutionModel.exit_code == 0,
-            )
-            .order_by(CommandExecutionModel.finished_at.desc())
-        ).all()
-        return next(
-            (execution for execution in executions if list(execution.arguments or []) == list(arguments)),
-            None,
-        )
-
     def _phase_uninstall(self, session, continuation, context) -> str:
         key = f"{context['attempt'].id}:transition:uninstall"
         execution = self._execution(session, context, key)
         if execution is None:
-            arguments = NPM_DEPENDENCY_UNINSTALL_RENDERER.render_arguments(
-                {"package": context["intent"]["blocking_package"]}
-            )
-            execution = self._completed_uninstall(session, continuation, context, arguments)
-            if execution is not None:
-                self._verify_uninstall(session, continuation, context, execution)
-                return "continue"
             try:
-                verify_dependency_transition_state(
+                verify_dependency_transition_evidence_for_source(
                     context["workspace"],
+                    diagnosis=context["intent"]["evidence_diagnosis"],
                     package=context["intent"]["blocking_package"],
                     installed_version=context["intent"]["installed_version"],
                     peer_ranges=context["intent"]["peer_ranges"],

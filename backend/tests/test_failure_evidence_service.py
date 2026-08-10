@@ -15,6 +15,7 @@ from app.services.failure_evidence_service import (
     FailureEvidenceService,
     validate_context_pack,
 )
+from app.services.repair_application_service import RepairApplicationError, RepairApplicationService
 
 
 @pytest.mark.parametrize(
@@ -268,3 +269,136 @@ def test_validate_context_pack_rejects_budget_overflow(tmp_path: Path):
     pack["bounds"]["max_total_bytes"] = 25
     with pytest.raises(ValueError, match="total byte budget"):
         validate_context_pack(pack)
+
+
+def test_npm_eresolve_peer_diagnosis_parses_unscoped_causal_package_and_quoted_range():
+    normalized = {
+        "command_id": "npm-lockfile-generate",
+        "failure_message": (
+            "npm error code ERESOLVE\n"
+            'npm error peer blocking-package@">=1.0.0 <2.0.0" '
+            "from causal-package@3.4.5"
+        ),
+    }
+
+    diagnosis = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+
+    assert diagnosis == {
+        "kind": "peer_dependency_conflict",
+        "source": "npm_eresolve_peer_conflict",
+        "package": "causal-package",
+        "blocking_dependency": "blocking-package",
+        "package_version": "3.4.5",
+        "required_peer_range": ">=1.0.0 <2.0.0",
+        "installed_version": None,
+        "required_ranges": {"blocking-package": ">=1.0.0 <2.0.0"},
+        "proposed_angular_version": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("blocking", "causal"),
+    [
+        ("@scope/blocking-package", "causal-package"),
+        ("blocking-package", "@scope/causal-package"),
+    ],
+)
+def test_npm_eresolve_peer_diagnosis_parses_scoped_package_names(blocking: str, causal: str):
+    normalized = {
+        "command_id": "npm-lockfile-generate",
+        "failure_message": (
+            "npm error code ERESOLVE\n"
+            f'npm error peer {blocking}@"^4.0.0 <5.0.0" '
+            f"from {causal}@6.7.8"
+        ),
+    }
+
+    diagnosis = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+
+    assert diagnosis is not None
+    assert diagnosis["package"] == causal
+    assert diagnosis["blocking_dependency"] == blocking
+    assert diagnosis["package_version"] == "6.7.8"
+    assert diagnosis["required_peer_range"] == "^4.0.0 <5.0.0"
+    assert diagnosis["required_ranges"] == {blocking: "^4.0.0 <5.0.0"}
+
+
+def test_existing_angular_cli_peer_diagnosis_remains_unchanged():
+    normalized = {
+        "command_id": "angular-update-exact",
+        "failure_message": (
+            'Package "blocking-package" has an incompatible peer dependency to '
+            '"@angular-devkit/build-angular" (requires ">=13.0.0 <18.0.0", '
+            'would install ">=21.0.0")'
+        ),
+    }
+
+    diagnosis = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+
+    assert diagnosis == {
+        "kind": "peer_dependency_conflict",
+        "package": "blocking-package",
+        "installed_version": None,
+        "required_ranges": {"@angular-devkit/build-angular": ">=13.0.0 <18.0.0"},
+        "proposed_angular_version": ">=21.0.0",
+    }
+
+
+def test_malformed_npm_eresolve_peer_diagnosis_fails_closed():
+    normalized = {
+        "command_id": "npm-lockfile-generate",
+        "failure_message": 'npm error peer @scope/blocking@">=1.0.0" from incomplete',
+    }
+
+    assert FailureEvidenceService.diagnose_angular_update_failure(normalized) is None
+
+
+def test_multiple_npm_eresolve_diagnostics_choose_first_complete_record_deterministically():
+    normalized = {
+        "command_id": "npm-lockfile-generate",
+        "failure_message": (
+            "npm error code ERESOLVE\n"
+            'npm error peer first-blocking@">=1.0.0 <2.0.0" from first-causal@1.2.3\n'
+            'npm error peer second-blocking@">=3.0.0 <4.0.0" from second-causal@5.6.7'
+        ),
+    }
+
+    first = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+    second = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+
+    assert first == second
+    assert first["package"] == "first-causal"
+    assert first["blocking_dependency"] == "first-blocking"
+
+
+def test_dependency_transition_still_rejects_unproven_npm_package(tmp_path: Path):
+    service = RepairApplicationService.__new__(RepairApplicationService)
+    context = {
+        "checkpoint_id": "checkpoint-1",
+        "target_exact": "21.0.0",
+        "workspace_path": str(tmp_path),
+        "failure_evidence_artifact_id": "artifact-failure",
+        "segments": [
+            json.dumps(
+                {
+                    "execution_id": "execution-1",
+                    "normalized_failure": {
+                        "command_id": "npm-lockfile-generate",
+                        "exit_code": 1,
+                        "failure_message": (
+                            "npm error code ERESOLVE\n"
+                            "npm error peer @scope/blocking@\">=1.0.0\" from incomplete"
+                        ),
+                    },
+                }
+            )
+        ],
+    }
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service._bind_dependency_transition(
+            {"operations": [{"operation": "dependency_transition"}]},
+            context,
+        )
+
+    assert raised.value.code == "REPAIR_DEPENDENCY_EVIDENCE_INVALID"

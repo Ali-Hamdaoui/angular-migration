@@ -51,7 +51,7 @@ class LlmFailureCode(str, Enum):
 class AzureGatewayError(RuntimeError):
     '''Stable gateway error that never exposes provider data or credentials.'''
 
-    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_status: int | None = None, provider_code: str | None = None, provider_message: str | None = None, provider_request_id: str | None = None, deployment_alias: str | None = None, failure_stage: str | None = None, failure_subtype: str | None = None, response_received: bool = False, response_content_type: str | None = None, response_bytes: int | None = None, response_sha256: str | None = None, response_kind: str | None = None, transport_started: bool = False) -> None:
+    def __init__(self, code: LlmFailureCode, message: str, *, retryable: bool = False, provider_status: int | None = None, provider_code: str | None = None, provider_message: str | None = None, provider_request_id: str | None = None, provider_response_id: str | None = None, deployment_alias: str | None = None, failure_stage: str | None = None, failure_subtype: str | None = None, response_received: bool = False, response_content_type: str | None = None, response_bytes: int | None = None, response_sha256: str | None = None, response_kind: str | None = None, transport_started: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
@@ -59,6 +59,7 @@ class AzureGatewayError(RuntimeError):
         self.provider_code = provider_code
         self.provider_message = provider_message
         self.provider_request_id = provider_request_id
+        self.provider_response_id = provider_response_id
         self.deployment_alias = deployment_alias
         self.failure_stage = failure_stage
         self.failure_subtype = failure_subtype
@@ -284,6 +285,7 @@ def _schema_validation_detail(error: ValidationError) -> str:
 class ProviderTransportResult(Mapping[str, Any]):
     body: Mapping[str, Any]
     provider_request_id: str | None = None
+    provider_response_id: str | None = None
     provider_status: int | None = None
     response_content_type: str | None = None
     response_bytes: int = 0
@@ -302,6 +304,8 @@ class ProviderTransportResult(Mapping[str, Any]):
 
 class ProviderTransport(Protocol):
     def request(self, *, endpoint: str, api_key: str, api_version: str, deployment: str, payload: dict[str, Any], timeout: float) -> Mapping[str, Any] | ProviderTransportResult: ...
+
+    def retrieve_response(self, *, endpoint: str, api_key: str, api_version: str, response_id: str, timeout: float) -> Mapping[str, Any] | ProviderTransportResult: ...
 
 
 class UrllibAzureTransport:
@@ -362,7 +366,8 @@ class UrllibAzureTransport:
                     raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response was not valid JSON.', failure_stage='response_json_decode', failure_subtype='INVALID_JSON', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True) from exc
                 if not isinstance(parsed_body, Mapping):
                     raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'LLM response top-level shape was invalid.', failure_stage='response_shape_validation', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum, response_kind=kind, provider_request_id=metadata['provider_request_id'], transport_started=True)
-                return ProviderTransportResult(body=parsed_body, provider_request_id=metadata['provider_request_id'], provider_status=metadata['provider_status'], response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum)
+                provider_response_id = parsed_body.get('id') if isinstance(parsed_body.get('id'), str) else None
+                return ProviderTransportResult(body=parsed_body, provider_request_id=metadata['provider_request_id'], provider_response_id=provider_response_id, provider_status=metadata['provider_status'], response_content_type=metadata['response_content_type'], response_bytes=len(raw_body), response_sha256=checksum)
         except AzureGatewayError:
             raise
         except urllib.error.HTTPError as exc:
@@ -383,6 +388,40 @@ class UrllibAzureTransport:
             raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI connection was reset.', retryable=True, failure_stage='http_request', failure_subtype='LLM_CONNECTION_RESET', transport_started=True) from exc
         except (BrokenPipeError, OSError) as exc:
             raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Azure OpenAI transport failed.', retryable=True, failure_stage='http_request', failure_subtype='LLM_TRANSPORT_FAILED', transport_started=True) from exc
+
+    def retrieve_response(self, *, endpoint: str, api_key: str, api_version: str, response_id: str, timeout: float) -> ProviderTransportResult:
+        if not response_id or '/' in response_id or '\\' in response_id:
+            raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response identifier was invalid.', failure_stage='response_retrieval', failure_subtype='PROVIDER_RESPONSE_ID_INVALID')
+        url = endpoint.rstrip('/') + '/openai/v1/responses/' + urllib.parse.quote(response_id, safe='')
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme not in {'https'} or not parsed.netloc or parsed.path != f'/openai/v1/responses/{urllib.parse.quote(response_id, safe="")}' or parsed.query:
+                raise ValueError('invalid endpoint')
+        except ValueError as exc:
+            raise AzureGatewayError(LlmFailureCode.CONFIGURATION, 'LLM endpoint configuration is invalid.', failure_stage='endpoint_validation', failure_subtype='LLM_ENDPOINT_INVALID') from exc
+        request = urllib.request.Request(url, headers={'api-key': api_key}, method='GET')
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                headers = getattr(response, 'headers', {})
+                raw_body = response.read(4 * 1024 * 1024 + 1)
+                checksum = hashlib.sha256(raw_body).hexdigest()
+                if len(raw_body) > 4 * 1024 * 1024:
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response exceeded the maximum permitted size.', failure_stage='response_retrieval', failure_subtype='LLM_RESPONSE_TRUNCATED', response_received=True, transport_started=True)
+                try:
+                    parsed_body = json.loads(raw_body.decode('utf-8'))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response retrieval returned invalid JSON.', failure_stage='response_retrieval', failure_subtype='INVALID_JSON', response_received=True, response_bytes=len(raw_body), response_sha256=checksum, transport_started=True) from exc
+                if not isinstance(parsed_body, Mapping):
+                    raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response retrieval returned an invalid body.', failure_stage='response_retrieval', failure_subtype='LLM_RESPONSE_SHAPE_INVALID', response_received=True, response_bytes=len(raw_body), response_sha256=checksum, transport_started=True)
+                actual_id = parsed_body.get('id') if isinstance(parsed_body.get('id'), str) else None
+                return ProviderTransportResult(body=parsed_body, provider_request_id=headers.get('apim-request-id') or headers.get('x-ms-request-id') or headers.get('request-id'), provider_response_id=actual_id, provider_status=getattr(response, 'status', None), response_content_type=headers.get('Content-Type'), response_bytes=len(raw_body), response_sha256=checksum)
+        except AzureGatewayError:
+            raise
+        except urllib.error.HTTPError as exc:
+            provider_code, provider_message = _provider_diagnostic(exc)
+            raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response retrieval failed.', provider_status=exc.code, provider_code=provider_code, provider_message=provider_message, provider_request_id=exc.headers.get('apim-request-id') or exc.headers.get('x-ms-request-id') or exc.headers.get('request-id'), failure_stage='response_retrieval', failure_subtype='HTTP_ERROR_ENVELOPE', response_received=True, transport_started=True) from exc
+        except (socket.timeout, TimeoutError, urllib.error.URLError, OSError) as exc:
+            raise AzureGatewayError(LlmFailureCode.TRANSPORT, 'Provider response retrieval failed safely.', retryable=True, failure_stage='response_retrieval', failure_subtype='LLM_TRANSPORT_FAILED', transport_started=True) from exc
 
 
 _SAFE_PROVIDER_CODE = re.compile(r'[^A-Za-z0-9_.:-]')
@@ -449,6 +488,7 @@ class AzureOpenAILLMGateway:
                 self.last_request_manifest = {'endpoint_host': endpoint_parts.hostname, 'endpoint_path': '/openai/responses', 'model': deployment.deployment, 'input': [{'role': 'user', 'content': [{'type': 'input_text'}]}], 'response_format': payload['text']['format'], 'max_output_tokens': call_request.max_output_tokens, 'adaptive_answer_target': request.adaptive_answer_target, 'answer_mode': request.answer_mode, 'final_serialized_input_tokens': budget.get('final_serialized_input_tokens'), 'tokenizer_strategy': budget.get('tokenizer_strategy'), 'timeout_seconds': self._settings.llm_timeout_seconds, 'headers': ['Content-Type'], 'attempt': attempt}
                 transport_result = self._transport.request(endpoint=deployment.endpoint, api_key=deployment.api_key, api_version=deployment.api_version, deployment=deployment.deployment, payload=payload, timeout=self._settings.llm_timeout_seconds)
                 provider_request_id = transport_result.provider_request_id if isinstance(transport_result, ProviderTransportResult) else None
+                provider_response_id = transport_result.provider_response_id if isinstance(transport_result, ProviderTransportResult) else (transport_result.get('id') if isinstance(transport_result, Mapping) and isinstance(transport_result.get('id'), str) else None)
                 raw = transport_result.body if isinstance(transport_result, ProviderTransportResult) else transport_result
                 try:
                     _validate_response_state(raw)
@@ -467,7 +507,7 @@ class AzureOpenAILLMGateway:
                 budget = decide_budget(request.run_id, [*(prior_usage or []), usage], token_budget=self._settings.llm_token_budget, cost_budget_usd=self._settings.llm_cost_budget_usd)
                 if budget.action in {LlmBudgetAction.BLOCK_NEW_LLM_CALLS, LlmBudgetAction.DIAGNOSTIC_HOLD}:
                     raise AzureGatewayError(LlmFailureCode.BUDGET, budget.reason)
-                return LlmResponse(response_id=f'llm-response-{uuid4().hex[:12]}', request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status='completed', summary='Azure OpenAI response validated by the governed gateway.', structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, provider_request_id=provider_request_id, request_manifest=self.last_request_manifest or {})
+                return LlmResponse(response_id=f'llm-response-{uuid4().hex[:12]}', request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status='completed', summary='Azure OpenAI response validated by the governed gateway.', structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, provider_request_id=provider_request_id, provider_response_id=provider_response_id, request_manifest=self.last_request_manifest or {})
             except AzureGatewayError as exc:
                 exc.deployment_alias = exc.deployment_alias or deployment.alias
                 bounded_retry = self._is_bounded_incomplete(exc)
@@ -491,6 +531,55 @@ class AzureOpenAILLMGateway:
         content = json.dumps({'system_policy': request.system_policy, 'context': [segment.model_dump(mode='json') for segment in request.context]}, sort_keys=True)
         return redact_prompt_text(content)
 
+    def retrieve_response(self, request: LlmRequest, *, provider_response_id: str, prior_usage: list[LlmUsageRecord] | None = None) -> LlmResponse:
+        """Retrieve an already-created Responses API result without issuing a POST."""
+        deployment = self._router.deployment_for(request.role, request.task_type)
+        try:
+            transport_result = self._transport.retrieve_response(
+                endpoint=deployment.endpoint,
+                api_key=deployment.api_key,
+                api_version=deployment.api_version,
+                response_id=provider_response_id,
+                timeout=self._settings.llm_timeout_seconds,
+            )
+        except AttributeError as exc:
+            raise AzureGatewayError(
+                LlmFailureCode.PROTOCOL,
+                "Provider response retrieval is not supported by the configured transport.",
+                failure_stage="response_retrieval",
+                failure_subtype="PROVIDER_RESPONSE_RETRIEVAL_UNSUPPORTED",
+            ) from exc
+        except AzureGatewayError as exc:
+            exc.deployment_alias = exc.deployment_alias or deployment.alias
+            raise
+        raw = transport_result.body if isinstance(transport_result, ProviderTransportResult) else transport_result
+        actual_id = transport_result.provider_response_id if isinstance(transport_result, ProviderTransportResult) else (raw.get("id") if isinstance(raw, Mapping) and isinstance(raw.get("id"), str) else None)
+        if not actual_id:
+            raise AzureGatewayError(LlmFailureCode.PROTOCOL, "Provider response retrieval omitted its response identifier.", failure_stage="response_retrieval", failure_subtype="PROVIDER_RESPONSE_ID_MISSING", response_received=True, transport_started=True)
+        if actual_id != provider_response_id:
+            raise AzureGatewayError(LlmFailureCode.PROTOCOL, "Provider response retrieval returned a different response identifier.", failure_stage="response_retrieval", failure_subtype="PROVIDER_RESPONSE_ID_MISMATCH", response_received=True, transport_started=True, provider_response_id=actual_id)
+        status = raw.get("status") if isinstance(raw, Mapping) else None
+        if status in {"queued", "in_progress"}:
+            raise AzureGatewayError(LlmFailureCode.PROTOCOL, "Provider response remains in progress.", retryable=True, failure_stage="response_retrieval", failure_subtype="PROVIDER_RESPONSE_PENDING", response_received=True, transport_started=True, provider_response_id=actual_id)
+        if status in {"failed", "cancelled"}:
+            raise AzureGatewayError(LlmFailureCode.SERVER if status == "failed" else LlmFailureCode.CANCELLATION, "Provider response reached a terminal failure state.", retryable=False, failure_stage="response_retrieval", failure_subtype="PROVIDER_RESPONSE_TERMINAL_FAILURE", response_received=True, transport_started=True, provider_response_id=actual_id)
+        if status != "completed":
+            raise AzureGatewayError(LlmFailureCode.PROTOCOL, "Provider response retrieval returned an unknown state.", failure_stage="response_retrieval", failure_subtype="PROVIDER_RESPONSE_STATE_INVALID", response_received=True, transport_started=True, provider_response_id=actual_id)
+        try:
+            validated = self._registry.validate(request.response_schema, _extract_structured_output(raw))
+            usage_data = _extract_usage(raw)
+        except AzureGatewayError as exc:
+            self._preserve_transport_evidence(exc, transport_result)
+            raise
+        prompt = self._prompt_registry.get(request.prompt_name or "llm_default_v1", request.task_type)
+        usage = build_usage_record(run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, input_tokens=usage_data["input_tokens"], output_tokens=usage_data["output_tokens"], total_tokens=usage_data["total_tokens"], input_price_per_million=self._settings.llm_input_price_per_million_tokens, output_price_per_million=self._settings.llm_output_price_per_million_tokens, retry_count=0)
+        budget = decide_budget(request.run_id, [*(prior_usage or []), usage], token_budget=self._settings.llm_token_budget, cost_budget_usd=self._settings.llm_cost_budget_usd)
+        if budget.action in {LlmBudgetAction.BLOCK_NEW_LLM_CALLS, LlmBudgetAction.DIAGNOSTIC_HOLD}:
+            raise AzureGatewayError(LlmFailureCode.BUDGET, budget.reason, provider_response_id=actual_id)
+        provider_request_id = transport_result.provider_request_id if isinstance(transport_result, ProviderTransportResult) else None
+        redacted = self._redacted_request(request)
+        return LlmResponse(response_id=f"llm-response-{uuid4().hex[:12]}", request_id=request.request_id, run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, status="completed", summary="Azure OpenAI response retrieved and validated by the governed gateway.", structured_output=validated, usage=usage, redaction=redacted, role=request.role, prompt_version=prompt.version, schema_version=self._registry.version, pricing_version=self._settings.llm_pricing_version, provider_request_id=provider_request_id, provider_response_id=actual_id, request_manifest={})
+
     @staticmethod
     def _retry_output_budget(max_output_tokens: int) -> int:
         return min(32768, max(max_output_tokens + 1024, max_output_tokens * 2))
@@ -506,6 +595,7 @@ class AzureOpenAILLMGateway:
         if isinstance(result, ProviderTransportResult):
             error.provider_status = result.provider_status
             error.provider_request_id = result.provider_request_id
+            error.provider_response_id = result.provider_response_id
             error.response_content_type = result.response_content_type
             error.response_bytes = result.response_bytes
             error.response_sha256 = result.response_sha256

@@ -306,6 +306,13 @@ def test_restart_recovery_reconstructs_and_does_not_create_a_second_process(tmp_
         command.status = CommandStatus.RUNNING.value
         command.worker_id = "old-backend:pid-1"
         command.finished_at = None
+        lease = session.scalar(
+            select(WorkerLeaseModel).where(
+                WorkerLeaseModel.execution_id == first.execution_id
+            )
+        )
+        assert lease is not None
+        lease.backend_instance_id = "old-backend"
         session.commit()
     assert service.reconcile_orphans() == 1
     recovered = service.get("run-1", first.execution_id)
@@ -314,6 +321,43 @@ def test_restart_recovery_reconstructs_and_does_not_create_a_second_process(tmp_
     assert recovered.reconstruction_required is True
     assert "BASELINE_RECONSTRUCTED" in recovered.blockers
     assert supervisor.calls == 1
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("execution_id", "command_id", "status"),
+    [
+        ("exec-transformer-target", "angular-version-verify", CommandStatus.RUNNING.value),
+        ("exec-repair", "npm-dependency-uninstall", CommandStatus.PENDING.value),
+        ("exec-validation", "npm-run-build", CommandStatus.RUNNING.value),
+    ],
+)
+def test_restart_recovery_ignores_commands_owned_by_other_lifecycles(
+    tmp_path, execution_id, command_id, status
+):
+    _scope, sessions, engine, service = _fixture(tmp_path)
+    with sessions() as session:
+        session.add(
+            CommandExecutionModel(
+                id=execution_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                authorization_id=f"authz-{execution_id}",
+                command_id=command_id,
+                executable="npx" if command_id == "angular-version-verify" else "npm",
+                working_directory_alias="STAGE_WORKSPACE_STAGE_1",
+                status=status,
+                requested_at=NOW,
+                started_at=NOW if status == CommandStatus.RUNNING.value else None,
+            )
+        )
+        session.commit()
+
+    assert service.reconcile_orphans() == 0
+    with sessions() as session:
+        record = session.get(CommandExecutionModel, execution_id)
+        assert record.status == status
+        assert not record.reconstruction_required
     engine.dispose()
 def test_cancelled_install_reconstructs_the_baseline_sandbox_and_persists_evidence(tmp_path):
     _scope, sessions, engine, service = _fixture(tmp_path, supervisor=CancelledNpmSupervisor())

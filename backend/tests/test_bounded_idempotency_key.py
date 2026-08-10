@@ -26,6 +26,7 @@ from app.services.stage_execution_application_service import (
     StageExecutionError,
     bounded_idempotency_key,
 )
+from app.services.command_registry_service import CommandPolicyError
 from app.services.stage_preparation_application_service import StagePreparationResult
 
 # Current-run IDs are fixture-only; production code is run-agnostic.
@@ -180,6 +181,38 @@ class _CapturingPolicyEngine:
     def validate(self, session, policy_request):
         self.captured = policy_request
         raise StageExecutionError("CAPTURED", "captured before policy decision")
+
+
+class _RejectingPolicyEngine:
+    def validate(self, session, policy_request):
+        raise CommandPolicyError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "The idempotency key is already bound to a different request payload.",
+        )
+
+
+def test_command_policy_error_is_translated_at_stage_execution_boundary(tmp_path: Path):
+    service, run, plan, stage, preparation, request = _service_and_seed(
+        tmp_path, timeout_seconds=300, policy_engine=_RejectingPolicyEngine()
+    )
+
+    with _session(service) as session:
+        with pytest.raises(StageExecutionError) as raised:
+            service._authorize_and_queue_first_command(
+                session,
+                run,
+                plan,
+                stage,
+                preparation,
+                request,
+                "transformer",
+                group="lockfile_generation",
+            )
+
+    assert raised.value.code == "IDEMPOTENCY_KEY_REUSED"
+    assert raised.value.message == (
+        "The idempotency key is already bound to a different request payload."
+    )
 
 
 @contextmanager

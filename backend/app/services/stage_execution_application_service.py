@@ -28,7 +28,11 @@ from app.repositories.models import (
 from app.repositories.session import session_scope
 from app.services.planning_review_application_service import PlanRevisionService, PlanningReviewApplicationError
 from app.services.command_executor_service import CommandExecutorService
-from app.services.command_registry_service import CommandPolicyEngineService, CommandRegistryService
+from app.services.command_registry_service import (
+    CommandPolicyEngineService,
+    CommandPolicyError,
+    CommandRegistryService,
+)
 from app.services.stage_preparation_application_service import (
     StagePreparationApplicationService,
     StagePreparationError,
@@ -425,10 +429,13 @@ class StageExecutionApplicationService:
                 "COMMAND_POLICY_REQUEST_INVALID",
                 f"Internally generated command-policy request is invalid: {field}.",
             ) from error
-        authorization = self._policy_engine.validate(
-            session,
-            policy_request,
-        )
+        try:
+            authorization = self._policy_engine.validate(
+                session,
+                policy_request,
+            )
+        except CommandPolicyError as error:
+            raise StageExecutionError(error.code, error.message) from error
         if authorization.decision != "accepted":
             raise StageExecutionError("FIRST_COMMAND_NOT_AUTHORIZED", "The first planned command was rejected by command policy.")
         try:

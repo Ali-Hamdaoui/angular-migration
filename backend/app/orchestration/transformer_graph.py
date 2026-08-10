@@ -67,6 +67,7 @@ from app.services.dependency_transition_runner import (
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.lockfile_generation_runner import (
     LOCKFILE_GENERATION_ETARGET,
+    LOCKFILE_GENERATION_ERESOLVE,
     LockfileGenerationError,
     LockfileGenerationRunner,
 )
@@ -193,8 +194,13 @@ class TransformerOrchestrator:
             self._handle_prompt(continuation_id, worker_id)
         elif node == "target_inspection":
             with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
                 self._stage.queue_version_check(
-                    session, self._owned(session, continuation_id, worker_id)
+                    session,
+                    continuation,
+                    attempt_key=(
+                        f"target:{self._validation_attempt_key(session, continuation)}"
+                    ),
                 )
         elif node == "version_verify":
             self._version_verify(continuation_id, worker_id)
@@ -573,12 +579,32 @@ class TransformerOrchestrator:
                     "Angular update execution or reconstruction checkpoint is missing",
                 )
                 return
+            if self._target_version_recovery_required(version_execution):
+                self._stage.queue_version_check(
+                    session,
+                    continuation,
+                    attempt_key=(
+                        f"target:{self._validation_attempt_key(session, continuation)}:recovery-1"
+                    ),
+                    recovery_of=version_execution.id,
+                )
+                return
             if version_execution is None or version_execution.status != "succeeded":
                 self._block(
                     session,
                     continuation,
-                    version_execution.failure_code if version_execution else "VERSION_CHECK_MISSING",
-                    "Target version command did not succeed",
+                    (
+                        version_execution.failure_code
+                        if version_execution and version_execution.failure_code
+                        else "TARGET_VERSION_CHECK_FAILED"
+                        if version_execution
+                        else "VERSION_CHECK_MISSING"
+                    ),
+                    (
+                        version_execution.failure_message
+                        if version_execution and version_execution.failure_message
+                        else "Target version command did not succeed"
+                    ),
                 )
                 return
             output = "".join(
@@ -2596,6 +2622,16 @@ class TransformerOrchestrator:
                             "failure classification queued"
                         ),
                     )
+                elif error.code == LOCKFILE_GENERATION_ERESOLVE:
+                    self._validation_failure(
+                        session,
+                        continuation,
+                        error,
+                        event_reason=(
+                            "lockfile-generation command failed with ERESOLVE; "
+                            "failure classification queued"
+                        ),
+                    )
                 else:
                     self._block(session, continuation, error.code, error.message)
 
@@ -3715,6 +3751,16 @@ class TransformerOrchestrator:
             RepairAttemptModel.status != "superseded"
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
         return attempt.id if attempt and attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating"} else "initial"
+
+    @staticmethod
+    def _target_version_recovery_required(execution) -> bool:
+        return bool(
+            execution is not None
+            and execution.status in {"failed", "interrupted", "timed_out"}
+            and execution.operation_kind == "read_only"
+            and execution.reconstruction_required
+            and execution.parent_execution_id is None
+        )
 
     def _cancel(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:

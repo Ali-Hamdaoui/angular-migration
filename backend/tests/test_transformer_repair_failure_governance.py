@@ -30,6 +30,7 @@ import app.orchestration.transformer_graph as transformer_graph_module
 from app.orchestration.transformer_graph import TransformerOrchestrator
 from app.repositories.models import (
     ArtifactMetadataModel,
+    CommandExecutionModel,
     LlmInvocationModel,
     MigrationPlanModel,
     MigrationRunModel,
@@ -45,6 +46,7 @@ from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.lockfile_generation_runner import (
     LOCKFILE_GENERATION_ETARGET,
     LockfileGenerationError,
+    LockfileGenerationRunner,
 )
 from app.services.repair_application_service import (
     RepairApplicationService,
@@ -1224,6 +1226,247 @@ def test_etarget_lockfile_failure_queues_governed_failure_classification(monkeyp
     assert advance.call_count == 1
     orchestrator._block.assert_not_called()
     events.assert_called_once()
+
+
+def test_eresolve_lockfile_failure_queues_governed_failure_classification(monkeypatch):
+    continuation = SimpleNamespace(
+        state_version=7,
+        status="running",
+        current_node="lockfile_generation",
+        last_error_code=None,
+        last_error_message=None,
+        worker_id="worker-1",
+        lease_expires_at="lease",
+        waiting_execution_id="exec-lock",
+    )
+    session = SimpleNamespace(flush=MagicMock())
+
+    @contextmanager
+    def scope():
+        yield session
+
+    error = LockfileGenerationError(
+        "LOCKFILE_GENERATION_ERESOLVE",
+        "npm error code ERESOLVE\nnpm error ERESOLVE unable to resolve dependency tree",
+    )
+    advance = MagicMock(side_effect=error)
+    orchestrator = TransformerOrchestrator.__new__(TransformerOrchestrator)
+    orchestrator._scope = scope
+    orchestrator._owned = lambda _session, _continuation_id, _worker_id: continuation
+    orchestrator._lockfiles = SimpleNamespace(advance=advance)
+    orchestrator._block = MagicMock()
+    events = MagicMock()
+    monkeypatch.setattr(transformer_graph_module, "append_continuation_event", events)
+
+    orchestrator._lockfile_generation("cont-1", "worker-1")
+
+    assert continuation.status == "queued"
+    assert continuation.current_node == "classify_failure"
+    assert continuation.last_error_code == "LOCKFILE_GENERATION_ERESOLVE"
+    assert continuation.last_error_message == str(error)
+    assert continuation.waiting_execution_id == "exec-lock"
+    assert advance.call_count == 1
+    orchestrator._block.assert_not_called()
+    events.assert_called_once()
+
+
+def test_eresolve_persisted_failure_creates_new_attempt_without_duplicate_command(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, _attempt_id, _app_ts, _artifacts = _seed(factory, tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.current_node = "classify_failure"
+    continuation.last_error_code = "LOCKFILE_GENERATION_ERESOLVE"
+    execution = CommandExecutionModel(
+        id="exec-eresolve",
+        run_id="run-1",
+        stage_id="stage-1",
+        command_id="npm-lockfile-generate",
+        idempotency_key="lockfile-generation-1",
+        executable="npm",
+        arguments=["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"],
+        status="failed",
+        requested_at=NOW + timedelta(seconds=1),
+        finished_at=NOW + timedelta(seconds=2),
+        exit_code=1,
+        failure_code="ERESOLVE",
+        failure_message="npm error code ERESOLVE\nnpm error ERESOLVE unable to resolve dependency tree",
+    )
+    session.add(execution)
+    session.commit()
+    session.close()
+
+    session = factory()
+    original = session.get(RepairAttemptModel, "repair-1")
+    original_evidence = (
+        original.failure_evidence_artifact_id,
+        original.failure_evidence_checksum,
+        original.failure_route_artifact_id,
+        original.failure_route_checksum,
+        original.context_pack_artifact_id,
+        original.context_pack_checksum,
+    )
+    session.close()
+
+    scope = _scope(factory)
+    orchestrator = TransformerOrchestrator(
+        scope=scope,
+        stage_service=TransformerStageService(scope=scope),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=FailureEvidenceService(),
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        gate_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+
+    orchestrator._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    attempts = session.query(RepairAttemptModel).order_by(RepairAttemptModel.attempt_number).all()
+    assert continuation.status == "queued"
+    assert continuation.current_node == "propose_repair"
+    assert len(attempts) == 2
+    assert attempts[0].status == "evidence_frozen"
+    assert attempts[1].status == "evidence_frozen"
+    assert attempts[1].attempt_number == 2
+    assert attempts[1].failure_fingerprint != attempts[0].failure_fingerprint
+    assert attempts[1].failure_evidence_checksum != attempts[0].failure_evidence_checksum
+    assert attempts[1].failure_route_checksum != attempts[0].failure_route_checksum
+    assert attempts[1].context_pack_checksum != attempts[0].context_pack_checksum
+    assert (
+        attempts[0].failure_evidence_artifact_id,
+        attempts[0].failure_evidence_checksum,
+        attempts[0].failure_route_artifact_id,
+        attempts[0].failure_route_checksum,
+        attempts[0].context_pack_artifact_id,
+        attempts[0].context_pack_checksum,
+    ) == original_evidence
+    assert session.query(CommandExecutionModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_eresolve_reclassification_is_bounded_and_does_not_queue_another_command(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, _attempt_id, _app_ts, _artifacts = _seed(factory, tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.current_node = "classify_failure"
+    continuation.last_error_code = "LOCKFILE_GENERATION_ERESOLVE"
+    session.add(
+        CommandExecutionModel(
+            id="exec-eresolve",
+            run_id="run-1",
+            stage_id="stage-1",
+            command_id="npm-lockfile-generate",
+            idempotency_key="lockfile-generation-1",
+            executable="npm",
+            arguments=["install", "--package-lock-only"],
+            status="failed",
+            requested_at=NOW + timedelta(seconds=1),
+            finished_at=NOW + timedelta(seconds=2),
+            exit_code=1,
+            failure_code="ERESOLVE",
+            failure_message="npm error code ERESOLVE unable to resolve dependency tree",
+        )
+    )
+    session.commit()
+    session.close()
+
+    scope = _scope(factory)
+    orchestrator = TransformerOrchestrator(
+        scope=scope,
+        stage_service=TransformerStageService(scope=scope),
+        transformation_evidence=MagicMock(),
+        prompt_explainer=MagicMock(),
+        validation_runner=MagicMock(),
+        failure_evidence=FailureEvidenceService(),
+        repair_service=MagicMock(),
+        patch_service=MagicMock(),
+        gate_service=MagicMock(),
+        sealing_flow=MagicMock(),
+    )
+    orchestrator._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.status = "running"
+    continuation.current_node = "classify_failure"
+    continuation.worker_id = "worker-1"
+    continuation.lease_expires_at = NOW + timedelta(minutes=5)
+    continuation.state_version += 1
+    session.commit()
+    session.close()
+
+    orchestrator._classify_failure("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "blocked"
+    assert continuation.last_error_code == "FAILURE_ROUTE_NO_PROGRESS"
+    assert session.query(RepairAttemptModel).count() == 2
+    assert session.query(CommandExecutionModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_persisted_eresolve_lockfile_execution_is_classified_without_queueing():
+    runner = LockfileGenerationRunner(stage_service=MagicMock())
+    continuation = SimpleNamespace(current_stage_id="stage-1")
+    step = SimpleNamespace(status="FAILED", execution_id="exec-1")
+    execution = SimpleNamespace(
+        command_id="npm-lockfile-generate",
+        status="failed",
+        exit_code=1,
+        failure_code="ERESOLVE",
+        failure_message="npm error code ERESOLVE\nnpm error ERESOLVE unable to resolve dependency tree",
+    )
+    session = MagicMock()
+    session.scalar.return_value = step
+    session.get.return_value = execution
+
+    with pytest.raises(LockfileGenerationError) as raised:
+        runner.advance(session, continuation, next_node="repair_revalidate")
+
+    assert raised.value.code == "LOCKFILE_GENERATION_ERESOLVE"
+    runner._stage.queue_lockfile_generation.assert_not_called()
+
+
+def test_etarget_and_unrelated_lockfile_failures_remain_distinct():
+    runner = LockfileGenerationRunner(stage_service=MagicMock())
+    continuation = SimpleNamespace(current_stage_id="stage-1")
+    step = SimpleNamespace(status="FAILED", execution_id="exec-1")
+
+    session = MagicMock()
+    session.scalar.return_value = step
+    session.get.side_effect = [
+        SimpleNamespace(
+            command_id="npm-lockfile-generate",
+            status="failed",
+            exit_code=1,
+            failure_code="ETARGET",
+            failure_message="npm error code ETARGET\nnpm error notarget No matching version found for package@^1.2.3.",
+        ),
+        SimpleNamespace(
+            command_id="npm-lockfile-generate",
+            status="failed",
+            exit_code=1,
+            failure_code="EACCES",
+            failure_message="npm error code EACCES permission denied",
+        ),
+    ]
+    with pytest.raises(LockfileGenerationError) as etarget:
+        runner.advance(session, continuation, next_node="repair_revalidate")
+    assert etarget.value.code == LOCKFILE_GENERATION_ETARGET
+
+    with pytest.raises(LockfileGenerationError) as unrelated:
+        runner.advance(session, continuation, next_node="repair_revalidate")
+    assert unrelated.value.code == "LOCKFILE_GENERATION_COMMAND_FAILED"
+
 
 
 def _reviewed_attempt_with_transport(factory, tmp_path: Path):

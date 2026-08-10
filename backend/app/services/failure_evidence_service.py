@@ -38,6 +38,7 @@ _ANGULAR_PEER_CONFLICT_MARKERS = (
     "dependencies are not compatible",
     "requires angular",
 )
+_NPM_ERROR_PREFIX = r"npm\s+(?:error|ERR!)"
 _NPM_PACKAGE_NAME = r"(?:@[a-z0-9_.-]+/[a-z0-9_.-]+|[a-z0-9_.-]+)"
 _ANGULAR_PACKAGE_AT_VERSION_RE = re.compile(
     rf"(?<![\w@]){_NPM_PACKAGE_NAME}@[\^~]?\d+\.\d+\.\d+(?:[-\w.]*)?"
@@ -63,6 +64,16 @@ _ANGULAR_MISSING_PEER_RE = re.compile(
 _ANGULAR_PEER_RANGE_RE = re.compile(
     rf"\bpeer(?:Dependencies| dependency)?\s+({_NPM_PACKAGE_NAME})"
     rf"@[\"']?([\^~><=]?\s*\d+\.\d+\.\d+[^\"'\s]*)"
+)
+_NPM_ERESOLVE_MARKER_RE = re.compile(
+    rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+(?:code\s+)?ERESOLVE\b"
+)
+_NPM_ERESOLVE_PEER_CONFLICT_RE = re.compile(
+    rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}\s+)?peer\s+"
+    rf"(?P<blocking>{_NPM_PACKAGE_NAME})@"
+    rf"(?P<required>\"[^\"\r\n]+\"|'[^'\r\n]+'|[^\s]+)\s+from\s+"
+    rf"(?P<package>{_NPM_PACKAGE_NAME})@"
+    rf"(?P<version>\d+\.\d+\.\d+(?:[-\w.]*)?)(?=\s|$)"
 )
 
 
@@ -115,6 +126,8 @@ class FailureEvidenceService:
         normalized: dict[str, object],
     ) -> dict[str, object] | None:
         """Deterministic peer-conflict diagnosis for a failed Angular update."""
+        if normalized.get("command_id") == "npm-lockfile-generate":
+            return FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
         if normalized.get("command_id") != "angular-update-exact":
             return None
         message = " ".join(str(normalized.get("failure_message") or "").split())
@@ -174,6 +187,64 @@ class FailureEvidenceService:
         }
 
     @staticmethod
+    def diagnose_npm_eresolve_failure(
+        normalized: dict[str, object],
+    ) -> dict[str, object] | None:
+        """Parse only npm's persisted ERESOLVE peer-conflict structure."""
+        if normalized.get("command_id") != "npm-lockfile-generate":
+            return None
+        message = _ANSI_ESCAPE.sub(
+            "", str(normalized.get("failure_message") or "")
+        )
+        if not _NPM_ERESOLVE_MARKER_RE.search(message):
+            return None
+        for match in _NPM_ERESOLVE_PEER_CONFLICT_RE.finditer(message):
+            required = match.group("required").strip()
+            if required[:1] in {"\"", "'"} and required[-1:] == required[:1]:
+                required = required[1:-1].strip()
+            if not required:
+                continue
+            blocking = match.group("blocking")
+            package = match.group("package")
+            package_version = match.group("version")
+            return {
+                "kind": "peer_dependency_conflict",
+                "source": "npm_eresolve_peer_conflict",
+                "package": package,
+                "blocking_dependency": blocking,
+                "package_version": package_version,
+                "required_peer_range": required,
+                "installed_version": None,
+                "required_ranges": {blocking: required},
+                "proposed_angular_version": None,
+            }
+        return None
+
+    @staticmethod
+    def normalize_dependency_transition_evidence(
+        evidence: object,
+    ) -> tuple[object, dict[str, object] | None]:
+        """Return evidence with its deterministic transition diagnosis restored."""
+        if not isinstance(evidence, dict):
+            return evidence, None
+        normalized = evidence.get("normalized_failure")
+        diagnosis = normalized.get("failure_diagnosis") if isinstance(normalized, dict) else None
+        if (
+            isinstance(normalized, dict)
+            and (
+                not isinstance(diagnosis, dict)
+                or not isinstance(diagnosis.get("package"), str)
+                or not diagnosis.get("required_ranges")
+            )
+        ):
+            reparsed = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+            if reparsed is not None:
+                normalized = {**normalized, "failure_diagnosis": reparsed}
+                evidence = {**evidence, "normalized_failure": normalized}
+                diagnosis = reparsed
+        return evidence, diagnosis if isinstance(diagnosis, dict) else None
+
+    @staticmethod
     def is_angular_update_peer_dependency_conflict(evidence: dict[str, object]) -> bool:
         normalized = evidence.get("normalized_failure") or {}
         diagnosis = normalized.get("failure_diagnosis")
@@ -224,8 +295,9 @@ class FailureEvidenceService:
             "failure_code": execution.failure_code if execution else None,
             "failure_message": (execution.failure_message or "")[:2000] if execution else None,
         }
-        if normalized["command_id"] == "angular-update-exact":
-            normalized["command_allows_dirty"] = "--allow-dirty" in (execution.arguments or [])
+        if normalized["command_id"] in {"angular-update-exact", "npm-lockfile-generate"}:
+            if normalized["command_id"] == "angular-update-exact":
+                normalized["command_allows_dirty"] = "--allow-dirty" in (execution.arguments or [])
             diagnosis = self.diagnose_angular_update_failure(normalized)
             if isinstance(diagnosis, dict) and isinstance(diagnosis.get("package"), str):
                 try:

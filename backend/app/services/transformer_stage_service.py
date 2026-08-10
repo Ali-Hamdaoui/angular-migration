@@ -578,13 +578,21 @@ class TransformerStageService:
         )
         return result
 
-    def queue_version_check(self, session, continuation: TransformationContinuationModel):
+    def queue_version_check(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        attempt_key: str,
+        recovery_of: str | None = None,
+    ):
         return self._queue_group(
             session,
             continuation,
             group="target_version_check",
             next_node="version_verify",
-            attempt_key="target",
+            attempt_key=attempt_key,
+            recovery_of=recovery_of,
         )
 
     def queue_lockfile_generation(
@@ -932,6 +940,7 @@ class TransformerStageService:
         attempt_key,
         checkpoint_id=None,
         prompt_id=None,
+        recovery_of=None,
     ):
         run = session.get(MigrationRunModel, continuation.run_id)
         plan = session.get(MigrationPlanModel, continuation.plan_id)
@@ -969,6 +978,15 @@ class TransformerStageService:
             )
         )
         execution = session.get(CommandExecutionModel, result.execution_id)
+        if recovery_of is not None:
+            parent = session.get(CommandExecutionModel, recovery_of)
+            if parent is None or execution.parent_execution_id not in (None, parent.id):
+                raise TransformerStageError(
+                    "TARGET_VERSION_RECOVERY_LINEAGE_INVALID",
+                    "Target-version recovery execution is not bound to its failed parent",
+                )
+            execution.parent_execution_id = parent.id
+            execution.attempt_number = (parent.attempt_number or 1) + 1
         execution.checkpoint_id = checkpoint_id
         execution.prompt_request_id = prompt_id
         if step is not None:

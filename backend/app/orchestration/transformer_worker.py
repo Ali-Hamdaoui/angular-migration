@@ -113,7 +113,11 @@ class TransformerWorker:
                         ),
                     )
                     reconciled.append(continuation.id)
-                elif execution.status in _TERMINAL_COMMAND_STATUSES:
+                elif (
+                    execution.status in _TERMINAL_COMMAND_STATUSES
+                    and execution.run_id == continuation.run_id
+                    and execution.stage_id == continuation.current_stage_id
+                ):
                     self._wake_continuation(
                         session, continuation, execution.id, checked_at, reason="command reached terminal state"
                     )
@@ -226,11 +230,21 @@ class TransformerWorker:
                 )
                 .limit(1)
             )
-            if latest is not None and latest.status in _TERMINAL_COMMAND_STATUSES:
-                continuation.status = "queued"
-                continuation.wake_sequence += 1
-                continuation.state_version += 1
-                continuation.updated_at = now
+            if (
+                latest is not None
+                and latest.status in _TERMINAL_COMMAND_STATUSES
+                and (
+                    continuation.waiting_execution_id is None
+                    or continuation.waiting_execution_id == latest.id
+                )
+            ):
+                self._wake_continuation(
+                    session,
+                    continuation,
+                    latest.id,
+                    now,
+                    reason="command reached terminal state",
+                )
 
     def _wake_command_waiter(self, execution_id: str) -> None:
         with self._scope() as session:
@@ -268,6 +282,8 @@ class TransformerWorker:
     ) -> None:
         previous_wake = continuation.wake_sequence
         continuation.status = "queued"
+        if continuation.waiting_execution_id == execution_id:
+            continuation.waiting_execution_id = None
         continuation.wake_sequence += 1
         continuation.state_version += 1
         continuation.updated_at = now

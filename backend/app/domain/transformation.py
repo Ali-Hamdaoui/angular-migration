@@ -177,6 +177,13 @@ class TransformationRestartRequest(ContractModel):
     correlation_id: str = Field(min_length=1, max_length=128)
 
 
+class RepairInvocationRecoveryRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=2000)
+    correlation_id: str = Field(min_length=1, max_length=128)
+
+
 class StageGateDecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)

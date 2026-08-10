@@ -49,7 +49,7 @@ from app.services.dependency_closure_service import (
     installed_dependency_version,
     is_exact_version,
     validate_dependency_transition_evidence,
-    verify_dependency_transition_state,
+    verify_dependency_transition_evidence_for_source,
 )
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.repair_application_service import (
@@ -826,19 +826,9 @@ class CommandPolicyEngineService:
                     fixed_run_root=Path(run.artifact_root),
                 ).read_artifact(request.run_id, evidence_metadata.relative_path).content
             )
-            normalized = evidence.get("normalized_failure")
-            diagnosis = normalized.get("failure_diagnosis") if isinstance(normalized, dict) else None
-            if (
-                isinstance(normalized, dict)
-                and (
-                    not isinstance(diagnosis, dict)
-                    or not isinstance(diagnosis.get("package"), str)
-                    or not diagnosis.get("required_ranges")
-                )
-            ):
-                reparsed = FailureEvidenceService.diagnose_angular_update_failure(normalized)
-                if reparsed is not None:
-                    evidence = {**evidence, "normalized_failure": {**normalized, "failure_diagnosis": reparsed}}
+            evidence, diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
+                evidence
+            )
             authority = validate_dependency_transition_evidence(
                 evidence,
                 package=blocking_package,
@@ -902,8 +892,9 @@ class CommandPolicyEngineService:
                 if binding is None:
                     return False
                 workspace = Path(binding.workspace_path).resolve(strict=False)
-                verify_dependency_transition_state(
+                verify_dependency_transition_evidence_for_source(
                     workspace,
+                    diagnosis=diagnosis,
                     package=blocking_package,
                     installed_version=blocking_candidate.installed_version,
                     peer_ranges=authority["peer_ranges"],

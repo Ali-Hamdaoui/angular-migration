@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.orchestration.transformer_worker import TransformerWorker
@@ -26,6 +26,7 @@ from app.repositories.models import (
     CommandExecutionModel,
     MigrationRunModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.services.command_executor_service import (
     CommandExecutorError,
@@ -412,6 +413,93 @@ def test_run_once_wakes_waiter_for_executed_terminal_command(tmp_path: Path):
     continuation = session.get(TransformationContinuationModel, "cont-stage-1")
     assert continuation.status == "queued"
     assert continuation.wake_sequence == 1
+    session.close()
+    engine.dispose()
+
+
+def test_terminal_wake_consumes_waiting_execution_link_and_preserves_event(
+    tmp_path: Path,
+):
+    """A terminal wake consumes its exact command link in the wake transaction."""
+    engine, factory = _database(tmp_path)
+    _seed_run(factory)
+    _seed_execution(factory, status="succeeded")
+    _seed_continuation(factory)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-stage-1")
+    continuation.waiting_execution_id = "exec-1"
+    session.commit()
+    session.close()
+    worker = _worker(factory)
+
+    worker._wake_command_waiter("exec-1")
+    worker._wake_command_waiter("exec-1")
+
+    session = factory()
+    durable = session.get(TransformationContinuationModel, "cont-stage-1")
+    assert durable.status == "queued"
+    assert durable.waiting_execution_id is None
+    resumed_events = list(
+        session.scalars(
+            select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == "run-1",
+                WorkflowEventModel.event_type == "TRANSFORMATION_CONTINUATION_RESUMED",
+            )
+        )
+    )
+    assert len(resumed_events) == 1
+    assert resumed_events[0].payload["execution_id"] == "exec-1"
+    session.close()
+    engine.dispose()
+
+
+def test_active_linked_command_is_not_consumed_or_woken(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_run(factory)
+    _seed_execution(factory, status="running", worker_id="worker-1")
+    _seed_continuation(factory)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-stage-1")
+    continuation.waiting_execution_id = "exec-1"
+    session.commit()
+    session.close()
+    worker = _worker(factory)
+
+    worker._wake_command_waiter("exec-1")
+
+    session = factory()
+    durable = session.get(TransformationContinuationModel, "cont-stage-1")
+    assert durable.status == "waiting_command"
+    assert durable.waiting_execution_id == "exec-1"
+    assert durable.wake_sequence == 0
+    session.close()
+    engine.dispose()
+
+
+def test_reconciliation_does_not_wake_terminal_execution_from_another_run(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    _seed_run(factory, run_id="run-1")
+    _seed_run(factory, run_id="run-2")
+    _seed_execution(factory, execution_id="exec-other", run_id="run-2", status="succeeded")
+    _seed_continuation(factory, run_id="run-1")
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-stage-1")
+    continuation.waiting_execution_id = "exec-other"
+    session.commit()
+    session.close()
+    worker = _worker(factory)
+
+    with _scope(factory)() as session:
+        reconciled = worker.reconcile_stuck_command_waiters(session, NOW)
+
+    session = factory()
+    durable = session.get(TransformationContinuationModel, "cont-stage-1")
+    assert reconciled == []
+    assert durable.status == "waiting_command"
+    assert durable.waiting_execution_id == "exec-other"
+    assert durable.wake_sequence == 0
     session.close()
     engine.dispose()
 

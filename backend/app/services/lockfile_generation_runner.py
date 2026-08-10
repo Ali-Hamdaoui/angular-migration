@@ -44,6 +44,7 @@ LOCKFILE_GENERATION_FINGERPRINT_SCOPE = "lockfile-generation-mutation-v2"
 #: restarts reconstruct the same key and never queue endless successors.
 LOCKFILE_GENERATION_ATTEMPT_2_MARKER = ":attempt-2"
 LOCKFILE_GENERATION_ETARGET = "LOCKFILE_GENERATION_ETARGET"
+LOCKFILE_GENERATION_ERESOLVE = "LOCKFILE_GENERATION_ERESOLVE"
 
 _NPM_ERROR_PREFIX = r"npm\s+(?:error|ERR!)"
 _NPM_ETARGET_CODE = re.compile(
@@ -51,6 +52,9 @@ _NPM_ETARGET_CODE = re.compile(
 )
 _NPM_NO_MATCHING_VERSION = re.compile(
     rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+notarget\s+No matching version found for\s+\S+"
+)
+_NPM_ERESOLVE = re.compile(
+    rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}\s+)?(?:code\s+)?ERESOLVE\b"
 )
 
 
@@ -72,6 +76,18 @@ def is_npm_etarget_failure(execution) -> bool:
         return False
     message = str(execution.failure_message or "")
     return bool(_NPM_ETARGET_CODE.search(message) and _NPM_NO_MATCHING_VERSION.search(message))
+
+
+def is_npm_eresolve_failure(execution) -> bool:
+    """Recognize persisted npm ERESOLVE dependency-resolution evidence."""
+    if (
+        execution is None
+        or execution.command_id != "npm-lockfile-generate"
+        or execution.status != "failed"
+        or execution.exit_code in (None, 0)
+    ):
+        return False
+    return bool(_NPM_ERESOLVE.search(str(execution.failure_message or "")))
 
 
 def _file_checksum(path: Path) -> str:
@@ -153,6 +169,11 @@ class LockfileGenerationRunner:
                 raise LockfileGenerationError(
                     LOCKFILE_GENERATION_ETARGET,
                     execution.failure_message or "npm reported an unavailable dependency version",
+                )
+            if is_npm_eresolve_failure(execution):
+                raise LockfileGenerationError(
+                    LOCKFILE_GENERATION_ERESOLVE,
+                    execution.failure_message or "npm reported an unresolved dependency tree",
                 )
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_COMMAND_FAILED",

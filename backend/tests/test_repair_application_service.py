@@ -11,17 +11,21 @@ from sqlalchemy.orm import sessionmaker
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
-from app.domain.contracts import ArtifactType
+from app.domain.contracts import AgentKind, ArtifactType, CommandStatus, WorkflowEventType
 from app.llm_gateway import (
     AzureGatewayError,
     AzureOpenAILLMGateway,
     LlmFailureCode,
+    LlmRequest,
+    LlmRole,
+    LlmTaskType,
     PromptRegistry,
     PromptSchemaRegistry,
 )
 from app.llm_gateway.azure_gateway import ProviderTransportResult
 from app.repositories.models import (
     ArtifactMetadataModel,
+    CommandExecutionModel,
     LlmInvocationModel,
     MigrationRunModel,
     RepairAttemptModel,
@@ -29,10 +33,16 @@ from app.repositories.models import (
     StageExecutionPlanModel,
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
+    WorkflowEventModel,
 )
 from app.repositories.models.base import Base
 from app.services import repair_application_service
 from app.services.causal_review import causal_rejection
+from app.services.dependency_closure_service import (
+    validate_dependency_transition_evidence,
+    verify_dependency_transition_state,
+    verify_npm_eresolve_attempted_resolution_state,
+)
 from app.services.failure_evidence_service import FailureEvidenceService
 from app.services.repair_application_service import (
     RepairApplicationError,
@@ -124,6 +134,29 @@ def _dependency_transition_operation():
     return {"operation": "dependency_transition", "path": "package.json"}
 
 
+def _dependency_change_candidate(*, section: str, package: str = "fixture-package", new_version: str = "2.0.0"):
+    return {
+        "proposal_format": "operations",
+        "operations": [
+            {
+                "operation": "dependency_change",
+                "path": "package.json",
+                "section": section,
+                "package": package,
+                "new_version": new_version,
+                "old_text": None,
+                "new_text": None,
+                "content": None,
+            }
+        ],
+        "unified_diff": None,
+        "rationale": ["Update the declared dependency version."],
+        "risk_level": "low",
+        "validation_targets": ["test"],
+        "limitations": [],
+    }
+
+
 def _dependency_transition_context(tmp_path: Path):
     from app.services.dependency_closure_service import _COMPATIBLE_REINSTALL_BUNDLES
 
@@ -177,6 +210,61 @@ def _dependency_transition_context(tmp_path: Path):
         "target_exact": f"{target_major}.0.0",
         "expected_target_version": target_version,
         "segments": [json.dumps(evidence)],
+    }
+
+
+def _npm_attempt_workspace(
+    tmp_path: Path,
+    *,
+    package: str = "fixture-package",
+    blocking_dependency: str = "fixture-peer",
+    package_intent: str = "^2.0.0",
+    attempted_version: str = "2.4.0",
+    installed_version: str = "1.4.0",
+    required_peer_range: str = ">=2.0.0 <3.0.0",
+    installed_peer_range: str = ">=1.0.0 <2.0.0",
+    include_package: bool = True,
+    include_blocking_dependency: bool = True,
+):
+    dev_dependencies = {}
+    if include_package:
+        dev_dependencies[package] = package_intent
+    if include_blocking_dependency:
+        dev_dependencies[blocking_dependency] = "^1.0.0"
+    package_json = {"name": "fixture", "devDependencies": dev_dependencies}
+    package_lock = {
+        "name": "fixture",
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"devDependencies": dev_dependencies},
+            f"node_modules/{package}": {
+                "version": installed_version,
+                "peerDependencies": {blocking_dependency: installed_peer_range},
+            },
+        },
+    }
+    (tmp_path / "package.json").write_text(json.dumps(package_json), encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(json.dumps(package_lock), encoding="utf-8")
+    package_path = tmp_path / "node_modules" / package
+    package_path.mkdir(parents=True)
+    (package_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": package,
+                "version": installed_version,
+                "peerDependencies": {blocking_dependency: installed_peer_range},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "source": "npm_eresolve_peer_conflict",
+        "kind": "peer_dependency_conflict",
+        "package": package,
+        "package_version": attempted_version,
+        "blocking_dependency": blocking_dependency,
+        "required_peer_range": required_peer_range,
+        "required_ranges": {blocking_dependency: required_peer_range},
     }
 
 
@@ -268,6 +356,329 @@ def test_dependency_change_requires_exact_stage_plan_authority(tmp_path: Path):
     assert service.validate_proposal(proposal, context)["operations"][0]["operation"] == (
         "dependency_change"
     )
+
+
+def test_dependency_section_mismatch_is_specific_in_both_binding_paths(tmp_path: Path):
+    package = tmp_path / "package.json"
+    package.write_text(
+        json.dumps({"devDependencies": {"fixture-package": "1.0.0"}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    operation = {
+        "operation": "dependency_change",
+        "path": "package.json",
+        "section": "dependencies",
+        "package": "fixture-package",
+        "new_version": "2.0.0",
+    }
+    service = RepairApplicationService(scope=None)
+
+    with pytest.raises(RepairApplicationError) as normalized:
+        service._normalize_dependency_operation(operation, package)
+    with pytest.raises(RepairApplicationError) as coalesced:
+        service._bind_proposal_candidate(
+            _dependency_change_candidate(section="dependencies"),
+            {
+                "workspace_path": str(tmp_path),
+                "workspace_binding_alias": "STAGE_WORKSPACE_1",
+                "failure_evidence_checksum": "sha256:failure",
+                "context_pack_checksum": "sha256:context",
+                "stage_plan_commands": _lockfile_generation_commands(),
+            },
+        )
+
+    for raised in (normalized, coalesced):
+        assert raised.value.code == "REPAIR_DEPENDENCY_SECTION_MISMATCH"
+        assert "fixture-package" in raised.value.message
+        assert "devDependencies" in raised.value.message
+        assert "dependencies" in raised.value.message
+        assert "1.0.0" in raised.value.message
+
+
+def test_dependency_multi_section_ambiguity_remains_non_retryable(tmp_path: Path):
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "dependencies": {"fixture-package": "1.0.0"},
+                "devDependencies": {"fixture-package": "1.0.0"},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(
+            _dependency_change_candidate(section="dependencies"),
+            {
+                "workspace_path": str(tmp_path),
+                "workspace_binding_alias": "STAGE_WORKSPACE_1",
+                "failure_evidence_checksum": "sha256:failure",
+                "context_pack_checksum": "sha256:context",
+                "stage_plan_commands": _lockfile_generation_commands(),
+            },
+        )
+
+    assert raised.value.code == "REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS"
+    assert "REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
+
+
+def test_dependency_missing_behavior_remains_unchanged(tmp_path: Path):
+    (tmp_path / "package.json").write_text('{"dependencies": {}}', encoding="utf-8")
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(
+            _dependency_change_candidate(section="dependencies"),
+            {
+                "workspace_path": str(tmp_path),
+                "workspace_binding_alias": "STAGE_WORKSPACE_1",
+                "failure_evidence_checksum": "sha256:failure",
+                "context_pack_checksum": "sha256:context",
+                "stage_plan_commands": _lockfile_generation_commands(),
+            },
+        )
+
+    assert raised.value.code == "REPAIR_DEPENDENCY_PACKAGE_MISSING"
+
+
+def test_dependency_section_mismatch_retry_feedback_and_lineage_are_bounded(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    package_json = json.dumps(
+        {"name": "fixture", "devDependencies": {"fixture-package": "1.0.0"}},
+        indent=2,
+    ) + "\n"
+    store, attempt_id, _app_ts, _artifacts = _seed_service(
+        factory, tmp_path, package_json=package_json
+    )
+    session = factory()
+    plan = session.get(StageExecutionPlanModel, "stage-plan-stage-1")
+    plan.stage_plan = {
+        "repair_policy": {"max_attempts": 3},
+        "commands": _lockfile_generation_commands(),
+    }
+    session.commit()
+    session.close()
+    invalid = _dependency_change_candidate(section="dependencies")
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(invalid)), _responses_body(json.dumps(invalid))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairApplicationError) as first:
+        service.propose(attempt_id)
+    assert first.value.code == "REPAIR_DEPENDENCY_SECTION_MISMATCH"
+    assert "REPAIR_DEPENDENCY_SECTION_MISMATCH" in repair_application_service._SEMANTIC_RETRY_CODES
+    assert "REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
+    assert len(transport.calls) == 2
+
+    retry_request = json.loads(transport.calls[1]["payload"]["input"][0]["content"][0]["text"])
+    retry_text = "\n".join(
+        segment["content"]
+        for segment in retry_request["context"]
+        if isinstance(segment, dict) and isinstance(segment.get("content"), str)
+    )
+    for phrase in (
+        "The requested dependency exists exactly once in authoritative package.json",
+        "Authoritative package: fixture-package",
+        "Authoritative section: devDependencies",
+        "Authoritative version: 1.0.0",
+        "requested section 'dependencies'",
+        "Do not move the dependency between package.json sections",
+        "Regenerate the repair from the original immutable failure and repository evidence",
+        "If dependency_change remains appropriate",
+        "Do not fabricate package state, lockfile state, or node_modules state",
+    ):
+        assert phrase in retry_text
+
+    session = factory()
+    base = session.get(LlmInvocationModel, f"{attempt_id}:proposer")
+    retry = session.get(LlmInvocationModel, f"{attempt_id}:proposer:semantic-retry-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert base is not None and retry is not None
+    assert retry.retries == 1
+    assert attempt.proposal_artifact_id is None
+    assert attempt.review_artifact_id is None
+    assert attempt.g10_gate_package_id is None
+    assert base.artifact_ids
+    assert retry.artifact_ids
+    rejected = next(
+        store.read_artifact_by_id(artifact_id)
+        for artifact_id in base.artifact_ids
+        if store.read_artifact_by_id(artifact_id).ref.relative_path.endswith(
+            "rejected-proposer-candidate.json"
+        )
+    )
+    rejected_payload = json.loads(rejected.content)
+    assert rejected_payload["semantic_failure_code"] == "REPAIR_DEPENDENCY_SECTION_MISMATCH"
+    assert rejected_payload["context_checksum"] == attempt.context_pack_checksum
+    assert rejected.ref.artifact_id in base.artifact_checksums
+    assert base.artifact_checksums[rejected.ref.artifact_id] == rejected.ref.checksum
+    session.close()
+
+    with pytest.raises(RepairApplicationError) as exhausted:
+        service.propose(attempt_id)
+    assert exhausted.value.code == "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+    assert len(transport.calls) == 2
+    engine.dispose()
+
+
+def test_corrected_dependency_section_binds_and_same_version_is_noop(tmp_path: Path):
+    package = tmp_path / "package.json"
+    package.write_text(
+        json.dumps({"devDependencies": {"fixture-package": "1.0.0"}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    context = {
+        "workspace_path": str(tmp_path),
+        "workspace_binding_alias": "STAGE_WORKSPACE_1",
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+        "stage_plan_commands": _lockfile_generation_commands(),
+    }
+    service = RepairApplicationService(scope=None)
+
+    bound = service._bind_proposal_candidate(
+        _dependency_change_candidate(section="devDependencies", new_version="2.0.0"),
+        context,
+    )
+    assert bound["operations"][0]["section"] == "devDependencies"
+    assert bound["operations"][0]["new_version"] == "2.0.0"
+
+    with pytest.raises(RepairApplicationError) as no_op:
+        service._bind_proposal_candidate(
+            _dependency_change_candidate(section="devDependencies", new_version="1.0.0"),
+            context,
+        )
+    assert no_op.value.code == "REPAIR_REPLACEMENT_NOOP"
+
+
+def test_restart_reclassifies_persisted_section_mismatch_into_one_retry(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    package_json = json.dumps(
+        {"name": "fixture", "devDependencies": {"fixture-package": "1.0.0"}},
+        indent=2,
+    ) + "\n"
+    store, attempt_id, _app_ts, _artifacts = _seed_service(
+        factory, tmp_path, package_json=package_json
+    )
+    session = factory()
+    plan = session.get(StageExecutionPlanModel, "stage-plan-stage-1")
+    plan.stage_plan = {
+        "repair_policy": {"max_attempts": 3},
+        "commands": _lockfile_generation_commands(),
+    }
+    session.commit()
+    session.close()
+
+    service = RepairApplicationService(scope=_scope(factory))
+    context = service._attempt_context(attempt_id)
+    candidate = _dependency_change_candidate(section="dependencies")
+    rejected_payload = {
+        "attempt_id": attempt_id,
+        "candidate": candidate,
+        "prompt_version": "prompt-repair-proposer-candidate-v5",
+        "schema_version": "schema-registry-v1",
+        "candidate_checksum": service._request_checksum(candidate),
+        "context_checksum": context["context_pack_checksum"],
+        "semantic_failure_code": "REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS",
+        "semantic_failure_message": "The requested package has ambiguous dependency entries",
+        "provider_request_id": "historical-request",
+    }
+    rejected = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/rejected-proposer-candidate.json",
+        json.dumps(rejected_payload),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-proposer",
+        created_at=NOW,
+    )
+    session = factory()
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + rejected.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=rejected.ref.artifact_type.value,
+            relative_path=rejected.ref.relative_path,
+            checksum=rejected.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.add(
+        LlmInvocationModel(
+            id=f"{attempt_id}:proposer",
+            run_id="run-1",
+            stage_id="stage-1",
+            idempotency_key=f"{attempt_id}:proposer",
+            request_checksum="sha256:historical-request",
+            input_hashes=["sha256:failure", context["context_pack_checksum"]],
+            correlation_id=f"{attempt_id}:proposer",
+            actor="transformer",
+            role="repair_proposer",
+            task_type="repair_diagnosis",
+            provider="azure_openai",
+            deployment_alias="azure-openai",
+            prompt_version="prompt-repair-proposer-candidate-v5",
+            schema_version="schema-registry-v1",
+            pricing_version="mvp-pricing-2026-01",
+            stage="repair",
+            redacted_summary=None,
+            status="failed",
+            failure_code="REPAIR_DEPENDENCY_PACKAGE_AMBIGUOUS",
+            artifact_ids=[rejected.ref.artifact_id],
+            artifact_checksums={rejected.ref.artifact_id: rejected.ref.checksum},
+            state_version=2,
+            event_sequence=0,
+            retries=0,
+            failure_stage="repair_semantics",
+            response_received=True,
+            transport_started=True,
+            started_at=NOW,
+            completed_at=NOW,
+            created_at=NOW,
+        )
+    )
+    session.commit()
+    session.close()
+
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(candidate)), _responses_body(json.dumps(candidate))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.propose(attempt_id)
+
+    assert raised.value.code == "REPAIR_DEPENDENCY_SECTION_MISMATCH"
+    assert len(transport.calls) == 1
+    retry_text = "\n".join(
+        segment["content"]
+        for segment in json.loads(transport.calls[0]["payload"]["input"][0]["content"][0]["text"])["context"]
+        if isinstance(segment, dict) and isinstance(segment.get("content"), str)
+    )
+    assert "Authoritative package: fixture-package" in retry_text
+    assert "Authoritative section: devDependencies" in retry_text
+    assert "Authoritative version: 1.0.0" in retry_text
+
+    session = factory()
+    retry = session.get(LlmInvocationModel, f"{attempt_id}:proposer:semantic-retry-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert retry is not None
+    assert retry.retries == 1
+    assert attempt.proposal_artifact_id is None
+    assert attempt.review_artifact_id is None
+    assert attempt.g10_gate_package_id is None
+    session.close()
+    engine.dispose()
 
 
 def test_unified_diff_cannot_modify_package_json(tmp_path: Path):
@@ -531,6 +942,112 @@ def test_corrected_dependency_transition_retry_binds(tmp_path: Path):
     assert bound["operations"][0]["path"] == "package.json"
     assert bound["operations"][0]["checkpoint_id"] == "checkpoint-1"
     assert bound["operations"][0]["target_state"]["target_version"] == context["expected_target_version"]
+
+
+def test_npm_eresolve_attempted_resolution_allows_candidate_different_from_installed(
+    tmp_path: Path,
+):
+    diagnosis = _npm_attempt_workspace(tmp_path)
+
+    verify_npm_eresolve_attempted_resolution_state(
+        tmp_path,
+        diagnosis=diagnosis,
+    )
+
+
+def test_installed_state_verification_still_requires_exact_peer_ranges(tmp_path: Path):
+    diagnosis = _npm_attempt_workspace(tmp_path)
+
+    verify_dependency_transition_state(
+        tmp_path,
+        package="fixture-package",
+        installed_version="1.4.0",
+        peer_ranges={"fixture-peer": ">=1.0.0 <2.0.0"},
+    )
+    with pytest.raises(ValueError, match="peer ranges do not match"):
+        verify_dependency_transition_state(
+            tmp_path,
+            package=diagnosis["package"],
+            installed_version="1.4.0",
+            peer_ranges=diagnosis["required_ranges"],
+        )
+
+
+def test_npm_eresolve_missing_package_version_fails_closed(tmp_path: Path):
+    diagnosis = _npm_attempt_workspace(tmp_path)
+    diagnosis.pop("package_version")
+
+    with pytest.raises(ValueError, match="attempted package version"):
+        verify_npm_eresolve_attempted_resolution_state(
+            tmp_path,
+            diagnosis=diagnosis,
+        )
+
+
+@pytest.mark.parametrize("missing_field", ["blocking_dependency", "required_peer_range", "required_ranges"])
+def test_npm_eresolve_missing_blocking_fact_fails_closed(tmp_path: Path, missing_field: str):
+    diagnosis = _npm_attempt_workspace(tmp_path)
+    diagnosis.pop(missing_field)
+
+    with pytest.raises(ValueError, match="attempted-resolution evidence"):
+        verify_npm_eresolve_attempted_resolution_state(
+            tmp_path,
+            diagnosis=diagnosis,
+        )
+
+
+def test_npm_eresolve_missing_package_intent_fails_closed(tmp_path: Path):
+    diagnosis = _npm_attempt_workspace(tmp_path, include_package=False)
+
+    with pytest.raises(ValueError, match="causal package intent"):
+        verify_npm_eresolve_attempted_resolution_state(
+            tmp_path,
+            diagnosis=diagnosis,
+        )
+
+
+def test_current_npm_eresolve_evidence_binds_facts_without_installed_peer_error(tmp_path: Path):
+    diagnosis = _npm_attempt_workspace(
+        tmp_path,
+        package="jest-preset-angular",
+        blocking_dependency="@angular-devkit/build-angular",
+        package_intent="^13.0.0",
+        attempted_version="13.1.6",
+        installed_version="16.1.3",
+        required_peer_range=">=13.0.0 <18.0.0",
+        installed_peer_range=">=16.0.0 <22.0.0",
+    )
+    evidence = {
+        "execution_id": "execution-eresolve",
+        "normalized_failure": {
+            "command_id": "npm-lockfile-generate",
+            "exit_code": 1,
+            "failure_diagnosis": diagnosis,
+        },
+    }
+    context = {
+        "workspace_path": str(tmp_path),
+        "failure_evidence_checksum": "sha256:failure",
+        "context_pack_checksum": "sha256:context",
+        "failure_evidence_artifact_id": "artifact-failure",
+        "checkpoint_id": "checkpoint-1",
+        "target_exact": "21.0.0",
+        "segments": [json.dumps(evidence)],
+    }
+
+    bound = RepairApplicationService(scope=None)._bind_proposal_candidate(
+        _dependency_transition_candidate(_dependency_transition_operation()), context
+    )
+
+    blocking = bound["operations"][0]["blocking_dependency"]
+    assert blocking["package"] == "jest-preset-angular"
+    assert blocking["installed_version"] == "16.1.3"
+    assert blocking["required_peer_ranges"] == [
+        {
+            "package": "@angular-devkit/build-angular",
+            "version_range": ">=13.0.0 <18.0.0",
+        }
+    ]
 
 
 def test_existing_create_target_has_specific_fail_closed_error(tmp_path: Path):
@@ -865,13 +1382,19 @@ def _gateway(transport, settings: Settings):
     )
 
 
-def _seed_service(factory, tmp_path: Path, *, human_revision: dict | None = None):
+def _seed_service(
+    factory,
+    tmp_path: Path,
+    *,
+    human_revision: dict | None = None,
+    package_json: str = '{"name": "fixture"}',
+):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
     (workspace / "src").mkdir(parents=True, exist_ok=True)
     app_ts = workspace / "src" / "app.ts"
     app_ts.write_text("old", encoding="utf-8")
-    (workspace / "package.json").write_text('{"name": "fixture"}', encoding="utf-8")
+    (workspace / "package.json").write_text(package_json, encoding="utf-8")
     (workspace / "angular.json").write_text('{"project": "fixture"}', encoding="utf-8")
     (workspace / "tsconfig.json").write_text('{"compilerOptions": {}}', encoding="utf-8")
     store = LocalFilesystemArtifactStore(artifacts.parent, fixed_run_root=artifacts)
@@ -2579,3 +3102,503 @@ def test_causal_dependency_transition_validation_unchanged() -> None:
         "limitations": [],
     }
     assert causal_rejection(_force_evidence(), proposal) is None
+
+
+def _seed_uncertain_reviewer(factory, tmp_path: Path):
+    store, attempt_id, app_ts, artifacts = _seed_service(factory, tmp_path)
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    plan = session.get(StageExecutionPlanModel, "stage-plan-stage-1")
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    proposal = _proposal(app_ts)
+    proposal["failure_evidence_checksum"] = attempt.failure_evidence_checksum
+    proposal["context_pack_checksum"] = attempt.context_pack_checksum
+    stored = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/proposal.json",
+        json.dumps(proposal, sort_keys=True, indent=2),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-proposer",
+        created_at=NOW,
+    )
+    diagnostic = store.write_text_artifact(
+        "run-1",
+        f"05_repairs/attempt-{attempt_id}/review-error.json",
+        json.dumps({"code": "LLM_PROVIDER_TIMEOUT", "response_received": False}),
+        ArtifactType.JSON,
+        stage_id="stage-1",
+        attempt_id=attempt_id,
+        created_by="repair-reviewer",
+        created_at=NOW,
+    )
+    checkpoint = StageCheckpointModel(
+        id="checkpoint-pre-repair",
+        run_id="run-1",
+        stage_id="stage-1",
+        kind="pre_repair",
+        sequence=1,
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=binding.workspace_path,
+        workspace_fingerprint=binding.workspace_fingerprint,
+        safe_for_resume=True,
+        sealed=True,
+        state_version=1,
+        created_at=NOW,
+    )
+    session.add(checkpoint)
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + stored.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=stored.ref.artifact_type.value,
+            relative_path=stored.ref.relative_path,
+            checksum=stored.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    session.add(
+        ArtifactMetadataModel(
+            id="metadata-" + diagnostic.ref.artifact_id,
+            run_id="run-1",
+            stage_id="stage-1",
+            artifact_type=diagnostic.ref.artifact_type.value,
+            relative_path=diagnostic.ref.relative_path,
+            checksum=diagnostic.ref.checksum,
+            created_at=NOW,
+            finalized_at=NOW,
+            immutable=True,
+        )
+    )
+    attempt.status = "proposed"
+    attempt.checkpoint_id = checkpoint.id
+    attempt.proposal_artifact_id = stored.ref.artifact_id
+    attempt.proposal_checksum = stored.ref.checksum
+    attempt.pre_fingerprint = binding.workspace_fingerprint
+    attempt.updated_at = NOW
+    continuation.status = "blocked"
+    continuation.current_node = "review_repair"
+    continuation.worker_id = None
+    continuation.lease_expires_at = None
+    continuation.last_error_code = "REPAIR_INVOCATION_UNCERTAIN"
+    continuation.last_error_message = "Repair LLM invocation outcome is uncertain"
+    continuation.state_version = 3
+    old_key = f"{attempt_id}:reviewer"
+    old = LlmInvocationModel(
+        id=old_key,
+        run_id="run-1",
+        stage_id="stage-1",
+        idempotency_key=old_key,
+        request_checksum="sha256:original-review-request",
+        input_hashes=[attempt.failure_evidence_checksum, attempt.context_pack_checksum],
+        correlation_id=old_key,
+        actor="transformer",
+        role="repair_reviewer",
+        task_type="repair_review",
+        provider="azure_openai",
+        deployment_alias="azure-openai",
+        prompt_version="prompt-repair-reviewer-candidate-v2",
+        schema_version="schema-registry-v1",
+        pricing_version="mvp-pricing-2026-01",
+        stage="repair",
+        redacted_summary=None,
+        status="in_progress",
+        failure_code="LLM_PROVIDER_TIMEOUT",
+        artifact_ids=[diagnostic.ref.artifact_id],
+        artifact_checksums={diagnostic.ref.artifact_id: diagnostic.ref.checksum},
+        state_version=1,
+        event_sequence=0,
+        retries=0,
+        transport_started=True,
+        response_received=None,
+        started_at=NOW,
+        completed_at=None,
+        created_at=NOW,
+    )
+    session.add(old)
+    session.commit()
+    session.close()
+    return store, attempt_id, stored.ref.checksum, old_key, artifacts
+
+
+def test_uncertain_reviewer_recovery_is_explicit_and_idempotent(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, proposal_checksum, old_key, _artifacts = _seed_uncertain_reviewer(factory, tmp_path)
+    service = RepairApplicationService(scope=_scope(factory))
+
+    with pytest.raises(RepairApplicationError) as blocked:
+        service._recover_completed(
+            service._attempt_context(attempt_id, include_proposal=True),
+            role="reviewer",
+            schema_name=service.reviewer_schema,
+            task_type=LlmTaskType.REPAIR_REVIEW,
+            schema=RepairReviewCandidate,
+        )
+    assert blocked.value.code == "REPAIR_INVOCATION_UNCERTAIN"
+
+    result = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="operator-recovery-1",
+        actor="operator",
+        reason="Provider outcome cannot be reconstructed from durable evidence.",
+    )
+    assert result["old_invocation_key"] == old_key
+    assert result["new_invocation_key"] == f"{attempt_id}:reviewer:recovery-1"
+    assert result["proposal_checksum"] == proposal_checksum
+    assert result["idempotent_replay"] is False
+
+    session = factory()
+    abandoned = session.get(LlmInvocationModel, old_key)
+    successor = session.get(LlmInvocationModel, f"{attempt_id}:reviewer:recovery-1")
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    events = session.query(WorkflowEventModel).filter_by(run_id="run-1").all()
+    assert abandoned.status == "uncertain_abandoned"
+    assert abandoned.completed_at is not None
+    assert abandoned.request_checksum == "sha256:original-review-request"
+    assert abandoned.idempotency_key == old_key
+    assert abandoned.failure_code == "LLM_PROVIDER_TIMEOUT"
+    assert len(abandoned.artifact_ids) == 1
+    assert successor.status == "in_progress"
+    assert successor.transport_started is False
+    assert successor.idempotency_key == f"{attempt_id}:reviewer:recovery-1"
+    assert successor.request_checksum == abandoned.request_checksum
+    assert attempt.reviewer_invocation_id == successor.id
+    assert attempt.proposal_checksum == proposal_checksum
+    assert continuation.status == "queued"
+    assert continuation.current_node == "review_repair"
+    assert continuation.last_error_code is None
+    recovery_events = [event for event in events if event.event_type == WorkflowEventType.REPAIR_INVOCATION_RECOVERED.value]
+    assert len(recovery_events) == 1
+    payload = recovery_events[0].payload
+    assert payload["old_invocation_key"] == old_key
+    assert payload["new_invocation_key"] == successor.idempotency_key
+    assert payload["proposal_checksum"] == proposal_checksum
+    assert payload["operator_actor"] == "operator"
+    assert payload["recovery_request_idempotency_key"] == "operator-recovery-1"
+    assert payload["reason"].startswith("Provider outcome")
+    session.close()
+
+    replay = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="operator-recovery-2",
+        actor="operator",
+        reason="Provider outcome cannot be reconstructed from durable evidence.",
+    )
+    assert replay["idempotent_replay"] is True
+    assert replay["new_invocation_key"] == f"{attempt_id}:reviewer:recovery-1"
+    session = factory()
+    assert session.query(LlmInvocationModel).filter(LlmInvocationModel.id.like(f"{attempt_id}:reviewer:recovery-%")).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_uncertain_reviewer_recovery_rejects_invalid_state_without_mutation(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_uncertain_reviewer(factory, tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    continuation.last_error_code = "OTHER_ERROR"
+    session.commit()
+    session.close()
+    service = RepairApplicationService(scope=_scope(factory))
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_uncertain_invocation(
+            run_id="run-1",
+            attempt_id="repair-1",
+            expected_state_version=3,
+            idempotency_key="operator-recovery-1",
+            actor="operator",
+            reason="operator recovery",
+        )
+    assert raised.value.code == "REPAIR_RECOVERY_NOT_ELIGIBLE"
+    session = factory()
+    assert session.get(LlmInvocationModel, "repair-1:reviewer").status == "in_progress"
+    assert session.get(RepairAttemptModel, "repair-1").reviewer_invocation_id is None
+    session.close()
+    engine.dispose()
+
+
+def _set_uncertain_reviewer_waiter(
+    factory,
+    *,
+    execution_id: str,
+    status: str,
+    run_id: str = "run-1",
+    stage_id: str | None = "stage-1",
+) -> None:
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    execution = CommandExecutionModel(
+        id=execution_id,
+        run_id=run_id,
+        stage_id=stage_id,
+        executable="node",
+        arguments=["--version"],
+        status=status,
+        requested_at=NOW,
+        finished_at=NOW if status not in {
+            CommandStatus.QUEUED.value,
+            CommandStatus.PENDING.value,
+            CommandStatus.RUNNING.value,
+        } else None,
+    )
+    session.add(execution)
+    continuation.waiting_execution_id = execution_id
+    session.commit()
+    session.close()
+
+
+def test_uncertain_reviewer_recovery_terminal_failed_waiter_allows_eligibility(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_uncertain_reviewer(factory, tmp_path)
+    _set_uncertain_reviewer_waiter(
+        factory,
+        execution_id="terminal-failed-waiter",
+        status=CommandStatus.FAILED.value,
+    )
+    service = RepairApplicationService(scope=_scope(factory))
+
+    result = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id="repair-1",
+        expected_state_version=3,
+        idempotency_key="operator-recovery-1",
+        actor="operator",
+        reason="terminal failed waiter is historical",
+    )
+
+    assert result["idempotent_replay"] is False
+    engine.dispose()
+
+
+def test_uncertain_reviewer_recovery_terminal_succeeded_waiter_allows_eligibility(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_uncertain_reviewer(factory, tmp_path)
+    _set_uncertain_reviewer_waiter(
+        factory,
+        execution_id="terminal-succeeded-waiter",
+        status=CommandStatus.SUCCEEDED.value,
+    )
+    service = RepairApplicationService(scope=_scope(factory))
+
+    result = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id="repair-1",
+        expected_state_version=3,
+        idempotency_key="operator-recovery-1",
+        actor="operator",
+        reason="terminal succeeded waiter is historical",
+    )
+
+    assert result["idempotent_replay"] is False
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        pytest.param(CommandStatus.QUEUED.value, id="queued"),
+        pytest.param(CommandStatus.PENDING.value, id="pending"),
+        pytest.param(CommandStatus.RUNNING.value, id="running"),
+    ],
+)
+def test_uncertain_reviewer_recovery_active_waiter_blocks(tmp_path: Path, status: str):
+    engine, factory = _database(tmp_path)
+    _seed_uncertain_reviewer(factory, tmp_path)
+    _set_uncertain_reviewer_waiter(
+        factory,
+        execution_id=f"active-{status}-waiter",
+        status=status,
+    )
+    service = RepairApplicationService(scope=_scope(factory))
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_uncertain_invocation(
+            run_id="run-1",
+            attempt_id="repair-1",
+            expected_state_version=3,
+            idempotency_key="operator-recovery-1",
+            actor="operator",
+            reason="active waiter must retain ownership",
+        )
+
+    assert raised.value.code == "REPAIR_RECOVERY_NOT_ELIGIBLE"
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "waiter_case",
+    [
+        pytest.param("missing", id="missing"),
+        pytest.param("wrong_run", id="wrong-run"),
+        pytest.param("wrong_continuation", id="wrong-continuation"),
+        pytest.param("malformed", id="malformed"),
+    ],
+)
+def test_uncertain_reviewer_recovery_nonexistent_or_mismatched_waiter_fails_closed(
+    tmp_path: Path, waiter_case: str
+):
+    engine, factory = _database(tmp_path)
+    _seed_uncertain_reviewer(factory, tmp_path)
+    if waiter_case == "missing":
+        session = factory()
+        session.get(TransformationContinuationModel, "cont-1").waiting_execution_id = "missing-waiter"
+        session.commit()
+        session.close()
+    else:
+        _set_uncertain_reviewer_waiter(
+            factory,
+            execution_id=f"{waiter_case}-waiter",
+            status=CommandStatus.SUCCEEDED.value,
+            run_id="other-run" if waiter_case == "wrong_run" else "run-1",
+            stage_id=None if waiter_case == "malformed" else (
+                "other-stage" if waiter_case == "wrong_continuation" else "stage-1"
+            ),
+        )
+    service = RepairApplicationService(scope=_scope(factory))
+
+    with pytest.raises(RepairApplicationError) as raised:
+        service.recover_uncertain_invocation(
+            run_id="run-1",
+            attempt_id="repair-1",
+            expected_state_version=3,
+            idempotency_key="operator-recovery-1",
+            actor="operator",
+            reason="malformed or mismatched waiter must fail closed",
+        )
+
+    assert raised.value.code == "REPAIR_RECOVERY_NOT_ELIGIBLE"
+    engine.dispose()
+
+
+def test_uncertain_reviewer_recovery_null_waiter_retains_eligibility(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed_uncertain_reviewer(factory, tmp_path)
+    service = RepairApplicationService(scope=_scope(factory))
+
+    result = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id="repair-1",
+        expected_state_version=3,
+        idempotency_key="operator-recovery-1",
+        actor="operator",
+        reason="null waiter retains existing eligibility",
+    )
+
+    assert result["idempotent_replay"] is False
+    session = factory()
+    assert session.get(TransformationContinuationModel, "cont-1").waiting_execution_id is None
+    session.close()
+    engine.dispose()
+
+
+class _RetrievalTransport:
+    def __init__(self, result):
+        self.result = result
+        self.post_calls = 0
+        self.get_calls = []
+
+    def request(self, **kwargs):
+        self.post_calls += 1
+        raise AssertionError("retrieval must not issue a new POST")
+
+    def retrieve_response(self, **kwargs):
+        self.get_calls.append(kwargs)
+        return self.result
+
+
+def _review_response_body(*, provider_response_id: str, status: str = "completed"):
+    body = _responses_body(
+        json.dumps(
+            {
+                "decision": "accept",
+                "findings": [],
+                "policy_checks": ["policy-ok"],
+                "risk_assessment": "low",
+                "required_validation_targets": ["build"],
+                "limitations": [],
+            }
+        )
+    )
+    body["id"] = provider_response_id
+    body["status"] = status
+    return body
+
+
+def _review_request(settings: Settings) -> LlmRequest:
+    return LlmRequest(
+        request_id="attempt:reviewer",
+        run_id="run-1",
+        stage_id="stage-1",
+        agent_kind=AgentKind.REPAIR,
+        task_type=LlmTaskType.REPAIR_REVIEW,
+        role=LlmRole.REPAIR_REVIEWER,
+        system_policy="Review only.",
+        context=[],
+        response_schema="repair_reviewer_candidate_v2",
+    )
+
+
+def test_synchronous_response_id_is_persistable_and_retrieval_does_not_post(tmp_path: Path):
+    settings = _azure_settings(tmp_path)
+    body = _review_response_body(provider_response_id="resp-1")
+    transport = _RecordingTransport([ProviderTransportResult(body=body, provider_response_id="resp-1")])
+    response = _gateway(transport, settings).complete(_review_request(settings))
+    assert response.provider_response_id == "resp-1"
+
+    retrieval_transport = _RetrievalTransport(
+        ProviderTransportResult(body=_review_response_body(provider_response_id="resp-1"), provider_response_id="resp-1")
+    )
+    gateway = _gateway(retrieval_transport, settings)
+    retrieved = gateway.retrieve_response(_review_request(settings), provider_response_id="resp-1")
+    assert retrieved.provider_response_id == "resp-1"
+    assert retrieval_transport.post_calls == 0
+    assert retrieval_transport.get_calls[0]["response_id"] == "resp-1"
+
+
+@pytest.mark.parametrize(
+    "body, expected_subtype",
+    [
+        (_review_response_body(provider_response_id="resp-1", status="in_progress"), "PROVIDER_RESPONSE_PENDING"),
+        ({"status": "completed", "output": []}, "PROVIDER_RESPONSE_ID_MISSING"),
+        (_review_response_body(provider_response_id="other"), "PROVIDER_RESPONSE_ID_MISMATCH"),
+    ],
+)
+def test_response_retrieval_is_fail_closed_without_duplicate_post(tmp_path: Path, body, expected_subtype):
+    settings = _azure_settings(tmp_path)
+    transport = _RetrievalTransport(ProviderTransportResult(body=body, provider_response_id=body.get("id")))
+    gateway = _gateway(transport, settings)
+    with pytest.raises(AzureGatewayError) as raised:
+        gateway.retrieve_response(_review_request(settings), provider_response_id="resp-1")
+    assert raised.value.failure_subtype == expected_subtype
+    assert transport.post_calls == 0
+
+
+def test_completed_provider_response_id_is_persisted_on_normal_reviewer_path(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    proposal_body = _responses_body(json.dumps(_proposal_candidate()))
+    review_body = _responses_body(json.dumps(_review_candidate()))
+    review_body["id"] = "resp-review-1"
+    transport = _RecordingTransport([proposal_body, review_body])
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+    service.propose(attempt_id)
+    service.review(attempt_id)
+    session = factory()
+    reviewer = session.get(LlmInvocationModel, f"{attempt_id}:reviewer")
+    assert reviewer.provider_response_id == "resp-review-1"
+    session.close()
+    engine.dispose()

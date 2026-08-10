@@ -192,9 +192,20 @@ def validate_dependency_transition_evidence(
         raise ValueError("backend dependency evidence is missing")
     normalized = evidence.get("normalized_failure")
     diagnosis = normalized.get("failure_diagnosis") if isinstance(normalized, dict) else None
+    supported_peer_conflict_evidence = (
+        isinstance(normalized, dict)
+        and (
+            normalized.get("command_id") == "angular-update-exact"
+            or (
+                normalized.get("command_id") == "npm-lockfile-generate"
+                and isinstance(diagnosis, dict)
+                and diagnosis.get("source") == "npm_eresolve_peer_conflict"
+            )
+        )
+    )
     if (
         not isinstance(normalized, dict)
-        or normalized.get("command_id") != "angular-update-exact"
+        or not supported_peer_conflict_evidence
         or not isinstance(normalized.get("exit_code"), int)
         or normalized["exit_code"] == 0
         or not isinstance(diagnosis, dict)
@@ -265,6 +276,76 @@ def validate_dependency_transition_evidence(
         "proposed_angular_version": proposed_version,
         "target_version": target_version,
     }
+
+
+def verify_npm_eresolve_attempted_resolution_state(
+    workspace: Path,
+    *,
+    diagnosis: dict[str, object],
+) -> None:
+    """Verify npm's rejected candidate against manifest/root intent only."""
+    if diagnosis.get("source") != "npm_eresolve_peer_conflict":
+        raise ValueError("attempted-resolution evidence source is invalid")
+    package = diagnosis.get("package")
+    package_version = diagnosis.get("package_version")
+    blocking_dependency = diagnosis.get("blocking_dependency")
+    required_peer_range = diagnosis.get("required_peer_range")
+    required_ranges = diagnosis.get("required_ranges")
+    if not isinstance(package, str) or not package.strip():
+        raise ValueError("attempted-resolution evidence causal package is missing")
+    if not is_exact_version(package_version):
+        raise ValueError("attempted package version is missing or not exact")
+    if not isinstance(blocking_dependency, str) or not blocking_dependency.strip():
+        raise ValueError("attempted-resolution evidence blocking dependency is missing")
+    if not isinstance(required_peer_range, str) or not required_peer_range.strip():
+        raise ValueError("attempted-resolution evidence peer range is missing")
+    if required_ranges != {blocking_dependency: required_peer_range}:
+        raise ValueError("attempted-resolution evidence peer ranges are inconsistent")
+
+    manifest = _read_json(Path(workspace) / "package.json")
+    if manifest is None:
+        raise ValueError("causal package intent is missing or invalid")
+    package_sections = [
+        section
+        for section in ("dependencies", "devDependencies")
+        if isinstance(manifest.get(section), dict) and package in manifest[section]
+    ]
+    if len(package_sections) != 1:
+        raise ValueError("causal package intent is missing or ambiguous")
+    package_intent = manifest[package_sections[0]][package]
+    if not isinstance(package_intent, str) or not package_intent.strip():
+        raise ValueError("causal package intent is missing or invalid")
+    if is_exact_version(package_intent) and package_intent != package_version:
+        raise ValueError("attempted package version conflicts with exact package intent")
+
+    blocking_sections = [
+        section
+        for section in ("dependencies", "devDependencies")
+        if isinstance(manifest.get(section), dict)
+        and blocking_dependency in manifest[section]
+    ]
+    if len(blocking_sections) != 1:
+        raise ValueError("blocking dependency is missing or ambiguous in root dependency state")
+
+
+def verify_dependency_transition_evidence_for_source(
+    workspace: Path,
+    *,
+    diagnosis: dict[str, object],
+    package: str,
+    installed_version: str,
+    peer_ranges: dict[str, str],
+) -> None:
+    """Verify transition pre-state according to its immutable evidence source."""
+    if diagnosis.get("source") == "npm_eresolve_peer_conflict":
+        verify_npm_eresolve_attempted_resolution_state(workspace, diagnosis=diagnosis)
+        return
+    verify_dependency_transition_state(
+        workspace,
+        package=package,
+        installed_version=installed_version,
+        peer_ranges=peer_ranges,
+    )
 
 
 def verify_dependency_transition_state(

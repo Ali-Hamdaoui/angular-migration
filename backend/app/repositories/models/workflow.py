@@ -828,6 +828,7 @@ class LlmInvocationModel(Base):
     provider_error_code: Mapped[str | None] = mapped_column(String(128))
     sanitized_provider_message: Mapped[str | None] = mapped_column(Text)
     provider_request_id: Mapped[str | None] = mapped_column(String(256))
+    provider_response_id: Mapped[str | None] = mapped_column(String(256))
     failure_stage: Mapped[str | None] = mapped_column(String(128))
     failure_subtype: Mapped[str | None] = mapped_column(String(128))
     transport_exception_type: Mapped[str | None] = mapped_column(String(128))

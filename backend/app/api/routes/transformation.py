@@ -10,6 +10,7 @@ from app.api.authentication import authenticated_actor, authorize_run
 from app.api.errors import error_response
 from app.domain.transformation import (
     RepairDecisionRequest,
+    RepairInvocationRecoveryRequest,
     RepairRevisionRequest,
     StageGateDecisionRequest,
     TransformationCancelRequest,
@@ -801,6 +802,42 @@ def recover_exhausted_semantic_retry(
             expected_state_version=body.expected_state_version,
             idempotency_key=body.idempotency_key,
             actor=actor,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-uncertain-invocation")
+def recover_uncertain_invocation(
+    run_id: str,
+    attempt_id: str,
+    body: RepairInvocationRecoveryRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).recover_uncertain_invocation(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            reason=body.reason,
         )
     except RepairApplicationError as error:
         return error_response(
