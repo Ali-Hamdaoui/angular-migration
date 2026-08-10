@@ -21,6 +21,17 @@ export interface ArtifactPresentation {
   searchableText: string;
 }
 
+const CATEGORY_ORDER: ArtifactCategory[] = [
+  "gate",
+  "validation",
+  "report",
+  "diff",
+  "command",
+  "snapshot",
+  "diagnostic",
+  "other",
+];
+
 const EXPLICIT_TYPE_CATEGORY: Partial<Record<ArtifactRefDto["artifact_type"], ArtifactCategory>> = {
   command_log: "command",
   patch: "diff",
@@ -104,4 +115,24 @@ export function presentArtifact(artifact: ArtifactRefDto): ArtifactPresentation 
     rawPath,
     searchableText,
   };
+}
+
+/**
+ * Keep artifact ordering deterministic for the investigation list. Semantic
+ * category and journey stage provide stable grouping; recency only orders
+ * artifacts inside that group. The artifact id is the final tie breaker so a
+ * refresh cannot reshuffle equal timestamps.
+ */
+export function sortArtifactPresentations(artifacts: ArtifactPresentation[]): ArtifactPresentation[] {
+  return [...artifacts].sort((left, right) => {
+    const category = CATEGORY_ORDER.indexOf(left.category) - CATEGORY_ORDER.indexOf(right.category);
+    if (category !== 0) return category;
+    const stage = left.stageLabel.localeCompare(right.stageLabel);
+    if (stage !== 0) return stage;
+    const created = right.artifact.created_at.localeCompare(left.artifact.created_at);
+    if (created !== 0) return created;
+    const title = left.title.localeCompare(right.title);
+    if (title !== 0) return title;
+    return left.artifact.artifact_id.localeCompare(right.artifact.artifact_id);
+  });
 }

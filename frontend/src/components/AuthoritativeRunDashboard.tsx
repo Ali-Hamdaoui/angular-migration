@@ -35,6 +35,7 @@ import type { PipelineStageContent } from "./control-tower/PipelineStageDetail";
 import type { AuthoritativePackageLoad } from "./control-tower/authoritativePackageLoad";
 import { TechnicalDetails } from "./control-tower/TechnicalDetails";
 import { WorkflowEventsSection } from "./control-tower/WorkflowEventsSection";
+import { EvidenceWorkspace } from "./control-tower/EvidenceWorkspace";
 import styles from "./ControlTowerShell.module.css";
 import "./control-tower/ControlTowerLayout.module.css";
 
@@ -484,29 +485,7 @@ export function AuthoritativeRunDashboard({
 
           {activeSection === "evidence" ? (
             <section className="controlTowerSection" aria-labelledby="evidence-navigation-item">
-              <div className="controlTowerSectionIntro">
-                <div><h2>Evidence</h2><p>Immutable artifacts registered by the backend.</p></div>
-              </div>
-              <section className={styles.panel} aria-label="Run evidence">
-                {artifactPresentations.length === 0 ? <p className={styles.note}>Evidence not available.</p> : (
-                  <ul className={styles.list}>
-                    {artifactPresentations.map((presentation) => (
-                      <li key={presentation.artifact.artifact_id}>
-                        <a
-                          className={styles.actionLink}
-                          href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(presentation.artifact.artifact_id)}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {presentation.title}
-                        </a>
-                        <span>{presentation.stageLabel}</span>
-                        <code>{presentation.rawPath}</code>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+              <EvidenceWorkspace artifacts={artifactPresentations} />
             </section>
           ) : null}
 

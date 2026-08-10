@@ -1,4 +1,4 @@
-import { presentArtifact, type ArtifactCategory } from "@/presentation/artifacts";
+import { presentArtifact, sortArtifactPresentations, type ArtifactCategory } from "@/presentation/artifacts";
 import { makeArtifact } from "@/test/authoritativeFixtures";
 
 describe("presentArtifact", () => {
@@ -60,6 +60,14 @@ describe("presentArtifact", () => {
       category: "other",
       rawPath: "future_backend/new_evidence_shape.json",
     });
+  });
+
+  it("groups by semantic category and stage, then sorts newest first deterministically", () => {
+    const older = presentArtifact(makeArtifact({ artifact_id: "older", artifact_type: "command_log", stage_id: "baseline", created_at: "2026-08-09T10:00:00Z", relative_path: "commands/older.log" }));
+    const newer = presentArtifact(makeArtifact({ artifact_id: "newer", artifact_type: "command_log", stage_id: "baseline", created_at: "2026-08-09T10:02:00Z", relative_path: "commands/newer.log" }));
+    const gate = presentArtifact(makeArtifact({ artifact_id: "gate", artifact_type: "json", stage_id: "G02", created_at: "2026-08-09T09:00:00Z", relative_path: "G02/package.json" }));
+
+    expect(sortArtifactPresentations([older, gate, newer]).map((item) => item.artifact.artifact_id)).toEqual(["gate", "newer", "older"]);
   });
 
   it.each([
