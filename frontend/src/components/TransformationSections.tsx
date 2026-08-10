@@ -24,7 +24,8 @@ function latest(events: WorkflowEventDto[], matches: (type: string) => boolean) 
 }
 
 export function decisionLabel(value: string | null | undefined) {
-  return value && isGateId(value) ? gateDefinition(value).label : value ? "Unsupported decision" : "No decision requested";
+  const transformationGate = value && ["G07", "G08", "G09", "G10", "G11", "G12"].includes(value);
+  return transformationGate && isGateId(value) ? gateDefinition(value).label : value ? "Unsupported decision" : "No decision requested";
 }
 
 export function approvalActionLabel(value: string | null | undefined) {

@@ -198,9 +198,6 @@ export function TransformationPanel({
     {actionError ? <div className={styles.alert} role="alert"><p>{actionError.message}</p>{actionError.code ? <TechnicalDetails><code>Error code: {actionError.code}</code></TechnicalDetails> : null}</div> : null}
 
     <div className={styles.grid}>
-      <StageSummary {...shared} />
-      <WorkerStatus projection={projection} />
-
       <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="transform-current-action">
         <span className={styles.eyebrow}>Current action or gate</span>
         <div className={styles.cardHeader}>
@@ -278,6 +275,8 @@ export function TransformationPanel({
         </> : null}
       </section>
 
+      <StageSummary {...shared} />
+      <WorkerStatus projection={projection} />
       <LogsAndDiagnostics {...shared} />
 
       <section className={`${styles.card} ${styles.cardWide} ${projection.status === "waiting_prompt" ? styles.prompt : ""}`} aria-labelledby="transform-prompt">

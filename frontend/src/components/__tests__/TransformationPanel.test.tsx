@@ -194,4 +194,21 @@ describe("TransformationPanel", () => {
     expect(screen.getByText(/lacks the backend package checksum or workspace fingerprint/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve repair validation/i })).not.toBeInTheDocument();
   });
+
+  it("rejects a non-transformation gate even when its bindings look complete", () => {
+    renderPanel({ ...baseProjection, active_gate: "G03", active_gate_package_checksum: "sha256:g03" });
+    expect(screen.getByText("This decision type is unsupported by the frontend.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+    expect(decideTransformationGate).not.toHaveBeenCalled();
+  });
+
+  it("leads with the current action and keeps technical details collapsed", () => {
+    renderPanel();
+    const headings = screen.getAllByRole("heading");
+    const actionIndex = headings.findIndex((heading) => heading.textContent === "Stage-start acceptance");
+    const stageIndex = headings.findIndex((heading) => heading.textContent === "Migration stages");
+    expect(actionIndex).toBeGreaterThanOrEqual(0);
+    expect(stageIndex).toBeGreaterThan(actionIndex);
+    expect(screen.getAllByText("Technical details").every((summary) => !summary.closest("details")?.hasAttribute("open"))).toBe(true);
+  });
 });
