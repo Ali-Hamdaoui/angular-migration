@@ -29,6 +29,7 @@ export interface JourneyMilestone {
   label: string;
   state: JourneyState;
   evidenceEvent?: string;
+  evidenceEvents?: string[];
   stageId?: string;
 }
 
@@ -84,13 +85,25 @@ function orderedEvents(run: AuthoritativeRunStateDto): WorkflowEventDto[] {
   return [...run.workflow_events].sort((left, right) => left.sequence - right.sequence);
 }
 
-function latestGateState(events: WorkflowEventDto[], gateIds: GateId[]): Pick<JourneyMilestone, "state" | "evidenceEvent"> | null {
+const GATE_EVIDENCE_EVENT_TYPES: Partial<Record<GateId, ReadonlySet<string>>> = {
+  G05: new Set(["COMPATIBILITY_RESOLUTION_COMPLETED", "COMPATIBILITY_RESOLUTION_BLOCKED"]),
+  G06: new Set(["MIGRATION_PLAN_CREATED", "STAGE_PLAN_CREATED", "PLANNING_AGENT_COMPLETED"]),
+};
+
+function latestGateState(events: WorkflowEventDto[], gateIds: GateId[]): Pick<JourneyMilestone, "state" | "evidenceEvent" | "evidenceEvents"> | null {
   const created = events
     .filter((event) => gateIds.some((gateId) => event.event_type === `${gateId}_CREATED`))
     .at(-1);
   if (!created) return null;
 
   const gateId = created.event_type.slice(0, 3) as GateId;
+  const previousCreatedSequence = events
+    .filter((event) => event.sequence < created.sequence && event.event_type === `${gateId}_CREATED`)
+    .at(-1)?.sequence ?? 0;
+  const supportingTypes = GATE_EVIDENCE_EVENT_TYPES[gateId];
+  const supportingEvents = supportingTypes
+    ? events.filter((event) => event.sequence > previousCreatedSequence && event.sequence < created.sequence && supportingTypes.has(event.event_type))
+    : [];
   const terminal = events
     .filter((event) =>
       event.sequence > created.sequence
@@ -98,12 +111,14 @@ function latestGateState(events: WorkflowEventDto[], gateIds: GateId[]): Pick<Jo
     )
     .at(-1);
 
-  if (!terminal) return { state: "action-required", evidenceEvent: created.event_id };
+  const evidenceEvents = [...supportingEvents.map((event) => event.event_id), created.event_id];
+  if (!terminal) return { state: "action-required", evidenceEvent: created.event_id, evidenceEvents };
   return {
     state: terminal.event_type.endsWith("_APPROVED") || terminal.event_type.endsWith("_APPROVED_WITH_RISK")
       ? "complete"
       : "blocked",
     evidenceEvent: terminal.event_id,
+    evidenceEvents: [...evidenceEvents, terminal.event_id],
   };
 }
 
@@ -156,7 +171,8 @@ export function buildJourney(
   }
 
   const gateMilestones: Array<[JourneyKey, GateId[]]> = [
-    ["baseline", ["G02", "G03"]],
+    ["readiness", ["G02"]],
+    ["baseline", ["G03"]],
     ["discovery", ["G04"]],
     ["feasibility", ["G05"]],
     ["plan", ["G06"]],

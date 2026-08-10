@@ -22,6 +22,11 @@ const props = { runId: "run-1", initialState: state, connectionStatus: "open", a
 describe("MigrationPlanPanel", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<MigrationPlanPanel {...props} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Migration plan", level: 4 })).toBeInTheDocument();
+  });
+
   it("renders route, Stage 1 commands, policies, and artifact checksums", async () => {
     vi.mocked(getPlan).mockResolvedValue(response);
     render(<MigrationPlanPanel {...props} />);

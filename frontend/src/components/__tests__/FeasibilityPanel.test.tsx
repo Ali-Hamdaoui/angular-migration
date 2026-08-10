@@ -23,6 +23,11 @@ const props = { runId: "run-1", initialState: state, connectionStatus: "open", a
 describe("FeasibilityPanel", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<FeasibilityPanel {...props} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Feasibility and G05", level: 4 })).toBeInTheDocument();
+  });
+
   it("renders the authoritative ladder, support, exact profile, evidence, and G05 controls", async () => {
     vi.mocked(getFeasibility).mockResolvedValue(response);
     render(<FeasibilityPanel {...props} />);

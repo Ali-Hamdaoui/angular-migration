@@ -1,22 +1,57 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
+import { getG02Review } from "@/api/g02";
+import { getBaselineSummary } from "@/api/baselineG03";
 import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import { useTransformation } from "@/hooks/useTransformation";
 import { makeArtifact, makeAuthoritativeRun, makeEvent } from "@/test/authoritativeFixtures";
-import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import type { AuthoritativeRunStateDto, BaselineAssessmentResponse, G02ReviewResponse } from "@/types/generated/api";
 import type { TransformationProjection } from "@/types/transformation";
+import type { PipelineStageContent } from "@/components/control-tower/PipelineStageDetail";
+import type { JourneyKey, JourneyMilestone } from "@/presentation/runJourney";
 
 const pipelineRender = vi.fn();
+type PipelineProps = {
+  journey: JourneyMilestone[];
+  stageContent: PipelineStageContent[];
+  focusStage?: JourneyKey;
+  expandedKey?: JourneyKey;
+  onExpandedKeyChange?: (key: JourneyKey) => void;
+};
+let latestPipelineProps: PipelineProps | null = null;
 
 vi.mock("@/hooks/useAuthoritativeRun", async () => {
   const actual = await vi.importActual<typeof import("@/hooks/useAuthoritativeRun")>("@/hooks/useAuthoritativeRun");
   return { ...actual, useAuthoritativeRun: vi.fn() };
 });
 vi.mock("@/hooks/useTransformation", () => ({ useTransformation: vi.fn() }));
+vi.mock("@/api/g02", async () => {
+  const actual = await vi.importActual<typeof import("@/api/g02")>("@/api/g02");
+  return { ...actual, getG02Review: vi.fn() };
+});
+vi.mock("@/api/baselineG03", async () => {
+  const actual = await vi.importActual<typeof import("@/api/baselineG03")>("@/api/baselineG03");
+  return { ...actual, getBaselineSummary: vi.fn() };
+});
 vi.mock("@/components/control-tower/PipelineSection", () => ({
-  PipelineSection: ({ focusStage }: { focusStage?: string }) => {
-    pipelineRender(focusStage);
-    return <section aria-label="Pipeline workspace">{focusStage ? `Focused stage: ${focusStage}` : "Pipeline workspace"}</section>;
+  PipelineSection: (props: PipelineProps) => {
+    latestPipelineProps = props;
+    pipelineRender(props);
+    return (
+      <section aria-label="Pipeline workspace">
+        {props.expandedKey ?? props.focusStage ? `Focused stage: ${props.expandedKey ?? props.focusStage}` : "Pipeline workspace"}
+        {props.stageContent.map((content) => (
+          <button key={`inspect-${content.milestone.key}`} type="button" onClick={() => props.onExpandedKeyChange?.(content.milestone.key)}>
+            Inspect {content.milestone.label}
+          </button>
+        ))}
+        {props.stageContent.map((content) => (
+          <span key={content.milestone.key} data-testid={`pipeline-${content.milestone.key}-tabs`}>
+            {content.tabs.map((tab) => tab.label).join(",")}
+          </span>
+        ))}
+      </section>
+    );
   },
 }));
 vi.mock("@/components/LlmDiagnosticsPanel", () => ({ LlmDiagnosticsPanel: () => <p>Provider diagnostics</p> }));
@@ -67,6 +102,77 @@ function pendingG06Run() {
       }),
     ],
   });
+}
+
+function g02Review(packageChecksum: string, artifactId: string): G02ReviewResponse {
+  return {
+    run_id: "run-fixture",
+    gate_id: "G02",
+    gate_version: "g02-v1",
+    status: "pending",
+    decision: null,
+    package: {
+      run_id: "run-fixture",
+      gate_id: "G02",
+      gate_version: "g02-v1",
+      state_version: 2,
+      actor: "operator",
+      policy_version: "source-snapshot-policy-v1",
+      snapshot_id: "snapshot-1",
+      source_fingerprint: "sha256:source",
+      snapshot_fingerprint: "sha256:snapshot",
+      artifact_set_checksum: "sha256:g02-artifacts",
+      artifacts: [{
+        artifact_id: artifactId,
+        run_id: "run-fixture",
+        stage_id: null,
+        artifact_type: "json",
+        relative_path: "global/g02/source-integrity.json",
+        created_at: "2026-08-09T10:02:00Z",
+        checksum: `sha256:${artifactId}`,
+      }],
+      integrity: {
+        before_fingerprint: "sha256:source",
+        after_snapshot_fingerprint: "sha256:source",
+        snapshot_fingerprint: "sha256:snapshot",
+        manifest_checksum: "sha256:manifest",
+        policy_version: "source-snapshot-policy-v1",
+        source_read_only_verified: true,
+        status: "verified",
+      },
+      package_checksum: packageChecksum,
+    },
+    baseline_input_boundary: null,
+    state_version: 2,
+    event_sequence: 2,
+    idempotent_replay: false,
+    stale_reason: null,
+    comment: null,
+  };
+}
+
+function g03Assessment(packageChecksum: string, artifactId: string): BaselineAssessmentResponse {
+  return {
+    run_id: "run-fixture",
+    assessment_id: "assessment-1",
+    status: "qualified",
+    policy: "strict_clean",
+    policy_version: "baseline-policy-v1",
+    blockers: [],
+    warnings: [],
+    known_failures: [],
+    evidence_confidence: {},
+    evidence_set_checksum: "sha256:g03-evidence",
+    sandbox_fingerprint: "sha256:sandbox",
+    execution_profile_checksum: "sha256:profile",
+    package_checksum: packageChecksum,
+    artifact_ids: [artifactId],
+    state_version: 4,
+    event_sequence: 4,
+    g03_decision: null,
+    stale_reason: null,
+    idempotent_replay: false,
+  };
 }
 
 function blockedTransformation(runId: string): TransformationProjection {
@@ -127,6 +233,7 @@ function blockedTransformation(runId: string): TransformationProjection {
 describe("AuthoritativeRunDashboard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    latestPipelineProps = null;
     vi.mocked(useTransformation).mockReturnValue(transformationHook());
   });
 
@@ -207,6 +314,173 @@ describe("AuthoritativeRunDashboard", () => {
     expect(screen.getByLabelText("Pipeline workspace")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
     expect(screen.queryByLabelText("Pipeline workspace")).not.toBeInTheDocument();
+  });
+
+  it("persists the operator-expanded journey key across Pipeline unmount and remount", () => {
+    renderDashboard(pendingG06Run());
+    fireEvent.click(screen.getByRole("button", { name: "Pipeline Action required" }));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect Baseline" }));
+    expect(screen.getByLabelText("Pipeline workspace")).toHaveTextContent("Focused stage: baseline");
+
+    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    expect(screen.queryByLabelText("Pipeline workspace")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pipeline Action required" }));
+
+    expect(screen.getByLabelText("Pipeline workspace")).toHaveTextContent("Focused stage: baseline");
+  });
+
+  it.each([
+    ["pending", false],
+    ["terminal", true],
+  ])("keeps exact G02-G06 package evidence in the Pipeline for %s gates", async (_case, terminal) => {
+    const scenarios: Array<{
+      key: JourneyKey;
+      artifactId: string;
+      events: AuthoritativeRunStateDto["workflow_events"];
+    }> = [
+      {
+        key: "readiness",
+        artifactId: "g02-package-artifact",
+        events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("G02_CREATED", 2, { payload: { snapshot_id: "snapshot-1", package_checksum: "sha256:g02-package" } }),
+          ...(terminal ? [makeEvent("G02_APPROVED", 3, { payload: { package_checksum: "sha256:g02-package", decision: "approved" } })] : []),
+        ],
+      },
+      {
+        key: "baseline",
+        artifactId: "g03-package-artifact",
+        events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("G02_CREATED", 2),
+          makeEvent("G02_APPROVED", 3),
+          makeEvent("G03_CREATED", 4, { payload: { package_checksum: "sha256:g03-package", evidence_set_checksum: "sha256:g03-evidence" } }),
+          ...(terminal ? [makeEvent("G03_REJECTED", 5, { payload: { package_checksum: "sha256:g03-package", decision: "rejected" } })] : []),
+        ],
+      },
+      {
+        key: "discovery",
+        artifactId: "g04-created-artifact",
+        events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("G04_CREATED", 2, { payload: { artifact_ids: ["g04-created-artifact"], artifact_set_checksum: "sha256:g04-set", package_checksum: "sha256:g04-package" } }),
+          ...(terminal ? [makeEvent("G04_APPROVED", 3)] : []),
+        ],
+      },
+      {
+        key: "feasibility",
+        artifactId: "g05-resolution-artifact",
+        events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("COMPATIBILITY_RESOLUTION_COMPLETED", 2, { payload: { status: "supported", artifact_ids: ["g05-resolution-artifact"] } }),
+          makeEvent("G05_CREATED", 3, { payload: { package_checksum: "sha256:g05-package", expires_at: "2026-08-10T12:00:00Z" } }),
+          ...(terminal ? [makeEvent("G05_APPROVED", 4, { payload: { decision: "approve", package_checksum: "sha256:g05-package" } })] : []),
+        ],
+      },
+      {
+        key: "plan",
+        artifactId: "g06-review-artifact",
+        events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("MIGRATION_PLAN_CREATED", 2, { payload: { plan_id: "plan-1", artifact_ids: ["g06-plan-artifact"] } }),
+          makeEvent("PLANNING_AGENT_COMPLETED", 3, { payload: { artifact_ids: ["g06-review-artifact"], plan_version: "plan-v1" } }),
+          makeEvent("G06_CREATED", 4, { payload: { package_checksum: "sha256:g06-package", artifact_set_checksum: "sha256:g06-set" } }),
+          ...(terminal ? [makeEvent("G06_REJECTED", 5, { payload: { package_checksum: "sha256:g06-package", plan_version: "plan-v1", decision: "reject" } })] : []),
+        ],
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      vi.mocked(getG02Review).mockResolvedValue(g02Review("sha256:g02-package", "g02-package-artifact"));
+      vi.mocked(getBaselineSummary).mockResolvedValue(g03Assessment("sha256:g03-package", "g03-package-artifact"));
+      const artifactIds = scenario.key === "plan" ? ["g06-plan-artifact", scenario.artifactId] : [scenario.artifactId];
+      const run = makeAuthoritativeRun({
+        workflow_events: scenario.events,
+        artifacts: [
+          ...artifactIds.map((artifactId) => makeArtifact({ artifact_id: artifactId, relative_path: `global/${artifactId}.json` })),
+          makeArtifact({ artifact_id: `decoy-${scenario.key}`, relative_path: `global/decoy-${scenario.key}.json` }),
+        ],
+      });
+      const view = renderDashboard(run);
+      fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+
+      await waitFor(() => expect(latestPipelineProps?.stageContent.find((content) => content.milestone.key === scenario.key)?.evidenceCount).toBe(artifactIds.length));
+      const stage = latestPipelineProps?.stageContent.find((content) => content.milestone.key === scenario.key);
+      const evidence = stage?.tabs.find((tab) => tab.id === "evidence");
+      expect(evidence).toBeDefined();
+      const evidenceView = render(<>{evidence?.panel}</>);
+      for (const artifactId of artifactIds) {
+        expect(evidenceView.container.querySelector(`a[href$="/${artifactId}"]`)).not.toBeNull();
+      }
+      expect(evidenceView.container.querySelector(`a[href$="/decoy-${scenario.key}"]`)).toBeNull();
+      evidenceView.unmount();
+      view.unmount();
+    }
+  });
+
+  it("withholds a prior run's loaded G02 package while the next run package is unresolved", async () => {
+    const firstRun = makeAuthoritativeRun({
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1),
+        makeEvent("G02_CREATED", 2, { payload: { snapshot_id: "snapshot-1", package_checksum: "sha256:g02-package" } }),
+      ],
+      artifacts: [makeArtifact({ artifact_id: "g02-package-artifact", relative_path: "global/g02/old-run.json" })],
+    });
+    vi.mocked(getG02Review).mockResolvedValueOnce(g02Review("sha256:g02-package", "g02-package-artifact"));
+    const view = renderDashboard(firstRun);
+    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+    await waitFor(() => expect(latestPipelineProps?.stageContent.find((content) => content.milestone.key === "readiness")?.evidenceCount).toBe(1));
+
+    vi.mocked(getG02Review).mockImplementationOnce(() => new Promise(() => undefined));
+    const nextRun = makeAuthoritativeRun({
+      run_id: "run-2",
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1, { run_id: "run-2" }),
+        makeEvent("G02_CREATED", 2, { run_id: "run-2", payload: { snapshot_id: "snapshot-2", package_checksum: "sha256:g02-package-2" } }),
+      ],
+      artifacts: [],
+    });
+    vi.mocked(useAuthoritativeRun).mockReturnValue({ state: nextRun, status: "open", error: null, refresh: vi.fn().mockResolvedValue(undefined) });
+    view.rerender(<AuthoritativeRunDashboard runId="run-2" initialState={nextRun} />);
+
+    const readiness = latestPipelineProps?.stageContent.find((content) => content.milestone.key === "readiness");
+    expect(readiness?.tabs.find((tab) => tab.id === "evidence")).toBeUndefined();
+    const reviewPanel = readiness?.tabs.find((tab) => tab.id === "review")?.panel;
+    const panelView = render(<>{reviewPanel}</>);
+    expect(panelView.queryByText("global/g02/source-integrity.json")).not.toBeInTheDocument();
+    panelView.unmount();
+  });
+
+  it("does not reload unchanged gate packages for an unrelated authoritative event", async () => {
+    vi.mocked(getG02Review).mockResolvedValue(g02Review("sha256:g02-package", "g02-package-artifact"));
+    vi.mocked(getBaselineSummary).mockResolvedValue(g03Assessment("sha256:g03-package", "g03-package-artifact"));
+    const gateEvents = [
+      makeEvent("RUN_CREATED", 1),
+      makeEvent("G02_CREATED", 2, { payload: { snapshot_id: "snapshot-1", package_checksum: "sha256:g02-package" } }),
+      makeEvent("G02_APPROVED", 3),
+      makeEvent("G03_CREATED", 4, { payload: { package_checksum: "sha256:g03-package", evidence_set_checksum: "sha256:g03-evidence" } }),
+    ];
+    const run = makeAuthoritativeRun({ workflow_events: gateEvents });
+    const view = renderDashboard(run);
+    await waitFor(() => {
+      expect(getG02Review).toHaveBeenCalledOnce();
+      expect(getBaselineSummary).toHaveBeenCalledOnce();
+    });
+
+    const refreshedRun = makeAuthoritativeRun({
+      state_version: run.state_version + 1,
+      workflow_events: [
+        ...gateEvents.map((event) => ({ ...event, payload: { ...event.payload } })),
+        makeEvent("RUN_NOTE_UPDATED", 5),
+      ],
+    });
+    vi.mocked(useAuthoritativeRun).mockReturnValue({ state: refreshedRun, status: "open", error: null, refresh: vi.fn().mockResolvedValue(undefined) });
+    view.rerender(<AuthoritativeRunDashboard runId={refreshedRun.run_id} initialState={refreshedRun} />);
+
+    await waitFor(() => {
+      expect(getG02Review).toHaveBeenCalledOnce();
+      expect(getBaselineSummary).toHaveBeenCalledOnce();
+    });
   });
 
   it("renders one route heading, a skip link, human evidence, and closed technical details", () => {

@@ -388,6 +388,44 @@ describe("selectCurrentAction", () => {
 });
 
 describe("buildRunWorkspaceProjection", () => {
+  it.each([
+    ["pending", [makeEvent("G02_CREATED", 2)], "action-required"],
+    ["approved", [makeEvent("G02_CREATED", 2), makeEvent("G02_APPROVED", 3)], "complete"],
+  ] as const)("attributes a %s G02 package to Readiness without advancing Baseline", (_case, gateEvents, readinessState) => {
+    const projection = buildRunWorkspaceProjection(
+      makeAuthoritativeRun({ workflow_events: [makeEvent("RUN_CREATED", 1), ...gateEvents] }),
+      null,
+      "empty",
+      "open",
+    );
+
+    expect(projection.journey.find((item) => item.key === "readiness")?.state).toBe(readinessState);
+    expect(projection.journey.find((item) => item.key === "baseline")?.state).toBe("not-reached");
+  });
+
+  it.each([
+    ["pending", makeEvent("G03_CREATED", 4), "action-required"],
+    ["rejected", makeEvent("G03_REJECTED", 5), "blocked"],
+  ] as const)("attributes a %s G03 package only to Baseline", (_case, lastGateEvent, baselineState) => {
+    const projection = buildRunWorkspaceProjection(
+      makeAuthoritativeRun({
+        workflow_events: [
+          makeEvent("RUN_CREATED", 1),
+          makeEvent("G02_CREATED", 2),
+          makeEvent("G02_APPROVED", 3),
+          makeEvent("G03_CREATED", 4),
+          ...(lastGateEvent.sequence === 4 ? [] : [lastGateEvent]),
+        ],
+      }),
+      null,
+      "empty",
+      "open",
+    );
+
+    expect(projection.journey.find((item) => item.key === "readiness")?.state).toBe("complete");
+    expect(projection.journey.find((item) => item.key === "baseline")?.state).toBe(baselineState);
+  });
+
   it("withholds action navigation while same-run transformation authority is refreshing", () => {
     const projection = buildRunWorkspaceProjection(
       makeAuthoritativeRun(),

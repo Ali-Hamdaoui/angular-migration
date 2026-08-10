@@ -121,7 +121,7 @@ describe("buildJourney", () => {
   });
 
   it.each([
-    ["G02", "baseline"],
+      ["G02", "readiness"],
     ["G03", "baseline"],
     ["G04", "discovery"],
     ["G05", "feasibility"],

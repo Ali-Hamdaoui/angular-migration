@@ -90,3 +90,70 @@ Static scans found no legacy `steps`, `relevant`, `state`, or display-label focu
 ## Concerns
 
 No open Task 7 implementation concern. Expected LF-to-CRLF working-copy notices remain informational. Task 7 is implemented pending independent review and is not marked complete.
+
+## Independent review fix round 1
+
+Task 7 review fix round 1 was implemented from clean reviewed HEAD `c28989cbbd4faf0feb9db835cc334ad78978f510`. The five verified findings are addressed and the task remains pending independent re-review.
+
+### Review findings addressed
+
+- Corrected journey authority so G02 owns Readiness and G03 alone owns Baseline. Real `buildRunWorkspaceProjection` regressions cover pending and terminal G02/G03 states, including the pre-run Readiness-complete override.
+- Replaced single-event evidence attribution with exact authoritative package evidence. G02 and G03 load their exact same-run package/assessment in the dashboard, validate checksums and artifact IDs, and pass the preloaded responses into embedded panels without duplicate GET ownership. G04-G06 retain artifact-bearing event IDs across later terminal decisions. IDs are resolved only against `state.artifacts`; no label, path, checksum, or category inference creates an Evidence tab.
+- Hoisted the operator-expanded `JourneyKey` into the dashboard shell so Pipeline -> Evidence -> Pipeline navigation preserves the chosen row. Only a genuinely changed authoritative key or a new explicit focus changes it.
+- Added configurable semantic panel headings. Standalone panels retain their existing outline; Pipeline composition renders panel headings below the Pipeline `h2`, group `h3`, and stage-detail context.
+- Added a state-derived `data-tone` to the Pipeline summary. Complete is success, current is accent, action-required/blocked is warning, and unavailable/not-reached is neutral.
+
+The consolidated self-review found one additional scoped lifecycle defect: refreshed DTOs could recreate unchanged G02/G03 event objects and repeat both GETs. A regression recreated those objects around an unrelated authoritative event; loader effects now depend on stable event IDs and package checksums.
+
+### Strict RED/GREEN evidence
+
+```text
+G02/G03 journey ownership RED: 1 file failed; 2 failed, 29 passed
+G02/G03 journey ownership GREEN: 1 file passed; 31/31
+
+Pending/terminal G02-G06 evidence RED: 1 file failed; 2 failed, 13 skipped
+Pending/terminal G02-G06 evidence GREEN: 1 file passed; 15/15
+
+Pipeline unmount/remount expansion RED: 1 failed, 15 skipped
+Pipeline unmount/remount expansion GREEN: 1 passed, 15 skipped
+
+Embedded outline RED: 7 files failed; 8 failed, 38 skipped
+Embedded outline GREEN: 7 files passed; 8 passed, 38 skipped
+
+Summary tone RED: 1 file failed; 2 failed, 29 skipped
+Summary tone GREEN: 1 file passed; 2 passed, 29 skipped
+
+Cross-run stale G02 package RED: 1 failed, 16 skipped
+Cross-run stale G02 package GREEN: 1 passed, 16 skipped
+
+Unchanged-package duplicate GET RED: 1 failed, 17 skipped
+Unchanged-package duplicate GET GREEN: 1 passed, 17 skipped
+```
+
+### Final verification
+
+```text
+npm test -- src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx src/components/__tests__/G02ReviewPanel.test.tsx src/components/__tests__/AnalysisReviewPanel.test.tsx src/components/__tests__/FeasibilityPanel.test.tsx src/components/__tests__/MigrationPlanPanel.test.tsx src/components/__tests__/PlanReviewPanel.test.tsx
+Test Files: 6 passed (6)
+Tests: 69 passed (69)
+
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/presentation/__tests__/currentAction.test.ts src/components/__tests__/SourceSnapshotPanel.test.tsx src/components/__tests__/BaselineParityPanel.test.tsx
+Test Files: 4 passed (4)
+Tests: 57 passed (57)
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+npm test
+Test Files: 58 passed (58)
+Tests: 472 passed (472)
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+```
+
+The narrow fix diff was self-reviewed for same-run/package validation, exact artifact identity, retained terminal evidence, request ownership and races, typed expansion persistence, heading outline, status tone, decision bindings, 409 fail-closed behavior, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 1 is implemented pending re-review and is not marked complete.

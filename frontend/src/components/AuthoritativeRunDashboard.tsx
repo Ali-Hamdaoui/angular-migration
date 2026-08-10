@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
-import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AuthoritativeRunStateDto, BaselineAssessmentResponse, G02ReviewResponse, WorkflowEventDto } from "@/types/generated/api";
 import {
   TRANSFORMATION_EVENT_TYPES,
   useAuthoritativeRun,
@@ -12,6 +12,8 @@ import { buildRunWorkspaceProjection } from "@/presentation/currentAction";
 import type { JourneyKey } from "@/presentation/runJourney";
 import { presentArtifact } from "@/presentation/artifacts";
 import { retryAuthoritativeSourceIntake } from "@/api/runs";
+import { getG02Review } from "@/api/g02";
+import { getBaselineSummary } from "@/api/baselineG03";
 import { getBackendBaseUrl } from "@/api/client";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
 import { G02ReviewPanel } from "./G02ReviewPanel";
@@ -114,6 +116,37 @@ function commandText(payload: Record<string, unknown>): string | null {
   return [payload.executable, ...args].join(" ");
 }
 
+function automaticPipelineKey(journey: ReturnType<typeof buildRunWorkspaceProjection>["journey"]): JourneyKey | undefined {
+  return journey.find((milestone) => milestone.state === "action-required")?.key
+    ?? journey.find((milestone) => milestone.state === "current")?.key;
+}
+
+function latestEvent(events: WorkflowEventDto[], eventType: string): WorkflowEventDto | undefined {
+  return [...events].reverse().find((event) => event.event_type === eventType);
+}
+
+function latestGateEventId(events: WorkflowEventDto[], gateId: "G02" | "G03", createdSequence: number): string {
+  return [...events].reverse().find((event) => event.sequence >= createdSequence && event.event_type.startsWith(`${gateId}_`))?.event_id ?? "";
+}
+
+function validG02Review(value: G02ReviewResponse, runId: string, packageChecksum: string): boolean {
+  return value.run_id === runId
+    && value.gate_id === "G02"
+    && value.package?.run_id === runId
+    && value.package.gate_id === "G02"
+    && value.package.package_checksum === packageChecksum
+    && Array.isArray(value.package.artifacts)
+    && value.package.artifacts.every((artifact) => artifact.run_id === runId && typeof artifact.artifact_id === "string" && artifact.artifact_id.length > 0);
+}
+
+function validG03Assessment(value: BaselineAssessmentResponse, runId: string, packageChecksum: string, evidenceSetChecksum: string): boolean {
+  return value.run_id === runId
+    && value.package_checksum === packageChecksum
+    && value.evidence_set_checksum === evidenceSetChecksum
+    && Array.isArray(value.artifact_ids)
+    && value.artifact_ids.every((artifactId) => typeof artifactId === "string" && artifactId.length > 0);
+}
+
 export function AuthoritativeRunDashboard({
   runId,
   initialState,
@@ -150,12 +183,63 @@ export function AuthoritativeRunDashboard({
 
   const [activeSection, setActiveSection] = useState<ControlTowerSection>("overview");
   const [focusStage, setFocusStage] = useState<JourneyKey | undefined>();
+  const authoritativePipelineKey = automaticPipelineKey(workspace.journey);
+  const [expandedStage, setExpandedStage] = useState<JourneyKey | undefined>(authoritativePipelineKey ?? workspace.journey[0]?.key);
+  const previousAuthoritativePipelineKey = useRef(authoritativePipelineKey);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [retryingSourceIntake, setRetryingSourceIntake] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [g02Review, setG02Review] = useState<G02ReviewResponse | null>(null);
+  const [g03Assessment, setG03Assessment] = useState<BaselineAssessmentResponse | null>(null);
+
+  useEffect(() => {
+    if (authoritativePipelineKey && authoritativePipelineKey !== previousAuthoritativePipelineKey.current) {
+      setExpandedStage(authoritativePipelineKey);
+    }
+    previousAuthoritativePipelineKey.current = authoritativePipelineKey;
+  }, [authoritativePipelineKey]);
+
+  const g02Created = useMemo(() => latestEvent(state.workflow_events, "G02_CREATED"), [state.workflow_events]);
+  const g03Created = useMemo(() => latestEvent(state.workflow_events, "G03_CREATED"), [state.workflow_events]);
+  const g02CreatedEventId = g02Created?.event_id ?? "";
+  const g03CreatedEventId = g03Created?.event_id ?? "";
+  const g02PackageChecksum = typeof g02Created?.payload.package_checksum === "string" ? g02Created.payload.package_checksum : "";
+  const g03PackageChecksum = typeof g03Created?.payload.package_checksum === "string" ? g03Created.payload.package_checksum : "";
+  const g03EvidenceSetChecksum = typeof g03Created?.payload.evidence_set_checksum === "string" ? g03Created.payload.evidence_set_checksum : "";
+  const authoritativeG02Review = g02Review && validG02Review(g02Review, runId, g02PackageChecksum) ? g02Review : null;
+  const authoritativeG03Assessment = g03Assessment && validG03Assessment(g03Assessment, runId, g03PackageChecksum, g03EvidenceSetChecksum) ? g03Assessment : null;
+  const g02RefreshEventId = g02Created ? latestGateEventId(state.workflow_events, "G02", g02Created.sequence) : "";
+  const g03RefreshEventId = g03Created ? latestGateEventId(state.workflow_events, "G03", g03Created.sequence) : "";
+
+  useEffect(() => {
+    let active = true;
+    if (!g02CreatedEventId || !g02PackageChecksum) {
+      setG02Review(null);
+      return () => { active = false; };
+    }
+    void getG02Review(runId).then((value) => {
+      if (active) setG02Review(validG02Review(value, runId, g02PackageChecksum) ? value : null);
+    }).catch(() => { if (active) setG02Review(null); });
+    return () => { active = false; };
+  }, [g02CreatedEventId, g02PackageChecksum, g02RefreshEventId, runId]);
+
+  useEffect(() => {
+    let active = true;
+    if (!g03CreatedEventId || !g03PackageChecksum || !g03EvidenceSetChecksum) {
+      setG03Assessment(null);
+      return () => { active = false; };
+    }
+    void getBaselineSummary(runId).then((value) => {
+      if (active) setG03Assessment(validG03Assessment(value, runId, g03PackageChecksum, g03EvidenceSetChecksum) ? value : null);
+    }).catch(() => { if (active) setG03Assessment(null); });
+    return () => { active = false; };
+  }, [g03CreatedEventId, g03EvidenceSetChecksum, g03PackageChecksum, g03RefreshEventId, runId]);
 
   const navigate = useCallback((section: ControlTowerSection, stageKey?: JourneyKey) => {
-    if (stageKey) setFocusStage(stageKey);
+    if (stageKey) {
+      setFocusStage(stageKey);
+      setExpandedStage(stageKey);
+    }
     setActiveSection(section);
   }, []);
 
@@ -185,7 +269,15 @@ export function AuthoritativeRunDashboard({
     return workspace.journey.map((milestone): PipelineStageContent => {
       const evidenceIds = new Set<string>();
       const evidenceEvent = milestone.evidenceEvent ? eventsById.get(milestone.evidenceEvent) : undefined;
-      if (evidenceEvent) eventArtifactIds(evidenceEvent.payload).forEach((id) => evidenceIds.add(id));
+      const evidenceEvents = milestone.evidenceEvents?.map((eventId) => eventsById.get(eventId)).filter((event) => event != null)
+        ?? (evidenceEvent ? [evidenceEvent] : []);
+      evidenceEvents.forEach((event) => eventArtifactIds(event.payload).forEach((id) => evidenceIds.add(id)));
+      if (milestone.key === "readiness" && authoritativeG02Review) {
+        authoritativeG02Review.package.artifacts.forEach((artifact) => evidenceIds.add(artifact.artifact_id));
+      }
+      if (milestone.key === "baseline" && authoritativeG03Assessment) {
+        authoritativeG03Assessment.artifact_ids.forEach((artifactId) => evidenceIds.add(artifactId));
+      }
       if (milestone.stageId) {
         state.artifacts.filter((artifact) => artifact.stage_id === milestone.stageId).forEach((artifact) => evidenceIds.add(artifact.artifact_id));
       }
@@ -215,26 +307,27 @@ export function AuthoritativeRunDashboard({
               </button>
             </>
           ) : null}
-          {milestone.key === "readiness" && !hasGatePackage ? <SourceSnapshotPanel runId={runId} initialState={state} /> : null}
+          {milestone.key === "readiness" && !hasGatePackage ? <SourceSnapshotPanel runId={runId} initialState={state} headingLevel={4} /> : null}
           {milestone.key === "baseline" && !hasGatePackage ? (
             <BaselineQualificationPanel
               runId={runId}
               stateVersion={state.state_version}
               workflowEvents={state.workflow_events}
               refreshAuthoritativeState={refresh}
+              headingLevel={4}
             />
           ) : null}
           {milestone.key === "discovery" && !hasGatePackage ? (
             <>
-              <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} />
-              <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+              <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} headingLevel={4} />
+              <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} />
             </>
           ) : null}
           {milestone.key === "feasibility" && !hasGatePackage ? (
-            <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+            <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} />
           ) : null}
           {milestone.key === "plan" && !hasGatePackage ? (
-            <MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+            <MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} />
           ) : null}
         </div>
       );
@@ -263,11 +356,11 @@ export function AuthoritativeRunDashboard({
       }
       if (hasGatePackage) {
         let panel: React.ReactNode = null;
-        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} /><G02ReviewPanel runId={runId} initialState={state} /></>;
-        else if (milestone.key === "baseline") panel = <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />;
-        else if (milestone.key === "discovery") panel = <><BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} /><AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /></>;
-        else if (milestone.key === "feasibility") panel = <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />;
-        else if (milestone.key === "plan") panel = <><MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /><PlanReviewPanel runId={runId} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} /></>;
+        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} headingLevel={4} /><G02ReviewPanel runId={runId} initialState={state} authoritativeReview={authoritativeG02Review} headingLevel={4} /></>;
+        else if (milestone.key === "baseline") panel = <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} authoritativeAssessment={authoritativeG03Assessment} headingLevel={4} />;
+        else if (milestone.key === "discovery") panel = <><BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} headingLevel={4} /><AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} /></>;
+        else if (milestone.key === "feasibility") panel = <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} />;
+        else if (milestone.key === "plan") panel = <><MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} /><PlanReviewPanel runId={runId} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} headingLevel={4} /></>;
         if (panel) tabs.push({ id: "review", label: "Review", panel });
       }
 
@@ -279,7 +372,7 @@ export function AuthoritativeRunDashboard({
         tabs,
       };
     });
-  }, [refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, workspace.journey]);
+  }, [authoritativeG02Review, authoritativeG03Assessment, refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, workspace.journey]);
 
   return (
     <div className="controlTowerDashboard">
@@ -329,6 +422,8 @@ export function AuthoritativeRunDashboard({
                 journey={workspace.journey}
                 stageContent={pipelineStageContent}
                 focusStage={focusStage}
+                expandedKey={expandedStage}
+                onExpandedKeyChange={setExpandedStage}
               />
             </section>
           ) : null}

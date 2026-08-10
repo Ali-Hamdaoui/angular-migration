@@ -14,6 +14,13 @@ const state = { run_id: "run-1", status: "SOURCE_VALIDATED", run_phase: "PREFLIG
 const review = { run_id: "run-1", gate_id: "G02", gate_version: "g02-v1", status: "pending", decision: null, package: { run_id: "run-1", gate_id: "G02", gate_version: "g02-v1", state_version: 4, actor: "operator", policy_version: "source-snapshot-policy-v1", snapshot_id: "snapshot-1", source_fingerprint: "sha256:source", snapshot_fingerprint: "sha256:snapshot", artifact_set_checksum: "sha256:artifacts", artifacts: [], integrity: { before_fingerprint: "sha256:source", after_snapshot_fingerprint: "sha256:source", snapshot_fingerprint: "sha256:snapshot", manifest_checksum: "manifest-1", policy_version: "source-snapshot-policy-v1", source_read_only_verified: true }, package_checksum: "sha256:package" }, baseline_input_boundary: null, state_version: 4, event_sequence: 6, idempotent_replay: false, stale_reason: null, comment: null } as unknown as G02ReviewResponse;
 
 describe("G02ReviewPanel", () => {
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={review} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "G02 source-integrity boundary", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Immutable evidence", level: 5 })).toBeInTheDocument();
+    expect(getG02Review).not.toHaveBeenCalled();
+  });
+
   it("shows the blocked next step and records approval", async () => {
     vi.mocked(getG02Review).mockResolvedValue(review);
     vi.mocked(decideG02).mockResolvedValue({ ...(review as Record<string, unknown>), status: "approved", decision: "approved", baseline_input_boundary: "snapshot-1" } as never);
@@ -79,6 +86,12 @@ describe("BaselineQualificationPanel G03 authority", () => {
     stale_reason: null,
     idempotent_replay: false,
   };
+
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<BaselineQualificationPanel runId="run-1" stateVersion={7} authoritativeAssessment={assessment} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Baseline qualification / G03", level: 4 })).toBeInTheDocument();
+    expect(getBaselineSummary).not.toHaveBeenCalled();
+  });
 
   it("keeps the G03 decision bound to its authoritative assessment version", async () => {
     vi.mocked(getBaselineSummary).mockResolvedValue(assessment);

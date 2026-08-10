@@ -74,7 +74,7 @@
 .technicalWide { grid-column: 1 / -1; }
 
 .pipelineSection, .eventsPanel { min-width: 0; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-1); padding: 1rem; }
-.pipelineSummary { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--color-border); padding-bottom: 1rem; }.pipelineSummary h3 { margin: .2rem 0; color: var(--color-text); }.pipelineSummary p { margin: 0; color: var(--color-text-muted); font-size: 13px; }.pipelineSummary > strong { align-self: start; color: var(--color-success); font: 700 13px ui-monospace, monospace; overflow-wrap: anywhere; }
+.pipelineSummary { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--color-border); padding-bottom: 1rem; }.pipelineSummary h3 { margin: .2rem 0; color: var(--color-text); }.pipelineSummary p { margin: 0; color: var(--color-text-muted); font-size: 13px; }.pipelineSummary > strong { align-self: start; color: var(--color-text-muted); font: 700 13px ui-monospace, monospace; overflow-wrap: anywhere; }.pipelineSummary > strong[data-tone="success"] { color: var(--color-success); }.pipelineSummary > strong[data-tone="accent"] { color: var(--color-accent); }.pipelineSummary > strong[data-tone="warning"] { color: var(--color-warning); }
 .pipelineGroups { display: grid; gap: 1.25rem; margin-top: 1.25rem; }
 .pipelineGroup { min-width: 0; }
 .pipelineGroup > h3 { margin: 0 0 .5rem; color: var(--color-text-muted); font-size: 14px; letter-spacing: .06em; text-transform: uppercase; }

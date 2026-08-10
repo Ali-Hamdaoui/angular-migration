@@ -11,6 +11,11 @@ const response = { run_id: "run-1", analysis_id: "analysis-1", status: "complete
 const props = { runId: "run-1", stateVersion: 4, connectionStatus: "open", artifacts: [makeArtifact({ artifact_id: "fact-1", checksum: "sha256:" + "b".repeat(64), relative_path: "facts.json" })], workflowEvents: analysisPrerequisites, refreshAuthoritativeState: vi.fn().mockResolvedValue(undefined) };
 
 describe("AnalysisReviewPanel", () => {
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<AnalysisReviewPanel {...props} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "AI-assisted analysis and G04 review", level: 4 })).toBeInTheDocument();
+  });
+
   it("renders split facts, interpretation, provenance, evidence, and G04 controls", async () => {
     vi.mocked(getAnalysis).mockResolvedValue(response as never);
     render(<AnalysisReviewPanel {...props} />);

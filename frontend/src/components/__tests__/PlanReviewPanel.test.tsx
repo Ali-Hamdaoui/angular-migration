@@ -23,6 +23,12 @@ describe("PlanReviewPanel", () => {
     vi.mocked(usePlanReview).mockReturnValue(baseResult);
   });
 
+  it("renders subordinate headings when embedded in a pipeline stage", () => {
+    render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Review and approve MigrationPlan", level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "G06 decision", level: 5 })).toBeInTheDocument();
+  });
+
   it("renders immutable diff, separated explanation, evidence, and accessible G06 controls", () => {
     render(<PlanReviewPanel runId="run-1" initialState={state} connectionStatus="open" refreshAuthoritativeState={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Review and approve MigrationPlan" })).toBeInTheDocument();

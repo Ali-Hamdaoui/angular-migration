@@ -5,6 +5,7 @@ import { ApiClientError, getBackendBaseUrl } from "@/api/client";
 import { decideG02, getG02Review, initializeG02 } from "@/api/g02";
 import type { AuthoritativeRunStateDto, G02Decision, G02ReviewResponse, WorkflowEventDto } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
+import { headingTag, type PanelHeadingLevel } from "./control-tower/semanticHeading";
 
 const decisions: Array<{ value: G02Decision; label: string }> = [
   { value: "approved", label: "Approve G02" },
@@ -17,9 +18,12 @@ function latestG02Event(events: WorkflowEventDto[]) {
   return [...events].reverse().find((event) => ["G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE", "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED"].includes(event.event_type));
 }
 
-export function G02ReviewPanel({ runId, initialState }: { runId: string; initialState: AuthoritativeRunStateDto }) {
-  const [review, setReview] = useState<G02ReviewResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+export function G02ReviewPanel({ runId, initialState, authoritativeReview, headingLevel = 2 }: { runId: string; initialState: AuthoritativeRunStateDto; authoritativeReview?: G02ReviewResponse | null; headingLevel?: PanelHeadingLevel }) {
+  const Heading = headingTag(headingLevel);
+  const Subheading = headingTag(headingLevel, 1);
+  const externallyLoaded = authoritativeReview !== undefined;
+  const [review, setReview] = useState<G02ReviewResponse | null>(authoritativeReview ?? null);
+  const [loading, setLoading] = useState(!externallyLoaded);
   const [submitting, setSubmitting] = useState(false);
   const [selectedDecision, setSelectedDecision] = useState<G02Decision>("approved");
   const [comment, setComment] = useState("");
@@ -35,7 +39,15 @@ export function G02ReviewPanel({ runId, initialState }: { runId: string; initial
     }).finally(() => setLoading(false));
   }, [runId]);
 
-  useEffect(() => { refresh(); }, [refresh, event?.sequence]);
+  useEffect(() => {
+    if (externallyLoaded) {
+      setReview(authoritativeReview ?? null);
+      setMissing(authoritativeReview == null);
+      setLoading(false);
+      return;
+    }
+    refresh();
+  }, [authoritativeReview, event?.sequence, externallyLoaded, refresh]);
 
   async function initializePackage() {
     setSubmitting(true); setError(null);
@@ -67,7 +79,7 @@ export function G02ReviewPanel({ runId, initialState }: { runId: string; initial
   const rejected = review?.status === "rejected" || review?.status === "stale";
 
   return <section className={styles.panel} aria-label="G02 source integrity review">
-    <div className={styles.previewHeader}><div><p className={styles.kicker}>S1-F08</p><h2>G02 source-integrity boundary</h2></div>{review ? <strong>{review.status}</strong> : null}</div>
+    <div className={styles.previewHeader}><div><p className={styles.kicker}>S1-F08</p><Heading>G02 source-integrity boundary</Heading></div>{review ? <strong>{review.status}</strong> : null}</div>
     {loading ? <p className={styles.note}>Loading G02 evidence...</p> : null}
     {!loading && missing ? <div><p className={styles.note}>G02 is pending. Initialize the review package from the finalized immutable snapshot.</p><button type="button" onClick={initializePackage} disabled={submitting}>Initialize G02 review</button></div> : null}
     {event?.event_type === "SOURCE_INTEGRITY_FAILED" ? <p role="alert">Source integrity failed. Approval is blocked until the source boundary is resolved.</p> : null}
@@ -76,7 +88,7 @@ export function G02ReviewPanel({ runId, initialState }: { runId: string; initial
       <div className={styles.dimensionGrid} aria-label="G02 integrity summary"><div><span>Integrity</span><strong>{integrity?.status ?? "unknown"}</strong></div><div><span>Policy</span><strong>{packageData.policy_version}</strong></div><div><span>State version</span><strong>{review?.state_version}</strong></div><div><span>Boundary</span><strong>{review?.baseline_input_boundary ?? "Not established"}</strong></div></div>
       <dl className={styles.metadataGrid}><div><dt>Source fingerprint</dt><dd>{packageData.source_fingerprint}</dd></div><div><dt>After-snapshot fingerprint</dt><dd>{integrity?.after_snapshot_fingerprint}</dd></div><div><dt>Snapshot fingerprint</dt><dd>{packageData.snapshot_fingerprint}</dd></div><div><dt>Package checksum</dt><dd>{packageData.package_checksum}</dd></div></dl>
       {integrity && integrity.before_fingerprint !== integrity.after_snapshot_fingerprint ? <p role="alert">The original source changed after snapshot creation. This package cannot be approved.</p> : null}
-      <h3>Immutable evidence</h3><ul className={styles.list}>{packageData.artifacts.map((artifact) => <li key={artifact.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`}>{artifact.relative_path}</a><code>{artifact.checksum}</code></li>)}</ul>
+      <Subheading>Immutable evidence</Subheading><ul className={styles.list}>{packageData.artifacts.map((artifact) => <li key={artifact.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`}>{artifact.relative_path}</a><code>{artifact.checksum}</code></li>)}</ul>
       {approved ? <p className={styles.note}>Baseline input boundary: immutable snapshot {review?.baseline_input_boundary}.</p> : rejected ? <p className={styles.note}>G02 is {review?.status}; the workflow will not continue until a new valid evidence package is created.</p> : <><p className={styles.note}>{integrityVerified ? "G02 evidence is finalized and verified. Record the approval decision to continue." : "G02 approval is blocked while source-integrity evidence is being finalized or verified."}</p><div className={styles.previewPanel}><label htmlFor="g02-decision">Decision</label><select id="g02-decision" value={selectedDecision} onChange={(e) => setSelectedDecision(e.target.value as G02Decision)}>{decisions.map((decision) => <option key={decision.value} value={decision.value}>{decision.label}</option>)}</select><label htmlFor="g02-comment">Comment</label><textarea id="g02-comment" value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Optional rationale; required for approval with comment." /><button type="button" onClick={submitDecision} disabled={submitting || !integrityVerified}>{submitting ? "Recording decision..." : "Record G02 decision"}</button></div></>}
     </> : null}
   </section>;

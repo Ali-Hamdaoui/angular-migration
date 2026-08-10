@@ -256,6 +256,19 @@ describe("control tower presentation state", () => {
     expect(screen.getByRole("button", { name: /^Readiness:/i })).toHaveAttribute("aria-expanded", "true");
   });
 
+  it.each([
+    ["action-required", "Action required"],
+    ["blocked", "Blocked"],
+  ] as const)("uses a warning tone for a %s pipeline summary", (state, label) => {
+    const tonedJourney = pipelineJourney.map((milestone) => ({
+      ...milestone,
+      state: milestone.key === "readiness" ? state : milestone.state,
+    }));
+    render(<PipelineSection {...pipelineProps({ journey: tonedJourney, stageContent: pipelineContent(tonedJourney), focusStage: "readiness" })} />);
+
+    expect(screen.getByText(label, { selector: "strong" })).toHaveAttribute("data-tone", "warning");
+  });
+
   it("keeps an operator-selected completed row open until a new authoritative current key arrives", () => {
     const { rerender } = render(<PipelineSection {...pipelineProps()} />);
 

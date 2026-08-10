@@ -17,6 +17,11 @@ const evidence = {
 describe("BaselineParityPanel", () => {
   beforeEach(() => { vi.clearAllMocks(); getBaselineParitySection.mockRejectedValue(new ApiClientError("missing", 404)); captureBaselineParity.mockResolvedValue(evidence); });
 
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Baseline parity anchors", level: 4 })).toBeInTheDocument();
+  });
+
   it("shows an empty state and captures evidence", async () => {
     render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" workflowEvents={[{ event_type: "BASELINE_BUILD_COMPLETED" }, { event_type: "BASELINE_TESTS_COMPLETED" }, { event_type: "BASELINE_LINT_COMPLETED" }]} />);
     expect(await screen.findByText("Baseline validation is complete; parity capture is ready.")).toBeInTheDocument();

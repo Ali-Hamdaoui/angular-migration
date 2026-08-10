@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { JourneyKey, JourneyMilestone, JourneyState } from "@/presentation/runJourney";
 import { PipelineStageDetail, type PipelineStageContent } from "./PipelineStageDetail";
@@ -50,6 +50,15 @@ const STAGE_CLASS_BY_STATE: Record<JourneyState, string> = {
   unavailable: styles.stageUnavailable,
 };
 
+const SUMMARY_TONE_BY_STATE: Record<JourneyState, "success" | "accent" | "warning" | "neutral"> = {
+  complete: "success",
+  current: "accent",
+  "action-required": "warning",
+  blocked: "warning",
+  "not-reached": "neutral",
+  unavailable: "neutral",
+};
+
 function automaticKey(journey: JourneyMilestone[]): JourneyKey | undefined {
   return journey.find((milestone) => milestone.state === "action-required")?.key
     ?? journey.find((milestone) => milestone.state === "current")?.key;
@@ -63,10 +72,14 @@ export function PipelineSection({
   journey,
   stageContent,
   focusStage,
+  expandedKey: controlledExpandedKey,
+  onExpandedKeyChange,
 }: {
   journey: JourneyMilestone[];
   stageContent: PipelineStageContent[];
   focusStage?: JourneyKey;
+  expandedKey?: JourneyKey;
+  onExpandedKeyChange?: (key: JourneyKey) => void;
 }) {
   const contentByKey = useMemo(
     () => new Map(stageContent.map((content) => [content.milestone.key, content])),
@@ -89,7 +102,12 @@ export function PipelineSection({
   );
   const authoritativeKey = automaticKey(journey);
   const initialKey = focusStage ?? authoritativeKey ?? journey[0]?.key;
-  const [expandedKey, setExpandedKey] = useState<JourneyKey | undefined>(initialKey);
+  const [internalExpandedKey, setInternalExpandedKey] = useState<JourneyKey | undefined>(initialKey);
+  const expandedKey = controlledExpandedKey ?? internalExpandedKey;
+  const setExpandedKey = useCallback((key: JourneyKey | undefined) => {
+    setInternalExpandedKey(key);
+    if (key) onExpandedKeyChange?.(key);
+  }, [onExpandedKeyChange]);
   const previousAuthoritativeKey = useRef(authoritativeKey);
   const previousFocusStage = useRef(focusStage);
 
@@ -98,19 +116,19 @@ export function PipelineSection({
       setExpandedKey(focusStage);
     }
     previousFocusStage.current = focusStage;
-  }, [contentByKey, focusStage]);
+  }, [contentByKey, focusStage, setExpandedKey]);
 
   useEffect(() => {
     if (authoritativeKey && authoritativeKey !== previousAuthoritativeKey.current) {
       setExpandedKey(authoritativeKey);
     }
     previousAuthoritativeKey.current = authoritativeKey;
-  }, [authoritativeKey]);
+  }, [authoritativeKey, setExpandedKey]);
 
   useEffect(() => {
     if (expandedKey && journey.some((milestone) => milestone.key === expandedKey)) return;
     setExpandedKey(authoritativeKey ?? journey[0]?.key);
-  }, [authoritativeKey, expandedKey, journey]);
+  }, [authoritativeKey, expandedKey, journey, setExpandedKey]);
 
   const expanded = stages.find((stage) => stage.milestone.key === expandedKey);
   const completeCount = journey.filter((milestone) => milestone.state === "complete").length;
@@ -123,7 +141,7 @@ export function PipelineSection({
           <h3>{expanded?.milestone.label ?? "No active stage"}</h3>
           <p>{completeCount} of {journey.length} milestones confirmed complete</p>
         </div>
-        <strong>{expanded ? STATE_LABELS[expanded.milestone.state] : "Not available"}</strong>
+        <strong data-tone={expanded ? SUMMARY_TONE_BY_STATE[expanded.milestone.state] : "neutral"}>{expanded ? STATE_LABELS[expanded.milestone.state] : "Not available"}</strong>
       </div>
 
       <div className={styles.pipelineGroups}>
