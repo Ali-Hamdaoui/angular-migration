@@ -96,3 +96,54 @@ Reviewed the exact Task 4 diff once for the required concerns:
 ## Concerns
 
 No open Task 4 concern. Git reports repository line-ending conversion notices for edited frontend files, but `git diff --check` is clean.
+
+## Fix round 1/5
+
+### Reviewer findings addressed
+
+- Active binding now fails closed across the complete chain. Path, environment, source, and preflight mapped states must each be `passed` or `warning`, and the preflight must be unexpired. Unknown and blocked prerequisite snapshots still contribute their returned identifiers to the authoritative production-preflight request, but a passed final preflight cannot expose G01 navigation for them.
+- `SetupBinding` now preserves the authoritative `expiresAt`. A cleanup-safe, long-delay-rescheduling timer marks the preflight outdated and removes navigation when it elapses. The click handler independently checks revision and expiry immediately before routing.
+- Runtime validation now checks every declared production-preflight field, string arrays, artifact entries, and every nested G01 decision field. Decision enums, timestamps, primitive types, and preflight/gate ID relationships fail closed. A later valid recheck recovers normally.
+- Environment, source, and preflight messages now remain verbatim. The existing path-code translation map is used only for path-rule evidence.
+
+### Fix-round RED evidence
+
+```text
+npm test -- src/presentation/__tests__/setupReadiness.test.ts src/components/__tests__/MigrationSetupForm.test.tsx
+Exit code: 1
+Test Files: 1 failed, 1 passed
+Tests: 9 failed, 47 passed (56 total)
+```
+
+The nine expected failures were five unknown/blocked prerequisite authorization cases, one non-path message translation case, one malformed nested decision-history case, automatic expiry invalidation, and click-time expiry protection.
+
+### Fix-round GREEN and static evidence
+
+```text
+npm test -- src/presentation/__tests__/setupReadiness.test.ts src/components/__tests__/MigrationSetupForm.test.tsx
+Test Files: 2 passed (2)
+Tests: 56 passed (56)
+Exit code: 0
+Duration: 5.03s
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+0 errors, 0 warnings
+Exit code: 0
+
+git diff --check
+Exit code: 0
+Only LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+
+npm test
+Test Files: 56 passed (56)
+Tests: 363 passed (363)
+Exit code: 0
+Duration: 40.34s
+```
+
+### Fix-diff self-review
+
+Reviewed only the fix diff and the original authorization regression context. The four mapped states gate binding; blocked secondary IDs still flow into preflight; active binding expiry is ref-synchronized, timer-cleaned, safely rescheduled, and rechecked on click; nested decision validation covers every typed field and relational IDs; non-path evidence remains verbatim; revision invalidation and G01-only routing remain intact. No new style, route, API, backend, or file-scope change was introduced. No open concern remains for fix round 1.

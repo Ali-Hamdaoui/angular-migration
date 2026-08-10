@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { analyzeSource, refreshEnvironment, validatePaths } from "@/api/migrations";
 import type { SourceAnalysisResult } from "@/api/migrations";
@@ -91,6 +91,26 @@ function isArtifactMap(value: unknown): boolean {
   });
 }
 
+function isDecisionHistory(value: unknown, preflightId: string, gateId: string): boolean {
+  if (!Array.isArray(value)) return false;
+  const decisions = new Set(["approved", "approved_with_comment", "modification_requested", "rejected"]);
+  return value.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const candidate = item as Record<string, unknown>;
+    return typeof candidate.decision_id === "string" && candidate.decision_id.length > 0 &&
+      candidate.preflight_id === preflightId &&
+      candidate.gate_id === gateId &&
+      typeof candidate.decision === "string" && decisions.has(candidate.decision) &&
+      typeof candidate.actor === "string" && candidate.actor.length > 0 &&
+      (candidate.comment === null || typeof candidate.comment === "string") &&
+      typeof candidate.decided_at === "string" && Number.isFinite(Date.parse(candidate.decided_at)) &&
+      typeof candidate.input_checksum === "string" && candidate.input_checksum.length > 0 &&
+      typeof candidate.artifact_set_checksum === "string" && candidate.artifact_set_checksum.length > 0 &&
+      Number.isInteger(candidate.state_version) && (candidate.state_version as number) >= 1 &&
+      typeof candidate.idempotent_replay === "boolean";
+  });
+}
+
 function isProductionPreflight(value: unknown): value is ProductionPreflight {
   if (!value || typeof value !== "object" || !("snapshot" in value)) return false;
   const snapshot = value.snapshot;
@@ -120,7 +140,7 @@ function isProductionPreflight(value: unknown): value is ProductionPreflight {
     isStringArray(candidate.blockers) &&
     isStringArray(candidate.warnings) &&
     isArtifactMap(candidate.artifacts) &&
-    Array.isArray(candidate.decision_history)
+    isDecisionHistory(candidate.decision_history, candidate.preflight_id as string, candidate.gate_id as string)
   );
 }
 
@@ -140,8 +160,12 @@ function translatedPathMessages(result: PathValidationResult): string[] {
   return [...result.snapshot.blockers, ...result.snapshot.warnings].map((code) => pathMessage(result, code));
 }
 
-function backendMessages(blockers: string[], warnings: string[]): string[] {
-  return [...blockers, ...warnings].map((message) => pathFindingLabels[message] ?? message);
+function verbatimMessages(blockers: string[], warnings: string[]): string[] {
+  return [...blockers, ...warnings];
+}
+
+function isActionableState(state: ReadinessState): boolean {
+  return state === "passed" || state === "warning";
 }
 
 function completedSupporting(status: string, identifier: string): string {
@@ -177,6 +201,7 @@ export function MigrationSetupForm() {
   const [pathValidation, setPathValidation] = useState<PathValidationResult | null>(null);
   const [sourceAnalysis, setSourceAnalysis] = useState<SourceAnalysisResult | null>(null);
   const [activeBinding, setActiveBinding] = useState<SetupBinding | null>(null);
+  const activeBindingRef = useRef<SetupBinding | null>(null);
   const [hasChecked, setHasChecked] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [configurationChanged, setConfigurationChanged] = useState(false);
@@ -191,6 +216,7 @@ export function MigrationSetupForm() {
     setConfigurationRevision(nextRevision);
     setInputs((current) => ({ ...current, [field]: value }));
     setIsChecking(false);
+    activeBindingRef.current = null;
     setActiveBinding(null);
     setRequestAlert(null);
     if (hasChecked || isChecking) {
@@ -202,6 +228,61 @@ export function MigrationSetupForm() {
 
   function requestIsCurrent(attempt: number, revision: number): boolean {
     return requestAttemptRef.current === attempt && configurationRevisionRef.current === revision;
+  }
+
+  useEffect(() => {
+    if (!activeBinding) return;
+    const binding = activeBinding;
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+
+    function scheduleAuthoritativeExpiry() {
+      if (cancelled) return;
+      const remaining = Date.parse(binding.expiresAt) - Date.now();
+      if (remaining > 0) {
+        expiryTimer = setTimeout(scheduleAuthoritativeExpiry, Math.min(remaining, 2_147_483_647));
+        return;
+      }
+      if (activeBindingRef.current?.preflightId !== binding.preflightId ||
+        activeBindingRef.current.revision !== binding.revision) return;
+      activeBindingRef.current = null;
+      setActiveBinding(null);
+      setOperations((current) => ({
+        ...current,
+        preflight: {
+          ...current.preflight,
+          state: "outdated",
+          supporting: "The authoritative production preflight has expired. Check readiness again.",
+        },
+      }));
+      setLiveMessage("Production preflight expired. Check readiness again.");
+    }
+
+    scheduleAuthoritativeExpiry();
+    return () => {
+      cancelled = true;
+      if (expiryTimer !== undefined) clearTimeout(expiryTimer);
+    };
+  }, [activeBinding]);
+
+  function reviewProductionReadiness() {
+    const binding = activeBindingRef.current;
+    if (!binding || binding.revision !== configurationRevisionRef.current) return;
+    if (Date.parse(binding.expiresAt) <= Date.now()) {
+      activeBindingRef.current = null;
+      setActiveBinding(null);
+      setOperations((current) => ({
+        ...current,
+        preflight: {
+          ...current.preflight,
+          state: "outdated",
+          supporting: "The authoritative production preflight has expired. Check readiness again.",
+        },
+      }));
+      setLiveMessage("Production preflight expired. Check readiness again.");
+      return;
+    }
+    router.push(`/preflights/${binding.preflightId}`);
   }
 
   async function runReadiness() {
@@ -220,6 +301,7 @@ export function MigrationSetupForm() {
     setIsChecking(true);
     setConfigurationChanged(false);
     setRequestAlert(null);
+    activeBindingRef.current = null;
     setActiveBinding(null);
     setPathValidation(null);
     setSourceAnalysis(null);
@@ -263,11 +345,12 @@ export function MigrationSetupForm() {
       }
 
       if (!requestIsCurrent(attempt, requestRevision)) return;
+      const pathState = pathReadinessState(pathResult.snapshot.status);
       setPathValidation(pathResult);
       setOperations((current) => ({
         ...current,
         path: {
-          state: pathReadinessState(pathResult.snapshot.status),
+          state: pathState,
           supporting: pathResult.snapshot.target_reservation_eligible
             ? completedSupporting(pathResult.snapshot.status, pathResult.snapshot.validation_id)
             : "The returned path evidence is not eligible for a target reservation.",
@@ -301,22 +384,28 @@ export function MigrationSetupForm() {
       if (!requestIsCurrent(attempt, requestRevision)) return;
       const environmentResult = environmentSettled.status === "fulfilled" ? environmentSettled.value : null;
       const sourceResult = sourceSettled.status === "fulfilled" ? sourceSettled.value : null;
+      const environmentState = environmentResult
+        ? environmentReadinessState(environmentResult.snapshot.status)
+        : "unavailable";
+      const sourceState = sourceResult
+        ? sourceReadinessState(sourceResult.snapshot.status)
+        : "unavailable";
       setSourceAnalysis(sourceResult);
       setOperations((current) => ({
         ...current,
         environment: environmentResult ? {
-          state: environmentReadinessState(environmentResult.snapshot.status),
+          state: environmentState,
           supporting: completedSupporting(environmentResult.snapshot.status, environmentResult.snapshot.snapshot_id),
-          messages: backendMessages(environmentResult.snapshot.blockers, environmentResult.snapshot.warnings),
+          messages: verbatimMessages(environmentResult.snapshot.blockers, environmentResult.snapshot.warnings),
         } : {
           state: "unavailable",
           supporting: requestFailure("Environment capability", environmentSettled.status === "rejected" ? environmentSettled.reason : null),
           messages: [],
         },
         source: sourceResult ? {
-          state: sourceReadinessState(sourceResult.snapshot.status),
+          state: sourceState,
           supporting: completedSupporting(sourceResult.snapshot.status, sourceResult.snapshot.analysis_id),
-          messages: backendMessages(sourceResult.snapshot.blockers, sourceResult.snapshot.warnings),
+          messages: verbatimMessages(sourceResult.snapshot.blockers, sourceResult.snapshot.warnings),
         } : {
           state: "unavailable",
           supporting: requestFailure("Source analysis", sourceSettled.status === "rejected" ? sourceSettled.reason : null),
@@ -387,23 +476,29 @@ export function MigrationSetupForm() {
         preflight: {
           state: preflightState,
           supporting: completedSupporting(returnedPreflight.snapshot.status, returnedPreflight.snapshot.preflight_id),
-          messages: backendMessages(returnedPreflight.snapshot.blockers, returnedPreflight.snapshot.warnings),
+          messages: verbatimMessages(returnedPreflight.snapshot.blockers, returnedPreflight.snapshot.warnings),
         },
       }));
 
       const actionable = (
         !responseExpired &&
-        (returnedPreflight.snapshot.status === "passed" || returnedPreflight.snapshot.status === "passed_with_warnings")
+        isActionableState(pathState) &&
+        isActionableState(environmentState) &&
+        isActionableState(sourceState) &&
+        isActionableState(preflightState)
       );
       if (actionable) {
         if (!requestIsCurrent(attempt, requestRevision)) return;
-        setActiveBinding({
+        const binding: SetupBinding = {
           revision: requestRevision,
           pathValidationId: pathResult.snapshot.validation_id,
           environmentSnapshotId: environmentResult.snapshot.snapshot_id,
           sourceAnalysisId: sourceResult.snapshot.analysis_id,
           preflightId: returnedPreflight.snapshot.preflight_id,
-        });
+          expiresAt: returnedPreflight.snapshot.expires_at,
+        };
+        activeBindingRef.current = binding;
+        setActiveBinding(binding);
       }
       if (!requestIsCurrent(attempt, requestRevision)) return;
       setLiveMessage("Readiness check finished with authoritative evidence.");
@@ -561,7 +656,7 @@ export function MigrationSetupForm() {
                 <div className={styles.findings}><h3>Source warnings</h3><ul>{sourceReview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>
               ) : <p>No source-analysis warnings were returned.</p>}
               {activeBinding ? (
-                <button type="button" className={styles.reviewAction} onClick={() => router.push(`/preflights/${activeBinding.preflightId}`)}>
+                <button type="button" className={styles.reviewAction} onClick={reviewProductionReadiness}>
                   Review production readiness
                 </button>
               ) : null}

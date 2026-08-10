@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MigrationSetupForm } from "@/components/MigrationSetupForm";
 import { analyzeSource, refreshEnvironment, validatePaths } from "@/api/migrations";
 import { createProductionPreflight } from "@/api/preflights";
@@ -158,6 +158,22 @@ function preflight(
   };
 }
 
+function decision(preflightId = "preflight-1") {
+  return {
+    decision_id: "decision-1",
+    preflight_id: preflightId,
+    gate_id: "G01",
+    decision: "approved" as const,
+    actor: "reviewer@example.com",
+    comment: null,
+    decided_at: "2026-08-09T10:30:00Z",
+    input_checksum: `sha256:input-${preflightId}`,
+    artifact_set_checksum: `sha256:evidence-${preflightId}`,
+    state_version: 2,
+    idempotent_replay: false,
+  };
+}
+
 function fillProject(source = "C:/external/source", target = "C:/external/target") {
   fireEvent.change(screen.getByLabelText("Source path"), { target: { value: source } });
   fireEvent.change(screen.getByLabelText("External target-parent path"), { target: { value: target } });
@@ -182,6 +198,10 @@ describe("MigrationSetupForm", () => {
     vi.mocked(refreshEnvironment).mockResolvedValue(environmentResult());
     vi.mocked(analyzeSource).mockResolvedValue(analysisResult());
     vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("shows the four-step journey, four waiting operations, and the initial action", () => {
@@ -273,6 +293,54 @@ describe("MigrationSetupForm", () => {
   });
 
   it.each([
+    ["unknown path", "path", "future_pass"],
+    ["unknown environment", "environment", "available_later"],
+    ["blocked environment", "environment", "blocked"],
+    ["unknown source", "source", "accepted_later"],
+    ["blocked source", "source", "blocked"],
+  ])("fails closed for %s evidence even when production preflight passes", async (_name, operation, status) => {
+    if (operation === "path") {
+      const result = pathResult();
+      (result.snapshot as { status: string }).status = status;
+      vi.mocked(validatePaths).mockResolvedValue(result as never);
+    } else if (operation === "environment") {
+      const result = environmentResult();
+      (result.snapshot as { status: string }).status = status;
+      vi.mocked(refreshEnvironment).mockResolvedValue(result as never);
+    } else {
+      const result = analysisResult();
+      (result.snapshot as { status: string }).status = status;
+      vi.mocked(analyzeSource).mockResolvedValue(result as never);
+    }
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed", `preflight-${operation}-${status}`));
+    render(<MigrationSetupForm />);
+    fillProject();
+    checkReadiness();
+
+    await waitFor(() => expect(createProductionPreflight).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: "Review production readiness" })).not.toBeInTheDocument();
+  });
+
+  it("keeps non-path warning messages verbatim", async () => {
+    const environment = environmentResult("environment-verbatim", "degraded");
+    environment.snapshot.warnings = ["SOURCE_PATH_NOT_FOUND"];
+    const source = analysisResult("analysis-verbatim", "review_required");
+    source.snapshot.warnings = ["SOURCE_PATH_NOT_FOUND"];
+    vi.mocked(refreshEnvironment).mockResolvedValue(environment);
+    vi.mocked(analyzeSource).mockResolvedValue(source);
+    vi.mocked(createProductionPreflight).mockResolvedValue(preflight("passed_with_warnings", "preflight-verbatim", [], ["SOURCE_PATH_NOT_FOUND"]));
+    render(<MigrationSetupForm />);
+    fillProject();
+    checkReadiness();
+
+    await screen.findByText("Readiness checks completed with warnings");
+    for (const row of ["Environment capability", "Source analysis", "Production preflight"]) {
+      expect(within(operationRow(row)).getByText("SOURCE_PATH_NOT_FOUND")).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Source path does not exist.")).not.toBeInTheDocument();
+  });
+
+  it.each([
     ["blocked preflight", () => preflight("blocked", "preflight-blocked", ["RUNTIME_BLOCKED"])],
     ["expired preflight", () => preflight("expired", "preflight-expired")],
     ["stale preflight", () => preflight("stale", "preflight-stale")],
@@ -317,9 +385,15 @@ describe("MigrationSetupForm", () => {
     expect(createProductionPreflight).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid production response and recovers on an explicit recheck", async () => {
+  it("rejects malformed nested decision history and recovers on an explicit recheck", async () => {
     const invalidPreflight = preflight("passed", "preflight-invalid");
-    delete (invalidPreflight.snapshot as Partial<ProductionPreflight["snapshot"]>).decision_history;
+    invalidPreflight.snapshot.decision_history = [{
+      ...decision("wrong-preflight"),
+      gate_id: "G99",
+      decision: "approve_later",
+      decided_at: "not-a-date",
+      idempotent_replay: "false",
+    } as never];
     vi.mocked(createProductionPreflight)
       .mockResolvedValueOnce(invalidPreflight)
       .mockResolvedValueOnce(preflight("passed", "preflight-recovered"));
@@ -334,6 +408,57 @@ describe("MigrationSetupForm", () => {
     expect(await screen.findByText("Readiness checks passed")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Review production readiness" }));
     expect(push).toHaveBeenCalledWith("/preflights/preflight-recovered");
+  });
+
+  it("automatically invalidates an authoritative preflight when its expiry elapses", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T10:00:00Z"));
+    const expiring = preflight("passed", "preflight-expiring");
+    expiring.snapshot.expires_at = "2026-08-09T10:00:05Z";
+    vi.mocked(createProductionPreflight).mockResolvedValue(expiring);
+    const view = render(<MigrationSetupForm />);
+    fillProject();
+
+    await act(async () => {
+      checkReadiness();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "Review production readiness" })).toBeEnabled();
+
+    act(() => vi.advanceTimersByTime(5_001));
+    expect(screen.queryByRole("button", { name: "Review production readiness" })).not.toBeInTheDocument();
+    expect(within(operationRow("Production preflight")).getByText("Outdated")).toBeInTheDocument();
+    view.unmount();
+    vi.useRealTimers();
+  });
+
+  it("rechecks expiry in the review click handler before navigation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T10:00:00Z"));
+    const expiring = preflight("passed", "preflight-click-guard");
+    expiring.snapshot.expires_at = "2026-08-09T10:00:05Z";
+    vi.mocked(createProductionPreflight).mockResolvedValue(expiring);
+    const view = render(<MigrationSetupForm />);
+    fillProject();
+
+    await act(async () => {
+      checkReadiness();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const review = screen.getByRole("button", { name: "Review production readiness" });
+    vi.setSystemTime(new Date("2026-08-09T10:00:06Z"));
+    fireEvent.click(review);
+
+    expect(push).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Review production readiness" })).not.toBeInTheDocument();
+    view.unmount();
+    vi.useRealTimers();
   });
 
   it("invalidates every identifier immediately when a Project value changes", async () => {

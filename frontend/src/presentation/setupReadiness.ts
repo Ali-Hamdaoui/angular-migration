@@ -10,6 +10,7 @@ export interface SetupBinding {
   environmentSnapshotId: string;
   sourceAnalysisId: string;
   preflightId: string;
+  expiresAt: string;
 }
 
 export type ReadinessLifecycle = "waiting" | "running" | "unavailable" | "outdated";
