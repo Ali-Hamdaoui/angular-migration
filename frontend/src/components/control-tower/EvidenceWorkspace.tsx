@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactContentResponse } from "@/api/migrations";
 import type { ArtifactRefDto } from "@/types/generated/api";
 import { presentArtifact, sortArtifactPresentations, type ArtifactCategory, type ArtifactPresentation } from "@/presentation/artifacts";
@@ -45,6 +45,9 @@ export function EvidenceWorkspace({ artifacts, loadArtifact }: EvidenceWorkspace
   const [filter, setFilter] = useState<EvidenceFilter>("all");
   const [stage, setStage] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const resultButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const detailHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousSelectedId = useRef<string | null>(null);
 
   const stageOptions = useMemo(
     () => [...new Set(presentations.map((presentation) => presentation.stageLabel))].sort((left, right) => left.localeCompare(right)),
@@ -60,6 +63,15 @@ export function EvidenceWorkspace({ artifacts, loadArtifact }: EvidenceWorkspace
   const selected = visible.find((presentation) => presentation.artifact.artifact_id === selectedId)
     ?? presentations.find((presentation) => presentation.artifact.artifact_id === selectedId)
     ?? null;
+
+  useEffect(() => {
+    if (selectedId) {
+      detailHeadingRef.current?.focus();
+    } else if (previousSelectedId.current) {
+      resultButtonRefs.current.get(previousSelectedId.current)?.focus();
+    }
+    previousSelectedId.current = selectedId;
+  }, [selectedId]);
 
   return (
     <section className={styles.workspace} data-detail-active={selected ? "true" : "false"} aria-labelledby="evidence-workspace-heading">
@@ -108,6 +120,10 @@ export function EvidenceWorkspace({ artifacts, loadArtifact }: EvidenceWorkspace
                   <button
                     type="button"
                     className={styles.resultButton}
+                    ref={(node) => {
+                      if (node) resultButtonRefs.current.set(presentation.artifact.artifact_id, node);
+                      else resultButtonRefs.current.delete(presentation.artifact.artifact_id);
+                    }}
                     data-selected={presentation.artifact.artifact_id === selectedId ? "true" : "false"}
                     onClick={() => setSelectedId(presentation.artifact.artifact_id)}
                   >
@@ -125,7 +141,7 @@ export function EvidenceWorkspace({ artifacts, loadArtifact }: EvidenceWorkspace
           {selected ? (
             <>
               <button className={styles.backButton} type="button" onClick={() => setSelectedId(null)}>Back to evidence</button>
-              <ArtifactPreviewPanel presentation={selected} loadArtifact={loadArtifact} />
+              <ArtifactPreviewPanel key={`${selected.artifact.artifact_id}|${selected.artifact.checksum}`} presentation={selected} headingRef={detailHeadingRef} loadArtifact={loadArtifact} />
             </>
           ) : (
             <div className={styles.placeholder}>

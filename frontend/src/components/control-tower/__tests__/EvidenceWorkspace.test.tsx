@@ -84,4 +84,14 @@ describe("EvidenceWorkspace", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Artifact preview is unavailable.");
     expect(screen.getByRole("button", { name: "Preview" })).toBeEnabled();
   });
+
+  it("moves focus to the detail heading and restores it to the originating result", async () => {
+    render(<EvidenceWorkspace artifacts={presentations} />);
+    const result = screen.getByRole("button", { name: /Source snapshot package/i });
+    fireEvent.click(result);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Source snapshot package" })).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to evidence" }));
+    expect(result).toHaveFocus();
+  });
 });
