@@ -15,7 +15,7 @@ const review = { run_id: "run-1", gate_id: "G02", gate_version: "g02-v1", status
 
 describe("G02ReviewPanel", () => {
   it("renders a subordinate heading when embedded in a pipeline stage", () => {
-    render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={review} headingLevel={4} />);
+    render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} headingLevel={4} />);
     expect(screen.getByRole("heading", { name: "G02 source-integrity boundary", level: 4 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Immutable evidence", level: 5 })).toBeInTheDocument();
     expect(getG02Review).not.toHaveBeenCalled();
@@ -88,7 +88,7 @@ describe("BaselineQualificationPanel G03 authority", () => {
   };
 
   it("renders a subordinate heading when embedded in a pipeline stage", () => {
-    render(<BaselineQualificationPanel runId="run-1" stateVersion={7} authoritativeAssessment={assessment} headingLevel={4} />);
+    render(<BaselineQualificationPanel runId="run-1" stateVersion={7} authoritativeAssessment={{ status: "ready", value: assessment }} headingLevel={4} />);
     expect(screen.getByRole("heading", { name: "Baseline qualification / G03", level: 4 })).toBeInTheDocument();
     expect(getBaselineSummary).not.toHaveBeenCalled();
   });

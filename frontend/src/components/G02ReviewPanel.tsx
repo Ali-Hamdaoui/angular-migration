@@ -6,6 +6,7 @@ import { decideG02, getG02Review, initializeG02 } from "@/api/g02";
 import type { AuthoritativeRunStateDto, G02Decision, G02ReviewResponse, WorkflowEventDto } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
 import { headingTag, type PanelHeadingLevel } from "./control-tower/semanticHeading";
+import type { AuthoritativePackageLoad } from "./control-tower/authoritativePackageLoad";
 
 const decisions: Array<{ value: G02Decision; label: string }> = [
   { value: "approved", label: "Approve G02" },
@@ -18,11 +19,11 @@ function latestG02Event(events: WorkflowEventDto[]) {
   return [...events].reverse().find((event) => ["G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE", "SOURCE_INTEGRITY_VERIFIED", "SOURCE_INTEGRITY_FAILED"].includes(event.event_type));
 }
 
-export function G02ReviewPanel({ runId, initialState, authoritativeReview, headingLevel = 2 }: { runId: string; initialState: AuthoritativeRunStateDto; authoritativeReview?: G02ReviewResponse | null; headingLevel?: PanelHeadingLevel }) {
+export function G02ReviewPanel({ runId, initialState, authoritativeReview, headingLevel = 2 }: { runId: string; initialState: AuthoritativeRunStateDto; authoritativeReview?: AuthoritativePackageLoad<G02ReviewResponse>; headingLevel?: PanelHeadingLevel }) {
   const Heading = headingTag(headingLevel);
   const Subheading = headingTag(headingLevel, 1);
   const externallyLoaded = authoritativeReview !== undefined;
-  const [review, setReview] = useState<G02ReviewResponse | null>(authoritativeReview ?? null);
+  const [localReview, setReview] = useState<G02ReviewResponse | null>(null);
   const [loading, setLoading] = useState(!externallyLoaded);
   const [submitting, setSubmitting] = useState(false);
   const [selectedDecision, setSelectedDecision] = useState<G02Decision>("approved");
@@ -39,15 +40,13 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
     }).finally(() => setLoading(false));
   }, [runId]);
 
-  useEffect(() => {
-    if (externallyLoaded) {
-      setReview(authoritativeReview ?? null);
-      setMissing(authoritativeReview == null);
-      setLoading(false);
-      return;
-    }
-    refresh();
-  }, [authoritativeReview, event?.sequence, externallyLoaded, refresh]);
+  useEffect(() => { if (!externallyLoaded) refresh(); }, [event?.sequence, externallyLoaded, refresh]);
+
+  const review = externallyLoaded
+    ? authoritativeReview.status === "ready" ? authoritativeReview.value : null
+    : localReview;
+  const reviewLoading = externallyLoaded ? authoritativeReview.status === "loading" : loading;
+  const reviewMissing = externallyLoaded ? false : missing;
 
   async function initializePackage() {
     setSubmitting(true); setError(null);
@@ -80,8 +79,10 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
 
   return <section className={styles.panel} aria-label="G02 source integrity review">
     <div className={styles.previewHeader}><div><p className={styles.kicker}>S1-F08</p><Heading>G02 source-integrity boundary</Heading></div>{review ? <strong>{review.status}</strong> : null}</div>
-    {loading ? <p className={styles.note}>Loading G02 evidence...</p> : null}
-    {!loading && missing ? <div><p className={styles.note}>G02 is pending. Initialize the review package from the finalized immutable snapshot.</p><button type="button" onClick={initializePackage} disabled={submitting}>Initialize G02 review</button></div> : null}
+    {reviewLoading ? <p className={styles.note}>Loading G02 review package</p> : null}
+    {externallyLoaded && authoritativeReview.status === "unavailable" ? <div><p role="status" className={styles.note}>G02 review package is unavailable because the response was invalid.</p><button type="button" onClick={authoritativeReview.retry}>Retry G02 review</button></div> : null}
+    {externallyLoaded && authoritativeReview.status === "error" ? <div><p role="alert">G02 review package could not be loaded.</p><button type="button" onClick={authoritativeReview.retry}>Retry G02 review</button></div> : null}
+    {!reviewLoading && reviewMissing ? <div><p className={styles.note}>G02 is pending. Initialize the review package from the finalized immutable snapshot.</p><button type="button" onClick={initializePackage} disabled={submitting}>Initialize G02 review</button></div> : null}
     {event?.event_type === "SOURCE_INTEGRITY_FAILED" ? <p role="alert">Source integrity failed. Approval is blocked until the source boundary is resolved.</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {packageData ? <>

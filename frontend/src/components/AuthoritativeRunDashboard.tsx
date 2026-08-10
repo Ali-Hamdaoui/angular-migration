@@ -31,6 +31,7 @@ import { ControlTowerSidebar, type ControlTowerSection } from "./control-tower/C
 import { OperatorOverview } from "./control-tower/OperatorOverview";
 import { PipelineSection } from "./control-tower/PipelineSection";
 import type { PipelineStageContent } from "./control-tower/PipelineStageDetail";
+import type { AuthoritativePackageLoad } from "./control-tower/authoritativePackageLoad";
 import { TechnicalDetails } from "./control-tower/TechnicalDetails";
 import { WorkflowEventsSection } from "./control-tower/WorkflowEventsSection";
 import styles from "./ControlTowerShell.module.css";
@@ -147,6 +148,17 @@ function validG03Assessment(value: BaselineAssessmentResponse, runId: string, pa
     && value.artifact_ids.every((artifactId) => typeof artifactId === "string" && artifactId.length > 0);
 }
 
+type PackageLoadRecord<T> =
+  | { requestKey: string; status: "loading" | "unavailable" | "error" }
+  | { requestKey: string; status: "ready"; value: T };
+
+function authoritativePackageLoad<T>(record: PackageLoadRecord<T>, requestKey: string, retry: () => void): AuthoritativePackageLoad<T> {
+  if (record.requestKey !== requestKey) return { status: "loading" };
+  if (record.status === "ready") return { status: "ready", value: record.value };
+  if (record.status === "loading") return { status: "loading" };
+  return { status: record.status, retry };
+}
+
 export function AuthoritativeRunDashboard({
   runId,
   initialState,
@@ -189,8 +201,10 @@ export function AuthoritativeRunDashboard({
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [retryingSourceIntake, setRetryingSourceIntake] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
-  const [g02Review, setG02Review] = useState<G02ReviewResponse | null>(null);
-  const [g03Assessment, setG03Assessment] = useState<BaselineAssessmentResponse | null>(null);
+  const [g02LoadRecord, setG02LoadRecord] = useState<PackageLoadRecord<G02ReviewResponse>>({ requestKey: "", status: "loading" });
+  const [g03LoadRecord, setG03LoadRecord] = useState<PackageLoadRecord<BaselineAssessmentResponse>>({ requestKey: "", status: "loading" });
+  const [g02RetryVersion, setG02RetryVersion] = useState(0);
+  const [g03RetryVersion, setG03RetryVersion] = useState(0);
 
   useEffect(() => {
     if (authoritativePipelineKey && authoritativePipelineKey !== previousAuthoritativePipelineKey.current) {
@@ -206,34 +220,58 @@ export function AuthoritativeRunDashboard({
   const g02PackageChecksum = typeof g02Created?.payload.package_checksum === "string" ? g02Created.payload.package_checksum : "";
   const g03PackageChecksum = typeof g03Created?.payload.package_checksum === "string" ? g03Created.payload.package_checksum : "";
   const g03EvidenceSetChecksum = typeof g03Created?.payload.evidence_set_checksum === "string" ? g03Created.payload.evidence_set_checksum : "";
-  const authoritativeG02Review = g02Review && validG02Review(g02Review, runId, g02PackageChecksum) ? g02Review : null;
-  const authoritativeG03Assessment = g03Assessment && validG03Assessment(g03Assessment, runId, g03PackageChecksum, g03EvidenceSetChecksum) ? g03Assessment : null;
   const g02RefreshEventId = g02Created ? latestGateEventId(state.workflow_events, "G02", g02Created.sequence) : "";
   const g03RefreshEventId = g03Created ? latestGateEventId(state.workflow_events, "G03", g03Created.sequence) : "";
+  const g02RequestKey = `${runId}|${g02CreatedEventId}|${g02PackageChecksum}|${g02RefreshEventId}`;
+  const g03RequestKey = `${runId}|${g03CreatedEventId}|${g03PackageChecksum}|${g03EvidenceSetChecksum}|${g03RefreshEventId}`;
+  const retryG02Review = useCallback(() => {
+    setG02LoadRecord({ requestKey: g02RequestKey, status: "loading" });
+    setG02RetryVersion((version) => version + 1);
+  }, [g02RequestKey]);
+  const retryG03Assessment = useCallback(() => {
+    setG03LoadRecord({ requestKey: g03RequestKey, status: "loading" });
+    setG03RetryVersion((version) => version + 1);
+  }, [g03RequestKey]);
+  const authoritativeG02Load = useMemo(
+    () => authoritativePackageLoad(g02LoadRecord, g02RequestKey, retryG02Review),
+    [g02LoadRecord, g02RequestKey, retryG02Review],
+  );
+  const authoritativeG03Load = useMemo(
+    () => authoritativePackageLoad(g03LoadRecord, g03RequestKey, retryG03Assessment),
+    [g03LoadRecord, g03RequestKey, retryG03Assessment],
+  );
+  const authoritativeG02Review = authoritativeG02Load.status === "ready" ? authoritativeG02Load.value : null;
+  const authoritativeG03Assessment = authoritativeG03Load.status === "ready" ? authoritativeG03Load.value : null;
 
   useEffect(() => {
     let active = true;
     if (!g02CreatedEventId || !g02PackageChecksum) {
-      setG02Review(null);
       return () => { active = false; };
     }
+    setG02LoadRecord({ requestKey: g02RequestKey, status: "loading" });
     void getG02Review(runId).then((value) => {
-      if (active) setG02Review(validG02Review(value, runId, g02PackageChecksum) ? value : null);
-    }).catch(() => { if (active) setG02Review(null); });
+      if (!active) return;
+      setG02LoadRecord(validG02Review(value, runId, g02PackageChecksum)
+        ? { requestKey: g02RequestKey, status: "ready", value }
+        : { requestKey: g02RequestKey, status: "unavailable" });
+    }).catch(() => { if (active) setG02LoadRecord({ requestKey: g02RequestKey, status: "error" }); });
     return () => { active = false; };
-  }, [g02CreatedEventId, g02PackageChecksum, g02RefreshEventId, runId]);
+  }, [g02CreatedEventId, g02PackageChecksum, g02RefreshEventId, g02RequestKey, g02RetryVersion, runId]);
 
   useEffect(() => {
     let active = true;
     if (!g03CreatedEventId || !g03PackageChecksum || !g03EvidenceSetChecksum) {
-      setG03Assessment(null);
       return () => { active = false; };
     }
+    setG03LoadRecord({ requestKey: g03RequestKey, status: "loading" });
     void getBaselineSummary(runId).then((value) => {
-      if (active) setG03Assessment(validG03Assessment(value, runId, g03PackageChecksum, g03EvidenceSetChecksum) ? value : null);
-    }).catch(() => { if (active) setG03Assessment(null); });
+      if (!active) return;
+      setG03LoadRecord(validG03Assessment(value, runId, g03PackageChecksum, g03EvidenceSetChecksum)
+        ? { requestKey: g03RequestKey, status: "ready", value }
+        : { requestKey: g03RequestKey, status: "unavailable" });
+    }).catch(() => { if (active) setG03LoadRecord({ requestKey: g03RequestKey, status: "error" }); });
     return () => { active = false; };
-  }, [g03CreatedEventId, g03EvidenceSetChecksum, g03PackageChecksum, g03RefreshEventId, runId]);
+  }, [g03CreatedEventId, g03EvidenceSetChecksum, g03PackageChecksum, g03RefreshEventId, g03RequestKey, g03RetryVersion, runId]);
 
   const navigate = useCallback((section: ControlTowerSection, stageKey?: JourneyKey) => {
     if (stageKey) {
@@ -356,8 +394,8 @@ export function AuthoritativeRunDashboard({
       }
       if (hasGatePackage) {
         let panel: React.ReactNode = null;
-        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} headingLevel={4} /><G02ReviewPanel runId={runId} initialState={state} authoritativeReview={authoritativeG02Review} headingLevel={4} /></>;
-        else if (milestone.key === "baseline") panel = <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} authoritativeAssessment={authoritativeG03Assessment} headingLevel={4} />;
+        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} headingLevel={4} /><G02ReviewPanel runId={runId} initialState={state} authoritativeReview={authoritativeG02Load} headingLevel={4} /></>;
+        else if (milestone.key === "baseline") panel = <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} authoritativeAssessment={authoritativeG03Load} headingLevel={4} />;
         else if (milestone.key === "discovery") panel = <><BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} headingLevel={4} /><AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} /></>;
         else if (milestone.key === "feasibility") panel = <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} />;
         else if (milestone.key === "plan") panel = <><MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} /><PlanReviewPanel runId={runId} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} headingLevel={4} /></>;
@@ -372,7 +410,7 @@ export function AuthoritativeRunDashboard({
         tabs,
       };
     });
-  }, [authoritativeG02Review, authoritativeG03Assessment, refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, workspace.journey]);
+  }, [authoritativeG02Load, authoritativeG02Review, authoritativeG03Assessment, authoritativeG03Load, refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, workspace.journey]);
 
   return (
     <div className="controlTowerDashboard">

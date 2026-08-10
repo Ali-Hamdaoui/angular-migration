@@ -157,3 +157,52 @@ Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors
 ```
 
 The narrow fix diff was self-reviewed for same-run/package validation, exact artifact identity, retained terminal evidence, request ownership and races, typed expansion persistence, heading outline, status tone, decision bindings, 409 fail-closed behavior, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 1 is implemented pending re-review and is not marked complete.
+
+## Independent review fix round 2
+
+Task 7 review fix round 2 was implemented from clean reviewed HEAD `62eb1d9c119eb96cafd8e5f7c05c08799d2d2a0c`. The verified package-loading finding is addressed and the task remains pending independent re-review.
+
+The dashboard-to-panel boundary now carries an explicit `loading | ready | unavailable | error` state instead of collapsing every non-ready response to `null`. Each state is bound to the run, created-event identity, exact package checksums, and latest gate event. A changed binding is synchronously treated as loading, late prior requests are ignored, invalid responses become unavailable, rejected GETs become error, and a safe GET-only retry starts a new request. Valid recovery restores the registered Evidence tab and the existing checksum/version-bound G02 or G03 review action.
+
+Embedded G02/G03 panels no longer interpret an unresolved external package as true absence. Pending, invalid, and failed GETs render non-mutating loading or unavailable/error content. Only the standalone panel flow that independently proves no package exists can expose `Initialize G02 review` or `Qualify baseline`. Existing decision payloads, state versions, checksums, idempotency behavior, 409 fail-closed handling, heading composition, single GET ownership, and Task 8 boundaries remain unchanged.
+
+### Strict RED/GREEN evidence
+
+```text
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx -t "package mutation|fails closed"
+RED: Test Files 1 failed (1); Tests 6 failed, 1 passed, 17 skipped
+GREEN: Test Files 1 passed (1); Tests 7 passed, 17 skipped
+
+Broader dashboard/panel regression discovered during integration:
+RED: Test Files 1 failed, 1 passed; Tests 1 failed, 29 passed
+Cause: no-package runs wrote an unused unavailable record and rerendered the hook owner.
+GREEN: Test Files 2 passed (2); Tests 30 passed (30)
+```
+
+### Final verification
+
+```text
+npm test -- src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx src/components/__tests__/G02ReviewPanel.test.tsx src/components/__tests__/AnalysisReviewPanel.test.tsx src/components/__tests__/FeasibilityPanel.test.tsx src/components/__tests__/MigrationPlanPanel.test.tsx src/components/__tests__/PlanReviewPanel.test.tsx
+Test Files: 6 passed (6)
+Tests: 69 passed (69)
+
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/presentation/__tests__/currentAction.test.ts src/components/__tests__/SourceSnapshotPanel.test.tsx src/components/__tests__/BaselineParityPanel.test.tsx
+Test Files: 4 passed (4)
+Tests: 63 passed (63)
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+npm test
+Test Files: 58 passed (58)
+Tests: 478 passed (478)
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+```
+
+The narrow fix diff was self-reviewed for explicit load-state exhaustiveness, same-run/package identity, immediate stale-response omission, request cancellation, GET-only recovery, suppression of package-creation/qualification mutations, successful Review/action recovery, unchanged package request deduplication, hook ownership, payload authority, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 2 is implemented pending re-review and is not marked complete.

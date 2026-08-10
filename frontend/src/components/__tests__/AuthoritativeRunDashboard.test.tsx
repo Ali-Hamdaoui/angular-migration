@@ -175,6 +175,36 @@ function g03Assessment(packageChecksum: string, artifactId: string): BaselineAss
   };
 }
 
+function gatePackageRun(key: "readiness" | "baseline"): AuthoritativeRunStateDto {
+  const g02Events = [
+    makeEvent("RUN_CREATED", 1),
+    makeEvent("G02_CREATED", 2, { payload: { snapshot_id: "snapshot-1", package_checksum: "sha256:g02-package" } }),
+  ];
+  if (key === "readiness") {
+    return makeAuthoritativeRun({
+      workflow_events: g02Events,
+      artifacts: [makeArtifact({ artifact_id: "g02-package-artifact", relative_path: "global/g02/source-integrity.json" })],
+    });
+  }
+  return makeAuthoritativeRun({
+    state_version: 4,
+    workflow_events: [
+      ...g02Events,
+      makeEvent("G02_APPROVED", 3),
+      makeEvent("BASELINE_INSTALL_SUCCEEDED", 4),
+      makeEvent("G03_CREATED", 5, { payload: { package_checksum: "sha256:g03-package", evidence_set_checksum: "sha256:g03-evidence" } }),
+    ],
+    artifacts: [makeArtifact({ artifact_id: "g03-package-artifact", relative_path: "global/g03/baseline-assessment.json" })],
+  });
+}
+
+function reviewPanelFor(key: "readiness" | "baseline") {
+  return latestPipelineProps?.stageContent
+    .find((content) => content.milestone.key === key)
+    ?.tabs.find((tab) => tab.id === "review")
+    ?.panel;
+}
+
 function blockedTransformation(runId: string): TransformationProjection {
   return {
     run_id: runId,
@@ -481,6 +511,60 @@ describe("AuthoritativeRunDashboard", () => {
       expect(getG02Review).toHaveBeenCalledOnce();
       expect(getBaselineSummary).toHaveBeenCalledOnce();
     });
+  });
+
+  it.each([
+    ["G02", "readiness", "Loading G02 review package", "Initialize G02 review"],
+    ["G03", "baseline", "Loading baseline qualification package", "Qualify baseline"],
+  ] as const)("keeps %s package mutation unavailable while the authoritative GET is pending", async (gate, key, loadingText, unsafeAction) => {
+    if (key === "readiness") {
+      vi.mocked(getG02Review).mockImplementation(() => new Promise(() => undefined));
+    } else {
+      vi.mocked(getG02Review).mockResolvedValue(g02Review("sha256:g02-package", "g02-package-artifact"));
+      vi.mocked(getBaselineSummary).mockImplementation(() => new Promise(() => undefined));
+    }
+    renderDashboard(gatePackageRun(key));
+    await waitFor(() => expect(gate === "G02" ? getG02Review : getBaselineSummary).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: /^Pipeline/ }));
+    const panelView = render(<>{reviewPanelFor(key)}</>);
+
+    expect(panelView.getByText(loadingText)).toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: unsafeAction })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["G02", "rejected", "readiness"],
+    ["G02", "invalid", "readiness"],
+    ["G03", "rejected", "baseline"],
+    ["G03", "invalid", "baseline"],
+  ] as const)("fails closed and recovers %s review after a %s package response", async (gate, failure, key) => {
+    const api = gate === "G02" ? getG02Review : getBaselineSummary;
+    if (gate === "G02") {
+      if (failure === "rejected") vi.mocked(getG02Review).mockRejectedValueOnce(new Error("network unavailable"));
+      else vi.mocked(getG02Review).mockResolvedValueOnce({ ...g02Review("sha256:g02-package", "g02-package-artifact"), run_id: "wrong-run" });
+    } else {
+      vi.mocked(getG02Review).mockResolvedValue(g02Review("sha256:g02-package", "g02-package-artifact"));
+      if (failure === "rejected") vi.mocked(getBaselineSummary).mockRejectedValueOnce(new Error("network unavailable"));
+      else vi.mocked(getBaselineSummary).mockResolvedValueOnce({ ...g03Assessment("sha256:g03-package", "g03-package-artifact"), run_id: "wrong-run" });
+    }
+    renderDashboard(gatePackageRun(key));
+    fireEvent.click(screen.getByRole("button", { name: /^Pipeline/ }));
+    await waitFor(() => expect(api).toHaveBeenCalledOnce());
+    const panelView = render(<>{reviewPanelFor(key)}</>);
+    const retryName = gate === "G02" ? "Retry G02 review" : "Retry baseline qualification";
+    const unsafeAction = gate === "G02" ? "Initialize G02 review" : "Qualify baseline";
+
+    expect(panelView.getByText(/could not be loaded|is unavailable/)).toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: unsafeAction })).not.toBeInTheDocument();
+    if (gate === "G02") vi.mocked(getG02Review).mockResolvedValueOnce(g02Review("sha256:g02-package", "g02-package-artifact"));
+    else vi.mocked(getBaselineSummary).mockResolvedValueOnce(g03Assessment("sha256:g03-package", "g03-package-artifact"));
+    fireEvent.click(panelView.getByRole("button", { name: retryName }));
+    await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(latestPipelineProps?.stageContent.find((content) => content.milestone.key === key)?.evidenceCount).toBe(1));
+    panelView.rerender(<>{reviewPanelFor(key)}</>);
+
+    expect(panelView.getByRole("button", { name: gate === "G02" ? "Record G02 decision" : "Approve G03" })).toBeInTheDocument();
+    expect(panelView.queryByRole("button", { name: unsafeAction })).not.toBeInTheDocument();
   });
 
   it("renders one route heading, a skip link, human evidence, and closed technical details", () => {
