@@ -193,3 +193,59 @@ Duration: 44.55s
 ## Concerns (round 2)
 
 No open concern. Git continues to report expected LF-to-CRLF working-copy notices for the three edited frontend files; `git diff --check` is clean.
+
+## Review fix round 3/5
+
+The exact focused command reproduced the route-evidence leak before production changes:
+
+```text
+npm test -- src/components/gates/__tests__/GateReview.test.tsx src/components/__tests__/G01ReviewPanel.test.tsx
+Test Files: 1 failed, 1 passed (2)
+Tests: 1 failed, 60 passed (61)
+Exit code: 1
+```
+
+The failing regression supplied requested route `preflight-A` with a complete, distinct `preflight-B` payload. It required a dedicated unavailable alert and confirmed that G01 review content, B source/target paths, checksum, blockers, warnings, artifact links, decision controls, and run controls were all absent until an A-bound reload returned authoritative A evidence. The existing round-2 behavior rendered `GateReview` with the B payload, so the new alert assertion failed as intended.
+
+The minimal correction treats a nonempty snapshot ID that differs from the requested route ID as a dedicated recovery state. The panel still subscribes and reloads only with `expectedPreflightId`, but it returns the recovery surface before constructing or rendering `GateReview`. The surface contains one unavailable-state route `h1`, a clear `role="alert"`, and only **Reload G01 evidence**. A valid A reload resumes the ordinary review and its legal controls. Empty/malformed IDs keep their existing generic fail-closed unknown-state handling instead of being conflated with a valid mismatched route ID.
+
+The requested accessibility follow-up also ran RED with the same exact focused command: 1 failed and 60 passed because the recovery surface used a `strong` element and had no page `h1`. Replacing it with the unavailable-state `h1` made the focused suite green without expanding the surface.
+
+Final verification from the round-3 code:
+
+```text
+npm test -- src/components/gates/__tests__/GateReview.test.tsx src/components/__tests__/G01ReviewPanel.test.tsx
+Test Files: 2 passed (2)
+Tests: 61 passed (61)
+Exit code: 0
+Duration: 10.24s
+
+npm run typecheck
+tsc --noEmit
+Exit code: 0
+
+npm run lint
+eslint .
+Exit code: 0
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+
+npm test
+Test Files: 57 passed (57)
+Tests: 420 passed (420)
+Exit code: 0
+Duration: 47.04s
+```
+
+### Fix-round-3 narrow self-review
+
+- Mismatched route identity: a complete payload for another nonempty preflight cannot render `GateReview`, technical details, paths, findings, checksum, artifacts, decision controls, or run controls.
+- Recovery authority: the existing `expectedPreflightId` continues to own the SSE callback and reload request; an exact A package is the only recovery path exercised by the regression.
+- Accessibility: the fail-closed route surface has one concise unavailable-state `h1`, an alert explanation, and one 44 px inherited button; the ordinary `G01 production readiness` `h1` remains absent until valid evidence is recovered.
+- Scope and regressions: only the G01 panel, its focused test, this report, and the ledger checkpoint are packaged. Empty IDs retain unknown fail-closed behavior, and the unchanged route cancellation, decision, 409, expiry, and run chains remain covered by the focused/full suites.
+
+## Concerns (round 3)
+
+No open concern. Expected LF-to-CRLF working-copy notices remain informational; `git diff --check` is clean.

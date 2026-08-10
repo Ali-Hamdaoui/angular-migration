@@ -397,7 +397,7 @@ describe('G01ReviewPanel', () => {
     expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
   });
 
-  it('binds initial authority, refresh, and events to the requested route preflight', async () => {
+  it('isolates a mismatched initial payload until requested-route evidence recovers it', async () => {
     const routeIdentityProps = { expectedPreflightId: 'preflight-A' };
     vi.mocked(getProductionPreflight).mockResolvedValue(fixture({
       preflight_id: 'preflight-A',
@@ -407,14 +407,27 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel {...routeIdentityProps} preflight={fixture({
       preflight_id: 'preflight-B',
       state_version: 20,
+      source_path: 'C:/wrong-route/source',
+      target_output_path: 'C:/wrong-route/output',
+      input_checksum: 'sha256:wrong-route-input',
+      blockers: ['WRONG_ROUTE_BLOCKER'],
+      warnings: ['WRONG_ROUTE_WARNING'],
     })} />);
 
-    expect(screen.getByText('Unknown status')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('G01 evidence is unavailable for this route.');
+    expect(screen.getByRole('heading', { level: 1, name: 'G01 evidence unavailable' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'G01 production readiness' })).not.toBeInTheDocument();
+    expect(screen.queryByText('C:/wrong-route/source')).not.toBeInTheDocument();
+    expect(screen.queryByText('C:/wrong-route/output')).not.toBeInTheDocument();
+    expect(screen.queryByText('sha256:wrong-route-input')).not.toBeInTheDocument();
+    expect(screen.queryByText('WRONG_ROUTE_BLOCKER')).not.toBeInTheDocument();
+    expect(screen.queryByText('WRONG_ROUTE_WARNING')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open Production readiness result' })).not.toBeInTheDocument();
     expectNoDecisionButtons();
     expectNoRunButton();
     expect(subscribedPreflightId).toBe('preflight-A');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload G01 evidence' }));
     expect(await screen.findByText('RECOVERED_ROUTE_A')).toBeInTheDocument();
     expect(getProductionPreflight).toHaveBeenCalledWith('preflight-A');
     expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();

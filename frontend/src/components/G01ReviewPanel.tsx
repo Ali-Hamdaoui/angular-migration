@@ -331,10 +331,11 @@ export function G01ReviewPanel({
 
   const stream = usePreflightEvents(expectedPreflightId, refresh);
   const { snapshot } = current;
+  const routeMismatch = isNonEmptyString(snapshot.preflight_id)
+    && snapshot.preflight_id !== expectedPreflightId;
   const status = freshness === 'current' ? reviewStatus(snapshot, now) : 'unknown';
   const canStart = status === 'approved'
     && (snapshot.approval_status === 'approved' || snapshot.approval_status === 'approved_with_comment');
-  const { artifactLinks, model } = buildReview(snapshot, stream.status, stream.lastEventId, status);
 
   useEffect(() => {
     if (status === 'expired' || status === 'unknown') return;
@@ -344,6 +345,24 @@ export function G01ReviewPanel({
     const timeout = window.setTimeout(() => setNow(Date.now()), delay);
     return () => window.clearTimeout(timeout);
   }, [now, snapshot.expires_at, status]);
+
+  if (routeMismatch) {
+    return (
+      <main className={styles.page}>
+        <div className={styles.content}>
+          <section className={styles.notice} data-tone="error" role="alert">
+            <h1>G01 evidence unavailable</h1>
+            <p>G01 evidence is unavailable for this route. Reload the authoritative evidence before reviewing G01.</p>
+            <button type="button" onClick={() => void refresh()} disabled={refreshing}>
+              {refreshing ? 'Reloading G01 evidence...' : 'Reload G01 evidence'}
+            </button>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  const { artifactLinks, model } = buildReview(snapshot, stream.status, stream.lastEventId, status);
 
   function invalidateStaleAction(expectedStatus: GateReviewStatus): boolean {
     const latest = currentRef.current.snapshot;
