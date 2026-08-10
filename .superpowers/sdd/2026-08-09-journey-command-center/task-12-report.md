@@ -37,3 +37,33 @@ Exit code: 0
 ```
 
 The full frontend suite was intentionally not run. No backend files or API contracts changed.
+
+## Review fix round 1
+
+The legacy shell navigation is now a real anchored destination set with selected state and `aria-current="page"` for Overview, Pipeline, Evidence, and Diagnostics. Mock runs use an explicit `mode="mock"` path that renders the legacy shell without SSE, authoritative package loading, gate controls, or mutation panels; the mock notice remains visible and no synthetic preflight, workspace, or state identifiers are created. Landing restoration keeps Resume active migration conditional: it is hidden without a valid candidate and uses the encoded candidate only when one is available. Mock and authoritative route failures now show a truthful retry/return surface.
+
+Strict RED evidence for the review fixes:
+
+```text
+Test Files: 3 failed
+Tests: 5 failed, 6 passed
+```
+
+Focused GREEN evidence:
+
+```text
+npm test -- --run src/app/__tests__/page.test.tsx src/app/__tests__/migrationRunPage.test.tsx src/components/__tests__/ControlTowerShell.test.tsx
+Test Files: 3 passed
+Tests: 11 passed
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+git diff --check
+Exit code: 0
+```
+
+The full frontend suite remains intentionally unrun.

@@ -23,7 +23,7 @@ function writeRunUrl(runId: string | null) {
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
-function preparePage(notice?: string) {
+function preparePage(notice?: string, resumeRunId?: string | null) {
   return <main className="landing">
     <p className="eyebrow">AI Frontend Migration Factory</p>
     <h1>Start a migration</h1>
@@ -32,7 +32,7 @@ function preparePage(notice?: string) {
     <p className="landingNote">The source stays read-only. The backend remains the authority for every decision and piece of evidence.</p>
     <div className="landingActions">
       <Link className="button" href="/migrations/new">Start a new migration</Link>
-      <Link className="secondaryButton" href="/">Resume active migration</Link>
+      {resumeRunId ? <Link className="secondaryButton" href={`/?run_id=${encodeURIComponent(resumeRunId)}`}>Resume active migration</Link> : null}
     </div>
     <details className="landingDiagnostics">
       <summary>View diagnostics</summary>
@@ -44,6 +44,7 @@ function preparePage(notice?: string) {
 export default function HomePage() {
   const [restoration, setRestoration] = useState<RestorationState>("restoring");
   const [run, setRun] = useState<AuthoritativeRunStateDto | null>(null);
+  const [resumeRunId, setResumeRunId] = useState<string | null>(null);
 
   const restore = useCallback(() => {
     const urlRunId = new URL(window.location.href).searchParams.get("run_id")?.trim() || null;
@@ -51,6 +52,7 @@ export default function HomePage() {
     const candidate = urlRunId || storedRunId;
     if (!candidate) {
       setRun(null);
+      setResumeRunId(null);
       setRestoration("prepare");
       return;
     }
@@ -65,6 +67,7 @@ export default function HomePage() {
         try { if (readStoredRunId() === candidate) window.localStorage.removeItem(ACTIVE_RUN_STORAGE_KEY); } catch { /* storage is optional */ }
         if (urlRunId === candidate) writeRunUrl(null);
         setRun(null);
+        setResumeRunId(null);
         setRestoration("not-found");
       } else {
         setRestoration("unavailable");
@@ -77,6 +80,6 @@ export default function HomePage() {
   if (restoration === "restoring") return <main role="status" aria-live="polite"><p>Restoring authoritative migration...</p></main>;
   if (restoration === "loaded" && run) return <AuthoritativeRunDashboard runId={run.run_id} initialState={run} />;
   if (restoration === "unavailable") return <main role="alert"><p>The authoritative migration could not be reached. Your active run is preserved.</p><button type="button" onClick={restore}>Retry restoration</button></main>;
-  if (restoration === "not-found") return preparePage("The requested migration run was not found. You can prepare a new migration.");
-  return preparePage();
+  if (restoration === "not-found") return preparePage("The requested migration run was not found. You can prepare a new migration.", resumeRunId);
+  return preparePage(undefined, resumeRunId);
 }

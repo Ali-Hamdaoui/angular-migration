@@ -29,6 +29,7 @@ describe("HomePage authoritative run restoration", () => {
     expect(screen.getByRole("link", { name: "Start a new migration" })).toHaveAttribute("href", "/migrations/new");
     expect(screen.getByText(/four .*steps/i)).toBeInTheDocument();
     expect(screen.getByText(/source stays read-only/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Resume active migration" })).not.toBeInTheDocument();
   });
 
   it("uses the last active run when the URL has no run id and updates the URL", async () => {

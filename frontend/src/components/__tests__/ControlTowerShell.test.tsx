@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { ControlTowerShell } from "@/components/ControlTowerShell";
 import { mockMigrationRun } from "@/data/mockMigrationRun";
 
@@ -25,6 +25,18 @@ describe("ControlTowerShell", () => {
   it("keeps the legacy shell's four primary destinations explicit", () => {
     render(<ControlTowerShell run={mockMigrationRun} />);
 
-    expect(screen.getByRole("navigation", { name: "Run sections" })).toHaveTextContent("OverviewPipelineEvidenceDiagnostics");
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("link", { name: "Pipeline" }));
+    expect(screen.getByRole("link", { name: "Pipeline" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Stages" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Evidence" })).toHaveAttribute("href", "#evidence");
+    expect(screen.getByRole("link", { name: "Diagnostics" })).toHaveAttribute("href", "#diagnostics");
+  });
+
+  it("does not expose authoritative controls for a demo run", () => {
+    render(<ControlTowerShell run={mockMigrationRun} mode="mock" />);
+
+    expect(screen.getByRole("note")).toHaveTextContent(/demo controls are unavailable/i);
+    expect(screen.queryByRole("button", { name: /run governed smoke check/i })).not.toBeInTheDocument();
   });
 });

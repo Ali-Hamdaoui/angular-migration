@@ -40,6 +40,8 @@ code, pre { overflow-wrap: anywhere; }
 .landingDiagnostics summary { cursor: pointer; font-weight: 700; }
 .mockWorkspace { min-height: 100vh; }
 .mockNotice { margin: 0; border-bottom: 1px solid var(--color-warning); background: var(--color-surface-2); color: var(--color-warning); padding: .7rem 1rem; text-align: center; font-weight: 700; }
+.routeError { max-width: 42rem; margin: 12vh auto; padding: var(--space-8); }
+.routeError a { margin-top: var(--space-4); color: var(--color-accent); font-weight: 700; }
 
 @media (max-width: 600px) {
   .landing { margin: 6vh auto; padding: var(--space-6) var(--space-4); }
