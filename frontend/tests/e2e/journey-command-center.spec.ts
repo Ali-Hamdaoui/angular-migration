@@ -53,10 +53,6 @@ test.describe("Journey Command Center real-service journeys", () => {
     const pathRow = page.locator('li[aria-label="Path safety and target reservation"]');
     await expect(pathRow).toHaveAttribute("data-state", /^(waiting|running|complete|unavailable|failed|blocked)$/);
     const recheck = page.getByRole("button", { name: "Check readiness again", exact: true });
-    if (!(await recheck.isEnabled({ timeout: 10_000 }).catch(() => false))) {
-      await expect(pathRow).toHaveAttribute("data-state", /^(waiting|running)$/);
-      return;
-    }
     await page.getByLabel("Source path").fill(`${sourcePath}-changed`);
     await expect(page.getByRole("status")).toContainText("Configuration changed");
     await expect(recheck).toBeEnabled();
