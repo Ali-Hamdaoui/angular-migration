@@ -48,6 +48,26 @@ function fixture(overrides: Partial<ProductionPreflight['snapshot']> = {}): Prod
           checksum: 'sha256:artifact',
           relative_path: '00_job_setup/preflight_result.json',
         },
+        'preflight_request.json': {
+          artifact_id: 'artifact/request',
+          checksum: 'sha256:request',
+          relative_path: '00_job_setup/preflight_request.json',
+        },
+        'environment_capability_summary.json': {
+          artifact_id: 'artifact/environment',
+          checksum: 'sha256:environment',
+          relative_path: '00_job_setup/environment_capability_summary.json',
+        },
+        'path_safety_report.json': {
+          artifact_id: 'artifact/path-safety',
+          checksum: 'sha256:path-safety',
+          relative_path: '00_job_setup/path_safety_report.json',
+        },
+        'eligibility_result.json': {
+          artifact_id: 'artifact/eligibility',
+          checksum: 'sha256:eligibility',
+          relative_path: '00_job_setup/eligibility_result.json',
+        },
       },
       decision_history: [],
       ...overrides,
@@ -66,7 +86,7 @@ function decision(overrides: Partial<G01DecisionResponse> = {}): G01DecisionResp
     decided_at: '2026-07-17T10:05:00Z',
     input_checksum: 'sha256:input-with-a-very-long-value-for-layout-checking',
     artifact_set_checksum: 'sha256:evidence-with-a-very-long-value-for-layout-checking',
-    state_version: 4,
+    state_version: 3,
     idempotent_replay: false,
     ...overrides,
   };
@@ -83,6 +103,10 @@ function expectNoDecisionButtons() {
   expect(screen.queryByRole('button', { name: 'Approve G01' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Request modification' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Reject G01' })).not.toBeInTheDocument();
+}
+
+function expectNoRunButton() {
+  expect(screen.queryByRole('button', { name: 'Create and start authoritative run' })).not.toBeInTheDocument();
 }
 
 describe('G01ReviewPanel', () => {
@@ -105,6 +129,7 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture({ blockers: ['SOURCE_PATH_NOT_FOUND'] })} />);
 
     expect(screen.getByRole('heading', { name: 'G01 production readiness' })).toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByText('Source is read-only: C:/external/source')).toBeInTheDocument();
     expect(screen.getByText('Target is reserved output: C:/external/target/angular-21')).toBeInTheDocument();
     const blocker = screen.getByText('SOURCE_PATH_NOT_FOUND');
@@ -195,14 +220,14 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture({ approval_status: 'unexpected' as never })} />);
     expect(screen.getByText('Unknown status')).toBeInTheDocument();
     expectNoDecisionButtons();
-    expect(screen.getByRole('button', { name: 'Create and start authoritative run' })).toBeDisabled();
+    expectNoRunButton();
   });
 
   it('fails closed when authoritative evidence is bound to a gate other than G01', () => {
     render(<G01ReviewPanel preflight={fixture({ gate_id: 'G02' })} />);
     expect(screen.getByText('Unknown status')).toBeInTheDocument();
     expectNoDecisionButtons();
-    expect(screen.getByRole('button', { name: 'Create and start authoritative run' })).toBeDisabled();
+    expectNoRunButton();
   });
 
   it('becomes terminal at expires_at and guards a decision clicked after expiry', () => {
@@ -269,7 +294,115 @@ describe('G01ReviewPanel', () => {
     render(<G01ReviewPanel preflight={fixture({ expires_at: 'not-a-timestamp' })} />);
     expect(screen.getByText('Unknown status')).toBeInTheDocument();
     expectNoDecisionButtons();
-    expect(screen.getByRole('button', { name: 'Create and start authoritative run' })).toBeDisabled();
+    expectNoRunButton();
+  });
+
+  it.each([
+    ['empty preflight ID', { preflight_id: '' }],
+    ['empty gate version', { gate_version: ' ' }],
+    ['empty input checksum', { input_checksum: '' }],
+    ['empty artifact-set checksum', { artifact_set_checksum: ' ' }],
+    ['empty source path', { source_path: '' }],
+    ['empty target path', { target_output_path: '' }],
+    ['missing reservation', { target_reservation_id: null }],
+    ['invalid state version', { state_version: 0 }],
+    ['invalid creation timestamp', { created_at: 'not-a-timestamp' }],
+  ] as const)('fails closed for a runtime-invalid G01 package: %s', (_label, overrides) => {
+    render(<G01ReviewPanel preflight={fixture(overrides)} />);
+    expect(screen.getByText('Unknown status')).toBeInTheDocument();
+    expectNoDecisionButtons();
+    expectNoRunButton();
+  });
+
+  it.each([
+    ['missing required artifact', (() => {
+      const artifacts = { ...fixture().snapshot.artifacts };
+      delete artifacts['path_safety_report.json'];
+      return artifacts;
+    })()],
+    ['malformed required artifact', {
+      ...fixture().snapshot.artifacts,
+      'eligibility_result.json': {
+        artifact_id: '',
+        checksum: 'sha256:eligibility',
+        relative_path: '00_job_setup/eligibility_result.json',
+      },
+    }],
+  ] as const)('fails closed for %s', (_label, artifacts) => {
+    render(<G01ReviewPanel preflight={fixture({ artifacts })} />);
+    expect(screen.getByText('Unknown status')).toBeInTheDocument();
+    expectNoDecisionButtons();
+    expectNoRunButton();
+  });
+
+  it('does not authorize run creation for an approved malformed package', () => {
+    render(<G01ReviewPanel preflight={fixture({ approval_status: 'approved', target_reservation_id: '' })} />);
+    expect(screen.getByText('Unknown status')).toBeInTheDocument();
+    expectNoDecisionButtons();
+    expectNoRunButton();
+  });
+
+  it('does not treat legacy layout metadata as an authorization binding', () => {
+    render(<G01ReviewPanel preflight={fixture({
+      target_parent_path: '',
+      generated_output_name: '',
+      resolved_output_root: '',
+    })} />);
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+  });
+
+  it('renders unavailable instead of crashing for malformed decision history', () => {
+    render(<G01ReviewPanel preflight={fixture({ decision_history: null as never })} />);
+    expect(screen.getByText('Unknown status')).toBeInTheDocument();
+    expectNoDecisionButtons();
+    expectNoRunButton();
+  });
+
+  it('rejects an invalid refresh and later accepts a valid lower-version recovery', async () => {
+    vi.mocked(getProductionPreflight)
+      .mockResolvedValueOnce(fixture({ state_version: 20, target_reservation_id: '' }))
+      .mockResolvedValueOnce(fixture({ state_version: 4, warnings: ['VALID_RECOVERY'] }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+    expect(await screen.findByText('Refreshed G01 evidence was not authoritative.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reload G01 evidence' }));
+    expect(await screen.findByText('VALID_RECOVERY')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+  });
+
+  it('rejects refreshed evidence bound to another preflight', async () => {
+    vi.mocked(getProductionPreflight).mockResolvedValue(fixture({ preflight_id: 'different-preflight', state_version: 20 }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+
+    expect(await screen.findByText('Refreshed G01 evidence was not authoritative.')).toBeInTheDocument();
+    expect(screen.getByText('preflight-1')).toBeInTheDocument();
+    expect(screen.queryByText('different-preflight')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+  });
+
+  it('ignores a successful response for a decision other than the submitted decision', async () => {
+    vi.mocked(decideG01).mockResolvedValue(decision({ decision: 'rejected' }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+
+    expect(await screen.findByText('A newer G01 state superseded this decision response.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.queryByRole('heading', { name: 'Rejected' })).not.toBeInTheDocument();
+  });
+
+  it('rejects a decision response that would construct a malformed evidence package', async () => {
+    vi.mocked(decideG01).mockResolvedValue(decision({ actor: '', decided_at: 'invalid-time' }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+
+    expect(await screen.findByText('A newer G01 state superseded this decision response.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
   });
 
   it('automatically reloads a 409, preserves the comment, announces changed evidence, and never reports success', async () => {
@@ -287,17 +420,79 @@ describe('G01ReviewPanel', () => {
     expect(screen.queryByText(/G01 rejected/i)).not.toBeInTheDocument();
   });
 
-  it('retains the comment and offers a reload action when the automatic 409 reload fails', async () => {
+  it('fails closed after a 409 reload failure and restores authority only after a successful reload', async () => {
     vi.mocked(decideG01).mockRejectedValue(new ApiClientError('Backend request failed', 409, 'POST', '/g01', 'stale'));
-    vi.mocked(getProductionPreflight).mockRejectedValue(new Error('network unavailable'));
+    vi.mocked(getProductionPreflight)
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValueOnce(fixture({ state_version: 4, warnings: ['RECOVERED_WARNING'] }));
     render(<G01ReviewPanel preflight={fixture()} />);
     fireEvent.change(screen.getByLabelText('Reviewer comment'), { target: { value: 'Keep this note' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reject G01' }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Updated G01 evidence could not be loaded');
+    expectNoDecisionButtons();
+    expectNoRunButton();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reload G01 evidence' }));
+
+    expect(await screen.findByText('RECOVERED_WARNING')).toBeInTheDocument();
     expect(screen.getByLabelText('Reviewer comment')).toHaveValue('Keep this note');
-    expect(screen.getByRole('button', { name: 'Reload G01 evidence' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled();
+    expect(screen.queryByText('Updated G01 evidence could not be loaded.')).not.toBeInTheDocument();
+  });
+
+  it('ignores a late decision result after newer terminal evidence already contains it', async () => {
+    const post = deferred<G01DecisionResponse>();
+    const staleResult = decision({ decision_id: 'decision-stale', state_version: 4 });
+    const newestDecision = decision({
+      decision_id: 'decision-newest',
+      decision: 'rejected',
+      state_version: 5,
+      comment: 'Newest rejection.',
+    });
+    vi.mocked(decideG01).mockReturnValue(post.promise);
+    vi.mocked(getProductionPreflight).mockResolvedValue(fixture({
+      state_version: 5,
+      approval_status: 'rejected',
+      decision_history: [staleResult, newestDecision],
+    }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    eventRefresh?.();
+    expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeInTheDocument();
+
+    await act(async () => { post.resolve(staleResult); });
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Rejected' })).toBeInTheDocument());
+    expect(screen.getByText('Newest rejection.')).toBeInTheDocument();
+    expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Technical details'));
+    expect(screen.getByText('Decision history entries').closest('div')).toHaveTextContent('2');
+  });
+
+  it('does not hybridize a late decision result with newer bindings', async () => {
+    const post = deferred<G01DecisionResponse>();
+    vi.mocked(decideG01).mockReturnValue(post.promise);
+    vi.mocked(getProductionPreflight).mockResolvedValue(fixture({
+      state_version: 5,
+      input_checksum: 'sha256:new-input',
+      artifact_set_checksum: 'sha256:new-artifacts',
+    }));
+    render(<G01ReviewPanel preflight={fixture()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve G01' }));
+    eventRefresh?.();
+    await waitFor(() => expect(getProductionPreflight).toHaveBeenCalledTimes(1));
+    await act(async () => { post.resolve(decision({ state_version: 4 })); });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve G01' })).toBeEnabled());
+    expect(screen.queryByRole('heading', { name: 'Approved' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^G01 approved/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Technical details'));
+    expect(screen.getByText('sha256:new-input')).toBeVisible();
+    expect(screen.getByText('sha256:new-artifacts')).toBeVisible();
   });
 
   it('does not let an older refresh regress a newer terminal decision to pending', async () => {

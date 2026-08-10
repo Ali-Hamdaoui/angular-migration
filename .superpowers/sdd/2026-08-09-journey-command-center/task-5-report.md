@@ -98,3 +98,51 @@ No open Task 5 concern. Git reports expected line-ending conversion notices for 
 ## Expiry fix self-review
 
 After the consolidated review, the narrow live-expiry correction was inspected once. The cleanup-safe scheduler now covers pending, approved, rejected, modification-requested, and stale future evidence so authoritative expiry precedence becomes visible without interaction. Expired and unknown states schedule nothing. Both decision and run click paths recompute status from the current clock before mutation, update `now`, and show one informational notice when a rendered control has become stale. The three new fake-time regressions prove pending click invalidation, approved live expiry/run disablement, and approved stale-click invalidation. No API, run-chain, refresh, style, route, or file-scope behavior changed.
+
+## Review fix round 1/5
+
+All four Important review findings were reproduced RED before their production corrections:
+
+```text
+npm test -- src/components/gates/__tests__/GateReview.test.tsx src/components/__tests__/G01ReviewPanel.test.tsx
+Test Files: 2 failed (2)
+Tests: 19 failed, 34 passed (53)
+Exit code: 1
+```
+
+The initial RED covered failed-409 evidence freshness and recovery, runtime package/binding validation, late decision-response races, and embedded-safe headings. Contract audit follow-ups then reproduced four focused failures for the backend's equal pre-transition decision version, optional legacy layout metadata, malformed history rendering, and invalid-refresh recovery. The final two narrow boundaries reproduced a wrong-preflight refresh and a malformed post-decision candidate before those fixes.
+
+The correction adds a fail-closed G01 authorization boundary for exact preflight/gate identity, live reservation, source/target/checksum/version/timestamp bindings, required backend evidence references, safe findings, and safe decision history. Invalid higher-version refreshes are rejected before monotonic comparison, while valid evidence can recover an invalid current package. A failed automatic 409 reload marks retained evidence unavailable and non-actionable; accepted manual or event reloads restore authority from the new snapshot, clear the stale error, and preserve the reviewer comment.
+
+Decision responses now merge against the latest ref-held snapshot. The real backend equal-version response is accepted only while the latest same-bound package is fresh and pending, the response matches the submitted decision, its ID is absent, and the constructed terminal candidate passes the complete runtime validator. Lower, duplicate, differently bound, malformed, or terminal-superseded results cannot mutate state or announce success. This preserves the ordinary local transition and the existing reverse refresh race.
+
+`GateReview` now defaults to an embedded-safe `h2` and exposes a typed heading level; G01 explicitly owns the route `h1`. Section, detail, and reviewer-control heading levels follow that choice, and the approved styling covers both heading hierarchies.
+
+Final verification from the completed review-fix code:
+
+```text
+npm test -- src/components/gates/__tests__/GateReview.test.tsx src/components/__tests__/G01ReviewPanel.test.tsx
+Test Files: 2 passed (2)
+Tests: 59 passed (59)
+Exit code: 0
+
+npm run typecheck
+tsc --noEmit
+Exit code: 0
+
+npm run lint
+eslint .
+Exit code: 0
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted.
+
+npm test
+Test Files: 57 passed (57)
+Tests: 418 passed (418)
+Exit code: 0
+Duration: 42.01s
+```
+
+Review-fix self-review found no open concern: stale evidence has no decision or run controls, recovered authority is exact-snapshot only, every decision candidate is validation- and binding-safe, no race can regress a newer terminal/version/history, the route retains exactly one `h1`, embedded reviews render none, dynamic heading styling is preserved, and the diff remains inside the Task 5 allowlist.

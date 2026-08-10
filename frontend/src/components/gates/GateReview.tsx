@@ -41,6 +41,8 @@ export interface ArtifactLink {
   label: string;
 }
 
+export type GateReviewHeadingLevel = 1 | 2;
+
 const TERMINAL_PRESENTATIONS: Record<Exclude<GateReviewStatus, 'pending'>, StatusPresentation> = {
   approved: { label: 'Approved', tone: 'success', raw: 'approved' },
   rejected: { label: 'Rejected', tone: 'danger', raw: 'rejected' },
@@ -65,10 +67,12 @@ function FindingList({ empty, items }: { empty: string; items: string[] }) {
 export function GateReview({
   artifactLinks = {},
   decisionPanel,
+  headingLevel = 2,
   model,
 }: {
   artifactLinks?: Record<string, ArtifactLink>;
   decisionPanel?: ReactNode;
+  headingLevel?: GateReviewHeadingLevel;
   model: GateReviewModel;
 }) {
   const id = useId();
@@ -86,29 +90,32 @@ export function GateReview({
     label: status.label,
     consequence: 'This gate is terminal. No reviewer decision is available.',
   };
+  const TitleHeading = headingLevel === 1 ? 'h1' : 'h2';
+  const SectionHeading = headingLevel === 1 ? 'h2' : 'h3';
+  const DetailHeading = headingLevel === 1 ? 'h3' : 'h4';
 
   return (
     <article className={styles.review} aria-labelledby={ids.title}>
       <header className={styles.hero}>
         <div>
           <p className={styles.eyebrow}>{model.gateId} governed review</p>
-          <h1 id={ids.title}>{model.title}</h1>
+          <TitleHeading id={ids.title}>{model.title}</TitleHeading>
         </div>
         <StatusPill status={status} />
       </header>
 
       <section className={styles.section} aria-labelledby={ids.purpose}>
-        <h2 id={ids.purpose}>Why this review exists</h2>
+        <SectionHeading id={ids.purpose}>Why this review exists</SectionHeading>
         <p>{model.purpose}</p>
         {model.consequence ? <p className={styles.consequence}>{model.consequence}</p> : null}
       </section>
 
       <section className={styles.section} aria-labelledby={ids.decision}>
-        <h2 id={ids.decision}>{outcome ? 'Decision outcome' : 'Decision required'}</h2>
+        <SectionHeading id={ids.decision}>{outcome ? 'Decision outcome' : 'Decision required'}</SectionHeading>
         <p>{model.requiredDecision}</p>
         {outcome ? (
           <div className={styles.outcome} data-status={model.status}>
-            <h3>{outcome.label}</h3>
+            <DetailHeading>{outcome.label}</DetailHeading>
             <p>{outcome.consequence}</p>
             {outcome.comment ? <p className={styles.outcomeComment}><strong>Reviewer comment:</strong> {outcome.comment}</p> : null}
           </div>
@@ -116,22 +123,22 @@ export function GateReview({
       </section>
 
       <section className={styles.section} aria-labelledby={ids.verified}>
-        <h2 id={ids.verified}>Verified facts</h2>
+        <SectionHeading id={ids.verified}>Verified facts</SectionHeading>
         <FindingList items={model.verified} empty="No verified facts are available for this review." />
       </section>
 
       <section className={`${styles.section} ${styles.blockers}`} aria-labelledby={ids.blockers}>
-        <h2 id={ids.blockers}>Blockers</h2>
+        <SectionHeading id={ids.blockers}>Blockers</SectionHeading>
         <FindingList items={model.blockers} empty="No blockers were reported." />
       </section>
 
       <section className={`${styles.section} ${styles.warnings}`} aria-labelledby={ids.warnings}>
-        <h2 id={ids.warnings}>Warnings</h2>
+        <SectionHeading id={ids.warnings}>Warnings</SectionHeading>
         <FindingList items={model.warnings} empty="No warnings were reported." />
       </section>
 
       <section className={styles.section} aria-labelledby={ids.evidence}>
-        <h2 id={ids.evidence}>Evidence</h2>
+        <SectionHeading id={ids.evidence}>Evidence</SectionHeading>
         {model.evidenceGroups.length > 0 ? (
           <div className={styles.evidenceGrid}>
             {model.evidenceGroups.map((group) => {
@@ -143,7 +150,7 @@ export function GateReview({
               return (
               <section className={styles.evidenceCard} key={`${group.title}-${group.artifactIds.join('-')}`}>
                 <div className={styles.evidenceHeading}>
-                  <h3>{group.title}</h3>
+                  <DetailHeading>{group.title}</DetailHeading>
                   <StatusPill status={group.status} />
                 </div>
                 <p>{group.summary}</p>

@@ -29,6 +29,12 @@ function expectBefore(first: HTMLElement, second: HTMLElement) {
 }
 
 describe('GateReview', () => {
+  it('uses an embedded-safe heading by default without rendering an h1', () => {
+    render(<GateReview model={model()} />);
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'G01 production readiness' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: 'Why this review exists' })).toBeInTheDocument();
+  });
   it('renders the governed reading order exactly', () => {
     render(
       <GateReview

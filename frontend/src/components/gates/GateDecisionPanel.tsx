@@ -11,12 +11,14 @@ export interface GateDecisionPanelProps {
   approveDisabled?: boolean;
   modificationDisabled?: boolean;
   rejectDisabled?: boolean;
+  headingLevel?: 2 | 3;
 }
 
 export function GateDecisionPanel({
   approveDisabled = false,
   busy,
   comment,
+  headingLevel = 3,
   modificationDisabled = false,
   onApprove,
   onCommentChange,
@@ -27,9 +29,10 @@ export function GateDecisionPanel({
   const id = useId();
   const titleId = `${id}-reviewer-controls`;
   const commentId = `${id}-reviewer-comment`;
+  const Heading = headingLevel === 2 ? 'h2' : 'h3';
   return (
     <section className={styles.decisionPanel} aria-labelledby={titleId}>
-      <h2 id={titleId}>Reviewer controls</h2>
+      <Heading id={titleId}>Reviewer controls</Heading>
       <p>Record one backend-permitted decision against this exact evidence set.</p>
       <label htmlFor={commentId}>
         Reviewer comment
