@@ -4,7 +4,7 @@
 
 Task 12 now presents a plain-language landing page with clear Start a new migration and Resume active migration actions. Preparation guidance explains the four-step journey and keeps environment details behind View diagnostics. Restoration behavior and `ACTIVE_RUN_STORAGE_KEY` are unchanged.
 
-Mock migration data is adapted through `adaptMockMigrationRun` before entering the shared dashboard shell. Mock runs display an explicit non-authoritative notice. The legacy shell exposes the same four primary destinations as the authoritative shell: Overview, Pipeline, Evidence, and Diagnostics.
+Mock migration data enters the shared legacy dashboard shell through an explicit non-authoritative mode. Mock runs display an explicit notice and do not open authoritative event streams or mutation controls. The legacy shell exposes the same four primary destinations as the authoritative shell: Overview, Pipeline, Evidence, and Diagnostics.
 
 Touched shell and route content has no mojibake or text-symbol icons. Landing, mock notice, and legacy navigation styles are owned by the shared global/module styles already used by these surfaces.
 
