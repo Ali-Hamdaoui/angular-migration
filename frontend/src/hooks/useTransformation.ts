@@ -7,30 +7,51 @@ import { ApiClientError } from "@/api/client";
 import type { TransformationProjection } from "@/types/transformation";
 import type { CommandExecutionResponseDto } from "@/types/generated/api";
 
-export function useTransformation(runId: string, refreshKey = 0) {
+export type UseTransformationOptions = {
+  enabled: boolean;
+  refreshKey?: number;
+};
+
+export function useTransformation(
+  runId: string,
+  { enabled, refreshKey = 0 }: UseTransformationOptions,
+) {
   const [projection, setProjection] = useState<TransformationProjection | null>(null);
   const [executions, setExecutions] = useState<CommandExecutionResponseDto[]>([]);
-  const [executionStatus, setExecutionStatus] = useState<"loading" | "ready" | "unavailable">("loading");
-  const [status, setStatus] = useState<"loading" | "ready" | "empty" | "failed">("loading");
+  const [executionStatus, setExecutionStatus] = useState<"idle" | "loading" | "ready" | "unavailable">(
+    enabled ? "loading" : "idle",
+  );
+  const [status, setStatus] = useState<"disabled" | "loading" | "ready" | "empty" | "failed">(
+    enabled ? "loading" : "disabled",
+  );
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<ApiClientError | null>(null);
-  const loadedRef = useRef(false);
+  const loadedRunIdRef = useRef<string | null>(null);
+  const requestGenerationRef = useRef(0);
+  const previousRunIdRef = useRef(runId);
 
   const refresh = useCallback(async () => {
-    if (!loadedRef.current) setStatus("loading");
+    if (!enabled) return;
+
+    const generation = ++requestGenerationRef.current;
+    const hasConfirmedProjection = loadedRunIdRef.current === runId;
+    if (!hasConfirmedProjection) setStatus("loading");
+    setExecutionStatus("loading");
     const [projectionResult, executionResult] = await Promise.allSettled([
       getTransformation(runId),
       listCommandExecutions(runId),
     ]);
+    if (generation !== requestGenerationRef.current) return;
+
     if (projectionResult.status === "fulfilled") {
       setProjection(projectionResult.value);
-      loadedRef.current = true;
+      loadedRunIdRef.current = runId;
       setStatus("ready");
       setRefreshError(null);
       setLoadError(null);
     } else {
       const error = projectionResult.reason;
-      if (!loadedRef.current) {
+      if (!hasConfirmedProjection) {
         setProjection(null);
         setStatus(error instanceof ApiClientError && error.status === 404 ? "empty" : "failed");
         setLoadError(error instanceof ApiClientError ? error : null);
@@ -48,7 +69,32 @@ export function useTransformation(runId: string, refreshKey = 0) {
     } else {
       setExecutionStatus("unavailable");
     }
-  }, [runId]);
-  useEffect(() => { void refresh(); }, [refresh, refreshKey]);
+  }, [enabled, runId]);
+
+  useEffect(() => {
+    const runChanged = previousRunIdRef.current !== runId;
+    if (runChanged) {
+      previousRunIdRef.current = runId;
+      loadedRunIdRef.current = null;
+      setProjection(null);
+      setExecutions([]);
+      setRefreshError(null);
+      setLoadError(null);
+    }
+
+    if (!enabled) {
+      requestGenerationRef.current += 1;
+      setStatus("disabled");
+      setExecutionStatus("idle");
+      return;
+    }
+
+    if (loadedRunIdRef.current === runId) setStatus("ready");
+    void refresh();
+    return () => {
+      requestGenerationRef.current += 1;
+    };
+  }, [enabled, refresh, refreshKey, runId]);
+
   return { projection, executions, executionStatus, status, refresh, refreshError, loadError };
 }

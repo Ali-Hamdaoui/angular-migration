@@ -57,6 +57,11 @@ const created: SourceSnapshotDto = {
 };
 
 describe("SourceSnapshotPanel", () => {
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<SourceSnapshotPanel runId="run-1" initialState={state} headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Immutable source snapshot", level: 4 })).toBeInTheDocument();
+  });
+
   it("creates and renders authoritative snapshot evidence", async () => {
     vi.mocked(createSourceSnapshot).mockResolvedValue(created);
     vi.mocked(getSourceSnapshot).mockResolvedValue(created);

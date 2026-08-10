@@ -81,10 +81,28 @@ export function getPathValidation(
 export type SourceAnalysisResult = {
   snapshot: {
     analysis_id: string;
+    policy_version: string;
     status: "accepted" | "review_required" | "blocked";
     source_path: string;
+    package_manager: string;
+    lockfile: string | null;
+    versions: Array<{
+      package: string;
+      declared: string | null;
+      resolved: string | null;
+      family: string | null;
+      confidence: "high" | "medium" | "low" | "unknown";
+    }>;
+    topology: {
+      projects: string[];
+      libraries: string[];
+      is_nx: boolean;
+      has_custom_builder: boolean;
+      classification: string;
+    };
     blockers: string[];
     warnings: string[];
+    checksum: string;
   };
 };
 

@@ -89,6 +89,7 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
   }, [activity, latest, workflowEvents]);
 
   async function invoke() {
+    if (connectionStatus != null && connectionStatus !== "open") return;
     setWorking(true); setError(null); setStale(false); setCorrelationId(null);
     try {
       const result = await invokeLlmSmoke({ run_id: runId, expected_state_version: stateVersion, idempotency_key: operationKey(runId) });
@@ -115,7 +116,10 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
     {(sectionErrors.readiness || sectionErrors.activity || sectionErrors.usage) ? <button type="button" onClick={() => void refresh(true)} disabled={loading}>Retry diagnostics</button> : null}
     {stale ? <p role="alert">The run changed while the invocation was requested. Refresh the authoritative state before retrying.</p> : null}
     {readiness?.status === "blocked" ? <p role="alert">Azure OpenAI is not ready: {readiness.error_code ?? "configuration is incomplete"}.</p> : null}
-    {!loading && !sectionErrors.activity && !activity?.invocations.length ? <p className={styles.note}>No governed LLM invocations have been recorded.</p> : null}
+    {!loading && !sectionErrors.activity && !activity?.invocations.length ? <p className={styles.note}>Not available — no governed LLM invocations have been recorded.</p> : null}
+    {latest ? <section aria-label="LLM outcome"><h3>{latest.status === "completed" ? "Outcome: completed" : latest.status === "failed" ? "Outcome: failed" : `Outcome: ${formatLabel(latest.status)}`}</h3><p className={styles.note}>Workflow operation: {formatLabel(latest.task_type)} · {latest.role}</p>{latest.failure_code ? <p role="alert">Blocker: {latest.failure_code}. {latest.sanitized_provider_message ?? "Review the backend evidence before retrying."}</p> : null}<p className={styles.note}>{latest.status === "failed" ? "Retry is available after the authoritative state is refreshed." : "The governed invocation is recorded in durable backend state."}</p></section> : null}
+    <details>
+      <summary>Response details</summary>
     <div className={styles.metadataGrid} aria-label="LLM provenance">
       <div><dt>Provider</dt><dd>{latest?.provider ?? readiness?.provider ?? "unknown"}</dd></div>
       <div><dt>Deployment</dt><dd>{latest?.deployment_alias ?? "unknown"}</dd></div><div><dt>Capability</dt><dd>{latest?.model_capability ?? readiness?.model_capability ?? "unknown"}</dd></div>
@@ -133,7 +137,8 @@ export function LlmDiagnosticsPanel({ runId, stateVersion, connectionStatus, ref
       <li><span>Estimated total cost</span><strong>{formatCost(usage?.total_cost_usd ?? latest?.total_cost_usd ?? 0)}</strong></li>
     </ul>
     {latest ? <div className={styles.previewPanel}><p className={styles.note}>Status: {formatLabel(latest.status)} · retries: {latest.retries} · latency: {latest.latency_ms ?? "not available"} ms · state version: {latest.state_version} · event sequence: {latest.event_sequence}</p>{latest.failure_code ? <p role="alert">Failure code: {latest.failure_code}</p> : null}<p className={styles.note}>Correlation ID: <code>{latest.correlation_id ?? "none"}</code></p><p className={styles.note}>Artifacts: {latest.artifact_ids.length ? latest.artifact_ids.map((id) => <a key={id} href={latest.artifact_links?.[id] ?? `/api/v1/artifacts/${id}`} target="_blank" rel="noreferrer">{id}</a>) : "none"}</p></div> : null}
-    {correlationId ? <p className={styles.note}>Correlation/invocation ID: <code>{correlationId}</code></p> : null}
-    <div className={styles.previewHeader}><span className={styles.note}>Evidence is read from the backend snapshot and durable events.</span><button type="button" onClick={() => void invoke()} disabled={working || loading || readiness?.status !== "ready"}>{running ? "Invoking..." : "Run governed smoke check"}</button></div>
+      {correlationId ? <p className={styles.note}>Correlation/invocation ID: <code>{correlationId}</code></p> : null}
+    </details>
+    <div className={styles.previewHeader}><span className={styles.note}>Evidence is read from the backend snapshot and durable events.</span><button type="button" onClick={() => void invoke()} disabled={working || loading || readiness?.status !== "ready" || (connectionStatus != null && connectionStatus !== "open")}>{running ? "Invoking..." : "Run governed smoke check"}</button></div>
   </section>;
 }

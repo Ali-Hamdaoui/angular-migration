@@ -1046,6 +1046,7 @@ git commit -m "refactor(frontend): unify command center surfaces"
 
 - Create: `frontend/playwright.journey.config.ts`
 - Create: `frontend/tests/e2e/journey-command-center.spec.ts`
+- Create: `design-qa.md`
 - Modify: `frontend/package.json`
 - Modify: responsive styles touched in Tasks 3-12
 - Create after capture: `docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-overview-desktop.png`
@@ -1123,7 +1124,7 @@ Expected: all journeys pass in installed Edge; zero unexpected console errors, f
 
 - [ ] **Step 6: Capture and compare the built UI to the selected reference**
 
-At identical viewport and state, capture Overview, Pipeline, blocked transformation, and Evidence. Put the selected reference and each built capture into the same visual comparison input, then judge hierarchy, spacing, surface color, line length, current-action emphasis, journey visibility, and progressive disclosure from that combined view. Record visible discrepancies, fix them, and repeat the combined comparison. Do not insert fake data to make the screenshots match.
+At identical viewport and state, capture Overview, Pipeline, blocked transformation, and Evidence. Put the selected reference and each built capture into the same visual comparison input, then judge hierarchy, spacing, surface color, line length, current-action emphasis, journey visibility, and progressive disclosure from that combined view. Record visible discrepancies, fix them, and repeat the combined comparison. Save the complete comparison history and evidence in repository-root `design-qa.md`; its final line must be exactly `final result: passed` before handoff. Do not insert fake data to make the screenshots match.
 
 - [ ] **Step 7: Perform manual accessibility checks**
 
@@ -1142,14 +1143,14 @@ git diff -- frontend
 
 Expected: no whitespace errors, no secrets, no generated browser traces/results, and only approved frontend, test, documentation, package, and screenshot changes.
 
-- [ ] **Step 9: Request code review, apply only verified findings, and rerun all gates**
+- [ ] **Step 9: Rerun all gates after the final visual or accessibility edit**
 
-Use `superpowers:requesting-code-review`. Resolve critical/high findings and any authoritative-state, accessibility, or regression issue. Re-run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run test:e2e:journey` after the final edit.
+Re-run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run test:e2e:journey` after the final edit. Confirm `design-qa.md` names the source visual, built screenshots, viewports, interaction states, comparison iterations, fixes, and final passed result. The controller performs this task's independent review after the commit, then uses `superpowers:requesting-code-review` for the broad whole-branch review after every task passes.
 
 - [ ] **Step 10: Commit verified completion**
 
 ```powershell
-git add frontend/playwright.journey.config.ts frontend/tests/e2e/journey-command-center.spec.ts frontend/package.json frontend/package-lock.json frontend/src/app/globals.css frontend/src/components/ControlTowerShell.module.css frontend/src/components/MigrationSetupForm.module.css frontend/src/components/G01ReviewPanel.module.css frontend/src/components/TransformationPanel.module.css frontend/src/components/AssistantPanel.module.css frontend/src/components/control-tower/ControlTowerLayout.module.css frontend/src/components/control-tower/EvidenceWorkspace.module.css frontend/src/components/control-tower/DiagnosticsWorkspace.module.css docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-overview-desktop.png docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-pipeline-tablet.png docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-transformation-mobile.png docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-evidence-desktop.png
+git add design-qa.md frontend/playwright.journey.config.ts frontend/tests/e2e/journey-command-center.spec.ts frontend/package.json frontend/package-lock.json frontend/src/app/globals.css frontend/src/components/ControlTowerShell.module.css frontend/src/components/MigrationSetupForm.module.css frontend/src/components/G01ReviewPanel.module.css frontend/src/components/TransformationPanel.module.css frontend/src/components/AssistantPanel.module.css frontend/src/components/control-tower/ControlTowerLayout.module.css frontend/src/components/control-tower/EvidenceWorkspace.module.css frontend/src/components/control-tower/DiagnosticsWorkspace.module.css docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-overview-desktop.png docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-pipeline-tablet.png docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-transformation-mobile.png docs/superpowers/specs/assets/2026-08-09-journey-command-center/built-evidence-desktop.png
 git commit -m "feat(frontend): deliver journey command center"
 ```
 

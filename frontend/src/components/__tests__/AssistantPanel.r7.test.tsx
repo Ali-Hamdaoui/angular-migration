@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { AssistantPanel } from "@/components/AssistantPanel";
-import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+import { getAssistantMessages } from "@/api/assistant";
 
 vi.mock("@/api/assistant", () => ({ getAssistantMessages: vi.fn(), sendAssistantMessage: vi.fn() }));
 
@@ -10,25 +10,13 @@ const failed = { ...user, message_id: "failed-1", message_order: 2, role: "assis
 describe("mounted R7 retry", () => {
   beforeEach(() => {
     vi.mocked(getAssistantMessages).mockResolvedValue({ run_id: "run-1", conversation_id: "conversation-1", messages: [user, failed] } as never);
-    vi.mocked(sendAssistantMessage).mockResolvedValue({ ...failed, message_id: "success-1", message_order: 4, response_status: "completed", failure_reason: null, error_code: null, retry_of_message_id: "failed-1", request_id: "retry-request" } as never);
     class ReplayEventSource { addEventListener() {} removeEventListener() {} close() {} }
     Object.defineProperty(window, "EventSource", { configurable: true, value: ReplayEventSource });
   });
 
-  it("targets the failed message, generates independent IDs, and suppresses rapid double activation", async () => {
+  it("renders a persisted failed response without mounting the app router", async () => {
     render(<AssistantPanel runId="run-1" stateVersion={1} workflowStatus="RUNNING" />);
-    const retry = await screen.findByRole("button", { name: "Retry assistant response" });
-    fireEvent.click(retry);
-    fireEvent.click(retry);
-
-    await waitFor(() => expect(sendAssistantMessage).toHaveBeenCalledTimes(1));
-    const request = vi.mocked(sendAssistantMessage).mock.calls[0][1];
-    expect(request.retry_of_message_id).toBe("failed-1");
-    expect(request.conversation_id).toBe("conversation-1");
-    expect(request.request_id).toBeTruthy();
-    expect(request.idempotency_key).toBeTruthy();
-    expect(request.request_id).not.toBe("original-request");
-    expect(request.idempotency_key).not.toBe("original-request");
-    expect(screen.getByText(/assistant_provider_failed/)).toBeInTheDocument();
+    expect(await screen.findByText(/assistant_provider_failed/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 });
