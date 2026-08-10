@@ -78,9 +78,42 @@ class LlmActivityResponse(ContractModel):
     invocations: list[LlmInvocationResponse] = Field(default_factory=list)
 
 
+class LlmUsageTotals(ContractModel):
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    llm_calls: int
+
+
+class LlmUsageBreakdown(ContractModel):
+    key: str
+    label: str
+    calls: int
+    retry_calls: int
+    usage_recorded_calls: int
+    usage_unavailable_calls: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    stage_id: str | None = None
+
+
+class LlmUsageRecordResponse(ContractModel):
+    invocation_id: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    total_cost_usd: float
+    pricing_version: str
+
+
 class LlmUsageResponse(ContractModel):
     run_id: str
     invocation_count: int
+    llm_calls: int
+    retry_calls: int
+    usage_recorded_calls: int
+    usage_unavailable_calls: int
     input_tokens: int
     output_tokens: int
     total_tokens: int
@@ -88,4 +121,8 @@ class LlmUsageResponse(ContractModel):
     output_cost_usd: float
     total_cost_usd: float
     pricing_versions: list[str] = Field(default_factory=list)
-    records: list[dict[str, Any]] = Field(default_factory=list)
+    by_phase: list[LlmUsageBreakdown] = Field(default_factory=list)
+    by_stage: list[LlmUsageBreakdown] = Field(default_factory=list)
+    by_role: list[LlmUsageBreakdown] = Field(default_factory=list)
+    by_purpose: list[LlmUsageBreakdown] = Field(default_factory=list)
+    records: list[LlmUsageRecordResponse] = Field(default_factory=list)

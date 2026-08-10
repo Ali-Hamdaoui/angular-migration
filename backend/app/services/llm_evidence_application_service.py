@@ -13,7 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 from sqlalchemy import select
 
-from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmSmokeRequest, LlmUsageResponse
+from app.api.llm_contracts import LlmActivityResponse, LlmInvocationResponse, LlmReadinessResponse, LlmSmokeRequest, LlmUsageBreakdown, LlmUsageRecordResponse, LlmUsageResponse
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings, get_settings
 from app.domain.contracts import AgentKind, ArtifactType, WorkflowEventType
@@ -132,6 +132,96 @@ class LlmEvidenceError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 422) -> None:
         self.code, self.message, self.status_code = code, message, status_code
         super().__init__(message)
+
+
+_PHASE_BY_STAGE = {
+    'analysis': 'analysis',
+    'planning': 'planning',
+    'repair': 'transformation',
+    'prompt_explanation': 'transformation',
+    'smoke': 'diagnostics',
+}
+
+
+@dataclass
+class _UsageBucket:
+    calls: int = 0
+    retry_calls: int = 0
+    usage_recorded_calls: int = 0
+    usage_unavailable_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+def _usage_label(key: str) -> str:
+    return key.replace('_', ' ').title()
+
+
+def _usage_breakdowns(rows, key_for) -> list[LlmUsageBreakdown]:
+    buckets: dict[str, tuple[str, str | None, _UsageBucket]] = {}
+    for invocation, usage in rows:
+        key, label, stage_id = key_for(invocation)
+        if key not in buckets:
+            buckets[key] = (label, stage_id, _UsageBucket())
+        bucket = buckets[key][2]
+        bucket.calls += 1
+        bucket.retry_calls += max(invocation.retries or 0, 0)
+        if usage is None:
+            bucket.usage_unavailable_calls += 1
+        else:
+            bucket.usage_recorded_calls += 1
+            bucket.input_tokens += usage.input_tokens
+            bucket.output_tokens += usage.output_tokens
+            bucket.total_tokens += usage.total_tokens
+    return [
+        LlmUsageBreakdown(
+            key=key,
+            label=label,
+            calls=bucket.calls,
+            retry_calls=bucket.retry_calls,
+            usage_recorded_calls=bucket.usage_recorded_calls,
+            usage_unavailable_calls=bucket.usage_unavailable_calls,
+            input_tokens=bucket.input_tokens,
+            output_tokens=bucket.output_tokens,
+            total_tokens=bucket.total_tokens,
+            stage_id=stage_id,
+        )
+        for key, (label, stage_id, bucket) in sorted(buckets.items(), key=lambda item: (-item[1][2].total_tokens, item[0]))
+    ]
+
+
+def aggregate_run_llm_usage(session, run_id: str) -> LlmUsageResponse:
+    """Aggregate authoritative, same-run invocation and persisted usage rows."""
+    invocations = list(session.scalars(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id, LlmInvocationModel.provider != 'deterministic_fallback').order_by(LlmInvocationModel.created_at, LlmInvocationModel.id)))
+    invocation_ids = [item.id for item in invocations]
+    usage_records = list(session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == run_id, UsageCostRecordModel.invocation_id.in_(invocation_ids)).order_by(UsageCostRecordModel.created_at, UsageCostRecordModel.id))) if invocation_ids else []
+    usage_by_invocation = {item.invocation_id: item for item in usage_records}
+    rows = [(item, usage_by_invocation.get(item.id)) for item in invocations]
+    phase = lambda item: ((stage := (item.stage or '').strip().lower()) and _PHASE_BY_STAGE.get(stage, stage) or 'unassigned', _usage_label(_PHASE_BY_STAGE.get((item.stage or '').strip().lower(), (item.stage or '').strip().lower()) or 'unassigned'), None)
+    stage = lambda item: (item.stage_id or 'unassigned', item.stage_id or 'Run-level / unassigned', item.stage_id)
+    role = lambda item: ((item.role or '').strip().lower() or 'unassigned', _usage_label((item.role or '').strip().lower() or 'unassigned'), None)
+    purpose = lambda item: ((item.task_type or '').strip().lower() or 'unassigned', _usage_label((item.task_type or '').strip().lower() or 'unassigned'), None)
+    return LlmUsageResponse(
+        run_id=run_id,
+        invocation_count=len(usage_records),
+        llm_calls=len(invocations),
+        retry_calls=sum(max(item.retries or 0, 0) for item in invocations),
+        usage_recorded_calls=len(usage_records),
+        usage_unavailable_calls=len(invocations) - len(usage_records),
+        input_tokens=sum(item.input_tokens for item in usage_records),
+        output_tokens=sum(item.output_tokens for item in usage_records),
+        total_tokens=sum(item.total_tokens for item in usage_records),
+        input_cost_usd=sum(item.input_cost_usd for item in usage_records),
+        output_cost_usd=sum(item.output_cost_usd for item in usage_records),
+        total_cost_usd=sum(item.total_cost_usd for item in usage_records),
+        pricing_versions=sorted({item.pricing_version for item in usage_records}),
+        by_phase=_usage_breakdowns(rows, phase),
+        by_stage=_usage_breakdowns(rows, stage),
+        by_role=_usage_breakdowns(rows, role),
+        by_purpose=_usage_breakdowns(rows, purpose),
+        records=[LlmUsageRecordResponse(invocation_id=item.invocation_id, input_tokens=item.input_tokens, output_tokens=item.output_tokens, total_tokens=item.total_tokens, total_cost_usd=item.total_cost_usd, pricing_version=item.pricing_version) for item in usage_records],
+    )
 
 
 class LlmEvidenceApplicationService:
@@ -349,8 +439,7 @@ class LlmEvidenceApplicationService:
                 raise LlmEvidenceError('RUN_NOT_AUTHORIZED', 'Authenticated actor is not authorized for this run.', 403)
             if run is None:
                 raise LlmEvidenceError('RUN_NOT_FOUND', 'Migration run does not exist.', 404)
-            records = list(session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == run_id).order_by(UsageCostRecordModel.created_at)))
-            return LlmUsageResponse(run_id=run_id, invocation_count=len(records), input_tokens=sum(r.input_tokens for r in records), output_tokens=sum(r.output_tokens for r in records), total_tokens=sum(r.total_tokens for r in records), input_cost_usd=sum(r.input_cost_usd for r in records), output_cost_usd=sum(r.output_cost_usd for r in records), total_cost_usd=sum(r.total_cost_usd for r in records), pricing_versions=sorted({r.pricing_version for r in records}), records=[{'invocation_id': r.invocation_id, 'input_tokens': r.input_tokens, 'output_tokens': r.output_tokens, 'total_tokens': r.total_tokens, 'total_cost_usd': r.total_cost_usd, 'pricing_version': r.pricing_version} for r in records])
+            return aggregate_run_llm_usage(session, run_id)
 
     def _complete(self, request, checksum, response, latency, actor=None):
         with self.scope() as session:

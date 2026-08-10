@@ -463,7 +463,7 @@ class AzureOpenAILLMGateway:
                     self._preserve_transport_evidence(exc, transport_result)
                     raise
                 usage_data = _extract_usage(raw)
-                usage = build_usage_record(run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, input_tokens=usage_data['input_tokens'], output_tokens=usage_data['output_tokens'], input_price_per_million=self._settings.llm_input_price_per_million_tokens, output_price_per_million=self._settings.llm_output_price_per_million_tokens, retry_count=attempt)
+                usage = build_usage_record(run_id=request.run_id, stage_id=request.stage_id, agent_kind=request.agent_kind, task_type=request.task_type, model_deployment_alias=deployment.alias, input_tokens=usage_data['input_tokens'], output_tokens=usage_data['output_tokens'], total_tokens=usage_data['total_tokens'], input_price_per_million=self._settings.llm_input_price_per_million_tokens, output_price_per_million=self._settings.llm_output_price_per_million_tokens, retry_count=attempt)
                 budget = decide_budget(request.run_id, [*(prior_usage or []), usage], token_budget=self._settings.llm_token_budget, cost_budget_usd=self._settings.llm_cost_budget_usd)
                 if budget.action in {LlmBudgetAction.BLOCK_NEW_LLM_CALLS, LlmBudgetAction.DIAGNOSTIC_HOLD}:
                     raise AzureGatewayError(LlmFailureCode.BUDGET, budget.reason)
@@ -720,6 +720,7 @@ def _extract_usage(raw: Mapping[str, Any]) -> dict[str, int]:
         raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider response omitted token usage.', failure_stage='response_contract_validation', failure_subtype='UNKNOWN_RESPONSE_SHAPE')
     input_tokens = usage.get('input_tokens', usage.get('prompt_tokens'))
     output_tokens = usage.get('output_tokens', usage.get('completion_tokens'))
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+    total_tokens = usage.get('total_tokens')
+    if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens, total_tokens)):
         raise AzureGatewayError(LlmFailureCode.PROTOCOL, 'Provider token usage was invalid.', failure_stage='response_contract_validation', failure_subtype='UNKNOWN_RESPONSE_SHAPE')
-    return {'input_tokens': input_tokens, 'output_tokens': output_tokens}
+    return {'input_tokens': input_tokens, 'output_tokens': output_tokens, 'total_tokens': total_tokens}
