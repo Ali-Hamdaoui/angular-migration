@@ -31,7 +31,7 @@ describe("AssistantPanel authoritative rendering", () => {
     expect(await screen.findByText(/Preflight Snapshot · G02 Source Integrity Approval · G02 pending/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "03_g02/g02_evidence_index.json" })).toHaveAttribute("href", expect.stringContaining("artifact-g02"));
     expect(screen.getByRole("link", { name: "03_g02/source_integrity_verification.json" })).toHaveAttribute("href", expect.stringContaining("artifact-integrity"));
-    expect(screen.getAllByText(/gpt-5-mini/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/gpt-5-mini/).every((element) => !element.getClientRects().length)).toBe(true);
     expect(screen.getByText("Operational statistics unavailable")).toBeInTheDocument();
   });
 
@@ -220,5 +220,40 @@ describe("AssistantPanel authoritative rendering", () => {
     expect(screen.queryByText(/Capability:/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Response details"));
     expect(screen.getByText("Operational statistics unavailable")).toBeInTheDocument();
+  });
+
+  it("portals the expanded drawer to document.body and keeps focus in the modal", async () => {
+    const host = document.createElement("aside");
+    host.style.transform = "translateZ(0)";
+    document.body.appendChild(host);
+    render(<div data-testid="transformed-sidebar"><AssistantDock runId="run-1" /></div>, { container: host });
+    fireEvent.click(screen.getByRole("button", { name: "Open Assistant" }));
+    const dialog = await screen.findByRole("dialog", { name: "Migration Follow-up Assistant" });
+    expect(dialog.parentElement).toBe(document.body);
+    expect(host).not.toContainElement(dialog);
+    const outside = document.createElement("button");
+    outside.textContent = "Outside";
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(screen.getByRole("button", { name: "Close Assistant" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Close Assistant" }));
+    expect(screen.getByRole("button", { name: "Open Assistant" })).toHaveFocus();
+    outside.remove();
+    host.remove();
+  });
+
+  it("keeps model metadata out of visible message chrome until response details open", async () => {
+    render(<AssistantPanel runId="run-1" />);
+    expect(await screen.findByText(/The migration is in the Preflight Snapshot phase/)).toBeInTheDocument();
+    expect(screen.getByText(/Model:/)).not.toBeVisible();
+    expect(screen.getByText(/gpt-5-mini/)).not.toBeVisible();
+    fireEvent.click(screen.getByText("Response details"));
+    expect(screen.getByText(/gpt-5-mini/)).toBeInTheDocument();
+  });
+
+  it("does not expose internal Assistant IDs in visible chrome", async () => {
+    render(<AssistantPanel runId="run-1" />);
+    await screen.findByText(/The migration is in the Preflight Snapshot phase/);
+    expect(screen.queryByText(/AMFA-221/)).not.toBeInTheDocument();
   });
 });
