@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import type { TransformationProjection } from "@/types/transformation";
@@ -48,6 +48,65 @@ const fullJourney: JourneyMilestone[] = [
   { key: "complete", label: "Complete", state: "not-reached" },
 ];
 
+const pipelineJourney: JourneyMilestone[] = [
+  { key: "setup", label: "Setup", state: "complete" },
+  { key: "readiness", label: "Readiness", state: "action-required" },
+  { key: "g01", label: "Production readiness", state: "complete" },
+  { key: "baseline", label: "Baseline", state: "complete" },
+  { key: "discovery", label: "Discovery", state: "not-reached" },
+  { key: "feasibility", label: "Feasibility", state: "not-reached" },
+  { key: "plan", label: "Migration plan", state: "not-reached" },
+  { key: "18-to-19", label: "Angular 18 to 19", state: "not-reached" },
+  { key: "19-to-20", label: "Angular 19 to 20", state: "not-reached" },
+  { key: "20-to-21", label: "Angular 20 to 21", state: "not-reached" },
+  { key: "validate", label: "Validate", state: "not-reached" },
+  { key: "complete", label: "Complete", state: "not-reached" },
+];
+
+const pipelineGroups = {
+  setup: "prepare",
+  readiness: "prepare",
+  g01: "prepare",
+  baseline: "baseline",
+  discovery: "understand",
+  feasibility: "decide",
+  plan: "decide",
+  "18-to-19": "transform",
+  "19-to-20": "transform",
+  "20-to-21": "transform",
+  validate: "validate",
+  complete: "validate",
+} as const;
+
+function pipelineContent(items = pipelineJourney) {
+  return items.map((milestone) => ({
+    milestone,
+    group: pipelineGroups[milestone.key],
+    occurredAt: milestone.key === "readiness" ? "2026-07-27T10:02:00Z" : null,
+    evidenceCount: milestone.key === "readiness" ? 2 : null,
+    tabs: milestone.key === "readiness"
+      ? [
+          { id: "summary", label: "Summary", panel: <p>Review the immutable source snapshot.</p> },
+          { id: "command", label: "Command output", panel: <pre>npm ci completed</pre> },
+          { id: "evidence", label: "Evidence", panel: <p>Two registered artifacts</p> },
+          { id: "review", label: "Review", panel: <button type="button">Approve source snapshot</button> },
+        ]
+      : [{ id: "summary", label: "Summary", panel: <p>{milestone.label} summary</p> }],
+  }));
+}
+
+function pipelineProps(overrides: Record<string, unknown> = {}) {
+  return {
+    state: run([event("SOURCE_INTAKE_STARTED", 1), event("G03_CREATED", 2)]),
+    retryError: null,
+    retrying: false,
+    onRetry: () => undefined,
+    journey: pipelineJourney,
+    stageContent: pipelineContent(),
+    ...overrides,
+  } as ComponentProps<typeof PipelineSection>;
+}
+
 const currentAuthority = {
   freshness: "current",
   navigation: "permitted",
@@ -57,14 +116,7 @@ function PipelineNavigationHarness({ action }: { action: CurrentAction }) {
   const [focusStage, setFocusStage] = useState<JourneyMilestone["key"]>();
   return <>
     <CurrentActionCard action={action} onNavigate={(_section, stageKey) => setFocusStage(stageKey)} />
-    <PipelineSection
-      state={run([event("SOURCE_INTAKE_STARTED", 1), event("G03_CREATED", 2)])}
-      retryError={null}
-      retrying={false}
-      onRetry={() => undefined}
-      qualificationAvailable
-      focusStage={focusStage}
-    />
+    <PipelineSection {...pipelineProps({ focusStage })} />
   </>;
 }
 
@@ -191,13 +243,83 @@ describe("control tower presentation state", () => {
     expect(globalsCss).toMatch(/a\[href\]\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*min-height:\s*44px;[^}]*max-width:\s*100%;[^}]*overflow-wrap:\s*anywhere/);
   });
 
-  it("opens only the selected current stage and keeps logs collapsed", () => {
-    render(<PipelineSection state={run([event("SOURCE_INTAKE_STARTED", 1)])} retryError={null} retrying={false} onRetry={() => undefined} />);
-    expect(screen.getByRole("button", { name: /Source intake/ })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByRole("heading", { name: "Command output" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Source snapshot/ }));
-    expect(screen.getByRole("button", { name: /Source intake/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: /Source snapshot/ })).toHaveAttribute("aria-expanded", "true");
+  it("renders all twelve milestones in the six semantic groups with exactly one row expanded", () => {
+    render(<PipelineSection {...pipelineProps()} />);
+
+    for (const group of ["Prepare", "Baseline", "Understand", "Decide", "Transform", "Validate"]) {
+      expect(screen.getByRole("heading", { name: group })).toBeInTheDocument();
+    }
+    for (const milestone of pipelineJourney) {
+      expect(screen.getByRole("button", { name: new RegExp(`^${milestone.label}:`, "i") })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { expanded: true })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /^Readiness:/i })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps an operator-selected completed row open until a new authoritative current key arrives", () => {
+    const { rerender } = render(<PipelineSection {...pipelineProps()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Baseline:/i }));
+    expect(screen.getByRole("button", { name: /^Baseline:/i })).toHaveAttribute("aria-expanded", "true");
+
+    rerender(<PipelineSection {...pipelineProps({ stageContent: pipelineContent().map((item) => ({ ...item })) })} />);
+    expect(screen.getByRole("button", { name: /^Baseline:/i })).toHaveAttribute("aria-expanded", "true");
+
+    const movedJourney = pipelineJourney.map((milestone) => ({
+      ...milestone,
+      state: milestone.key === "readiness" ? "complete" as const : milestone.key === "discovery" ? "current" as const : milestone.state,
+    }));
+    rerender(<PipelineSection {...pipelineProps({ journey: movedJourney, stageContent: pipelineContent(movedJourney) })} />);
+    expect(screen.getByRole("button", { name: /^Discovery:/i })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByRole("button", { expanded: true })).toHaveLength(1);
+  });
+
+  it("uses JourneyKey for the typed focus handoff", async () => {
+    const { rerender } = render(<PipelineSection {...pipelineProps()} />);
+    rerender(<PipelineSection {...pipelineProps({ focusStage: "plan" })} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Migration plan:/i })).toHaveAttribute("aria-expanded", "true"));
+  });
+
+  it("implements linked roving tabs and mounts only the selected panel", () => {
+    render(<PipelineSection {...pipelineProps()} />);
+
+    const tablist = screen.getByRole("tablist", { name: "Readiness details" });
+    const summary = within(tablist).getByRole("tab", { name: "Summary" });
+    const command = within(tablist).getByRole("tab", { name: "Command output" });
+    const evidence = within(tablist).getByRole("tab", { name: "Evidence" });
+    const review = within(tablist).getByRole("tab", { name: "Review" });
+    expect(summary).toHaveAttribute("aria-selected", "true");
+    expect(summary).toHaveAttribute("tabindex", "0");
+    expect(command).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", summary.id);
+    expect(screen.getByText("Review the immutable source snapshot.")).toBeInTheDocument();
+    expect(screen.queryByText("npm ci completed")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(summary, { key: "ArrowRight" });
+    expect(command).toHaveFocus();
+    expect(command).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("npm ci completed")).toBeInTheDocument();
+    expect(screen.queryByText("Review the immutable source snapshot.")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(command, { key: "End" });
+    expect(review).toHaveFocus();
+    fireEvent.keyDown(review, { key: "ArrowRight" });
+    expect(summary).toHaveFocus();
+    fireEvent.keyDown(summary, { key: "ArrowLeft" });
+    expect(review).toHaveFocus();
+    fireEvent.keyDown(review, { key: "Home" });
+    expect(summary).toHaveFocus();
+    expect(evidence).toHaveAttribute("aria-controls");
+  });
+
+  it("omits unavailable command, evidence, and review tabs", () => {
+    render(<PipelineSection {...pipelineProps({ focusStage: "baseline" })} />);
+
+    expect(screen.getByRole("tab", { name: "Summary" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Command output" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Evidence" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Review" })).not.toBeInTheDocument();
   });
 
   it("filters and reverses events without changing the source array", () => {
@@ -315,9 +437,9 @@ describe("control tower presentation state", () => {
   });
 
   it.each([
-    ["G02 readiness", "readiness", "Source review & G02"],
-    ["G03 baseline", "baseline", "Baseline qualification"],
-    ["transformation target", "20-to-21", "G03 readiness"],
+    ["G02 readiness", "readiness", "Readiness"],
+    ["G03 baseline", "baseline", "Baseline"],
+    ["transformation target", "20-to-21", "Angular 20 to 21"],
   ] as const)("maps %s action navigation to the available pipeline row", async (_case, stageKey, rowLabel) => {
     const action: CurrentAction = {
       kind: "gate",

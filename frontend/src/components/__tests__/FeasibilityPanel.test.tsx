@@ -89,4 +89,30 @@ describe("FeasibilityPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Add a comment");
     expect(decideG05).not.toHaveBeenCalled();
   });
+
+  it("sends the complete G05 authority binding and preserves the draft on 409", async () => {
+    vi.mocked(getFeasibility).mockResolvedValue(response);
+    vi.mocked(decideG05).mockRejectedValue(new ApiClientError("stale", 409));
+    render(<FeasibilityPanel {...props} />);
+
+    await screen.findByText("Major-stage ladder");
+    fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "approve_with_comment" } });
+    fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Preserve the feasibility draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Record G05 decision" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("feasibility or G05 state is stale");
+    expect(decideG05).toHaveBeenCalledWith("run-1", {
+      expected_state_version: 5,
+      idempotency_key: expect.stringMatching(/^g05-run-1-/),
+      gate_version: "g05-v1",
+      package_checksum: checksum("d"),
+      artifact_set_checksum: checksum("c"),
+      workspace_fingerprint: "sha256:physical-workspace",
+      plan_version: null,
+      decision: "approve_with_comment",
+      comment: "Preserve the feasibility draft",
+    });
+    expect(screen.getByLabelText("Review comment")).toHaveValue("Preserve the feasibility draft");
+    expect(screen.queryByText(/G05 was accepted/)).not.toBeInTheDocument();
+  });
 });

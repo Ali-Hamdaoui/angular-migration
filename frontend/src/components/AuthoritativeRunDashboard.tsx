@@ -16,6 +16,11 @@ import { getBackendBaseUrl } from "@/api/client";
 import { SourceSnapshotPanel } from "./SourceSnapshotPanel";
 import { G02ReviewPanel } from "./G02ReviewPanel";
 import { BaselineQualificationPanel } from "./BaselineQualificationPanel";
+import { BaselineParityPanel } from "./BaselineParityPanel";
+import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
+import { FeasibilityPanel } from "./FeasibilityPanel";
+import { MigrationPlanPanel } from "./MigrationPlanPanel";
+import { PlanReviewPanel } from "./PlanReviewPanel";
 import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
 import { AssistantDock } from "./AssistantPanel";
 import { LlmDiagnosticsPanel } from "./LlmDiagnosticsPanel";
@@ -23,6 +28,7 @@ import { ControlTowerHeader } from "./control-tower/ControlTowerHeader";
 import { ControlTowerSidebar, type ControlTowerSection } from "./control-tower/ControlTowerSidebar";
 import { OperatorOverview } from "./control-tower/OperatorOverview";
 import { PipelineSection } from "./control-tower/PipelineSection";
+import type { PipelineStageContent } from "./control-tower/PipelineStageDetail";
 import { TechnicalDetails } from "./control-tower/TechnicalDetails";
 import { WorkflowEventsSection } from "./control-tower/WorkflowEventsSection";
 import styles from "./ControlTowerShell.module.css";
@@ -41,6 +47,71 @@ const CONNECTION_LABELS: Record<AuthoritativeConnectionStatus, string> = {
 
 function hasEvent(state: AuthoritativeRunStateDto, ...types: string[]) {
   return state.workflow_events.some((event) => types.includes(event.event_type));
+}
+
+const PIPELINE_GROUP_BY_KEY: Record<JourneyKey, PipelineStageContent["group"]> = {
+  setup: "prepare",
+  readiness: "prepare",
+  g01: "prepare",
+  baseline: "baseline",
+  discovery: "understand",
+  feasibility: "decide",
+  plan: "decide",
+  "18-to-19": "transform",
+  "19-to-20": "transform",
+  "20-to-21": "transform",
+  validate: "validate",
+  complete: "validate",
+};
+
+const PIPELINE_SUMMARIES: Record<JourneyKey, string> = {
+  setup: "Prepare the source boundary for authoritative migration work.",
+  readiness: "Confirm the immutable source snapshot and G02 source-snapshot decision.",
+  g01: "Production readiness was reviewed before this run was created.",
+  baseline: "Establish and accept the known pre-migration baseline through G03.",
+  discovery: "Review discovery, parity anchors, and the G04 analysis decision.",
+  feasibility: "Resolve compatibility and decide whether the route may proceed through G05.",
+  plan: "Review the checksum-bound migration plan and G06 execution contract.",
+  "18-to-19": "Angular 18 to 19 transformation details are available when the backend exposes them.",
+  "19-to-20": "Angular 19 to 20 transformation details are available when the backend exposes them.",
+  "20-to-21": "Angular 20 to 21 transformation details are available when the backend exposes them.",
+  validate: "Validation details are available when authoritative validation evidence exists.",
+  complete: "Completion is confirmed only by the staged-migration and final-target evidence.",
+};
+
+const GATE_EVENT_BY_KEY: Partial<Record<JourneyKey, string>> = {
+  readiness: "G02_CREATED",
+  baseline: "G03_CREATED",
+  discovery: "G04_CREATED",
+  feasibility: "G05_CREATED",
+  plan: "G06_CREATED",
+};
+
+const BASELINE_COMMAND_EVENTS = new Set([
+  "COMMAND_QUEUED",
+  "COMMAND_STARTED",
+  "COMMAND_SUCCEEDED",
+  "COMMAND_FAILED",
+  "COMMAND_OUTPUT_AVAILABLE",
+  "COMMAND_OUTPUT_CHUNK",
+  "COMMAND_CANCELLED",
+  "COMMAND_INTERRUPTED",
+]);
+
+function eventArtifactIds(payload: Record<string, unknown>): string[] {
+  const values = [payload.artifact_id, payload.stdout_artifact_id, payload.stderr_artifact_id];
+  if (Array.isArray(payload.artifact_ids)) values.push(...payload.artifact_ids);
+  return values.filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function commandText(payload: Record<string, unknown>): string | null {
+  if (typeof payload.chunk === "string" && payload.chunk.length > 0) return payload.chunk;
+  if (typeof payload.command === "string" && payload.command.length > 0) return payload.command;
+  if (typeof payload.executable !== "string" || payload.executable.length === 0) return null;
+  const args = Array.isArray(payload.arguments)
+    ? payload.arguments.filter((value): value is string => typeof value === "string")
+    : [];
+  return [payload.executable, ...args].join(" ");
 }
 
 export function AuthoritativeRunDashboard({
@@ -105,15 +176,110 @@ export function AuthoritativeRunDashboard({
     }
   }, [refresh, runId, state.state_version]);
 
-  const qualificationAvailable = (hasEvent(state, "G02_APPROVED") && hasEvent(state, "BASELINE_INSTALL_SUCCEEDED"))
-    || hasEvent(state, "BASELINE_BLOCKED", "BASELINE_QUALIFIED", "G03_CREATED", "G03_APPROVED", "G03_REJECTED");
-  const qualificationActionRequired = qualificationAvailable && !hasEvent(state, "G03_APPROVED");
-  const g02Available = hasEvent(state, "G02_CREATED", "G02_APPROVED", "G02_REJECTED", "G02_STALE")
-    || (state.status === "SOURCE_VALIDATED" && state.approval_status === "pending" && hasEvent(state, "SNAPSHOT_CREATED"));
-  const g02ActionRequired = g02Available && !hasEvent(state, "G02_APPROVED", "G02_REJECTED", "G02_STALE");
   const pipelineActionRequired = workspace.currentAction.section === "pipeline"
     && (workspace.currentAction.kind === "gate" || workspace.currentAction.kind === "blocked");
-  const shared = { runId, initialState: state };
+  const pipelineStageContent = useMemo(() => {
+    const eventsById = new Map(state.workflow_events.map((event) => [event.event_id, event]));
+    const artifactsById = new Map(state.artifacts.map((artifact) => [artifact.artifact_id, artifact]));
+
+    return workspace.journey.map((milestone): PipelineStageContent => {
+      const evidenceIds = new Set<string>();
+      const evidenceEvent = milestone.evidenceEvent ? eventsById.get(milestone.evidenceEvent) : undefined;
+      if (evidenceEvent) eventArtifactIds(evidenceEvent.payload).forEach((id) => evidenceIds.add(id));
+      if (milestone.stageId) {
+        state.artifacts.filter((artifact) => artifact.stage_id === milestone.stageId).forEach((artifact) => evidenceIds.add(artifact.artifact_id));
+      }
+      const evidence = [...evidenceIds].map((id) => artifactsById.get(id)).filter((artifact) => artifact != null);
+
+      const gateEventType = GATE_EVENT_BY_KEY[milestone.key];
+      const gateEvent = gateEventType
+        ? [...state.workflow_events].reverse().find((event) => event.event_type === gateEventType)
+        : undefined;
+      const hasGatePackage = Boolean(gateEvent && typeof gateEvent.payload.package_checksum === "string" && gateEvent.payload.package_checksum.length > 0);
+
+      const commandEvents = state.workflow_events.filter((event) => (
+        milestone.stageId
+          ? event.stage_id === milestone.stageId
+          : milestone.key === "baseline" && BASELINE_COMMAND_EVENTS.has(event.event_type)
+      ));
+      const output = commandEvents.map((event) => commandText(event.payload)).filter((value): value is string => value != null);
+
+      const summaryPanel = (
+        <div className="pipelineHumanSummary">
+          <p>{milestone.state === "unavailable" ? "Not available from the authoritative state" : PIPELINE_SUMMARIES[milestone.key]}</p>
+          {milestone.key === "setup" && hasEvent(state, "SOURCE_INTAKE_FAILED") ? (
+            <>
+              {retryError ? <p role="alert">{retryError}</p> : null}
+              <button type="button" onClick={() => void retrySourceIntake()} disabled={retryingSourceIntake}>
+                {retryingSourceIntake ? "Retrying…" : "Retry source intake"}
+              </button>
+            </>
+          ) : null}
+          {milestone.key === "readiness" && !hasGatePackage ? <SourceSnapshotPanel runId={runId} initialState={state} /> : null}
+          {milestone.key === "baseline" && !hasGatePackage ? (
+            <BaselineQualificationPanel
+              runId={runId}
+              stateVersion={state.state_version}
+              workflowEvents={state.workflow_events}
+              refreshAuthoritativeState={refresh}
+            />
+          ) : null}
+          {milestone.key === "discovery" && !hasGatePackage ? (
+            <>
+              <BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} />
+              <AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+            </>
+          ) : null}
+          {milestone.key === "feasibility" && !hasGatePackage ? (
+            <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+          ) : null}
+          {milestone.key === "plan" && !hasGatePackage ? (
+            <MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />
+          ) : null}
+        </div>
+      );
+      const tabs: PipelineStageContent["tabs"] = [{ id: "summary", label: "Summary", panel: summaryPanel }];
+
+      if (output.length > 0) {
+        tabs.push({ id: "command", label: "Command output", panel: <pre className={styles.logViewer}>{output.join("\n")}</pre> });
+      }
+      if (evidence.length > 0) {
+        tabs.push({
+          id: "evidence",
+          label: "Evidence",
+          panel: (
+            <ul className={styles.list}>
+              {evidence.map((artifact) => (
+                <li key={artifact.artifact_id}>
+                  <a href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`} target="_blank" rel="noreferrer">
+                    {presentArtifact(artifact).title}
+                  </a>
+                  <code>{artifact.checksum}</code>
+                </li>
+              ))}
+            </ul>
+          ),
+        });
+      }
+      if (hasGatePackage) {
+        let panel: React.ReactNode = null;
+        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} /><G02ReviewPanel runId={runId} initialState={state} /></>;
+        else if (milestone.key === "baseline") panel = <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />;
+        else if (milestone.key === "discovery") panel = <><BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} /><AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /></>;
+        else if (milestone.key === "feasibility") panel = <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} />;
+        else if (milestone.key === "plan") panel = <><MigrationPlanPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} /><PlanReviewPanel runId={runId} initialState={state} connectionStatus={status} refreshAuthoritativeState={refresh} /></>;
+        if (panel) tabs.push({ id: "review", label: "Review", panel });
+      }
+
+      return {
+        milestone,
+        group: PIPELINE_GROUP_BY_KEY[milestone.key],
+        occurredAt: evidenceEvent?.occurred_at ?? gateEvent?.occurred_at ?? null,
+        evidenceCount: evidence.length > 0 ? evidence.length : null,
+        tabs,
+      };
+    });
+  }, [refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, workspace.journey]);
 
   return (
     <div className="controlTowerDashboard">
@@ -160,27 +326,10 @@ export function AuthoritativeRunDashboard({
                 <div><h2>Pipeline</h2><p>Authoritative work across the migration journey.</p></div>
               </div>
               <PipelineSection
-                state={state}
-                retryError={retryError}
-                retrying={retryingSourceIntake}
-                onRetry={() => void retrySourceIntake()}
-                qualificationAvailable={qualificationAvailable}
-                qualificationActionRequired={qualificationActionRequired}
-                g02ActionRequired={g02ActionRequired}
+                journey={workspace.journey}
+                stageContent={pipelineStageContent}
                 focusStage={focusStage}
-              >
-                {(selectedStage) => <>
-                  {selectedStage === "Source review & G02" ? <><SourceSnapshotPanel {...shared} /><G02ReviewPanel {...shared} /></> : null}
-                  {selectedStage === "Baseline qualification" ? (
-                    <BaselineQualificationPanel
-                      runId={runId}
-                      stateVersion={state.state_version}
-                      workflowEvents={state.workflow_events}
-                      refreshAuthoritativeState={refresh}
-                    />
-                  ) : null}
-                </>}
-              </PipelineSection>
+              />
             </section>
           ) : null}
 
