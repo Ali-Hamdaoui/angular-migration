@@ -5,6 +5,7 @@ import { ApiClientError } from "@/api/client";
 import { captureBaselineParity, getBaselineParitySection } from "@/api/baselineParity";
 import type { BaselineParityResponse } from "@/types/baselineParity";
 import styles from "./ControlTowerShell.module.css";
+import { headingTag, type PanelHeadingLevel } from "./control-tower/semanticHeading";
 
 type ConnectionStatus = "loading" | "connecting" | "open" | "reconnecting" | "recovering" | "failed";
 type Section = "failures" | "routes" | "backend-integration" | "anchors";
@@ -19,7 +20,8 @@ function operationKey(runId: string) { return `baseline-parity-${runId}-${Date.n
 function label(value: string) { return value.replaceAll("_", " "); }
 function confidenceKey(section: Section): string { return section === "backend-integration" ? "backend_integration" : section; }
 
-export function BaselineParityPanel({ runId, stateVersion, connectionStatus, workflowEvents = [] }: { runId: string; stateVersion: number; connectionStatus: ConnectionStatus; workflowEvents?: Array<{ event_type: string }> }) {
+export function BaselineParityPanel({ runId, stateVersion, connectionStatus, workflowEvents = [], headingLevel = 2 }: { runId: string; stateVersion: number; connectionStatus: ConnectionStatus; workflowEvents?: Array<{ event_type: string }>; headingLevel?: PanelHeadingLevel }) {
+  const Heading = headingTag(headingLevel);
   const [evidence, setEvidence] = useState<Partial<Record<Section, BaselineParityResponse>>>({});
   const [active, setActive] = useState<Section>("failures");
   const [loading, setLoading] = useState(true);
@@ -65,7 +67,7 @@ export function BaselineParityPanel({ runId, stateVersion, connectionStatus, wor
   const captured = Object.keys(evidence).length > 0;
   const connectionLabel = connectionStatus === "open" ? "Live baseline parity state" : connectionStatus === "reconnecting" ? "Connection lost. Reconnecting..." : connectionStatus === "recovering" ? "Refreshing authoritative parity state..." : connectionStatus === "failed" ? "Unable to refresh parity state" : "Connecting to parity evidence...";
   return <section className={styles.panel} aria-labelledby="baseline-parity-title">
-    <div className={styles.header}><div><p className={styles.kicker}>S1-F13</p><h2 id="baseline-parity-title">Baseline parity anchors</h2><p className={styles.note}>Structural evidence and known baseline failures; this is not a functional parity conclusion.</p></div><span className={styles.status}>{working ? "capturing" : captured ? (current?.failures.length ? "captured with known baseline failures" : "captured") : hasG03 ? "integrity error" : validationComplete ? "ready to capture" : "waiting for baseline validation"}</span></div>
+    <div className={styles.header}><div><p className={styles.kicker}>S1-F13</p><Heading id="baseline-parity-title">Baseline parity anchors</Heading><p className={styles.note}>Structural evidence and known baseline failures; this is not a functional parity conclusion.</p></div><span className={styles.status}>{working ? "capturing" : captured ? (current?.failures.length ? "captured with known baseline failures" : "captured") : hasG03 ? "integrity error" : validationComplete ? "ready to capture" : "waiting for baseline validation"}</span></div>
     <div className={styles.connectionBar} role="status" aria-live="polite">{connectionLabel}</div>
     {loading ? <p role="status">Loading baseline parity evidence...</p> : null}
     {error ? <p role="alert">{error}</p> : null}

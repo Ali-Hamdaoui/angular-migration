@@ -9,6 +9,7 @@ import type {
   WorkflowEventDto,
 } from "@/types/generated/api";
 import styles from "./ControlTowerShell.module.css";
+import { headingTag, type PanelHeadingLevel } from "./control-tower/semanticHeading";
 
 function eventSnapshotId(event: WorkflowEventDto | undefined): string | null {
   const value = event?.payload.snapshot_id;
@@ -24,10 +25,13 @@ function formatBytes(value: number): string {
 export function SourceSnapshotPanel({
   runId,
   initialState,
+  headingLevel = 2,
 }: {
   runId: string;
   initialState: AuthoritativeRunStateDto;
+  headingLevel?: PanelHeadingLevel;
 }) {
+  const Heading = headingTag(headingLevel);
   const [snapshot, setSnapshot] = useState<SourceSnapshotDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -79,7 +83,7 @@ export function SourceSnapshotPanel({
       <div className={styles.previewHeader}>
         <div>
           <p className={styles.kicker}>S1-F07</p>
-          <h2>Immutable source snapshot</h2>
+          <Heading>Immutable source snapshot</Heading>
         </div>
         {canCreate ? (
           <button type="button" onClick={handleCreate} disabled={creating}>

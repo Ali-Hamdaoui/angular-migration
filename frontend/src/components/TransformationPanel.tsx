@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ArtifactRefDto, WorkflowEventDto } from "@/types/generated/api";
+import type { CommandExecutionResponseDto } from "@/types/generated/api";
 import type { TransformationProjection } from "@/types/transformation";
 import { ApiClientError } from "@/api/client";
-import { useTransformation } from "@/hooks/useTransformation";
-import { TRANSFORMATION_EVENT_TYPES } from "@/hooks/useAuthoritativeRun";
 import {
   cancelTransformation,
   decideTransformationGate,
@@ -23,24 +22,26 @@ import {
   ValidationEvidence,
   WorkerStatus,
   TechnicalDetails,
+  approvalActionLabel,
   decisionLabel,
   displayStatus,
 } from "./TransformationSections";
 import styles from "./TransformationPanel.module.css";
 
-type Props = {
+export interface TransformationPanelProps {
   runId: string;
+  projection: TransformationProjection | null;
+  projectionStatus: "disabled" | "loading" | "ready" | "empty" | "failed";
+  executions: CommandExecutionResponseDto[];
+  executionStatus: "idle" | "loading" | "ready" | "unavailable";
   workflowEvents: WorkflowEventDto[];
   artifacts: ArtifactRefDto[];
-  authoritativeStatus: string;
-  authoritativePhase: string;
-  authoritativeStateVersion: number;
-  refreshAuthoritativeState: () => Promise<void> | void;
+  refreshTransformation: () => Promise<void>;
+  refreshAuthoritativeState: () => Promise<void>;
   onActionRequiredChange?: (required: boolean) => void;
 };
 
 const terminalStatuses = new Set(["completed", "cancelled", "failed"]);
-const transformerEvents = new Set<string>(TRANSFORMATION_EVENT_TYPES);
 
 function conflictMessage(error: ApiClientError) {
   let code = "STALE_STATE";
@@ -104,21 +105,16 @@ function bannerLabel(
 
 export function TransformationPanel({
   runId,
+  projection,
+  projectionStatus,
+  executions,
+  executionStatus,
   workflowEvents,
   artifacts,
-  authoritativeStatus,
-  authoritativePhase,
-  authoritativeStateVersion,
+  refreshTransformation,
   refreshAuthoritativeState,
   onActionRequiredChange,
-}: Props) {
-  const refreshKey = useMemo(
-    () => workflowEvents.filter((event) =>
-      transformerEvents.has(event.event_type) || event.event_type.startsWith("COMMAND_"),
-    ).at(-1)?.sequence ?? 0,
-    [workflowEvents],
-  );
-  const { projection, executions, executionStatus, status, refresh, refreshError, loadError } = useTransformation(runId, refreshKey);
+}: TransformationPanelProps) {
   const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
@@ -135,44 +131,40 @@ export function TransformationPanel({
     || (projection?.status === "waiting_gate" && decisionLabel(projection.active_gate) !== "Unsupported decision" && decisionLabel(projection.active_gate) !== "No decision requested");
 
   useEffect(() => {
-    if (status !== "loading") onActionRequiredChange?.(Boolean(actionRequired));
-  }, [actionRequired, onActionRequiredChange, status]);
+    if (projectionStatus !== "loading") onActionRequiredChange?.(Boolean(actionRequired));
+  }, [actionRequired, onActionRequiredChange, projectionStatus]);
 
-  if (status === "loading" && !projection) {
+  if (projectionStatus === "loading" && !projection) {
     return <section className={styles.empty} aria-label="Transformer status" role="status">
       <p>Loading authoritative Transformer state…</p>
     </section>;
   }
-  if (status === "empty") {
+  if (projectionStatus === "empty") {
     return <section className={styles.empty} aria-label="Transformer status">
       <span className={styles.eyebrow}>Transformation prerequisite</span>
       <h3>Transformer continuation has not been created</h3>
       <p>Accept the migration plan in Planning to create the durable Transformer continuation. This screen remains available while Planning is pending, rejected, stale, or unavailable.</p>
       <dl className={styles.metadata}>
-        <div><dt>Run status</dt><dd>{authoritativeStatus}</dd></div>
-        <div><dt>Run phase</dt><dd>{authoritativePhase}</dd></div>
-        <div><dt>Run state version</dt><dd>{authoritativeStateVersion}</dd></div>
         <div><dt>Planning evidence</dt><dd>{workflowEvents.some((event) => event.event_type.startsWith("G06_")) ? "Recorded" : "Unavailable"}</dd></div>
       </dl>
     </section>;
   }
-  if (status === "failed" || !projection) {
-    const loadFailure = loadError ? backendErrorMessage(loadError) : null;
+  if (projectionStatus === "failed" || !projection) {
     return <section className={styles.empty} aria-label="Transformer status">
       <h3>Transformer state unavailable</h3>
       <p role="alert">The backend projection could not be loaded. The frontend has not inferred a workflow result.</p>
-      {loadFailure
-        ? <div className={styles.alert} role="alert">
-            <p>Backend unavailable: {loadFailure.message}</p>
-            <TechnicalDetails><code>HTTP {loadError?.status}; error code: {loadFailure.code}</code></TechnicalDetails>
-          </div>
-        : null}
-      <button type="button" onClick={() => void refresh()}>Retry Transformer state</button>
+      <button type="button" onClick={() => void refreshTransformation()}>Retry Transformer state</button>
     </section>;
   }
 
   const current = projection;
-  const shared = { projection: current, workflowEvents, artifacts, executions, executionStatus };
+  const shared = {
+    projection: current,
+    workflowEvents,
+    artifacts,
+    executions,
+    executionStatus: executionStatus === "idle" ? "loading" as const : executionStatus,
+  };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
   const g10EvidenceAvailable = current.dependency_operation?.operation === "dependency_transition"
@@ -203,16 +195,11 @@ export function TransformationPanel({
     </section>
 
     {banner ? <div className={styles.banner} role="status" aria-live="polite">{banner}</div> : null}
-    {refreshError ? <p className={styles.note} role="status">{refreshError}</p> : null}
-
     {actionError ? <div className={styles.alert} role="alert"><p>{actionError.message}</p>{actionError.code ? <TechnicalDetails><code>Error code: {actionError.code}</code></TechnicalDetails> : null}</div> : null}
 
     <div className={styles.grid}>
-      <StageSummary {...shared} />
-      <WorkerStatus projection={projection} />
-
       <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="transform-current-action">
-        <span className={styles.eyebrow}>03 / Current action or gate</span>
+        <span className={styles.eyebrow}>Current action or gate</span>
         <div className={styles.cardHeader}>
           <div>
             <h3 id="transform-current-action">
@@ -245,7 +232,7 @@ export function TransformationPanel({
                 title={projection.active_gate === "G10" && !g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
                 onClick={() => void decideGate("approve")}
               >
-                {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : "Approve"}
+                {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : approvalActionLabel(projection.active_gate)}
               </button>
               {projection.active_gate === "G10" ? <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
                 Request changes
@@ -288,10 +275,12 @@ export function TransformationPanel({
         </> : null}
       </section>
 
+      <StageSummary {...shared} />
+      <WorkerStatus projection={projection} />
       <LogsAndDiagnostics {...shared} />
 
       <section className={`${styles.card} ${styles.cardWide} ${projection.status === "waiting_prompt" ? styles.prompt : ""}`} aria-labelledby="transform-prompt">
-        <span className={styles.eyebrow}>05 / Prompt decision and reconstruction</span>
+        <span className={styles.eyebrow}>Prompt decision and reconstruction</span>
         <h3 id="transform-prompt">Angular CLI prompt</h3>
         {projection.status === "waiting_prompt"
           && projection.active_prompt_id
@@ -341,7 +330,7 @@ export function TransformationPanel({
   </div>;
 
   async function refreshAll() {
-    await Promise.all([refresh(), refreshAuthoritativeState()]);
+    await Promise.all([refreshTransformation(), refreshAuthoritativeState()]);
   }
 
   async function mutate(action: (key: string) => Promise<unknown>, fallback: string) {
@@ -357,7 +346,7 @@ export function TransformationPanel({
       return result;
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
-        await Promise.allSettled([refresh(), Promise.resolve(refreshAuthoritativeState())]);
+        await Promise.allSettled([refreshTransformation(), refreshAuthoritativeState()]);
         setActionError({ message: conflictMessage(error), code: "STALE_STATE" });
       } else if (error instanceof ApiClientError) {
         const { code, message } = backendErrorMessage(error);

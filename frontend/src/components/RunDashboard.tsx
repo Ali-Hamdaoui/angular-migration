@@ -9,7 +9,14 @@ import { ControlTowerShell } from "./ControlTowerShell";
 import { ConnectionStatusBar } from "./ConnectionStatusBar";
 import { EventStreamPanel } from "./EventStreamPanel";
 
-export function RunDashboard({ runId, initialRun }: { runId: string; initialRun: MigrationRunDto }) {
+type RunDashboardProps = { runId: string; initialRun: MigrationRunDto; mode?: "authoritative" | "mock" };
+
+export function RunDashboard({ mode = "authoritative", ...props }: RunDashboardProps) {
+  if (mode === "mock") return <ControlTowerShell run={props.initialRun} mode="mock" />;
+  return <LiveRunDashboard {...props} />;
+}
+
+function LiveRunDashboard({ runId, initialRun }: RunDashboardProps) {
   const [snapshot, setSnapshot] = useState(initialRun);
   const { status, events, recoveryRequired, clearRecoveryRequired } = useMigrationEvents(runId);
 

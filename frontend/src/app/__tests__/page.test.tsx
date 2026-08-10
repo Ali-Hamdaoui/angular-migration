@@ -23,6 +23,15 @@ describe("HomePage authoritative run restoration", () => {
     expect(window.localStorage.getItem("amfa.activeRunId")).toBe("run-valid");
   });
 
+  it("presents a clear landing choice when there is no active run", async () => {
+    render(<HomePage />);
+    expect(await screen.findByRole("heading", { name: "Start a migration" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Start a new migration" })).toHaveAttribute("href", "/migrations/new");
+    expect(screen.getByText(/four .*steps/i)).toBeInTheDocument();
+    expect(screen.getByText(/source stays read-only/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Resume active migration" })).not.toBeInTheDocument();
+  });
+
   it("uses the last active run when the URL has no run id and updates the URL", async () => {
     window.localStorage.setItem("amfa.activeRunId", "run-last"); vi.mocked(getAuthoritativeRunState).mockResolvedValue({ ...state, run_id: "run-last" } as never);
     render(<HomePage />);
@@ -41,7 +50,7 @@ describe("HomePage authoritative run restoration", () => {
     setUrl("/?run_id=run-missing"); window.localStorage.setItem("amfa.activeRunId", "run-missing"); vi.mocked(getAuthoritativeRunState).mockRejectedValue(new ApiClientError("missing", 404));
     render(<HomePage />);
     expect(await screen.findByRole("alert")).toHaveTextContent("requested migration run was not found");
-    expect(screen.getByRole("heading", { name: "Control Tower" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Start a migration" })).toBeInTheDocument();
     expect(window.localStorage.getItem("amfa.activeRunId")).toBeNull(); expect(window.location.search).toBe("");
   });
 
@@ -50,5 +59,6 @@ describe("HomePage authoritative run restoration", () => {
     render(<HomePage />);
     expect(await screen.findByRole("alert")).toHaveTextContent("active run is preserved");
     expect(window.localStorage.getItem("amfa.activeRunId")).toBe("run-offline"); expect(screen.getByRole("button", { name: "Retry restoration" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Resume active migration" })).toHaveAttribute("href", "/?run_id=run-offline");
   });
 });
