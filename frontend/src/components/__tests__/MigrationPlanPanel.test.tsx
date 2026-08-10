@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "@/api/client";
 import { getPlan } from "@/api/plans";
@@ -32,6 +32,25 @@ describe("MigrationPlanPanel", () => {
     expect(screen.getByText("Build-system decision")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Artifacts" }));
     expect(screen.getByRole("link", { name: "plan-artifact" })).toHaveAttribute("href", "/api/v1/artifacts/plan-artifact");
+  });
+
+  it("preserves the Builder tab after a same-checksum authoritative refresh", async () => {
+    let resolveRefresh!: (value: PlanResponse) => void;
+    vi.mocked(getPlan).mockResolvedValue(response);
+    const { rerender } = render(<MigrationPlanPanel {...props} />);
+    expect(await screen.findByText("Major-stage route")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Builder" }));
+    expect(screen.getByRole("tab", { name: "Builder" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Build-system decision");
+
+    vi.mocked(getPlan).mockImplementation(() => new Promise<PlanResponse>((resolve) => { resolveRefresh = resolve; }));
+    rerender(<MigrationPlanPanel {...props} initialState={{ ...state, state_version: state.state_version + 1 }} />);
+    expect(await screen.findByText("Loading authoritative MigrationPlan...")).toBeInTheDocument();
+    resolveRefresh(response);
+    await waitFor(() => expect(screen.queryByText("Loading authoritative MigrationPlan...")).not.toBeInTheDocument());
+
+    expect(screen.getByRole("tab", { name: "Builder" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Build-system decision");
   });
 
   it("renders an empty backend-owned plan without enabling a local generation action", async () => {

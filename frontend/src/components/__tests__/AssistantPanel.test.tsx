@@ -1,26 +1,21 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AssistantDock, AssistantPanel } from "@/components/AssistantPanel";
-import { getAssistantMessages, sendAssistantMessage } from "@/api/assistant";
+import { getAssistantMessages, sendAssistantMessage, streamAssistantEvents } from "@/api/assistant";
 import { ApiClientError } from "@/api/client";
 
 vi.mock("@/api/assistant", () => ({
   getAssistantMessages: vi.fn().mockResolvedValue({ run_id: "run-1", conversation_id: "conversation-1", messages: [{
     message_id: "message-1", model: "gpt-5-mini", message_order: 1, conversation_id: "conversation-1", run_id: "run-1", role: "assistant", answer: "The migration is in the Preflight Snapshot phase at G02 Source Integrity Approval.", current_phase: "Preflight Snapshot", current_stage: "G02 Source Integrity Approval", workflow_status: "SOURCE_VALIDATED", current_gate: "G02 pending", current_blocker: "none", next_permitted_action: "Record a G02 reviewer decision through the governed cockpit control.", workflow_state_version: 8, stale: false, evidence_references: [{ artifact_id: "artifact-g02", checksum: "sha256:g02", label: "03_g02/g02_evidence_index.json" }, { artifact_id: "artifact-integrity", checksum: "sha256:integrity", label: "03_g02/source_integrity_verification.json" }], proof_label: "authoritative persisted fact", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_input_cost: 0, estimated_output_cost: 0, estimated_total_cost: 0 }, response_status: "completed", failure_reason: null,
     next_step_proposals: [],
-  }] }), sendAssistantMessage: vi.fn() }));
+  }] }),
+  sendAssistantMessage: vi.fn(),
+  streamAssistantEvents: vi.fn(() => new Promise<never>(() => undefined)),
+}));
 
 describe("AssistantPanel authoritative rendering", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
-    class ReplayEventSource {
-      onmessage: ((event: MessageEvent<string>) => void) | null = null;
-      onerror: (() => void) | null = null;
-      addEventListener() {}
-      removeEventListener() {}
-      close() {}
-    }
-    Object.defineProperty(window, "EventSource", { configurable: true, value: ReplayEventSource });
   });
 
   it("renders current progress, separated evidence, and authoritative zero usage", async () => {
@@ -79,6 +74,24 @@ describe("AssistantPanel authoritative rendering", () => {
     fireEvent.change(await screen.findByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Assistant request failed POST /api/v1/runs/run-1/assistant/messages returned 503");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("keeps retry available when the stream disconnects after a 503 request failure", async () => {
+    let rejectStream!: (reason?: unknown) => void;
+    vi.mocked(streamAssistantEvents).mockReturnValueOnce(new Promise<never>((_, reject) => { rejectStream = reject; }));
+    vi.mocked(sendAssistantMessage).mockRejectedValueOnce(new ApiClientError("failed", 503, "POST", "/api/v1/runs/run-1/assistant/messages"));
+    render(<AssistantPanel runId="run-1" />);
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText(/POST \/api\/v1\/runs\/run-1\/assistant\/messages returned 503/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+    rejectStream(new Error("stream disconnected"));
+
+    expect(await screen.findByText("Reconnecting to persisted conversation…")).toBeInTheDocument();
+    expect(screen.getByText(/POST \/api\/v1\/runs\/run-1\/assistant\/messages returned 503/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 import { usePlanProjection } from "@/hooks/usePlanProjection";
 import styles from "./ControlTowerShell.module.css";
@@ -12,9 +12,15 @@ type Tab = (typeof tabs)[number];
 export function MigrationPlanPanel({ runId, initialState, connectionStatus, workflowEvents, refreshAuthoritativeState }: { runId: string; initialState: AuthoritativeRunStateDto; connectionStatus: string; artifacts?: unknown[]; workflowEvents: Array<{ event_type: string; sequence: number }>; refreshAuthoritativeState?: () => Promise<unknown> }) {
   const { plan, status, error } = usePlanProjection({ runId, stateVersion: initialState.state_version, planningJob: initialState.planning_job, workflowEvents, connectionStatus, refreshAuthoritativeState });
   const [tab, setTab] = useState<Tab>("Commands");
+  const previousPlanChecksum = useRef<string | null>(null);
   const statusLabel = status === "reconnecting" ? "Reconnecting; refreshing authoritative plan..." : status === "queued" ? "Planning queued" : status === "resolving_feasibility" ? "Resolving feasibility" : status === "waiting_g05" ? "Waiting for G05 approval" : status === "generating_plan" ? "Generating migration plan" : status === "running_planning_review" ? "Reviewing migration plan" : status === "waiting_retry" ? "Planning retry scheduled" : status === "technical_failed" ? "Planning failed" : status === "completed_blocked" ? "Feasibility blocked" : status === "waiting_g06" ? "Waiting for G06 approval" : status === "completed" ? "Planning approved" : status === "running" ? "Generating plan..." : status;
 
-  useEffect(() => { if (status === "success") setTab("Commands"); }, [status, plan?.plan_checksum]);
+  useEffect(() => {
+    if (status !== "success" || !plan?.plan_checksum) return;
+    const previousChecksum = previousPlanChecksum.current;
+    previousPlanChecksum.current = plan.plan_checksum;
+    if (previousChecksum && previousChecksum !== plan.plan_checksum) setTab("Commands");
+  }, [status, plan?.plan_checksum]);
 
   const stage = plan?.stage_plan;
   const route = useMemo(() => plan?.plan.route ?? [], [plan]);

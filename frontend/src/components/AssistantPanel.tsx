@@ -105,6 +105,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
   const [answerMode, setAnswerMode] = useState<AssistantAnswerMode>("concise");
   const [state, setState] = useState<"empty" | "loading" | "ready" | "failed" | "reconnecting">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [retryAvailable, setRetryAvailable] = useState(false);
   const [pendingRequest, setPendingRequest] = useState(false);
   const failedMessageId = useRef<string | undefined>(undefined);
   const retryQuestion = useRef("");
@@ -191,6 +192,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
     submitting.current = true;
     setState("loading");
     setError(null);
+    setRetryAvailable(false);
     const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const optimistic: AssistantMessage = {
       message_id: `optimistic-${requestId}`, model: "user", message_order: messages.length + 1,
@@ -215,12 +217,14 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
       setMessages((current) => [...current.filter((item) => item.message_id !== optimistic.message_id), result]);
       retryQuestion.current = "";
       setPendingRequest(false);
+      setRetryAvailable(false);
       setState("ready");
     } catch (reason) {
       failedMessageId.current = optimistic.message_id;
       setMessages((current) => current.map((item) => item.message_id === optimistic.message_id ? { ...item, response_status: "failed", failure_reason: reason instanceof Error ? reason.message : "Request failed" } : item));
       setPendingRequest(false);
       setError(reason instanceof ApiClientError ? `${reason.method} ${reason.path} returned ${reason.status}` : reason instanceof Error ? reason.message : "The Assistant could not answer. Retry while the read-only cockpit remains available.");
+      setRetryAvailable(true);
       setState("failed");
     } finally {
       submitting.current = false;
@@ -239,6 +243,6 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
       <ol className={styles.assistantConversation}>{messages.map((message) => <li key={message.message_id} className={styles.assistantConversationItem}><AssistantMessageBubble message={message} />{message.role === "assistant" ? <><div className={styles.assistantMessageMeta}><span>Blocker: {message.current_blocker}</span><span>Next: {message.next_permitted_action}</span></div>{message.summary ? <p className={styles.note}>{message.summary}</p> : null}{message.intent ? <small>Intent: {message.intent} · Capability: {message.capability_key || "unavailable"}{message.confidence ? ` · Confidence: ${message.confidence}` : ""}</small> : null}{message.failure_reason ? <p role="alert">{message.error_code ? `${message.error_code} · ` : ""}{message.failure_reason}{message.correlation_id ? ` · ${message.correlation_id}` : ""}</p> : null}{message.missing_information?.length ? <small>Missing information: {message.missing_information.join(", ")}</small> : null}{message.suggested_follow_ups?.length ? <small>Suggested follow-ups: {message.suggested_follow_ups.join(" · ")}</small> : null}<AssistantNextSteps runId={runId} proposals={message.next_step_proposals ?? []} /><AssistantEvidenceDrawer citations={message.citations?.length ? message.citations : message.evidence_references} /><small>{message.operational_statistics?.total_tokens == null ? "Operational statistics unavailable" : `${message.operational_statistics.total_tokens} tokens · ${message.operational_statistics.total_cost_usd == null ? "cost unavailable" : `$${message.operational_statistics.total_cost_usd.toFixed(6)}`}`}</small></> : null}</li>)}{pendingRequest ? <li key="assistant-pending" className={styles.assistantConversationItem} aria-live="polite"><article data-role="assistant" aria-label="Assistant is thinking"><small>assistant</small><p>Thinking…</p></article></li> : null}</ol>
       <div aria-label="Suggested assistant questions" className={styles.assistantSuggestions}>{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => updateQuestion(suggestion)}>{suggestion}</button>)}</div>
     </div>
-    <form className={styles.assistantComposer} onSubmit={submit}><label htmlFor="assistant-question">Ask about this migration</label><textarea id="assistant-question" rows={3} value={question} onChange={(event) => updateQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} disabled={state === "loading"} /><div><label htmlFor="assistant-answer-mode">Answer depth</label><select id="assistant-answer-mode" value={answerMode} onChange={(event) => updateAnswerMode(event.target.value as AssistantAnswerMode)}><option value="concise">Concise</option><option value="detailed">Detailed</option><option value="deep">Deep</option></select><button type="submit" disabled={!question.trim() || state === "loading"}>{state === "loading" ? "Answering…" : "Send"}</button>{state === "failed" ? <button type="button" onClick={() => void submit(undefined, failedMessageId.current)}>Retry</button> : null}</div></form>
+    <form className={styles.assistantComposer} onSubmit={submit}><label htmlFor="assistant-question">Ask about this migration</label><textarea id="assistant-question" rows={3} value={question} onChange={(event) => updateQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} disabled={state === "loading"} /><div><label htmlFor="assistant-answer-mode">Answer depth</label><select id="assistant-answer-mode" value={answerMode} onChange={(event) => updateAnswerMode(event.target.value as AssistantAnswerMode)}><option value="concise">Concise</option><option value="detailed">Detailed</option><option value="deep">Deep</option></select><button type="submit" disabled={!question.trim() || state === "loading"}>{state === "loading" ? "Answering…" : "Send"}</button>{retryAvailable ? <button type="button" onClick={() => void submit(undefined, failedMessageId.current)}>Retry</button> : null}</div></form>
   </section>;
 }
