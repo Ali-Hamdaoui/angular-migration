@@ -149,3 +149,115 @@ No Task 3 CSS, package, status, disclosure, icon, test, or report file was stage
 ## Concerns
 
 None within the stabilization scope. The eight pre-existing Task 3 modifications remain intentionally uncommitted and unstaged for their owning implementer.
+
+## Independent review fix round 1/5: run-transition request isolation
+
+### Finding and root cause
+
+Changing `runId` restarted history and transport effects but retained request-owned failure state (`error` and `retryAvailable`), `failedMessageId`, `retryQuestion`, and the `submitting` lock. In addition, `sendAssistantMessage` success, failure, and `finally` continuations committed without proving that their originating run lifecycle was still active. This allowed a Retry from run 1 to remain actionable in run 2 and allowed a late run-1 rejection to overwrite run-2 request state.
+
+### Deterministic RED evidence
+
+The first RED run exposed the two lifecycle failures plus a test-isolation leak: the current submission-lock bug prevented the queued run-2 send mock from being consumed, so it leaked into the following test. The mock boundary was reset explicitly, without changing production code, and RED was rerun. The authoritative RED command was:
+
+```powershell
+npm test -- src/components/__tests__/AssistantPanel.test.tsx
+```
+
+Exit code: `1`.
+
+```text
+ ❯ src/components/__tests__/AssistantPanel.test.tsx (11 tests | 2 failed) 821ms
+     × clears a visible request failure when a different run loads 94ms
+     × ignores a late run-1 rejection while a run-2 request is pending 124ms
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 9 passed (11)
+   Start at  02:44:31
+   Duration  3.35s (transform 302ms, setup 223ms, import 509ms, tests 821ms, environment 1.49s)
+```
+
+Exact failure diagnostics:
+
+```text
+FAIL  src/components/__tests__/AssistantPanel.test.tsx > AssistantPanel authoritative rendering > clears a visible request failure when a different run loads
+Error: expect(element).not.toBeInTheDocument()
+
+expected document not to contain element, found <span>
+
+  POST /api/v1/runs/run-1/assistant/messages returned 503
+</span> instead
+```
+
+```text
+FAIL  src/components/__tests__/AssistantPanel.test.tsx > AssistantPanel authoritative rendering > ignores a late run-1 rejection while a run-2 request is pending
+TestingLibraryElementError: Unable to find an accessible element with the role "article" and name "user message"
+```
+
+The second diagnostic's DOM also contained the stale run-1 503 error and Retry control while the run-2 question remained unsent, proving both the stale async commit and retained submission lock.
+
+### Minimal production fix
+
+- The run-scoped history effect now clears request error/retry/pending state, `failedMessageId`, `retryQuestion`, and `submitting` whenever a run lifecycle starts.
+- A monotonically invalidated request epoch changes during run-effect cleanup and setup. Each submit captures the current epoch; request success, failure, and final lock release commit only if that epoch is still active.
+- Returning to a previously visited `runId` cannot reactivate an older request because the epoch, rather than the run-id string alone, identifies the lifecycle.
+- Same-run retry binding, generated request/idempotency keys, optimistic messages, and stream behavior are unchanged. No history UI behavior, timeout, retry loop, or unrelated file was added.
+
+### GREEN and gate evidence
+
+Assistant focused GREEN:
+
+```powershell
+npm test -- src/components/__tests__/AssistantPanel.test.tsx
+```
+
+```text
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+   Start at  02:45:45
+   Duration  5.63s (transform 488ms, setup 374ms, import 710ms, tests 1.31s, environment 2.76s)
+```
+
+Two-file stabilization GREEN:
+
+```powershell
+npm test -- src/components/__tests__/AssistantPanel.test.tsx src/components/__tests__/MigrationPlanPanel.test.tsx
+```
+
+```text
+ Test Files  2 passed (2)
+      Tests  16 passed (16)
+   Start at  02:46:04
+   Duration  4.39s (transform 550ms, setup 525ms, import 1.03s, tests 1.79s, environment 3.85s)
+```
+
+Static checks:
+
+- `npm run typecheck` — exit `0`; `tsc --noEmit` produced no diagnostics.
+- `npx eslint src/components/AssistantPanel.tsx src/components/__tests__/AssistantPanel.test.tsx` — exit `0`; no output.
+- `git diff --check` — exit `0`; no whitespace errors. Git printed LF-to-CRLF working-copy warnings only.
+
+Complete frontend suite, run once for this review round after focused/static gates:
+
+```powershell
+npm test
+```
+
+```text
+ Test Files  55 passed (55)
+      Tests  316 passed (316)
+   Start at  02:46:30
+   Duration  37.93s (transform 5.54s, setup 15.71s, import 16.64s, tests 31.99s, environment 157.35s)
+```
+
+### Round 1 staged-file proof
+
+Immediately before the round 1 commit, `git diff --cached --name-only` contained exactly:
+
+```text
+.superpowers/sdd/2026-08-09-journey-command-center/full-suite-stabilization-report.md
+frontend/src/components/AssistantPanel.tsx
+frontend/src/components/__tests__/AssistantPanel.test.tsx
+```
+
+The eight pre-existing Task 3 modifications remained unstaged and unmodified.

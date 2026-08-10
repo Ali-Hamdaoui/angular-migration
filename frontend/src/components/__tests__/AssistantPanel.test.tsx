@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AssistantDock, AssistantPanel } from "@/components/AssistantPanel";
 import { getAssistantMessages, sendAssistantMessage, streamAssistantEvents } from "@/api/assistant";
 import { ApiClientError } from "@/api/client";
@@ -16,6 +16,9 @@ describe("AssistantPanel authoritative rendering", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    vi.mocked(sendAssistantMessage).mockReset();
+    vi.mocked(streamAssistantEvents).mockReset();
+    vi.mocked(streamAssistantEvents).mockImplementation(() => new Promise<never>(() => undefined));
   });
 
   it("renders current progress, separated evidence, and authoritative zero usage", async () => {
@@ -93,6 +96,50 @@ describe("AssistantPanel authoritative rendering", () => {
     expect(await screen.findByText("Reconnecting to persisted conversation…")).toBeInTheDocument();
     expect(screen.getByText(/POST \/api\/v1\/runs\/run-1\/assistant\/messages returned 503/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("clears a visible request failure when a different run loads", async () => {
+    vi.mocked(sendAssistantMessage).mockRejectedValueOnce(new ApiClientError("failed", 503, "POST", "/api/v1/runs/run-1/assistant/messages"));
+    const { rerender } = render(<AssistantPanel runId="run-1" />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why did run 1 fail?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText(/POST \/api\/v1\/runs\/run-1\/assistant\/messages returned 503/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+    vi.mocked(getAssistantMessages).mockResolvedValueOnce({ run_id: "run-2", conversation_id: "conversation-2", messages: [] });
+    rerender(<AssistantPanel runId="run-2" />);
+
+    expect(await screen.findByText("Ask any read-only question about this migration.")).toBeInTheDocument();
+    expect(screen.queryByText(/POST \/api\/v1\/runs\/run-1\/assistant\/messages returned 503/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("ignores a late run-1 rejection while a run-2 request is pending", async () => {
+    let rejectRun1!: (reason?: unknown) => void;
+    const run1Request = new Promise<Awaited<ReturnType<typeof sendAssistantMessage>>>((_, reject) => { rejectRun1 = reject; });
+    vi.mocked(sendAssistantMessage)
+      .mockReturnValueOnce(run1Request)
+      .mockReturnValueOnce(new Promise<Awaited<ReturnType<typeof sendAssistantMessage>>>(() => undefined));
+    const { rerender } = render(<AssistantPanel runId="run-1" />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Run 1 question" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Assistant is thinking");
+
+    vi.mocked(getAssistantMessages).mockResolvedValueOnce({ run_id: "run-2", conversation_id: "conversation-2", messages: [] });
+    rerender(<AssistantPanel runId="run-2" />);
+    expect(await screen.findByText("Ask any read-only question about this migration.")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Run 2 question" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await act(async () => {
+      rejectRun1(new ApiClientError("failed", 503, "POST", "/api/v1/runs/run-1/assistant/messages"));
+      await run1Request.catch(() => undefined);
+    });
+
+    expect(screen.getByRole("article", { name: "user message" })).toHaveTextContent("Run 2 question");
+    expect(screen.getByRole("status")).toHaveTextContent("Assistant is thinking");
+    expect(screen.queryByText(/POST \/api\/v1\/runs\/run-1\/assistant\/messages returned 503/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
   it("shows transient thinking, keeps the optimistic question, and sends Enter once", async () => {

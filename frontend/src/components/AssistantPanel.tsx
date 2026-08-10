@@ -110,6 +110,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
   const failedMessageId = useRef<string | undefined>(undefined);
   const retryQuestion = useRef("");
   const submitting = useRef(false);
+  const requestEpoch = useRef(0);
   const suggestions = useMemo(() => [...(phaseQuestions[phase] ?? []), ...baseQuestions].slice(0, 3), [phase]);
   const activeModel = [...messages].reverse().find((message) => message.role === "assistant")?.model ?? "Waiting for first answer";
 
@@ -123,6 +124,13 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
 
   useEffect(() => {
     let active = true;
+    const epoch = ++requestEpoch.current;
+    setError(null);
+    setRetryAvailable(false);
+    setPendingRequest(false);
+    failedMessageId.current = undefined;
+    retryQuestion.current = "";
+    submitting.current = false;
     setState("loading");
     getAssistantMessages(runId).then((history) => {
       if (!active) return;
@@ -135,7 +143,10 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
         setState("reconnecting");
       }
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      if (requestEpoch.current === epoch) requestEpoch.current += 1;
+    };
   }, [runId]);
 
   useEffect(() => {
@@ -190,6 +201,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
     const value = question.trim() || retryQuestion.current;
     if (!value || state === "loading" || submitting.current) return;
     submitting.current = true;
+    const activeRequestEpoch = requestEpoch.current;
     setState("loading");
     setError(null);
     setRetryAvailable(false);
@@ -213,6 +225,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
         message: value, conversation_id: conversationId, request_id: requestId, idempotency_key: requestId, retry_of_message_id: retryOfMessageId,
         answer_mode: answerMode, client_known_state_version: stateVersion,
       });
+      if (requestEpoch.current !== activeRequestEpoch) return;
       setConversationId(result.conversation_id);
       setMessages((current) => [...current.filter((item) => item.message_id !== optimistic.message_id), result]);
       retryQuestion.current = "";
@@ -220,6 +233,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
       setRetryAvailable(false);
       setState("ready");
     } catch (reason) {
+      if (requestEpoch.current !== activeRequestEpoch) return;
       failedMessageId.current = optimistic.message_id;
       setMessages((current) => current.map((item) => item.message_id === optimistic.message_id ? { ...item, response_status: "failed", failure_reason: reason instanceof Error ? reason.message : "Request failed" } : item));
       setPendingRequest(false);
@@ -227,7 +241,7 @@ export function AssistantPanel({ runId, phase = "unknown", stateVersion = 1, wor
       setRetryAvailable(true);
       setState("failed");
     } finally {
-      submitting.current = false;
+      if (requestEpoch.current === activeRequestEpoch) submitting.current = false;
     }
   }
 
