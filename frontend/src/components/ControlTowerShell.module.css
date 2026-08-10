@@ -38,7 +38,7 @@
 .metricList span, .eventStage { color: var(--color-text-muted); }
 .list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1rem; padding: .6rem 0; }
 .list code { color: var(--color-accent); overflow-wrap: anywhere; }
-.actionLink { color: var(--color-text); font-weight: 700; text-decoration: none; }
+.actionLink { max-width: 100%; color: var(--color-text); font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
 .panel button { border: 1px solid var(--color-accent); border-radius: 8px; background: var(--color-surface-2); color: var(--color-text); padding: .6rem; font-weight: 600; transition: background 150ms ease, border-color 150ms ease; }
 .panel button:hover:not(:disabled) { border-color: var(--color-accent); background: var(--color-bg); }
 .dangerPanel, .dangerButton { border-color: var(--color-danger); }
@@ -114,16 +114,6 @@
   .secondaryColumn { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 680px) {
-  .shell { padding: 0 1rem 2rem; }
-  .header { flex-direction: column; gap: 1rem; }
-  .dimensionGrid, .cardGrid, .twoColumns, .secondaryColumn { grid-template-columns: 1fr; width: 100%; }
-  .panel, .card { padding: 1rem; }
-  .pipeline { padding-inline: 1rem; }
-  .timeline li, .row, .previewHeader { flex-direction: column; }
-  .previewHeader button { width: 100%; }
-}
-
 /* Run-scoped Assistant dock: globally available without becoming workflow navigation. */
 .assistantDock { position: fixed; right: 20px; bottom: 20px; z-index: 80; min-width: 0; max-width: 100%; }
 .assistantExpanded, .assistantMinimized, .assistantLauncher { display: none; }
@@ -168,18 +158,6 @@
 .assistantComposer > div label { margin-left: auto; font-size: 13px; color: #9db0c8; }
 .assistantComposer select { min-width: 0; max-width: 100%; }
 
-@media (max-width: 680px) {
-  .assistantDock { right: 8px; bottom: 8px; left: 8px; }
-  .assistantMinimized { width: auto; }
-  .assistantLauncher { justify-content: center; width: 100%; }
-  .assistantPopup { right: 8px; bottom: 8px; left: 8px; width: auto; height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); }
-  .assistantPanel { padding: 1rem; }
-  .assistantHeader { flex-direction: column; }
-  .assistantBadges { justify-content: flex-start; }
-  .assistantSuggestions { grid-template-columns: 1fr; }
-  .assistantComposer > div label { margin-left: 0; }
-}
-
 /* State selectors win over the popup/dock layout rules above. */
 .assistantDock[data-assistant-presentation="expanded"] .assistantExpanded { display: grid; }
 .assistantDock[data-assistant-presentation="expanded"] .assistantMinimized,
@@ -190,3 +168,22 @@
 .assistantDock[data-assistant-presentation="closed"] .assistantMinimized { display: none; }
 .assistantDock[data-assistant-presentation="minimized"] .assistantMinimized { display: flex; }
 .assistantDock[data-assistant-presentation="closed"] .assistantLauncher { display: inline-flex; }
+
+@media (max-width: 767px) {
+  .shell { padding: 0 1rem 2rem; }
+  .header { flex-direction: column; gap: 1rem; }
+  .dimensionGrid, .cardGrid, .twoColumns, .secondaryColumn { grid-template-columns: 1fr; width: 100%; }
+  .panel, .card { padding: 1rem; }
+  .pipeline { padding-inline: 1rem; }
+  .timeline li, .row, .previewHeader { flex-direction: column; }
+  .previewHeader button { width: 100%; }
+  .assistantDock { right: 8px; bottom: 8px; left: 8px; }
+  .assistantMinimized { width: auto; }
+  .assistantLauncher { justify-content: center; width: 100%; }
+  .assistantPopup { right: 8px; bottom: 8px; left: 8px; width: auto; height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); }
+  .assistantPanel { padding: 1rem; }
+  .assistantHeader { flex-direction: column; }
+  .assistantBadges { justify-content: flex-start; }
+  .assistantSuggestions { grid-template-columns: 1fr; }
+  .assistantComposer > div label { margin-left: 0; }
+}

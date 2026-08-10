@@ -111,3 +111,46 @@ Exit code: 0
 
 - Browser screenshot comparison is intentionally deferred: Task 3 creates shared primitives and tokens but does not compose the final approved screen, and the plan reserves rendered browser QA for Task 13. The approved reference was reviewed directly and the foundation was checked against it without inventing the later shell.
 - The npm audit findings and platform-specific lockfile metadata churn are documented above; neither caused a test, type, lint, or diff failure.
+
+## Fix round 1
+
+### Review findings and RED evidence
+
+- Independent re-review found that the Windows-generated lockfile had removed baseline libc constraints and `@emnapi/core` / `@emnapi/runtime` records, while WASI packages still referenced that metadata. The lockfile was restored exactly from pre-Task-3 baseline `f1a6d663f4487b4f7e67296016124cd5b0aa1058` before the Lucide-only delta was reapplied. This supersedes the earlier acceptance of platform-specific lock churn above.
+- Four focused regression contracts were added before the fix. `npm test -- src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx` initially reported 4 failed and 8 passed: no rendered Lucide navigation icons, no explicit authoritative connection-state colors, no default-hidden/below-768 drawer contract, and no real 44 px wrapping box for anchors.
+
+### Implementation
+
+- Replaced the Header menu, source-to-target separator, connection marker, Sidebar close control, live marker, and all eleven navigation glyph strings with named `lucide-react` components. Every inserted SVG is decorative; visible button and navigation labels remain their accessible names, and navigation keys/callback behavior are unchanged.
+- The connection base is now neutral. `open` alone uses success; `loading`, `connecting`, `reconnecting`, and `recovering` use warning; `failed` uses danger.
+- Drawer controls are globally hidden by default and displayed only at `max-width: 767px`. The fixed-sidebar-to-drawer transition now covers 681–767 px, the local mobile layout declarations share that breakpoint, the two shell mobile blocks were consolidated, and the globally scoped 420 px summary rules occur after the 767 px rules so their overrides win.
+- `a[href]` is an inline-flex, vertically aligned 44 px interaction box with constrained width and anywhere wrapping. Shared action links retain wrapping and avoid horizontal overflow.
+
+### Verification
+
+- Focused Task 3 suite after the fix: 1 file passed, 12 tests passed.
+- Combined focused presentation and legacy-shell suites: 2 files passed, 13 tests passed.
+- `npm run typecheck`: exit 0.
+- `npm run lint`: exit 0.
+- `git diff --check`: exit 0 (only Git's Windows LF-to-CRLF notices).
+- `npm ls lucide-react --depth=0`: exactly `lucide-react@1.31.0`.
+- `git diff f1a6d663f4487b4f7e67296016124cd5b0aa1058 -- frontend/package-lock.json`: exactly 10 added lines, comprising the root `lucide-react` dependency and its exact 1.31.0 package record; no baseline lock metadata removals or unrelated churn remain.
+- The requested first full suite run reported 54 files passed and 1 failed; 311 tests passed and 1 failed. The only failure was the existing `AssistantPanel` 503 retry timing test, which found the error alert before the asynchronous Retry control rendered. An immediate isolated run of that exact test passed (1 passed, 7 skipped), showing that it is timing-sensitive under full-suite concurrency. No out-of-scope Assistant production or test file was changed.
+- The parent authorized exactly one additional complete run on the unchanged tree. It reported 53 files passed and 2 failed; 310 tests passed and 2 failed. The same `AssistantPanel` retry failure recurred, and the existing `MigrationPlanPanel` tab test also synchronously queried Builder content before its state update rendered. Per the checkpoint instruction, no further run or commit was made.
+
+### Self-review
+
+- Static glyph/mojibake search is empty for the changed Header and Sidebar. The focused render asserts more than twelve SVGs, all `aria-hidden="true"` and without an image role, while preserving stable control classes and visible accessible names.
+- The CSS state contract covers every member of `AuthoritativeConnectionStatus`; no non-open state inherits success.
+- Mobile media declarations are ordered 900 px, 767 px, then 420 px. The 420 px metric and summary overrides therefore remain effective, and shell mobile declarations occur in one non-conflicting block.
+- The lock proof is based on the pre-Task-3 baseline, not the reviewed commit, so the restored optional/peer metadata is included in the comparison.
+
+### Concerns
+
+- Full-suite concurrency remains a release blocker outside Task 3 scope: the `AssistantPanel` retry failure recurred in both complete runs even though its exact isolated test is green, and the authorized repeat also exposed a separate `MigrationPlanPanel` tab timing failure. Fix round 1 is intentionally uncommitted pending root direction.
+
+### Post-stabilization verification
+
+- Stabilization commits `b34af81` and `4235ac5` were present before verification. On that HEAD plus the unchanged Task 3 diff, the focused presentation/compatibility run passed 13/13 tests, typecheck and full lint exited 0, and the complete frontend suite passed 55/55 files and 316/316 tests.
+- The earlier full-suite timing concern is resolved by those independently reviewed stabilization commits; Task 3 does not include their files.
+- Five-finding self-review: the lock diff against `f1a6d66` is still exactly 10 Lucide-only additions with `npm ls` resolving 1.31.0; connection states use success only for `open`; Header/Sidebar glyphs are named decorative Lucide icons with desktop-hidden drawer controls; the 900/767/420 responsive cascade closes the 681–767 gap and keeps the global summary override effective; and interactive links use a wrapping, constrained inline-flex box with a 44 px minimum height.

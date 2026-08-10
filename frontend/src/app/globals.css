@@ -23,9 +23,10 @@
 html { background: var(--color-bg); color-scheme: dark; }
 body { margin: 0; background: var(--color-bg); color: var(--color-text); font: 400 16px/1.5 "Segoe UI", system-ui, sans-serif; }
 a { color: inherit; }
+a[href] { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; }
 button, input, select, textarea, summary { font: inherit; }
 :focus-visible { outline: 0; box-shadow: var(--focus-ring); }
-button, a, input, select, textarea, summary { min-height: 44px; }
+button, input, select, textarea, summary { min-height: 44px; }
 code, pre { overflow-wrap: anywhere; }
 .landing { max-width: 720px; margin: 12vh auto; padding: var(--space-8); }
 .eyebrow { color: var(--color-accent); text-transform: uppercase; letter-spacing: .12em; font-size: 13px; }
