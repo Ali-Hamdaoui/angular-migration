@@ -35,7 +35,7 @@ describe("mock migration route", () => {
     vi.mocked(getMockMigrationState).mockRejectedValueOnce(new Error("offline"));
     render(await MigrationRunPage({ params: Promise.resolve({ runId: "mock-offline" }) }));
     expect(screen.getByRole("alert")).toHaveTextContent(/demo migration data is unavailable/i);
-    expect(screen.getByRole("link", { name: "Retry this migration" })).toHaveAttribute("href", "/?run_id=mock-offline");
+    expect(screen.getByRole("link", { name: "Retry this migration" })).toHaveAttribute("href", "/migrations/mock-offline");
     expect(screen.getByRole("link", { name: "Return to migrations" })).toHaveAttribute("href", "/");
   });
 

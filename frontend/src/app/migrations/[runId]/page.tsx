@@ -16,7 +16,7 @@ export default async function MigrationRunPage({ params }: { params: Promise<{ r
         <RunDashboard runId={runId} initialRun={mockRun} mode="mock" />
       </div>;
     } catch {
-      return <main role="alert" className="routeError"><p>Demo migration data is unavailable. Try again or return to migrations.</p><div><a href={`/?run_id=${encodeURIComponent(runId)}`}>Retry this migration</a><a href="/">Return to migrations</a></div></main>;
+      return <main role="alert" className="routeError"><p>Demo migration data is unavailable. Try again or return to migrations.</p><div><a href={`/migrations/${encodeURIComponent(runId)}`}>Retry this migration</a><a href="/">Return to migrations</a></div></main>;
     }
   }
   try {
