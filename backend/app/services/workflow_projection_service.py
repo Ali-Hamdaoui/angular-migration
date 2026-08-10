@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -12,6 +11,7 @@ from app.domain.contracts import (
     AssistantOperationalStatisticsDto,
     AssistantWorkflowProjectionDto,
     ProjectionValue,
+    RunTimingDto,
 )
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -26,6 +26,7 @@ from app.repositories.models import (
 )
 from app.services.assistant_capabilities import build_next_step_proposals
 from app.services.llm_evidence_application_service import aggregate_run_llm_usage
+from app.services.run_timing_service import RunTimingService
 
 _PHASES = ["Preflight Snapshot", "Baseline", "Planning", "Transformation", "Validation", "Completion"]
 _PHASE_LABELS = {
@@ -45,16 +46,6 @@ def _value(value, *, supported: bool = True) -> ProjectionValue:
     if value is None or value == "":
         return ProjectionValue(value=None, availability="unavailable")
     return ProjectionValue(value=value, availability="known")
-
-
-def _seconds(start: datetime | None, end: datetime | None) -> float | None:
-    if not start or not end:
-        return None
-    if start.tzinfo is None and end.tzinfo is not None:
-        start = start.replace(tzinfo=end.tzinfo)
-    elif end.tzinfo is None and start.tzinfo is not None:
-        end = end.replace(tzinfo=start.tzinfo)
-    return max(0.0, (end - start).total_seconds())
 
 
 def _application_name(source_path: str | None) -> str | None:
@@ -85,6 +76,24 @@ def _event_detail(event: WorkflowEventModel | None) -> str | None:
     )
 
 
+def _apply_timing_statistics(
+    stats: AssistantOperationalStatisticsDto,
+    timing: RunTimingDto,
+    phase_durations: dict[str, float],
+    stage_durations: dict[str, float],
+) -> AssistantOperationalStatisticsDto:
+    """Add timing-owned fields without changing usage-owned statistics."""
+    return stats.model_copy(
+        update={
+            "run_start_timestamp": timing.started_at,
+            "recorded_workflow_duration_seconds": timing.total_duration_seconds,
+            "current_active_run_age_seconds": timing.total_duration_seconds if timing.total_measurement_status == "running" else None,
+            "phase_durations_seconds": phase_durations or None,
+            "stage_durations_seconds": stage_durations or None,
+        }
+    )
+
+
 class WorkflowProjectionService:
     """Compose one query-ready projection from persisted run records and events."""
 
@@ -101,12 +110,16 @@ class WorkflowProjectionService:
         snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
         g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
         execution_profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
+        timing = RunTimingService().build(session, run_id)
 
         current_stage = next((item for item in reversed(stages) if item.status not in {"PASSED", "COMPLETED", "CANCELLED"}), None) or (stages[-1] if stages else None)
         current_step = next((item for item in reversed(steps) if item.status not in {"PASSED", "COMPLETED", "CANCELLED"}), None)
         current_event = events[-1] if events else None
         terminal = str(run.status).upper() in {"COMPLETED", "CANCELLED", "FAILED", "TIMED_OUT", "WORKER_LOST", "ORPHANED", "CLEANUP_FAILED"}
-        duration = _seconds(run.created_at, run.updated_at if terminal else max((item.occurred_at for item in events), default=None))
+        phase_durations = {item.key: item.duration_seconds for item in timing.phases if item.duration_seconds is not None}
+        stage_durations = {item.key: item.duration_seconds for item in timing.stages if item.duration_seconds is not None}
+        current_phase_duration = phase_durations.get(str(run.run_phase))
+        current_stage_duration = stage_durations.get(current_stage.id) if current_stage else None
 
         counts: dict[str, int] = {}
         for command in commands:
@@ -114,10 +127,6 @@ class WorkflowProjectionService:
         role_counts = {item.key: item.calls for item in llm_usage.by_role}
         usage_available = llm_usage.usage_recorded_calls > 0
         stats = AssistantOperationalStatisticsDto(
-            run_start_timestamp=run.created_at,
-            recorded_workflow_duration_seconds=duration,
-            current_active_run_age_seconds=None if terminal else _seconds(run.created_at, datetime.now(UTC)),
-            stage_durations_seconds=(stage_durations := {item.id: value for item in stages if (value := _seconds(item.started_at, item.completed_at)) is not None}) or None,
             command_totals_by_status=counts or None,
             successful_commands=sum(value for key, value in counts.items() if key in {"succeeded", "completed"}) if commands else None,
             failed_commands=sum(value for key, value in counts.items() if key in {"failed", "timed_out", "rejected", "interrupted"}) if commands else None,
@@ -130,6 +139,7 @@ class WorkflowProjectionService:
             output_cost_usd=llm_usage.output_cost_usd if usage_available else None,
             total_cost_usd=llm_usage.total_cost_usd if usage_available else None,
         )
+        stats = _apply_timing_statistics(stats, timing, phase_durations, stage_durations)
 
         referenced_artifact_ids = [artifact_id for event in events for artifact_id in (event.payload.get("artifact_ids", []) if isinstance(event.payload.get("artifact_ids", []), list) else [])]
         if snapshot is not None and snapshot.status == "created":
@@ -223,8 +233,8 @@ class WorkflowProjectionService:
             latest_command_result=_value({"command_key": latest_command.command_id or latest_command.executable, "status": latest_command.status, "exit_code": latest_command.exit_code, "failure_code": latest_command.failure_code, "started_at": latest_command.started_at, "completed_at": latest_command.finished_at, "correlation_id": latest_command.correlation_id} if latest_command else None, supported=latest_command is not None),
             semantic_state_version=run.state_version,
             operational_event_sequence=current_event.sequence if current_event else 0,
-            phase_duration_seconds=_value(duration, supported=duration is not None),
-            stage_duration_seconds=_value(_seconds(current_stage.started_at, current_stage.completed_at) if current_stage else None, supported=current_stage is not None),
+            phase_duration_seconds=_value(current_phase_duration, supported=current_phase_duration is not None),
+            stage_duration_seconds=_value(current_stage_duration, supported=current_stage_duration is not None),
             pricing_availability=_value("available" if usage_available else None, supported=usage_available),
             workflow_state_version=run.state_version,
             operational_statistics=stats,

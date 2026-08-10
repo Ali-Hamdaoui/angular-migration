@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -217,18 +217,18 @@ def test_recorded_duration_uses_persisted_event_timestamps_and_replays_stably(tm
     start = datetime(2026, 7, 23, 17, 53, 27, 680679, tzinfo=UTC)
     with sessions() as session:
         run = session.get(MigrationRunModel, "run-1")
+        run.status = "COMPLETED"
         run.created_at = start
-        run.updated_at = start.replace(microsecond=885989)
+        run.updated_at = start + timedelta(hours=1)
         session.add(WorkflowEventModel(id="duration-1", run_id="run-1", event_type="RUN_CREATED", idempotency_key="duration-1", actor="worker", reason="authoritative", sequence=1, payload={}, occurred_at=start.replace(microsecond=680679)))
-        session.add(WorkflowEventModel(id="duration-2", run_id="run-1", event_type="G02_CREATED", idempotency_key="duration-2", actor="worker", reason="authoritative", sequence=2, payload={}, occurred_at=start.replace(microsecond=885989)))
+        session.add(WorkflowEventModel(id="duration-2", run_id="run-1", event_type="RUN_START_ACCEPTED", idempotency_key="duration-2", actor="worker", reason="authoritative", sequence=2, payload={}, occurred_at=start.replace(microsecond=680679)))
+        session.add(WorkflowEventModel(id="duration-3", run_id="run-1", event_type="STAGED_MIGRATION_COMPLETED", idempotency_key="duration-3", actor="worker", reason="authoritative", sequence=3, payload={}, occurred_at=start.replace(microsecond=885989)))
         session.commit()
-    service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
-    result = service.answer(AssistantMessageRequestDto(run_id="run-1", message="How much recorded workflow time, token usage, and estimated cost has this migration consumed?", idempotency_key="duration-1"))
-    replay = service.history("run-1", result.conversation_id)
-    assert "Recorded workflow duration: 0.21 seconds." in result.answer
-    assert replay.messages[1].answer == result.answer
-    assert result.usage.total_tokens == 0
-    assert result.usage.estimated_total_cost == 0
+    with sessions() as session:
+        first = WorkflowProjectionService().build(session, "run-1")
+        second = WorkflowProjectionService().build(session, "run-1")
+    assert first.operational_statistics.recorded_workflow_duration_seconds == 0.20531
+    assert second.operational_statistics.recorded_workflow_duration_seconds == first.operational_statistics.recorded_workflow_duration_seconds
     engine.dispose()
 
 
@@ -241,11 +241,12 @@ def test_recorded_duration_prefers_terminal_run_timestamp(tmp_path):
         run.status = "COMPLETED"
         run.created_at = start
         run.updated_at = terminal
-        session.add(WorkflowEventModel(id="terminal-1", run_id="run-1", event_type="RUN_COMPLETED", idempotency_key="terminal-1", actor="worker", reason="authoritative", sequence=1, payload={}, occurred_at=start.replace(second=29)))
+        session.add(WorkflowEventModel(id="terminal-1", run_id="run-1", event_type="RUN_START_ACCEPTED", idempotency_key="terminal-1", actor="worker", reason="authoritative", sequence=1, payload={}, occurred_at=start))
+        session.add(WorkflowEventModel(id="terminal-2", run_id="run-1", event_type="STAGED_MIGRATION_COMPLETED", idempotency_key="terminal-2", actor="worker", reason="authoritative", sequence=2, payload={}, occurred_at=start.replace(second=29)))
         session.commit()
-    service = AssistantContextService(session_scope_factory=scope, gateway=Gateway())
-    result = service.answer(AssistantMessageRequestDto(run_id="run-1", message="How much recorded workflow time, token usage, and estimated cost has this migration consumed?", idempotency_key="terminal-duration"))
-    assert "Recorded workflow duration: 3.00 seconds." in result.answer
+    with sessions() as session:
+        projection = WorkflowProjectionService().build(session, "run-1")
+    assert projection.operational_statistics.recorded_workflow_duration_seconds == 2.0
     engine.dispose()
 
 

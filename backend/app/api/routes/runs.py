@@ -15,9 +15,11 @@ from app.domain.contracts import (
     AuthoritativeRunStateDto,
     CancelAuthoritativeRunRequestDto,
     CreateAuthoritativeRunRequestDto,
+    RunTimingDto,
     StartAuthoritativeRunRequestDto,
 )
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
+from app.services.run_timing_service import RunTimingError, RunTimingService
 from app.repositories.models import WorkflowEventModel
 from app.repositories.session import session_scope
 
@@ -26,6 +28,10 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 def get_run_service() -> MigrationRunService:
     return MigrationRunService(get_settings())
+
+
+def get_run_timing_service() -> RunTimingService:
+    return RunTimingService()
 
 
 def _error(request: Request, error: MigrationRunError):
@@ -89,6 +95,15 @@ def cancel_run(run_id: str, request: CancelAuthoritativeRunRequestDto, http_requ
         event_sequence=result.event_sequence, graph_thread_id=result.graph_thread_id,
         idempotent_replay=result.idempotent_replay, artifacts=list(result.artifacts),
     )
+
+
+@router.get("/{run_id}/timing", response_model=RunTimingDto)
+def read_run_timing(run_id: str, http_request: Request, service: RunTimingService = Depends(get_run_timing_service)):
+    try:
+        with session_scope() as session:
+            return service.build(session, run_id)
+    except RunTimingError as error:
+        return _error(http_request, error)
 
 
 @router.get("/{run_id}/state", response_model=AuthoritativeRunStateDto)
