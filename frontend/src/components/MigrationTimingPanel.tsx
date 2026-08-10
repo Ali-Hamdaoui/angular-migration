@@ -33,6 +33,10 @@ function statusLabel(status: TimingActivityDto["measurement_status"]): string {
   return status === "complete" ? "Measured" : status === "partial" ? "Partial" : "Unavailable";
 }
 
+function totalStatusLabel(status: RunTimingDto["total_measurement_status"]): string {
+  return status === "running" ? "Running" : status === "complete" ? "Measured" : "Unavailable";
+}
+
 function activityDetail(activity: TimingActivityDto): string {
   const details = [`${activity.measured_count} measured`];
   if (activity.unmeasured_count > 0) details.push(`${activity.unmeasured_count} invocation(s) lack timing`);
@@ -44,10 +48,13 @@ function SpanList({ title, spans }: { title: string; spans: TimingSpanDto[] }) {
   return <section className={styles.activityGroup} aria-labelledby={`${title.toLowerCase().replaceAll(" ", "-")}-heading`}>
     <h3 id={`${title.toLowerCase().replaceAll(" ", "-")}-heading`}>{title}</h3>
     {spans.length === 0 ? <p className={styles.note}>—</p> : <ul className={styles.metricList}>
-      {spans.map((span) => <li key={span.key}>
-        <span>{span.label}</span>
-        <strong>{span.status === "not_started" ? "Not started." : formatDuration(span.duration_seconds)}</strong>
-      </li>)}
+      {spans.map((span) => {
+        const status = span.status === "running" ? "Running" : span.status === "unavailable" ? "Unavailable" : null;
+        return <li key={span.key}>
+          <span>{span.label}</span>
+          <strong>{span.status === "not_started" ? "Not started." : formatDuration(span.duration_seconds)}{status && <small>{status}</small>}</strong>
+        </li>;
+      })}
     </ul>}
   </section>;
 }
@@ -72,11 +79,11 @@ export function MigrationTimingPanel({ runId, refreshKey = 0 }: { runId: string;
   }, [runId, refreshKey]);
 
   if (error) return <section className={styles.panel} role="alert"><h2>Migration timing is temporarily unavailable</h2><p className={styles.note}>Refresh to retry this panel.</p></section>;
-  if (!timing) return <section className={styles.panel} aria-busy="true"><h2>Migration timing</h2><p className={styles.note}>Loading authoritative timing\u2026</p></section>;
+  if (!timing) return <section className={styles.panel} aria-busy="true"><h2>Migration timing</h2><p className={styles.note}>{"Loading authoritative timing\u2026"}</p></section>;
 
   const totalLabel = timing.total_measurement_status === "running" ? "Elapsed as of" : "Total wall-clock";
   return <section className={styles.panel} aria-labelledby="migration-timing-heading">
-    <div className={styles.previewHeader}><div><span className={styles.kicker}>Backend-owned timing</span><h2 id="migration-timing-heading">Migration timing</h2></div><span className={styles.status}>{statusLabel(timing.total_measurement_status === "running" ? "partial" : timing.total_measurement_status === "complete" ? "complete" : "unavailable")}</span></div>
+    <div className={styles.previewHeader}><div><span className={styles.kicker}>Backend-owned timing</span><h2 id="migration-timing-heading">Migration timing</h2></div><span className={styles.status}>{totalStatusLabel(timing.total_measurement_status)}</span></div>
     <div className={styles.metricGrid}>
       <strong>{formatDuration(timing.total_duration_seconds)}<small>{totalLabel}</small></strong>
       <strong>{formatTimestamp(timing.started_at)}<small>Start</small></strong>

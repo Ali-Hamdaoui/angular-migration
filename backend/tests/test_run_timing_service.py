@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.domain.contracts import AssistantOperationalStatisticsDto
 from app.repositories.models import (
     Base,
     CommandExecutionModel,
@@ -19,7 +20,7 @@ from app.repositories.models import (
 from app.api.routes import runs as run_routes
 from app.main import app
 from app.services.run_timing_service import RunTimingService
-from app.services.workflow_projection_service import WorkflowProjectionService
+from app.services.workflow_projection_service import WorkflowProjectionService, _apply_timing_statistics
 
 
 RUN_ID = "run-timing-1"
@@ -441,6 +442,31 @@ def test_workflow_projection_delegates_timing_and_preserves_usage_aggregation(tm
     assert projection.operational_statistics.current_active_run_age_seconds is None
     assert projection.operational_statistics.total_tokens == 15
     assert projection.operational_statistics.total_cost_usd == 0.03
+
+
+def test_timing_statistics_update_preserves_usage_fields(tmp_path) -> None:
+    session = _session(tmp_path)
+    session.add(_run(status="COMPLETED"))
+    session.add_all(
+        [
+            _event("accepted", "RUN_START_ACCEPTED", 1, START),
+            _event("completed", "STAGED_MIGRATION_COMPLETED", 2, FINISH),
+        ]
+    )
+    session.commit()
+
+    timing = RunTimingService().build(session, RUN_ID)
+    stats = AssistantOperationalStatisticsDto(input_tokens=10, output_tokens=5, total_tokens=15, total_cost_usd=0.03)
+
+    updated = _apply_timing_statistics(stats, timing, {"STAGED_MIGRATION": 720.0}, {"stage-a": 42.0})
+
+    assert updated.recorded_workflow_duration_seconds == 720.0
+    assert updated.phase_durations_seconds == {"STAGED_MIGRATION": 720.0}
+    assert updated.stage_durations_seconds == {"stage-a": 42.0}
+    assert updated.input_tokens == 10
+    assert updated.output_tokens == 5
+    assert updated.total_tokens == 15
+    assert updated.total_cost_usd == 0.03
 
 
 def test_timing_route_returns_typed_projection_and_404_envelope(tmp_path, monkeypatch) -> None:

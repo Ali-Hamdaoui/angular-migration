@@ -11,6 +11,7 @@ from app.domain.contracts import (
     AssistantOperationalStatisticsDto,
     AssistantWorkflowProjectionDto,
     ProjectionValue,
+    RunTimingDto,
 )
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -76,6 +77,24 @@ def _event_detail(event: WorkflowEventModel | None) -> str | None:
     )
 
 
+def _apply_timing_statistics(
+    stats: AssistantOperationalStatisticsDto,
+    timing: RunTimingDto,
+    phase_durations: dict[str, float],
+    stage_durations: dict[str, float],
+) -> AssistantOperationalStatisticsDto:
+    """Add timing-owned fields without changing usage-owned statistics."""
+    return stats.model_copy(
+        update={
+            "run_start_timestamp": timing.started_at,
+            "recorded_workflow_duration_seconds": timing.total_duration_seconds,
+            "current_active_run_age_seconds": timing.total_duration_seconds if timing.total_measurement_status == "running" else None,
+            "phase_durations_seconds": phase_durations or None,
+            "stage_durations_seconds": stage_durations or None,
+        }
+    )
+
+
 class WorkflowProjectionService:
     """Compose one query-ready projection from persisted run records and events."""
 
@@ -110,13 +129,9 @@ class WorkflowProjectionService:
         role_counts: dict[str, int] = {}
         for invocation in invocations:
             role_counts[invocation.role] = role_counts.get(invocation.role, 0) + 1
+        # Keep usage/token aggregation independent from timing integration.
         records = [usage[item.id] for item in invocations if item.status == "completed" and item.id in usage]
         stats = AssistantOperationalStatisticsDto(
-            run_start_timestamp=timing.started_at,
-            recorded_workflow_duration_seconds=timing.total_duration_seconds,
-            current_active_run_age_seconds=timing.total_duration_seconds if timing.total_measurement_status == "running" else None,
-            phase_durations_seconds=phase_durations or None,
-            stage_durations_seconds=stage_durations or None,
             command_totals_by_status=counts or None,
             successful_commands=sum(value for key, value in counts.items() if key in {"succeeded", "completed"}) if commands else None,
             failed_commands=sum(value for key, value in counts.items() if key in {"failed", "timed_out", "rejected", "interrupted"}) if commands else None,
@@ -129,6 +144,7 @@ class WorkflowProjectionService:
             output_cost_usd=sum(item.output_cost_usd for item in records) if records else None,
             total_cost_usd=sum(item.total_cost_usd for item in records) if records else None,
         )
+        stats = _apply_timing_statistics(stats, timing, phase_durations, stage_durations)
 
         referenced_artifact_ids = [artifact_id for event in events for artifact_id in (event.payload.get("artifact_ids", []) if isinstance(event.payload.get("artifact_ids", []), list) else [])]
         if snapshot is not None and snapshot.status == "created":

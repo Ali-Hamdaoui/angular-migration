@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { RunTimingDto } from "@/types/generated/api";
 import { getAuthoritativeRunTiming } from "@/api/runs";
 import { MigrationTimingPanel } from "@/components/MigrationTimingPanel";
@@ -81,6 +81,36 @@ describe("MigrationTimingPanel", () => {
 
     expect(await screen.findByText("Elapsed as of")).toBeInTheDocument();
     expect(screen.getByText("1m 05s")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
+  });
+
+  it("labels unavailable workflow spans instead of displaying only a placeholder", async () => {
+    vi.mocked(getAuthoritativeRunTiming).mockResolvedValue({
+      ...timing,
+      phases: [
+        { key: "BASELINE", label: "Baseline", status: "unavailable", started_at: null, finished_at: null, duration_seconds: null },
+      ],
+    });
+
+    render(<MigrationTimingPanel runId="run-timing-1" />);
+
+    const baselineRow = (await screen.findByText("Baseline")).closest("li");
+    expect(baselineRow).not.toBeNull();
+    expect(within(baselineRow as HTMLElement).getByText("Unavailable")).toBeInTheDocument();
+    expect(within(baselineRow as HTMLElement).getByText("—")).toBeInTheDocument();
+  });
+
+  it("renders a readable loading indicator", () => {
+    let resolveLoading: (value: RunTimingDto) => void = () => undefined;
+    const loading = new Promise<RunTimingDto>((resolve) => { resolveLoading = resolve; });
+    vi.mocked(getAuthoritativeRunTiming).mockReturnValue(loading);
+
+    const view = render(<MigrationTimingPanel runId="run-timing-1" />);
+
+    expect(screen.getByText("Loading authoritative timing…")).toBeInTheDocument();
+    expect(screen.queryByText(/\\u2026/)).not.toBeInTheDocument();
+    view.unmount();
+    resolveLoading(timing);
   });
 
   it("keeps an API failure inside the panel", async () => {
