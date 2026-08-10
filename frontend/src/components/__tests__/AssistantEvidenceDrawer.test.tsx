@@ -13,4 +13,12 @@ describe("AssistantEvidenceDrawer", () => {
     expect(screen.queryByText("projection/b.json")).not.toBeInTheDocument();
     expect(screen.queryByText(/C:\\workspace|\/home\\/)).not.toBeInTheDocument();
   });
+
+  it("uses a shared evidence title and keeps provenance details collapsed", () => {
+    render(<AssistantEvidenceDrawer citations={[{
+      artifact_id: "artifact-a", checksum: "sha256:a", label: "approved/a.json", stage_key: "G02", proof_label: "approved_evidence_supported",
+    }]} />);
+    expect(screen.getByText("Evidence")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "approved/a.json" })).toBeInTheDocument();
+  });
 });

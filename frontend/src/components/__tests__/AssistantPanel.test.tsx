@@ -90,7 +90,7 @@ describe("AssistantPanel authoritative rendering", () => {
     const conversation = await screen.findByRole("region", { name: "Assistant conversation" });
     expect(conversation).toContainElement(screen.getByLabelText("Suggested assistant questions"));
     expect(conversation).not.toContainElement(screen.getByRole("textbox", { name: "Ask about this migration" }));
-    expect(screen.getAllByRole("region")).toHaveLength(2);
+    expect(screen.getAllByRole("region")).toHaveLength(3);
   });
 
   it("keeps a 503 visible and exposes the existing retry action", async () => {
@@ -186,5 +186,39 @@ describe("AssistantPanel authoritative rendering", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("article", { name: "user message" })).not.toHaveTextContent("Blocker:");
+  });
+
+  it("opens an expanded modal with initial focus, closes on Escape, and returns focus to launcher", async () => {
+    render(<AssistantDock runId="run-1" />);
+    const launcher = screen.getByRole("button", { name: "Open Assistant" });
+    fireEvent.click(launcher);
+    const dialog = await screen.findByRole("dialog", { name: "Migration Follow-up Assistant" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByRole("button", { name: "Close Assistant" })).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Open Assistant" })).toHaveFocus();
+  });
+
+  it("keeps focus inside the expanded drawer when tabbing from the last control", async () => {
+    render(<AssistantDock runId="run-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Assistant" }));
+    const dialog = await screen.findByRole("dialog", { name: "Migration Follow-up Assistant" });
+    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button, textarea, select, input, [tabindex]:not([tabindex="-1"])')).filter((item) => !item.hasAttribute("disabled"));
+    const last = controls.at(-1)!;
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(screen.getByRole("button", { name: "Minimize Assistant" })).toHaveFocus();
+  });
+
+  it("shows response hierarchy before technical response details", async () => {
+    render(<AssistantPanel runId="run-1" />);
+    expect(await screen.findByText("Current state")).toBeInTheDocument();
+    expect(screen.getByText("What is waiting")).toBeInTheDocument();
+    expect(screen.getByText("Why it is blocked")).toBeInTheDocument();
+    expect(screen.getByText("Next permitted action")).toBeInTheDocument();
+    expect(screen.getByText("Evidence")).toBeInTheDocument();
+    expect(screen.queryByText(/Capability:/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Response details"));
+    expect(screen.getByText("Operational statistics unavailable")).toBeInTheDocument();
   });
 });
