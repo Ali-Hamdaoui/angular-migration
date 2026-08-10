@@ -64,6 +64,8 @@ test.describe("Journey Command Center real-service journeys", () => {
     await page.goto(`/preflights/${encodeURIComponent(preflightId)}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: /G01/i })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("main")).toContainText(preflightId);
+    await expect(page.getByRole("region", { name: "Evidence" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Decision outcome" })).toContainText(/Expired|Passed|Blocked|Rejected|Approved/i);
   });
 
   test("overview action focuses the corresponding Pipeline stage", async ({ page }) => {
@@ -118,7 +120,11 @@ test.describe("Journey Command Center real-service journeys", () => {
     const launcher = page.getByRole("button", { name: "Open Assistant" });
     await launcher.focus();
     await launcher.click();
-    await expect(page.getByRole("dialog", { name: "Migration Follow-up Assistant" })).toBeVisible();
+    const dialog = page.getByRole("dialog", { name: "Migration Follow-up Assistant" });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole("button", { name: "Close Assistant" })).toBeFocused();
+    for (let index = 0; index < 4; index += 1) await page.keyboard.press("Tab");
+    expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
     await page.getByRole("button", { name: "Minimize Assistant" }).click();
     await expect(page.getByRole("button", { name: "Expand Assistant" })).toBeVisible();
     await page.getByRole("button", { name: "Close Assistant" }).click();
@@ -139,6 +145,41 @@ test.describe("Journey Command Center real-service journeys", () => {
       await page.keyboard.press("Enter");
       await expect(item).toHaveAttribute("aria-current", "page");
     }
+    const pipeline = page.locator("#pipeline-navigation-item");
+    if (!(await pipeline.isVisible())) await openNavigation.click();
+    await pipeline.focus();
+    await page.keyboard.press("Enter");
+    const stage = page.getByRole("button", { name: /Setup: / }).first();
+    await stage.focus();
+    await page.keyboard.press("Enter");
+    await expect(stage).toHaveAttribute("aria-expanded", "true");
+    const tabs = page.getByRole("tab");
+    await expect(tabs.first()).toBeVisible();
+    if (await tabs.count() > 1) {
+      await tabs.first().focus();
+      await page.keyboard.press("ArrowRight");
+      expect(await page.locator('[role="tab"][aria-selected="true"]').count()).toBe(1);
+    }
+    const evidence = page.locator("#evidence-navigation-item");
+    if (!(await evidence.isVisible())) await openNavigation.click();
+    await evidence.focus();
+    await page.keyboard.press("Enter");
+    const evidenceResult = page.locator('[aria-label="Evidence results"] button').first();
+    await expect(evidenceResult).toBeVisible();
+    await evidenceResult.focus();
+    await page.keyboard.press("Enter");
+    await expect(evidenceResult).toHaveAttribute("data-selected", "true");
+    const provenance = page.getByText("Provenance", { exact: true });
+    await expect(provenance).toBeVisible();
+    await provenance.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Technical details", { exact: true })).toBeVisible();
+    const preflight = required("JOURNEY_PREFLIGHT_ID");
+    await page.goto(`/preflights/${encodeURIComponent(preflight)}`, { waitUntil: "domcontentloaded" });
+    const decision = page.getByRole("button", { name: /Approve|Request modification|Reject|Create and start authoritative run/i }).first();
+    await expect(decision).toBeVisible();
+    await decision.focus();
+    expect(await decision.getAttribute("type")).toBe("button");
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     expect(overflow).toBe(false);
     const fixedObstruction = await page.evaluate(() => {
@@ -157,16 +198,16 @@ test.describe("Journey Command Center real-service journeys", () => {
 
   test("captures approved responsive comparison states", async ({ page }) => {
     await openRun(page, "desktop");
-    await page.screenshot({ path: screenshotPath("built-overview-desktop.png"), fullPage: true });
+    await page.screenshot({ path: screenshotPath("built-overview-desktop.png") });
     await selectSection(page, "Pipeline");
     await page.setViewportSize(viewport.tablet);
-    await page.screenshot({ path: screenshotPath("built-pipeline-tablet.png"), fullPage: true });
+    await page.screenshot({ path: screenshotPath("built-pipeline-tablet.png") });
     const transformation = page.getByRole("button", { name: /20.*21|Transform/i }).first();
     if (await transformation.count()) await transformation.click();
     await page.setViewportSize(viewport.mobile);
-    await page.screenshot({ path: screenshotPath("built-transformation-mobile.png"), fullPage: true });
+    await page.screenshot({ path: screenshotPath("built-transformation-mobile.png") });
     await page.setViewportSize(viewport.desktop);
     await selectSection(page, "Evidence");
-    await page.screenshot({ path: screenshotPath("built-evidence-desktop.png"), fullPage: true });
+    await page.screenshot({ path: screenshotPath("built-evidence-desktop.png") });
   });
 });
