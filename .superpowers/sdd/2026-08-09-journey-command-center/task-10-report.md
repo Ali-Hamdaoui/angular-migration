@@ -64,3 +64,5 @@ Exit code: 0
 ```
 
 The full frontend suite remains intentionally unrun.
+
+The final authority edge regression also covers stale `active_error` data on a completed projection; the focused suite finished at 72/72 after this guard.
