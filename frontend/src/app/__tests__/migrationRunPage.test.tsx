@@ -6,6 +6,7 @@ vi.mock("@/api/migrations", () => ({ getMockMigrationState: vi.fn() }));
 vi.mock("@/api/runs", () => ({ getAuthoritativeRunState: vi.fn() }));
 vi.mock("@/components/RunDashboard", () => ({
   RunDashboard: () => <div data-testid="legacy-run-dashboard">Legacy dashboard</div>,
+  adaptMockMigrationRun: (run: unknown) => run,
 }));
 vi.mock("@/components/AuthoritativeRunDashboard", () => ({
   AuthoritativeRunDashboard: ({ runId }: { runId: string }) => <div data-testid="authoritative-run-dashboard">Authoritative {runId}</div>,
@@ -27,6 +28,7 @@ describe("mock migration route", () => {
     render(await MigrationRunPage({ params: Promise.resolve({ runId: "mock-run-angular-18-to-21" }) }));
 
     expect(screen.getByTestId("authoritative-run-dashboard")).toHaveTextContent("mock-run-angular-18-to-21");
+    expect(screen.getByRole("note")).toHaveTextContent(/demo data/i);
     expect(screen.queryByTestId("legacy-run-dashboard")).not.toBeInTheDocument();
   });
 });

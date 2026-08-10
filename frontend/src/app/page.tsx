@@ -24,7 +24,21 @@ function writeRunUrl(runId: string | null) {
 }
 
 function preparePage(notice?: string) {
-  return <main className="landing"><p className="eyebrow">AI Frontend Migration Factory</p><h1>Control Tower</h1>{notice ? <p role="alert">{notice}</p> : null}<p>Review backend-owned migration state and prepare an authoritative external migration run.</p><Link className="button" href="/migrations/new">Prepare migration</Link><EnvironmentDiagnosticsPanel /></main>;
+  return <main className="landing">
+    <p className="eyebrow">AI Frontend Migration Factory</p>
+    <h1>Start a migration</h1>
+    {notice ? <p role="alert">{notice}</p> : null}
+    <p className="landingLead">Use four clear steps to check the project, review readiness, approve the plan, and follow the migration.</p>
+    <p className="landingNote">The source stays read-only. The backend remains the authority for every decision and piece of evidence.</p>
+    <div className="landingActions">
+      <Link className="button" href="/migrations/new">Start a new migration</Link>
+      <Link className="secondaryButton" href="/">Resume active migration</Link>
+    </div>
+    <details className="landingDiagnostics">
+      <summary>View diagnostics</summary>
+      <EnvironmentDiagnosticsPanel />
+    </details>
+  </main>;
 }
 
 export default function HomePage() {
@@ -60,7 +74,7 @@ export default function HomePage() {
 
   useEffect(() => { restore(); }, [restore]);
 
-  if (restoration === "restoring") return <main role="status" aria-live="polite"><p>Restoring authoritative migration…</p></main>;
+  if (restoration === "restoring") return <main role="status" aria-live="polite"><p>Restoring authoritative migration...</p></main>;
   if (restoration === "loaded" && run) return <AuthoritativeRunDashboard runId={run.run_id} initialState={run} />;
   if (restoration === "unavailable") return <main role="alert"><p>The authoritative migration could not be reached. Your active run is preserved.</p><button type="button" onClick={restore}>Retry restoration</button></main>;
   if (restoration === "not-found") return preparePage("The requested migration run was not found. You can prepare a new migration.");
