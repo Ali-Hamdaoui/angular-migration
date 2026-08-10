@@ -296,3 +296,36 @@ Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors
 ```
 
 The narrow fix diff was self-reviewed for untrusted-response validation, exact run/gate/package authority, immutable artifact retention, monotonic version/event handling, changed-binding races, terminal control closure, authoritative refresh recovery, unchanged payload and 409 behavior, standalone compatibility, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 4 is implemented pending re-review and is not marked complete.
+
+## Independent review fix round 5
+
+Task 7 review fix round 5 was implemented from reviewed HEAD `383ac4885419f2dd121e42bff91e3b7c2f59ba9a`. The verified unknown/inconsistent G02 GET-state finding is addressed and the task remains pending independent re-review.
+
+The dashboard's same-run, same-package GET validator now also requires an explicit valid G02 status/decision pair. Pending is valid only with a null decision; approved, approved-with-comment, modification-requested, and rejected states require their matching decision; stale permits only null or a known prior G02 decision. Unknown statuses and inconsistent pairs become the existing unavailable package state, omit package evidence and decision controls, and expose only the safe GET retry. The panel independently applies the same validator, withholds invalid package content, reports a validation error, and offers authoritative refresh. Its action form is now reachable only from the exact `pending`/null pair. Valid terminal outcomes, the runtime-validated POST override, exact decision payload and checksum/version bindings, reviewer draft, 409 behavior, standalone GET retry, and Task 8 boundary remain unchanged.
+
+### Strict RED/GREEN evidence
+
+```text
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/components/__tests__/G02ReviewPanel.test.tsx -t "same-run/checksum|authoritative G02 review"
+RED: Test Files 2 failed (2); Tests 4 failed, 34 skipped
+GREEN: Test Files 2 passed (2); Tests 4 passed, 34 skipped
+```
+
+### Focused verification
+
+```text
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/components/__tests__/G02ReviewPanel.test.tsx
+Test Files: 2 passed (2)
+Tests: 38 passed (38)
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+git diff --check -- frontend/src/components/AuthoritativeRunDashboard.tsx frontend/src/components/G02ReviewPanel.tsx frontend/src/components/__tests__/AuthoritativeRunDashboard.test.tsx frontend/src/components/__tests__/G02ReviewPanel.test.tsx
+Exit code: 0
+```
+
+Per controller direction, round 5 did not rerun the repository-wide frontend suite. The narrow fix diff was self-reviewed for explicit status/decision exhaustiveness, pending-only actionability, terminal-state preservation, invalid package/evidence omission, GET-only recovery, POST-response validation compatibility, unchanged 409 behavior, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 5 is implemented pending re-review and is not marked complete.
