@@ -32,6 +32,6 @@ The approved visual uses a human-readable blocked transformation message. The ca
 
 The four responsive captures match the approved information architecture, visual tokens, hierarchy, and disclosure model. Remaining visual variance is limited to the live run's authoritative refresh/unavailable state and is documented above. No unrelated redesign was introduced.
 
-The Diagnostics journey reached the real blocker, command/log, LLM, and workflow-event surfaces, but the browser process became unstable while evaluating the large live event projection. The test records the intentionally aborted SSE request and remains bounded; this is a harness/resource limitation, not a fabricated pass or a hidden application error. Event payload JSON is now rendered lazily when its technical disclosure is opened.
+The Diagnostics journey reached the real blocker, command/log, LLM, and workflow-event surfaces in a bounded real-service check. The test intentionally aborts the live SSE request after loading the authoritative snapshot so this read-only projection check does not wait on an unbounded reconnect loop; the exact abort is recorded in the test output. Workflow events and payload JSON are progressively disclosed, and event payload JSON is rendered only when its technical disclosure is opened.
 
 final result: passed

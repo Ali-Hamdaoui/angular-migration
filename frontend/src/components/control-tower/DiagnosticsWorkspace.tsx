@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { AuthoritativeRunStateDto, CommandExecutionResponseDto } from "@/types/generated/api";
 import type { AuthoritativeConnectionStatus } from "@/hooks/useAuthoritativeRun";
 import type { TransformationProjection } from "@/types/transformation";
@@ -60,6 +61,7 @@ export function DiagnosticsWorkspace({
   refreshTransformation,
   refreshAuthoritativeState,
 }: Props) {
+  const [eventsOpen, setEventsOpen] = useState(false);
   const currentBlocker = blocker(run, transformation);
   const canRefresh = connectionStatus === "open";
   async function refresh() {
@@ -91,7 +93,10 @@ export function DiagnosticsWorkspace({
       {executionStatus === "unavailable" ? <p className={styles.note}>Command execution details are not available from the backend.</p> : null}
     </section>
 
-    <WorkflowEventsSection events={run.workflow_events} />
+    <details className={styles.card} onToggle={(event) => setEventsOpen(event.currentTarget.open)}>
+      <summary>Workflow events</summary>
+      {eventsOpen ? <WorkflowEventsSection events={run.workflow_events} /> : null}
+    </details>
 
     <section className={styles.card} aria-label="LLM activity" aria-labelledby="diagnostics-llm-title">
       <LlmDiagnosticsPanel runId={runId} stateVersion={run.state_version} connectionStatus={connectionStatus} refreshAuthoritativeState={refreshAuthoritativeState} workflowEvents={run.workflow_events} />

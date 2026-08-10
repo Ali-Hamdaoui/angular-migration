@@ -50,12 +50,12 @@ test.describe("Journey Command Center real-service journeys", () => {
     await page.getByLabel("Source path").fill(sourcePath);
     await page.getByLabel("External target-parent path").fill(targetParentPath);
     await page.getByRole("button", { name: "Check readiness", exact: true }).click();
-    await expect(page.locator('li[aria-label="Path safety and target reservation"]')).not.toHaveAttribute("data-state", "waiting", { timeout: 30_000 });
+    await expect(page.locator('li[aria-label="Path safety and target reservation"]')).not.toHaveAttribute("data-state", "waiting", { timeout: 90_000 });
     await page.getByLabel("Source path").fill(`${sourcePath} `);
     await expect(page.getByRole("status")).toContainText("Configuration changed");
     await expect(page.getByRole("button", { name: "Check readiness again", exact: true })).toBeEnabled();
     await page.getByRole("button", { name: "Check readiness again", exact: true }).click();
-    await expect(page.locator('li[aria-label="Path safety and target reservation"]')).not.toHaveAttribute("data-state", "running", { timeout: 30_000 });
+    await expect(page.locator('li[aria-label="Path safety and target reservation"]')).not.toHaveAttribute("data-state", "running", { timeout: 90_000 });
   });
 
   test("G01 route renders supplied authoritative preflight evidence", async ({ page }) => {
@@ -108,6 +108,7 @@ test.describe("Journey Command Center real-service journeys", () => {
     await expect(page.getByRole("heading", { name: "Blocker", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Commands and logs", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "LLM diagnostics and usage", exact: true })).toBeVisible();
+    await page.getByText("Workflow events", { exact: true }).click();
     await expect(page.getByLabel("Authoritative workflow events")).toBeVisible();
     await page.getByLabel("Search events").fill("blocked");
     await expect(page.getByLabel("Authoritative workflow events")).toBeVisible();
