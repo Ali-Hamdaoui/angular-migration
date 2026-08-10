@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { ArtifactRefDto, CommandExecutionResponseDto, WorkflowEventDto } from "@/types/generated/api";
 import type { TransformationProjection } from "@/types/transformation";
+import { gateDefinition, isGateId } from "@/presentation/gates";
 import { getBackendBaseUrl } from "@/api/client";
 import { TRANSFORMATION_EVENT_TYPES } from "@/hooks/useAuthoritativeRun";
 import { LiveCommandLogViewer } from "@/components/LogViewer";
@@ -22,17 +23,14 @@ function latest(events: WorkflowEventDto[], matches: (type: string) => boolean) 
   return events.filter((event) => matches(event.event_type)).at(-1);
 }
 
-const decisionLabels: Record<string, string> = {
-  G07: "Stage-start approval",
-  G08: "Validation review",
-  G09: "Validation evidence review",
-  G10: "Repair approval",
-  G11: "Final stage acceptance",
-  G12: "Delivery approval",
-};
-
 export function decisionLabel(value: string | null | undefined) {
-  return value ? decisionLabels[value] ?? "Unsupported decision" : "No decision requested";
+  return value && isGateId(value) ? gateDefinition(value).label : value ? "Unsupported decision" : "No decision requested";
+}
+
+export function approvalActionLabel(value: string | null | undefined) {
+  if (value === "G11") return "Approve repair validation";
+  if (value === "G12") return "Approve stage completion";
+  return "Approve";
 }
 
 export function displayStatus(value: string | null | undefined) {
@@ -57,8 +55,8 @@ export function displayStatus(value: string | null | undefined) {
 }
 
 function evidenceLabel(value: string) {
-  const decision = Object.keys(decisionLabels).find((key) => value.startsWith(`${key}_`));
-  if (decision) return decisionLabel(decision);
+  const decision = ["G07", "G08", "G09", "G10", "G11", "G12"].find((key) => value.startsWith(`${key}_`));
+  if (decision && isGateId(decision)) return decisionLabel(decision);
   return value.replaceAll("_", " ").toLowerCase();
 }
 
@@ -110,7 +108,7 @@ export function StageSummary({ projection }: Omit<SharedProps, "artifacts">) {
   const currentStageIndex = projection.route_stages.findIndex((stage) => stage.stage_id === projection.stage_id);
   const previousStage = currentStageIndex > 0 ? projection.route_stages[currentStageIndex - 1] : null;
   return <section className={styles.card} aria-labelledby="transform-stage-summary">
-    <span className={styles.eyebrow}>01 / Stage and continuation</span>
+    <span className={styles.eyebrow}>Stage and continuation</span>
     <h3 id="transform-stage-summary">Migration stages</h3>
     <dl className={styles.metadata}>
       <div><dt>Angular route</dt><dd>{projection.source_version ?? "unavailable"} → {projection.target_version ?? "unavailable"}</dd></div>
@@ -145,7 +143,7 @@ export function StageSummary({ projection }: Omit<SharedProps, "artifacts">) {
 
 export function WorkerStatus({ projection }: { projection: TransformationProjection }) {
   return <section className={styles.card} aria-labelledby="transform-worker-status">
-    <span className={styles.eyebrow}>02 / Worker and command</span>
+    <span className={styles.eyebrow}>Worker and command</span>
     <h3 id="transform-worker-status">Durable execution</h3>
     <dl className={styles.metadata}>
       <div><dt>Worker state</dt><dd>{displayStatus(projection.status)}</dd></div>
@@ -216,7 +214,7 @@ export function LogsAndDiagnostics({ projection, workflowEvents, executions, exe
     && !currentDiagnostic,
   );
   return <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="transform-logs">
-    <span className={styles.eyebrow}>04 / Logs and diagnostics</span>
+    <span className={styles.eyebrow}>Logs and diagnostics</span>
     <h3 id="transform-logs">Command output</h3>
     {projection.active_command_id
       ? <LiveCommandLogViewer
@@ -257,7 +255,7 @@ export function TransformationEvidence({ projection, workflowEvents, artifacts }
   const completed = latest(workflowEvents, (type) => type === "STAGE_TRANSFORMATION_COMPLETED");
   const versionStatus = version?.event_type === "VERSION_VERIFICATION_PASSED" ? "Passed" : version ? "Failed or unavailable" : "Unavailable";
   return <section className={styles.card} aria-labelledby="transform-evidence">
-    <span className={styles.eyebrow}>06 / Version and transformation evidence</span>
+    <span className={styles.eyebrow}>Version and transformation evidence</span>
     <h3 id="transform-evidence">Dependency and version evidence</h3>
     <dl className={styles.metadata}>
       <div><dt>Version verification</dt><dd>{versionStatus}</dd></div>
@@ -276,14 +274,14 @@ export function TransformationEvidence({ projection, workflowEvents, artifacts }
 export function ValidationEvidence({ projection, workflowEvents, artifacts }: SharedProps) {
   const validation = latest(workflowEvents, (type) => type.startsWith("STAGE_VALIDATION_"));
   return <section className={styles.card} aria-labelledby="transform-validation">
-    <span className={styles.eyebrow}>07 / Build and test validation</span>
+    <span className={styles.eyebrow}>Build and test validation</span>
     <h3 id="transform-validation">Frozen validation</h3>
     <dl className={styles.metadata}>
       <div><dt>Install</dt><dd>{displayStatus(projection.validation_results.npm_ci?.status)}</dd></div>
       <div><dt>Production build</dt><dd>{displayStatus(projection.validation_results.build?.status)}</dd></div>
       <div><dt>Tests</dt><dd>{displayStatus(projection.validation_results.test?.status)}</dd></div>
       <div><dt>Validation review</dt><dd>{validation?.event_type === "STAGE_VALIDATION_COMPLETED" ? "Recorded" : validation ? "Failed or unavailable" : "Unavailable"}</dd></div>
-      <div><dt>Final stage acceptance</dt><dd>{projection.stage_status.toLowerCase() === "sealed" ? "Recorded with sealed stage" : "Unavailable"}</dd></div>
+      <div><dt>Stage-completion evidence</dt><dd>{projection.stage_status.toLowerCase() === "sealed" ? "Recorded with sealed stage" : "Unavailable"}</dd></div>
     </dl>
     <p className={styles.note}>Build, test, and install status come from the backend validation projection. Missing values remain unavailable.</p>
     <EvidenceLinks
@@ -370,7 +368,7 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
         ? "Rejected"
         : null;
   return <section className={styles.card} aria-labelledby="transform-repair">
-    <span className={styles.eyebrow}>08 / Governed repair</span>
+    <span className={styles.eyebrow}>Governed repair</span>
     <h3 id="transform-repair">Repair workflow</h3>
     <dl className={styles.metadata}>
       <div><dt>Status</dt><dd>{displayStatus(projection.repair_status)}</dd></div>
@@ -568,7 +566,7 @@ export function RepairEvidence({ projection, workflowEvents, artifacts }: Shared
 export function SealAndRoute({ projection, workflowEvents, artifacts }: SharedProps) {
   const isSealed = projection.stage_status.toLowerCase() === "sealed";
   return <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="transform-seal">
-    <span className={styles.eyebrow}>09 / Seal and route continuation</span>
+    <span className={styles.eyebrow}>Seal and route continuation</span>
     <h3 id="transform-seal">Stage seal and next-stage lineage</h3>
     <dl className={styles.metadata}>
       <div><dt>Seal status</dt><dd>{isSealed ? "Sealed" : displayStatus(projection.stage_status)}</dd></div>

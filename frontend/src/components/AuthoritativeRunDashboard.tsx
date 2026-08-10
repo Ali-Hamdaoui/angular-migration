@@ -23,6 +23,7 @@ import { AnalysisReviewPanel } from "./AnalysisReviewPanel";
 import { FeasibilityPanel } from "./FeasibilityPanel";
 import { MigrationPlanPanel } from "./MigrationPlanPanel";
 import { PlanReviewPanel } from "./PlanReviewPanel";
+import { TransformationPanel } from "./TransformationPanel";
 import { AuthoritativeRunCancellationPanel } from "./AuthoritativeRunCancellationPanel";
 import { AssistantDock } from "./AssistantPanel";
 import { LlmDiagnosticsPanel } from "./LlmDiagnosticsPanel";
@@ -334,9 +335,23 @@ export function AuthoritativeRunDashboard({
           : milestone.key === "baseline" && BASELINE_COMMAND_EVENTS.has(event.event_type)
       ));
       const output = commandEvents.map((event) => commandText(event.payload)).filter((value): value is string => value != null);
+      const isCurrentTransformation = milestone.stageId != null
+        && milestone.stageId === transformation.projection?.stage_id;
 
       const summaryPanel = (
-        <div className="pipelineHumanSummary">
+        isCurrentTransformation ? (
+          <TransformationPanel
+            runId={runId}
+            projection={transformation.projection}
+            projectionStatus={transformation.status}
+            executions={transformation.executions}
+            executionStatus={transformation.executionStatus}
+            workflowEvents={state.workflow_events}
+            artifacts={state.artifacts}
+            refreshTransformation={transformation.refresh}
+            refreshAuthoritativeState={refresh}
+          />
+        ) : <div className="pipelineHumanSummary">
           <p>{milestone.state === "unavailable" ? "Not available from the authoritative state" : PIPELINE_SUMMARIES[milestone.key]}</p>
           {milestone.key === "setup" && hasEvent(state, "SOURCE_INTAKE_FAILED") ? (
             <>
@@ -411,7 +426,7 @@ export function AuthoritativeRunDashboard({
         tabs,
       };
     });
-  }, [authoritativeG02Load, authoritativeG02Review, authoritativeG03Assessment, authoritativeG03Load, refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, workspace.journey]);
+  }, [authoritativeG02Load, authoritativeG02Review, authoritativeG03Assessment, authoritativeG03Load, refresh, retryError, retrySourceIntake, retryingSourceIntake, runId, state, status, transformation.executionStatus, transformation.executions, transformation.projection, transformation.refresh, transformation.status, workspace.journey]);
 
   return (
     <div className="controlTowerDashboard">
