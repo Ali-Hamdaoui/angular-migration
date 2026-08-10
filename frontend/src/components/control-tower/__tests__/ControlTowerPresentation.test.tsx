@@ -1,10 +1,18 @@
 import { readFileSync } from "node:fs";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import type { TransformationProjection } from "@/types/transformation";
+import type { CurrentAction, RunWorkspaceProjection } from "@/presentation/currentAction";
+import type { JourneyMilestone } from "@/presentation/runJourney";
 import type { StatusPresentation } from "@/presentation/status";
+import { presentArtifact } from "@/presentation/artifacts";
+import { makeArtifact } from "@/test/authoritativeFixtures";
 import { StatusPill } from "../../StatusPill";
+import { CurrentActionCard } from "../CurrentActionCard";
 import { ControlTowerHeader } from "../ControlTowerHeader";
+import { OperatorOverview } from "../OperatorOverview";
 import { PipelineSection } from "../PipelineSection";
+import { RunJourneyStrip } from "../RunJourneyStrip";
 import { ControlTowerSidebar } from "../ControlTowerSidebar";
 import { TechnicalDetails } from "../TechnicalDetails";
 import { WorkflowEventsSection } from "../WorkflowEventsSection";
@@ -14,6 +22,25 @@ const layoutCss = readFileSync("src/components/control-tower/ControlTowerLayout.
 
 const event = (event_type: string, sequence: number, payload: Record<string, unknown> = {}) => ({ event_id: `e-${sequence}`, run_id: "run", stage_id: null, event_type, occurred_at: `2026-07-27T10:0${sequence}:00Z`, sequence, payload });
 const run = (workflow_events: AuthoritativeRunStateDto["workflow_events"]): AuthoritativeRunStateDto => ({ run_id: "run", status: "RUNNING", run_phase: "PREFLIGHT_SNAPSHOT", phase_status: "running", approval_status: "pending", repair_status: "not_required", state_version: 3, preflight_id: "p", source_path: "C:/source", target_output_path: "C:/target", graph_thread_id: "thread", created_at: "2026-07-27T10:00:00Z", updated_at: "2026-07-27T10:00:00Z", artifacts: [], workflow_events });
+
+const journey: JourneyMilestone[] = [
+  { key: "setup", label: "Setup", state: "complete" },
+  { key: "readiness", label: "Readiness", state: "complete" },
+  { key: "plan", label: "Migration plan", state: "complete" },
+  { key: "20-to-21", label: "Angular 20 to 21", state: "blocked", stageId: "stage-20-21" },
+  { key: "validate", label: "Validate", state: "not-reached" },
+  { key: "complete", label: "Complete", state: "not-reached" },
+];
+
+function workspace(currentAction: CurrentAction): RunWorkspaceProjection {
+  return {
+    journey,
+    currentAction,
+    completed: "Setup, Readiness, Migration plan",
+    now: currentAction.title,
+    next: currentAction.kind === "complete" ? "No further milestone" : "Angular 20 to 21",
+  };
+}
 
 describe("control tower presentation state", () => {
   it("presents a created G11 gate as a warning with its human decision label", () => {
@@ -99,7 +126,11 @@ describe("control tower presentation state", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
     expect(selectedSection).toBe("pipeline");
     expect(closeCount).toBe(1);
-    expect(container.querySelectorAll("svg").length).toBeGreaterThan(12);
+    expect(container.querySelectorAll("svg").length).toBeGreaterThanOrEqual(9);
+    expect(screen.getByRole("button", { name: "Overview" }).querySelector(".lucide-layout-dashboard")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pipeline" }).querySelector(".lucide-git-branch")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Evidence" }).querySelector(".lucide-folder-search")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Diagnostics" }).querySelector(".lucide-activity")).toBeInTheDocument();
     container.querySelectorAll("svg").forEach((icon) => {
       expect(icon).toHaveAttribute("aria-hidden", "true");
       expect(icon).not.toHaveAttribute("role");
@@ -143,5 +174,91 @@ describe("control tower presentation state", () => {
     fireEvent.click(screen.getByRole("button", { name: "Newest first" }));
     expect(screen.getAllByRole("listitem")[0]).toHaveTextContent("RUN_FAILED");
     expect(events[0].sequence).toBe(1);
+  });
+
+  it("renders the full journey as a semantic status list", () => {
+    render(<RunJourneyStrip journey={journey} />);
+
+    expect(screen.getByRole("list", { name: "Migration journey" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Setup: Complete" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "Angular 20 to 21: Blocked" })).toBeInTheDocument();
+    expect(screen.getAllByText("Not reached")).toHaveLength(2);
+  });
+
+  it("uses a current-action control only for operator navigation", () => {
+    const onNavigate = vi.fn();
+    const action: CurrentAction = {
+      kind: "blocked",
+      title: "Transformation blocked",
+      summary: "Repair revalidation needs attention.",
+      consequence: "Inspect the authoritative blocker before continuing.",
+      section: "pipeline",
+      stageKey: "20-to-21",
+      evidenceIds: ["failure-evidence"],
+      rawSource: "REPAIR_REVALIDATION_FAILED",
+    };
+    render(<CurrentActionCard action={action} onNavigate={onNavigate} />);
+
+    expect(screen.getByRole("heading", { name: "Transformation blocked" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View in pipeline" }));
+    expect(onNavigate).toHaveBeenCalledWith("pipeline", "20-to-21");
+  });
+
+  it.each([
+    ["blocked transformation", { kind: "blocked", title: "Transformation blocked", summary: "Repair revalidation needs attention.", section: "pipeline", stageKey: "20-to-21", evidenceIds: [], rawSource: "blocked" }],
+    ["running command", { kind: "running", title: "Migration command running", summary: "The backend is executing the current migration command.", section: "pipeline", stageKey: "20-to-21", evidenceIds: [], rawSource: "command:running" }],
+    ["verified completion", { kind: "complete", title: "Migration verified complete", summary: "The staged migration and final target verification are durably recorded.", section: "overview", stageKey: "complete", evidenceIds: [], rawSource: "verified" }],
+    ["no available data", { kind: "unavailable", title: "Current action unavailable", summary: "No current action can be confirmed.", section: "diagnostics", evidenceIds: [], rawSource: "unavailable" }],
+  ] as Array<[string, CurrentAction]>)("presents the %s state without raw event vocabulary", (_case, action) => {
+    render(
+      <OperatorOverview
+        projection={workspace(action)}
+        run={run([])}
+        transformation={null}
+        transformationStatus="disabled"
+        artifacts={[]}
+        onNavigate={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: action.title })).toBeInTheDocument();
+    expect(screen.getByText(action.summary)).toBeInTheDocument();
+    expect(screen.queryByText(action.rawSource)).not.toBeVisible();
+  });
+
+  it("keeps raw identifiers, counts, and projection versions in closed Technical details", () => {
+    const action: CurrentAction = { kind: "running", title: "Work in progress", summary: "Confirmed work continues.", section: "pipeline", evidenceIds: [], rawSource: "RUNNING" };
+    const authoritativeRun = { ...run([]), artifacts: [makeArtifact({ run_id: "run" })] };
+    render(
+      <OperatorOverview
+        projection={workspace(action)}
+        run={authoritativeRun}
+        transformation={{ continuation_id: "continuation-1", state_version: 31 } as TransformationProjection}
+        transformationStatus="ready"
+        artifacts={authoritativeRun.artifacts.map(presentArtifact)}
+        onNavigate={() => undefined}
+      />,
+    );
+
+    const details = screen.getByText("Technical details").closest("details") as HTMLElement;
+    expect(details).not.toHaveAttribute("open");
+    for (const value of ["run", "RUNNING", "3", "0 events", "1 artifact", "continuation-1", "31"]) {
+      within(details).getAllByText(value).forEach((item) => expect(item).not.toBeVisible());
+    }
+  });
+
+  it("disables navigation while authoritative records are refreshing", () => {
+    const action: CurrentAction = {
+      kind: "unavailable",
+      title: "Authoritative state is refreshing",
+      summary: "Confirmed journey state remains visible while authoritative records are refreshed.",
+      section: "diagnostics",
+      evidenceIds: [],
+      rawSource: "connection:recovering",
+    };
+    render(<CurrentActionCard action={action} onNavigate={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Waiting for authoritative refresh" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Open diagnostics" })).not.toBeInTheDocument();
   });
 });

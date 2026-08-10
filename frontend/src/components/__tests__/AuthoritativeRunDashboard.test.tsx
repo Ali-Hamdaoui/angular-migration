@@ -1,224 +1,211 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { AuthoritativeRunDashboard } from "@/components/AuthoritativeRunDashboard";
+import { useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
+import { useTransformation } from "@/hooks/useTransformation";
+import { makeArtifact, makeAuthoritativeRun, makeEvent } from "@/test/authoritativeFixtures";
+import type { AuthoritativeRunStateDto } from "@/types/generated/api";
+import type { TransformationProjection } from "@/types/transformation";
 
-let planReviewShouldThrow = false;
-let baselineInstallationShouldThrow = false;
+const pipelineRender = vi.fn();
 
-vi.mock("@/hooks/useAuthoritativeRun", () => ({
-  useAuthoritativeRun: (_runId: string, initialState: AuthoritativeRunStateDto) => ({
-    state: initialState,
-    status: "open",
-    error: null,
-    refresh: vi.fn(),
-  }),
+vi.mock("@/hooks/useAuthoritativeRun", async () => {
+  const actual = await vi.importActual<typeof import("@/hooks/useAuthoritativeRun")>("@/hooks/useAuthoritativeRun");
+  return { ...actual, useAuthoritativeRun: vi.fn() };
+});
+vi.mock("@/hooks/useTransformation", () => ({ useTransformation: vi.fn() }));
+vi.mock("@/components/control-tower/PipelineSection", () => ({
+  PipelineSection: ({ focusStage }: { focusStage?: string }) => {
+    pipelineRender(focusStage);
+    return <section aria-label="Pipeline workspace">{focusStage ? `Focused stage: ${focusStage}` : "Pipeline workspace"}</section>;
+  },
 }));
-vi.mock("@/components/AnalysisReviewPanel", () => ({ AnalysisReviewPanel: () => <h2>analysis-panel</h2> }));
-vi.mock("@/components/FeasibilityPanel", () => ({ FeasibilityPanel: () => <h2>feasibility-panel</h2> }));
-vi.mock("@/components/MigrationPlanPanel", () => ({ MigrationPlanPanel: () => <h2>plan-panel</h2> }));
-vi.mock("@/components/PlanReviewPanel", () => ({ PlanReviewPanel: () => {
-  if (planReviewShouldThrow) throw new Error("malformed review");
-  return <h2>plan-review-panel</h2>;
-} }));
-vi.mock("@/components/BaselineInstallationPanel", () => ({ BaselineInstallationPanel: () => {
-  if (baselineInstallationShouldThrow) throw new Error("incomplete baseline installation projection");
-  return <div>baseline-installation-panel</div>;
-} }));
-vi.mock("@/components/TransformationPanel", () => ({ TransformationPanel: ({ onActionRequiredChange }: { onActionRequiredChange?: (required: boolean) => void }) => <div aria-label="mock-transformation-panel">transformation-panel<button type="button" onClick={() => onActionRequiredChange?.(true)}>Require Transformer action</button></div> }));
+vi.mock("@/components/LlmDiagnosticsPanel", () => ({ LlmDiagnosticsPanel: () => <p>Provider diagnostics</p> }));
 vi.mock("@/components/AssistantPanel", () => ({ AssistantDock: () => <button type="button">Open Assistant</button> }));
+vi.mock("@/components/AuthoritativeRunCancellationPanel", () => ({ AuthoritativeRunCancellationPanel: () => <button type="button">Cancel run</button> }));
 
-const initialState: AuthoritativeRunStateDto = {
-  run_id: "run-authoritative-1",
-  status: "CREATED",
-  run_phase: "PREFLIGHT_SNAPSHOT",
-  phase_status: "running",
-  approval_status: "approved",
-  repair_status: "not_required",
-  state_version: 2,
-  preflight_id: "preflight-1",
-  source_path: "C:/source",
-  target_output_path: "C:/target",
-  graph_thread_id: "source-intake-run-authoritative-1",
-  created_at: "2026-07-15T10:00:00Z",
-  updated_at: "2026-07-15T10:00:01Z",
-  artifacts: [{
-    artifact_id: "artifact-create-request",
-    run_id: "run-authoritative-1",
-    stage_id: null,
-    artifact_type: "json",
-    relative_path: "00_job_setup/create_run_request.json",
-    created_at: "2026-07-15T10:00:00Z",
-    checksum: "sha256:evidence",
-  }],
-  workflow_events: [{
-    event_id: "event-created",
-    run_id: "run-authoritative-1",
-    stage_id: null,
-    event_type: "RUN_CREATED",
-    occurred_at: "2026-07-15T10:00:00Z",
-    sequence: 1,
-    payload: { graph_thread_id: "source-intake-run-authoritative-1" },
-  }],
-};
+function transformationHook(overrides: Partial<ReturnType<typeof useTransformation>> = {}) {
+  return {
+    projection: null,
+    executions: [],
+    executionStatus: "idle" as const,
+    status: "disabled" as const,
+    refresh: vi.fn().mockResolvedValue(undefined),
+    refreshError: null,
+    loadError: null,
+    ...overrides,
+  };
+}
+
+function renderDashboard(
+  run: AuthoritativeRunStateDto = makeAuthoritativeRun(),
+  connection: ReturnType<typeof useAuthoritativeRun>["status"] = "open",
+) {
+  vi.mocked(useAuthoritativeRun).mockReturnValue({
+    state: run,
+    status: connection,
+    error: null,
+    refresh: vi.fn().mockResolvedValue(undefined),
+  });
+  return render(<AuthoritativeRunDashboard runId={run.run_id} initialState={run} />);
+}
+
+function pendingG06Run() {
+  return makeAuthoritativeRun({
+    state_version: 7,
+    status: "WAITING_PLAN_APPROVAL",
+    phase_status: "waiting_approval",
+    approval_status: "pending",
+    workflow_events: [
+      makeEvent("RUN_CREATED", 1),
+      makeEvent("G06_CREATED", 2, {
+        payload: {
+          gate_id: "G06",
+          package_checksum: "sha256:g06",
+          expected_state_version: 7,
+          permitted_decisions: ["approved", "modification_requested", "rejected"],
+        },
+      }),
+    ],
+  });
+}
 
 describe("AuthoritativeRunDashboard", () => {
   beforeEach(() => {
-    planReviewShouldThrow = false;
-    baselineInstallationShouldThrow = false;
+    vi.resetAllMocks();
+    vi.mocked(useTransformation).mockReturnValue(transformationHook());
   });
 
-  it("always exposes and mounts the dedicated Transformation destination", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+  it("exposes exactly the four Journey Command Center destinations", () => {
+    renderDashboard();
+    const navigation = screen.getByRole("navigation", { name: "Run sections" });
 
-    expect(screen.getByRole("button", { name: "Transformation" })).toBeInTheDocument();
-    expect(screen.getByLabelText("mock-transformation-panel")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Transformation" }));
-    expect(screen.getByRole("heading", { name: "Transformation" })).toBeInTheDocument();
-    expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
+    expect(within(navigation).getByRole("button", { name: "Overview" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "Pipeline" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "Evidence" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "Diagnostics" })).toBeInTheDocument();
+    expect(within(navigation).getAllByRole("button")).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: "Transformation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "LLM Diagnostics" })).not.toBeInTheDocument();
   });
 
-  it("highlights and opens Transformation when its authoritative projection requires action", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
-    fireEvent.click(screen.getByText("Require Transformer action"));
-    expect(screen.getByRole("button", { name: /Transformation/ })).toHaveAttribute("aria-current", "page");
-    expect(document.querySelector("[aria-labelledby='transformation-navigation-item']")).not.toHaveAttribute("hidden");
+  it("owns exactly one authoritative run hook and one disabled transformation hook", () => {
+    const run = makeAuthoritativeRun({
+      workflow_events: [makeEvent("RUN_CREATED", 1), makeEvent("NOT_TRANSFORMATION_CONTINUATION_CREATED", 99)],
+    });
+
+    renderDashboard(run);
+
+    expect(useAuthoritativeRun).toHaveBeenCalledOnce();
+    expect(useTransformation).toHaveBeenCalledOnce();
+    expect(useTransformation).toHaveBeenCalledWith(run.run_id, { enabled: false, refreshKey: 0 });
   });
 
-  it("keeps the dashboard rendered when the planning review panel throws", () => {
-    planReviewShouldThrow = true;
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "MIGRATION_PLAN_CREATED" }] }} />);
-    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Planning & G06" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Planning review is temporarily unavailable");
-    consoleError.mockRestore();
+  it("enables transformation only from staged phase or exact transformation event membership", () => {
+    const run = makeAuthoritativeRun({
+      workflow_events: [
+        makeEvent("RUN_CREATED", 1),
+        makeEvent("G07_CREATED", 4),
+        makeEvent("TRANSFORMATION_CONTINUATION_WAITING", 7),
+        makeEvent("G07_CREATED_LOOKALIKE", 99),
+      ],
+    });
+
+    renderDashboard(run);
+
+    expect(useTransformation).toHaveBeenCalledWith(run.run_id, { enabled: true, refreshKey: 7 });
   });
 
-  it("keeps the dashboard mounted when baseline installation data is incomplete", () => {
-    baselineInstallationShouldThrow = true;
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "BASELINE_WORKSPACE_READY" }] }} />);
-    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByText("Baseline installation is temporarily unavailable")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Transformation" })).toBeInTheDocument();
-    consoleError.mockRestore();
+  it("enables transformation for the staged-migration phase without guessed events", () => {
+    const run = makeAuthoritativeRun({ run_phase: "STAGED_MIGRATION" });
+
+    renderDashboard(run);
+
+    expect(useTransformation).toHaveBeenCalledWith(run.run_id, { enabled: true, refreshKey: 0 });
   });
 
-  it("renders backend-owned state, event history, and evidence", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
+  it("highlights Pipeline for an action without changing the operator's active destination", () => {
+    renderDashboard(pendingG06Run());
+    const pipeline = screen.getByRole("button", { name: "Pipeline" });
 
-    expect(screen.getByText("Live · authoritative state")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
-    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Source intake: pending" })).toHaveTextContent("pending");
-    fireEvent.click(screen.getByRole("button", { name: "Files & Artifacts" }));
-    expect(screen.getByText("00_job_setup/create_run_request.json")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "00_job_setup/create_run_request.json" })).toHaveAttribute("href", expect.stringContaining("artifact-create-request"));
-    expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
-    expect(screen.queryByRole("listitem", { name: /G03 readiness/ })).not.toBeInTheDocument();
-  });
-
-  it("renders the complete baseline timeline only after qualification evidence is authoritative", () => {
-    const events = [
-      "SOURCE_INTAKE_COMPLETED", "SNAPSHOT_CREATED", "G02_APPROVED", "EXECUTION_PROFILE_SELECTED",
-      "BASELINE_WORKSPACE_READY", "BASELINE_INSTALL_SUCCEEDED", "BASELINE_BUILD_COMPLETED",
-      "BASELINE_TESTS_COMPLETED", "BASELINE_LINT_COMPLETED", "BASELINE_QUALIFIED", "G03_CREATED",
-    ].map((event_type, index) => ({
-      event_id: `event-${event_type}`,
-      run_id: initialState.run_id,
-      stage_id: null,
-      event_type,
-      occurred_at: `2026-07-15T10:${String(index + 1).padStart(2, "0")}:00Z`,
-      sequence: index + 2,
-      payload: {},
-    }));
-    events.push({ event_id: "event-install-output-after-success", run_id: initialState.run_id, stage_id: null, event_type: "COMMAND_OUTPUT_CHUNK", occurred_at: "2026-07-15T10:20:00Z", sequence: 99, payload: { chunk: "late buffered output" } });
-
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
-
-    expect(screen.getByRole("listitem", { name: "Source intake: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Dependency installation: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Build: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Tests: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Lint: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "G03 readiness: completed" })).toBeInTheDocument();
-  });
-
-  it("does not attribute a qualification blocker to completed validation stages", () => {
-    const events = [
-      "BASELINE_BUILD_COMPLETED", "BASELINE_TESTS_COMPLETED", "BASELINE_LINT_COMPLETED",
-      "BASELINE_FAILURES_FINGERPRINTED", "BASELINE_ROUTE_ANCHOR_CREATED", "BASELINE_BACKEND_ANCHOR_CREATED", "BASELINE_BLOCKED",
-    ].map((event_type, index) => ({
-      event_id: `event-${event_type}`, run_id: initialState.run_id, stage_id: null, event_type,
-      occurred_at: `2026-07-15T12:${String(index).padStart(2, "0")}:00Z`, sequence: index + 2, payload: {},
-    }));
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
-
-    expect(screen.getByRole("listitem", { name: "Build: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Tests: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Lint: completed" })).toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Baseline qualification: blocked" })).toBeInTheDocument();
-  });
-
-  it("reveals each next review surface from its prerequisite event", () => {
-    const events = ["DISCOVERY_COMPLETED", "G04_APPROVED", "G05_APPROVED", "MIGRATION_PLAN_CREATED"].map((event_type, index) => ({
-      event_id: `event-${event_type}`, run_id: initialState.run_id, stage_id: null, event_type,
-      occurred_at: `2026-07-15T11:0${index}:00Z`, sequence: index + 2, payload: {},
-    }));
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
-    expect(screen.getByText("analysis-panel")).toBeInTheDocument();
-    expect(screen.getByText("feasibility-panel")).toBeInTheDocument();
-    expect(screen.getByText("plan-panel")).toBeInTheDocument();
-    expect(screen.getByText("plan-review-panel")).toBeInTheDocument();
-  });
-
-  it("keeps every destination mounted while switching presentation sections", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: [{ ...initialState.workflow_events[0], event_type: "DISCOVERY_COMPLETED" }] }} />);
     expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page");
-    expect(document.querySelector("[aria-labelledby='pipeline-navigation-item']")).toHaveAttribute("hidden");
-    fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
+    expect(pipeline).toHaveAttribute("data-action-required", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+
+    expect(screen.getByRole("button", { name: "Evidence" })).toHaveAttribute("aria-current", "page");
+    expect(pipeline).not.toHaveAttribute("aria-current");
+  });
+
+  it("navigates and focuses a stage only after the operator uses the current-action link", () => {
+    renderDashboard(pendingG06Run());
+
+    fireEvent.click(screen.getByRole("button", { name: "View in pipeline" }));
+
     expect(screen.getByRole("button", { name: "Pipeline" })).toHaveAttribute("aria-current", "page");
-    expect(document.querySelector("[aria-labelledby='overview-navigation-item']")).toHaveAttribute("hidden");
+    expect(screen.getByLabelText("Pipeline workspace")).toHaveTextContent("Focused stage: plan");
   });
 
-  it("opens and closes navigation without a backend action", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
-    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
-    expect(screen.getByRole("button", { name: "Close navigation" })).toBeInTheDocument();
-    expect(document.querySelector(".controlTowerScrimOpen")).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(document.querySelector(".controlTowerScrimOpen")).not.toBeInTheDocument();
-  });
+  it("mounts feature workspaces only for the active destination", () => {
+    renderDashboard();
 
-  it("shows exactly one actionable G03 panel and keeps it mounted when another stage is selected", () => {
-    const events = [
-      { ...initialState.workflow_events[0], event_type: "G02_APPROVED", sequence: 2 },
-      { ...initialState.workflow_events[0], event_id: "install", event_type: "BASELINE_INSTALL_SUCCEEDED", sequence: 3 },
-    ];
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, workflow_events: events }} />);
+    expect(screen.queryByLabelText("Pipeline workspace")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Pipeline" }));
-    expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
-    expect(screen.getByRole("button", { name: "Qualify baseline" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Source snapshot/ }));
-    expect(document.querySelectorAll('[aria-label="Baseline qualification"]').length).toBe(1);
-    expect(screen.getByLabelText("G03 review")).toHaveAttribute("hidden");
-  });
-  it("renders one global Assistant launcher and no sidebar destination", () => {
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={initialState} />);
-    expect(screen.queryByRole("button", { name: "Assistant" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Open Assistant" })).toHaveLength(1);
+    expect(screen.getByLabelText("Pipeline workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    expect(screen.queryByLabelText("Pipeline workspace")).not.toBeInTheDocument();
   });
 
-  it("surfaces and navigates to the authoritative G02 review stage", () => {
-    const event = { ...initialState.workflow_events[0], event_type: "G02_CREATED", sequence: 2 };
-    render(<AuthoritativeRunDashboard runId={initialState.run_id} initialState={{ ...initialState, status: "SOURCE_VALIDATED", approval_status: "pending", workflow_events: [event] }} />);
-    expect(screen.getByRole("button", { name: "Open G02 review" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open G02 review" }));
-    expect(screen.getByRole("listitem", { name: "Source review & G02: action required" })).toBeInTheDocument();
-    expect(screen.getByLabelText("G02 source integrity review")).toBeInTheDocument();
+  it("renders one route heading, a skip link, human evidence, and closed technical details", () => {
+    const run = makeAuthoritativeRun({
+      artifacts: [makeArtifact({ relative_path: "00_job_setup/create_run_request.json" })],
+    });
+
+    renderDashboard(run);
+
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveAccessibleName("source to source-angular-21");
+    expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#control-tower-content");
+    expect(screen.getByText("Create run request")).toBeInTheDocument();
+    expect(screen.getByText(run.run_id)).not.toBeVisible();
+    expect(screen.getByText("Technical details").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("keeps confirmed context visible and disables fresh-state navigation during recovery", () => {
+    renderDashboard(makeAuthoritativeRun(), "recovering");
+
+    expect(screen.getByRole("heading", { name: "Authoritative state is refreshing" })).toBeInTheDocument();
+    expect(screen.getByText(/Setup, Readiness, Production readiness/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting for authoritative refresh" })).toBeDisabled();
+  });
+
+  it("presents reconnecting quietly without hiding the confirmed Overview", () => {
+    renderDashboard(makeAuthoritativeRun(), "reconnecting");
+
+    expect(screen.getByText("Connection lost · reconnecting…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
+  });
+
+  it("fails closed for incompatible run identifiers", () => {
+    vi.mocked(useTransformation).mockReturnValue(transformationHook({
+      status: "ready",
+      executionStatus: "ready",
+      projection: {
+        run_id: "another-run",
+        status: "running",
+      } as TransformationProjection,
+    }));
+
+    renderDashboard();
+
+    expect(screen.getByRole("heading", { name: "Authoritative state is refreshing" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting for authoritative refresh" })).toBeDisabled();
+  });
+
+  it("keeps Assistant subordinate after the primary navigation", () => {
+    renderDashboard();
+
+    expect(document.querySelector(".controlTowerAssistantSlot")).toContainElement(
+      screen.getByRole("button", { name: "Open Assistant" }),
+    );
+    expect(screen.getAllByRole("button", { name: "Open Assistant" })).toHaveLength(1);
   });
 });

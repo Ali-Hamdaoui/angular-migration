@@ -118,7 +118,10 @@ export function TransformationPanel({
     ).at(-1)?.sequence ?? 0,
     [workflowEvents],
   );
-  const { projection, executions, executionStatus, status, refresh, refreshError, loadError } = useTransformation(runId, refreshKey);
+  const { projection, executions, executionStatus, status, refresh, refreshError, loadError } = useTransformation(
+    runId,
+    { enabled: true, refreshKey },
+  );
   const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
@@ -172,7 +175,13 @@ export function TransformationPanel({
   }
 
   const current = projection;
-  const shared = { projection: current, workflowEvents, artifacts, executions, executionStatus };
+  const shared = {
+    projection: current,
+    workflowEvents,
+    artifacts,
+    executions,
+    executionStatus: executionStatus === "idle" ? "loading" as const : executionStatus,
+  };
   const banner = bannerLabel(current, revisionSubmitting);
   const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
   const g10EvidenceAvailable = current.dependency_operation?.operation === "dependency_transition"
