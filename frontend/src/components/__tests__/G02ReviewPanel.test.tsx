@@ -40,7 +40,7 @@ describe("G02ReviewPanel", () => {
   });
 
   it("keeps an embedded successful decision closed while the authoritative binding catches up", async () => {
-    const approvedReview = { ...(review as Record<string, unknown>), status: "approved", decision: "approved", baseline_input_boundary: "snapshot-1", event_sequence: 7 } as unknown as G02ReviewResponse;
+    const approvedReview = { ...(review as Record<string, unknown>), status: "approved", decision: "approved", baseline_input_boundary: "snapshot-1", state_version: 5, event_sequence: 7 } as unknown as G02ReviewResponse;
     vi.mocked(decideG02).mockResolvedValue(approvedReview);
     const view = render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
 
@@ -52,6 +52,62 @@ describe("G02ReviewPanel", () => {
     expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
     view.rerender(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "loading" }} />);
     expect(screen.getByText("Loading G02 review package")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["malformed identity", {
+      ...(review as Record<string, unknown>),
+      run_id: "wrong-run",
+      status: "approved",
+      decision: "approved",
+      baseline_input_boundary: "wrong-snapshot",
+      state_version: 5,
+      event_sequence: 7,
+      package: {
+        ...review.package,
+        run_id: "wrong-run",
+        gate_id: "G04",
+        package_checksum: "sha256:wrong-package",
+        artifacts: [{ artifact_id: "wrong-artifact", run_id: "wrong-run", stage_id: null, artifact_type: "json", relative_path: "global/wrong-artifact.json", created_at: "2026-01-01", checksum: "sha256:wrong-artifact" }],
+      },
+    }],
+    ["non-monotonic version", {
+      ...(review as Record<string, unknown>),
+      status: "approved",
+      decision: "approved",
+      baseline_input_boundary: "snapshot-1",
+      state_version: 3,
+      event_sequence: 5,
+    }],
+  ])("rejects a %s G02 decision response and waits for authoritative refresh", async (_case, response) => {
+    const refreshAuthoritativeState = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(decideG02).mockResolvedValue(response as unknown as G02ReviewResponse);
+    render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} refreshAuthoritativeState={refreshAuthoritativeState} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("G02 decision response could not be validated");
+    expect(refreshAuthoritativeState).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Baseline input boundary/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "global/wrong-artifact.json" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a validated modification request closed until a new authoritative package arrives", async () => {
+    vi.mocked(decideG02).mockResolvedValue({
+      ...(review as Record<string, unknown>),
+      status: "modification_requested",
+      decision: "modification_requested",
+      state_version: 5,
+      event_sequence: 7,
+    } as unknown as G02ReviewResponse);
+    render(<G02ReviewPanel runId="run-1" initialState={state} authoritativeReview={{ status: "ready", value: review }} />);
+
+    fireEvent.change(screen.getByLabelText("Decision"), { target: { value: "modification_requested" } });
+    fireEvent.click(screen.getByRole("button", { name: "Record G02 decision" }));
+
+    expect(await screen.findByText("G02 is modification_requested; the workflow will not continue until a new valid evidence package is created.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record G02 decision" })).not.toBeInTheDocument();
   });
 

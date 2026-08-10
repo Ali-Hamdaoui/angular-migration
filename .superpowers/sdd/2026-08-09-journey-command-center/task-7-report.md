@@ -248,3 +248,51 @@ Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors
 ```
 
 The narrow fix diff was self-reviewed for exact override identity, immediate post-decision control closure, stale-data omission across binding changes, unchanged G02 payload and 409 behavior, standalone compatibility, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 3 is implemented pending re-review and is not marked complete.
+
+## Independent review fix round 4
+
+Task 7 review fix round 4 was implemented from clean reviewed HEAD `459e77f088afcbf5c4a2ac388635b084cbd629ca`. The verified stale/malformed G02 decision-response finding is addressed and the task remains pending independent re-review.
+
+The embedded G02 decision override now treats the API result as untrusted runtime data. Before installing it, the panel verifies the submitted/current run and G02 identities, gate versions, immutable package run/gate/checksum, artifact-set checksum, snapshot and package state binding, the selected terminal decision and matching status, baseline boundary, and strictly increasing state/event versions. A valid response is normalized onto the already trusted authoritative package so a claimed matching checksum cannot substitute response artifacts. Invalid or stale results are never rendered: decision controls close for that exact source binding, a validation error is shown, and the dashboard's authoritative state refresh is awaited. A genuinely changed authoritative binding supersedes the block. Standalone loading, valid response handling, exact decision payload, reviewer draft, and 409 behavior remain unchanged.
+
+The narrow self-review found one related terminal classification defect: a valid `modification_requested` response passed validation but was not classified as closed, so the action form reopened. A separate regression established RED before the one-line terminal-state correction; modification requests now remain closed until a new authoritative package arrives.
+
+### Strict RED/GREEN evidence
+
+```text
+npm test -- src/components/__tests__/G02ReviewPanel.test.tsx -t "rejects a"
+RED: Test Files 1 failed (1); Tests 2 failed, 7 skipped
+GREEN: Test Files 1 passed (1); Tests 2 passed, 7 skipped
+
+npm test -- src/components/__tests__/G02ReviewPanel.test.tsx -t "validated modification"
+RED: Test Files 1 failed (1); Tests 1 failed, 9 skipped
+GREEN: Test Files 1 passed (1); Tests 1 passed, 9 skipped
+```
+
+### Final verification
+
+```text
+npm test -- src/components/control-tower/__tests__/ControlTowerPresentation.test.tsx src/components/__tests__/G02ReviewPanel.test.tsx src/components/__tests__/AnalysisReviewPanel.test.tsx src/components/__tests__/FeasibilityPanel.test.tsx src/components/__tests__/MigrationPlanPanel.test.tsx src/components/__tests__/PlanReviewPanel.test.tsx
+Test Files: 6 passed (6)
+Tests: 73 passed (73)
+
+npm test -- src/components/__tests__/AuthoritativeRunDashboard.test.tsx src/presentation/__tests__/currentAction.test.ts src/components/__tests__/SourceSnapshotPanel.test.tsx src/components/__tests__/BaselineParityPanel.test.tsx
+Test Files: 4 passed (4)
+Tests: 63 passed (63)
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+npm test
+Test Files: 58 passed (58)
+Tests: 482 passed (482)
+
+git diff --check
+Exit code: 0
+Only expected LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+```
+
+The narrow fix diff was self-reviewed for untrusted-response validation, exact run/gate/package authority, immutable artifact retention, monotonic version/event handling, changed-binding races, terminal control closure, authoritative refresh recovery, unchanged payload and 409 behavior, standalone compatibility, and Task 8 exclusion. No open scoped concern remains. Task 7 review fix round 4 is implemented pending re-review and is not marked complete.

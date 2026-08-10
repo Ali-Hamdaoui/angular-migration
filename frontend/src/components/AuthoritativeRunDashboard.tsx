@@ -394,7 +394,7 @@ export function AuthoritativeRunDashboard({
       }
       if (hasGatePackage) {
         let panel: React.ReactNode = null;
-        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} headingLevel={4} /><G02ReviewPanel runId={runId} initialState={state} authoritativeReview={authoritativeG02Load} headingLevel={4} /></>;
+        if (milestone.key === "readiness") panel = <><SourceSnapshotPanel runId={runId} initialState={state} headingLevel={4} /><G02ReviewPanel runId={runId} initialState={state} authoritativeReview={authoritativeG02Load} refreshAuthoritativeState={refresh} headingLevel={4} /></>;
         else if (milestone.key === "baseline") panel = <BaselineQualificationPanel runId={runId} stateVersion={state.state_version} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} authoritativeAssessment={authoritativeG03Load} headingLevel={4} />;
         else if (milestone.key === "discovery") panel = <><BaselineParityPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} workflowEvents={state.workflow_events} headingLevel={4} /><AnalysisReviewPanel runId={runId} stateVersion={state.state_version} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} /></>;
         else if (milestone.key === "feasibility") panel = <FeasibilityPanel runId={runId} initialState={state} connectionStatus={status} artifacts={state.artifacts} workflowEvents={state.workflow_events} refreshAuthoritativeState={refresh} headingLevel={4} />;

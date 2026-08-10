@@ -23,12 +23,81 @@ function reviewBinding(review: G02ReviewResponse): string {
   return `${review.run_id}|${review.package.package_checksum}|${review.event_sequence}|${review.state_version}`;
 }
 
-export function G02ReviewPanel({ runId, initialState, authoritativeReview, headingLevel = 2 }: { runId: string; initialState: AuthoritativeRunStateDto; authoritativeReview?: AuthoritativePackageLoad<G02ReviewResponse>; headingLevel?: PanelHeadingLevel }) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validatedDecisionResponse(
+  value: unknown,
+  submittedReview: G02ReviewResponse,
+  runId: string,
+  submittedDecision: G02Decision,
+): G02ReviewResponse | null {
+  if (!isRecord(value) || !isRecord(value.package)) return null;
+  const packageData = value.package;
+  const approved = submittedDecision === "approved" || submittedDecision === "approved_with_comment";
+  const validBoundary = approved
+    ? value.baseline_input_boundary === submittedReview.package.snapshot_id
+    : value.baseline_input_boundary === null;
+
+  if (
+    submittedReview.run_id !== runId
+    || submittedReview.gate_id !== "G02"
+    || submittedReview.package.run_id !== runId
+    || submittedReview.package.gate_id !== "G02"
+    || value.run_id !== runId
+    || value.gate_id !== "G02"
+    || value.gate_version !== submittedReview.gate_version
+    || value.status !== submittedDecision
+    || value.decision !== submittedDecision
+    || packageData.run_id !== runId
+    || packageData.gate_id !== "G02"
+    || packageData.gate_version !== submittedReview.package.gate_version
+    || packageData.package_checksum !== submittedReview.package.package_checksum
+    || packageData.artifact_set_checksum !== submittedReview.package.artifact_set_checksum
+    || packageData.snapshot_id !== submittedReview.package.snapshot_id
+    || packageData.state_version !== submittedReview.package.state_version
+    || !Number.isInteger(value.state_version)
+    || Number(value.state_version) <= submittedReview.state_version
+    || !Number.isInteger(value.event_sequence)
+    || Number(value.event_sequence) <= submittedReview.event_sequence
+    || typeof value.idempotent_replay !== "boolean"
+    || value.stale_reason !== null
+    || !(value.comment === null || typeof value.comment === "string")
+    || !validBoundary
+  ) return null;
+
+  return {
+    run_id: runId,
+    gate_id: "G02",
+    gate_version: submittedReview.gate_version,
+    status: submittedDecision,
+    decision: submittedDecision,
+    package: submittedReview.package,
+    baseline_input_boundary: approved ? submittedReview.package.snapshot_id : null,
+    state_version: Number(value.state_version),
+    event_sequence: Number(value.event_sequence),
+    idempotent_replay: value.idempotent_replay,
+    stale_reason: null,
+    comment: value.comment,
+  };
+}
+
+type G02ReviewPanelProps = {
+  runId: string;
+  initialState: AuthoritativeRunStateDto;
+  authoritativeReview?: AuthoritativePackageLoad<G02ReviewResponse>;
+  refreshAuthoritativeState?: () => Promise<void>;
+  headingLevel?: PanelHeadingLevel;
+};
+
+export function G02ReviewPanel({ runId, initialState, authoritativeReview, refreshAuthoritativeState, headingLevel = 2 }: G02ReviewPanelProps) {
   const Heading = headingTag(headingLevel);
   const Subheading = headingTag(headingLevel, 1);
   const externallyLoaded = authoritativeReview !== undefined;
   const [localReview, setReview] = useState<G02ReviewResponse | null>(null);
   const [decisionOverride, setDecisionOverride] = useState<{ binding: string; value: G02ReviewResponse } | null>(null);
+  const [invalidDecisionBinding, setInvalidDecisionBinding] = useState<string | null>(null);
   const [loading, setLoading] = useState(!externallyLoaded);
   const [submitting, setSubmitting] = useState(false);
   const [selectedDecision, setSelectedDecision] = useState<G02Decision>("approved");
@@ -52,6 +121,7 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
   const review = externallyLoaded
     ? decisionOverride?.binding === externalBinding ? decisionOverride.value : externalReview
     : localReview;
+  const decisionValidationBlocked = externallyLoaded && invalidDecisionBinding === externalBinding;
   const reviewLoading = externallyLoaded ? authoritativeReview.status === "loading" : loading;
   const reviewMissing = externallyLoaded ? false : missing;
 
@@ -72,8 +142,16 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
         idempotency_key: `g02-${runId}-${selectedDecision}-${review?.package.package_checksum ?? "new"}`,
         actor: "control-tower", decision: selectedDecision, comment: comment.trim() || null, gate_id: "G02",
       });
-      if (externallyLoaded && externalBinding) setDecisionOverride({ binding: externalBinding, value: result });
-      else setReview(result);
+      if (externallyLoaded && externalBinding && externalReview) {
+        const validated = validatedDecisionResponse(result, externalReview, runId, selectedDecision);
+        if (!validated) {
+          setInvalidDecisionBinding(externalBinding);
+          setError("G02 decision response could not be validated. Refreshing the authoritative review.");
+          try { await refreshAuthoritativeState?.(); } catch { /* The panel remains fail-closed until a valid binding arrives. */ }
+          return;
+        }
+        setDecisionOverride({ binding: externalBinding, value: validated });
+      } else setReview(result);
       setMissing(false);
     } catch (reason: unknown) {
       setError(reason instanceof ApiClientError && reason.status === 409 ? "G02 is stale. Refresh the authoritative run state before deciding." : "The G02 decision could not be recorded.");
@@ -84,7 +162,7 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
   const integrity = packageData?.integrity;
   const integrityVerified = Boolean(integrity?.source_read_only_verified && integrity.before_fingerprint === integrity.after_snapshot_fingerprint);
   const approved = review?.status === "approved" || review?.status === "approved_with_comment";
-  const rejected = review?.status === "rejected" || review?.status === "stale";
+  const rejected = review?.status === "modification_requested" || review?.status === "rejected" || review?.status === "stale";
 
   return <section className={styles.panel} aria-label="G02 source integrity review">
     <div className={styles.previewHeader}><div><p className={styles.kicker}>S1-F08</p><Heading>G02 source-integrity boundary</Heading></div>{review ? <strong>{review.status}</strong> : null}</div>
@@ -99,7 +177,7 @@ export function G02ReviewPanel({ runId, initialState, authoritativeReview, headi
       <dl className={styles.metadataGrid}><div><dt>Source fingerprint</dt><dd>{packageData.source_fingerprint}</dd></div><div><dt>After-snapshot fingerprint</dt><dd>{integrity?.after_snapshot_fingerprint}</dd></div><div><dt>Snapshot fingerprint</dt><dd>{packageData.snapshot_fingerprint}</dd></div><div><dt>Package checksum</dt><dd>{packageData.package_checksum}</dd></div></dl>
       {integrity && integrity.before_fingerprint !== integrity.after_snapshot_fingerprint ? <p role="alert">The original source changed after snapshot creation. This package cannot be approved.</p> : null}
       <Subheading>Immutable evidence</Subheading><ul className={styles.list}>{packageData.artifacts.map((artifact) => <li key={artifact.artifact_id}><a className={styles.actionLink} href={`${getBackendBaseUrl()}/api/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}`}>{artifact.relative_path}</a><code>{artifact.checksum}</code></li>)}</ul>
-      {approved ? <p className={styles.note}>Baseline input boundary: immutable snapshot {review?.baseline_input_boundary}.</p> : rejected ? <p className={styles.note}>G02 is {review?.status}; the workflow will not continue until a new valid evidence package is created.</p> : <><p className={styles.note}>{integrityVerified ? "G02 evidence is finalized and verified. Record the approval decision to continue." : "G02 approval is blocked while source-integrity evidence is being finalized or verified."}</p><div className={styles.previewPanel}><label htmlFor="g02-decision">Decision</label><select id="g02-decision" value={selectedDecision} onChange={(e) => setSelectedDecision(e.target.value as G02Decision)}>{decisions.map((decision) => <option key={decision.value} value={decision.value}>{decision.label}</option>)}</select><label htmlFor="g02-comment">Comment</label><textarea id="g02-comment" value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Optional rationale; required for approval with comment." /><button type="button" onClick={submitDecision} disabled={submitting || !integrityVerified}>{submitting ? "Recording decision..." : "Record G02 decision"}</button></div></>}
+      {approved ? <p className={styles.note}>Baseline input boundary: immutable snapshot {review?.baseline_input_boundary}.</p> : rejected ? <p className={styles.note}>G02 is {review?.status}; the workflow will not continue until a new valid evidence package is created.</p> : decisionValidationBlocked ? <p className={styles.note}>Waiting for the authoritative G02 review after an invalid decision response.</p> : <><p className={styles.note}>{integrityVerified ? "G02 evidence is finalized and verified. Record the approval decision to continue." : "G02 approval is blocked while source-integrity evidence is being finalized or verified."}</p><div className={styles.previewPanel}><label htmlFor="g02-decision">Decision</label><select id="g02-decision" value={selectedDecision} onChange={(e) => setSelectedDecision(e.target.value as G02Decision)}>{decisions.map((decision) => <option key={decision.value} value={decision.value}>{decision.label}</option>)}</select><label htmlFor="g02-comment">Comment</label><textarea id="g02-comment" value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Optional rationale; required for approval with comment." /><button type="button" onClick={submitDecision} disabled={submitting || !integrityVerified}>{submitting ? "Recording decision..." : "Record G02 decision"}</button></div></>}
     </> : null}
   </section>;
 }
