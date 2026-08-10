@@ -115,7 +115,7 @@ def _registry() -> PromptSchemaRegistry:
 def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp_path: Path) -> None:
     transport = _FakeAzureTransport([{
         'output': [{'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'validated'})}]}],
-        'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120},
+        'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 125},
     }])
     gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=transport, registry=_registry())
 
@@ -123,7 +123,7 @@ def test_azure_gateway_validates_response_extracts_usage_and_calculates_cost(tmp
 
     assert response.status == 'completed'
     assert response.structured_output == {'answer': 'validated'}
-    assert response.usage.total_tokens == 120
+    assert response.usage.total_tokens == 125
     assert response.usage.total_cost_usd == pytest.approx(0.000065)
     assert response.role == LlmRole.PHASE_PROPOSER
     assert response.pricing_version == 'mvp-pricing-2026-01'
@@ -141,6 +141,20 @@ def test_azure_gateway_decodes_reasoning_first_and_message_first_responses(tmp_p
     assert response.structured_output == {'answer': 'validated'}
     assert response.usage.input_tokens == 11
     assert response.usage.output_tokens == 71
+
+
+@pytest.mark.parametrize('usage', [
+    {'input_tokens': 11, 'output_tokens': 71},
+    {'input_tokens': 11, 'output_tokens': 71, 'total_tokens': -1},
+    {'input_tokens': 11, 'output_tokens': 71, 'total_tokens': '82'},
+])
+def test_azure_gateway_rejects_missing_or_invalid_provider_total(tmp_path: Path, usage: dict[str, object]) -> None:
+    body = _responses_body(json.dumps({'answer': 'validated'}))
+    body['usage'] = usage
+    with pytest.raises(AzureGatewayError) as error:
+        AzureOpenAILLMGateway(settings=_azure_settings(tmp_path), transport=_FakeAzureTransport([body]), registry=_registry()).complete(_azure_request())
+    assert error.value.code == LlmFailureCode.PROTOCOL
+    assert error.value.failure_stage == 'response_contract_validation'
 
 
 def test_azure_gateway_traverses_message_content_until_output_text(tmp_path: Path) -> None:
@@ -370,7 +384,7 @@ def test_azure_gateway_preserves_provider_deployment_failure_metadata(tmp_path: 
 def test_azure_gateway_retries_only_retryable_provider_failures(tmp_path: Path) -> None:
     transport = _FakeAzureTransport([
         AzureGatewayError(LlmFailureCode.NETWORK, 'network failure', retryable=True),
-        {'output': [{'content': [{'text': json.dumps({'answer': 'ok'})}]}], 'usage': {'prompt_tokens': 5, 'completion_tokens': 3}},
+        {'output': [{'content': [{'text': json.dumps({'answer': 'ok'})}]}], 'usage': {'prompt_tokens': 5, 'completion_tokens': 3, 'total_tokens': 8}},
     ])
     gateway = AzureOpenAILLMGateway(settings=_azure_settings(tmp_path, retries=1), transport=transport, registry=_registry())
 
@@ -501,6 +515,22 @@ def test_usage_cost_calculation_uses_pricing_snapshot() -> None:
     assert usage.input_cost_usd == 0.25
     assert usage.output_cost_usd == 1.0
     assert usage.total_cost_usd == 1.25
+
+
+def test_build_usage_record_preserves_explicit_provider_total() -> None:
+    usage = build_usage_record(
+        run_id='run-001',
+        stage_id=None,
+        agent_kind=AgentKind.ANALYSIS,
+        task_type=LlmTaskType.ANALYSIS_SUMMARY,
+        model_deployment_alias='gpt-5-mini',
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=99,
+        input_price_per_million=0.25,
+        output_price_per_million=2.0,
+    )
+    assert usage.total_tokens == 99
 
 
 def test_usage_summary_aggregates_by_run_stage_agent_and_task() -> None:
