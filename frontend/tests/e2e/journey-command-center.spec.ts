@@ -212,6 +212,11 @@ test.describe("Journey Command Center real-service journeys", () => {
     const transformation = page.getByRole("button", { name: /20.*21|Transform/i }).first();
     if (await transformation.count()) await transformation.click();
     await page.setViewportSize(viewport.mobile);
+    const mobileTransformation = page.getByRole("button", { name: /Angular 20 to 21|20.*21/i }).first();
+    await mobileTransformation.scrollIntoViewIfNeeded();
+    await expect(mobileTransformation).toHaveAttribute("aria-expanded", "true");
+    const transformationTabs = page.getByRole("tablist").first();
+    await transformationTabs.scrollIntoViewIfNeeded();
     await page.screenshot({ path: screenshotPath("built-transformation-mobile.png") });
     await page.setViewportSize(viewport.desktop);
     await selectSection(page, "Evidence");
