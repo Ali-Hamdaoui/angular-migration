@@ -127,7 +127,7 @@ function isProductionPreflight(value: unknown): value is ProductionPreflight {
   return (
     stringFields.every((field) => typeof candidate[field] === "string") &&
     (candidate.preflight_id as string).length > 0 &&
-    (candidate.gate_id as string).length > 0 &&
+    candidate.gate_id === "G01" &&
     (candidate.gate_version as string).length > 0 &&
     Number.isInteger(candidate.state_version) && (candidate.state_version as number) >= 1 &&
     typeof candidate.status === "string" && statuses.has(candidate.status) &&

@@ -101,7 +101,7 @@ No open Task 4 concern. Git reports repository line-ending conversion notices fo
 
 ### Reviewer findings addressed
 
-- Active binding now fails closed across the complete chain. Path, environment, source, and preflight mapped states must each be `passed` or `warning`, and the preflight must be unexpired. Unknown and blocked prerequisite snapshots still contribute their returned identifiers to the authoritative production-preflight request, but a passed final preflight cannot expose G01 navigation for them.
+- Active binding now fails closed across the complete chain. Path, environment, source, and preflight mapped states must each be `passed` or `warning`, and the preflight must be unexpired. Unknown prerequisite snapshots and blocked secondary environment/source snapshots still contribute their returned identifiers to the authoritative production-preflight request; blocked or ineligible path validation stops before secondary checks and preflight. A passed final preflight cannot expose G01 navigation for an unavailable or blocked secondary prerequisite.
 - `SetupBinding` now preserves the authoritative `expiresAt`. A cleanup-safe, long-delay-rescheduling timer marks the preflight outdated and removes navigation when it elapses. The click handler independently checks revision and expiry immediately before routing.
 - Runtime validation now checks every declared production-preflight field, string arrays, artifact entries, and every nested G01 decision field. Decision enums, timestamps, primitive types, and preflight/gate ID relationships fail closed. A later valid recheck recovers normally.
 - Environment, source, and preflight messages now remain verbatim. The existing path-code translation map is used only for path-rule evidence.
@@ -147,3 +147,51 @@ Duration: 40.34s
 ### Fix-diff self-review
 
 Reviewed only the fix diff and the original authorization regression context. The four mapped states gate binding; blocked secondary IDs still flow into preflight; active binding expiry is ref-synchronized, timer-cleaned, safely rescheduled, and rechecked on click; nested decision validation covers every typed field and relational IDs; non-path evidence remains verbatim; revision invalidation and G01-only routing remain intact. No new style, route, API, backend, or file-scope change was introduced. No open concern remains for fix round 1.
+
+## Fix round 2/5
+
+The production-preflight runtime guard now requires the authoritative gate identifier to be exactly `G01`. A structurally valid snapshot and nested decision history that consistently claim another gate therefore fail schema validation, render production preflight as unavailable, and cannot expose the Review action.
+
+### Fix-round RED evidence
+
+```text
+npm test -- src/components/__tests__/MigrationSetupForm.test.tsx -t "rejects a structurally consistent non-G01 production preflight"
+Exit code: 1
+Test Files: 1 failed (1)
+Tests: 1 failed, 23 skipped (24 total)
+```
+
+The consistent `G99` fixture incorrectly rendered a passed preflight and Review action before the exact gate guard was added.
+
+### Fix-round GREEN and static evidence
+
+```text
+npm test -- src/components/__tests__/MigrationSetupForm.test.tsx -t "rejects a structurally consistent non-G01 production preflight"
+Test Files: 1 passed (1)
+Tests: 1 passed, 23 skipped (24 total)
+Exit code: 0
+
+npm test -- src/presentation/__tests__/setupReadiness.test.ts src/components/__tests__/MigrationSetupForm.test.tsx
+Test Files: 2 passed (2)
+Tests: 57 passed (57)
+Exit code: 0
+
+npm run typecheck
+Exit code: 0
+
+npm run lint
+Exit code: 0
+
+git diff --check
+Exit code: 0
+Only LF-to-CRLF working-copy notices were emitted; no whitespace errors.
+
+npm test
+Test Files: 56 passed (56)
+Tests: 364 passed (364)
+Exit code: 0
+```
+
+### Fix-diff self-review
+
+Reviewed only the narrow round-2 diff and the production-preflight authorization regression context. The runtime guard now accepts exactly `G01`; the new consistent-`G99` regression verifies schema rejection, unavailable presentation, and absent Review navigation. No other schema, lifecycle, routing, API, backend, or file-scope behavior changed. No open concern remains for fix round 2.

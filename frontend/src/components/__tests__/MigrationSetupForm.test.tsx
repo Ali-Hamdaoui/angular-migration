@@ -410,6 +410,22 @@ describe("MigrationSetupForm", () => {
     expect(push).toHaveBeenCalledWith("/preflights/preflight-recovered");
   });
 
+  it("rejects a structurally consistent non-G01 production preflight", async () => {
+    const wrongGate = preflight("passed", "preflight-wrong-gate");
+    wrongGate.snapshot.gate_id = "G99";
+    wrongGate.snapshot.state_version = 2;
+    wrongGate.snapshot.approval_status = "approved";
+    wrongGate.snapshot.decision_history = [{ ...decision("preflight-wrong-gate"), gate_id: "G99" }];
+    vi.mocked(createProductionPreflight).mockResolvedValue(wrongGate);
+    render(<MigrationSetupForm />);
+    fillProject();
+    checkReadiness();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Production preflight is unavailable");
+    expect(within(operationRow("Production preflight")).getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review production readiness" })).not.toBeInTheDocument();
+  });
+
   it("automatically invalidates an authoritative preflight when its expiry elapses", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-09T10:00:00Z"));
