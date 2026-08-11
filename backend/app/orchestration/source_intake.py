@@ -481,6 +481,14 @@ class SourceIntakeDispatcher:
                     values["angular"] = values["angular"] or str(dependencies.get("@angular/core", ""))
                     values["typescript"] = str(dependencies.get("typescript")) if dependencies.get("typescript") else None
                     values["rxjs"] = str(dependencies.get("rxjs")) if dependencies.get("rxjs") else None
+
+                    lock_path = package_path.with_name("package-lock.json")
+                    if lock_path.is_file():
+                        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                        locked_packages = lock.get("packages", {})
+                        locked_angular = locked_packages.get("node_modules/@angular/core", {}).get("version")
+                        if locked_angular:
+                            values["angular"] = str(locked_angular)
                 except (OSError, ValueError, TypeError):
                     pass
         if not values["angular"]:

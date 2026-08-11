@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from typing import Callable
 
 from app.domain.compatibility import (
@@ -28,6 +29,38 @@ class CompatibilityApplicationError(ValueError):
         self.status_code = status_code
 
 
+@dataclass(frozen=True)
+class CatalogueRouteDecision:
+    source_family: str
+    target_family: str
+    entries: tuple
+    blocker: str | None = None
+
+
+def resolve_catalogue_route(catalogue: CompatibilityCatalogue, source_exact: str, target_family: str) -> CatalogueRouteDecision:
+    source = Version.parse(source_exact)
+    source_family = f"angular-{source.major}.x" if source is not None else "unknown"
+    canonical_target = target_family.strip()
+    if re.fullmatch(r"\d+\.x", canonical_target):
+        canonical_target = f"angular-{canonical_target}"
+    supported_sources = {entry.source_family for entry in catalogue.entries}
+    supported_targets = {entry.target_family for entry in catalogue.entries}
+    if source is None or source_family not in supported_sources:
+        return CatalogueRouteDecision(source_family, canonical_target, (), "SOURCE_FAMILY_UNSUPPORTED")
+    if canonical_target not in supported_targets:
+        return CatalogueRouteDecision(source_family, canonical_target, (), "TARGET_FAMILY_UNSUPPORTED")
+    target_major = int(canonical_target.removeprefix("angular-").removesuffix(".x"))
+    if source.major >= target_major:
+        return CatalogueRouteDecision(source_family, canonical_target, (), "TARGET_MUST_BE_GREATER_THAN_SOURCE")
+    entries = []
+    for major in range(source.major, target_major):
+        entry = catalogue.entry_for(f"angular-{major}.x", f"angular-{major + 1}.x")
+        if entry is None:
+            return CatalogueRouteDecision(source_family, canonical_target, (), f"CATALOGUE_ROUTE_MISSING_{major}_{major + 1}")
+        entries.append(entry)
+    return CatalogueRouteDecision(source_family, canonical_target, tuple(entries))
+
+
 class CompatibilityResolver:
     """Resolve only catalogue data and already-observed runtime candidates."""
 
@@ -38,17 +71,11 @@ class CompatibilityResolver:
     def resolve(self, request: CompatibilityResolutionRequest) -> CompatibilityResolutionResult:
         if request.catalogue_version != self.catalogue.version:
             raise CompatibilityApplicationError("STALE_CATALOGUE", "The requested compatibility catalogue is not current.", 409)
-        source = Version.parse(request.source_angular_exact)
-        if source is None or source.major != 18:
-            return self._blocked(request, "SOURCE_FAMILY_UNSUPPORTED")
-        source_family = f"angular-{source.major}.x"
-        families = list(range(source.major, 21))
-        entries = []
-        for major in families:
-            entry = self.catalogue.entry_for(f"angular-{major}.x", f"angular-{major + 1}.x")
-            if entry is None:
-                return self._blocked(request, f"CATALOGUE_ROUTE_MISSING_{major}_{major + 1}", source_family)
-            entries.append(entry)
+        decision = resolve_catalogue_route(self.catalogue, request.source_angular_exact, request.target_family)
+        source_family = decision.source_family
+        if decision.blocker:
+            return self._blocked(request, decision.blocker, source_family)
+        entries = decision.entries
 
         blockers = list(dict.fromkeys([*request.dependency_findings, *(reason for entry in entries for reason in entry.blockers)]))
         warnings = list(dict.fromkeys(risk for entry in entries for risk in entry.known_risks))

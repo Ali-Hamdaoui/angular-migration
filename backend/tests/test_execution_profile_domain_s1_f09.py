@@ -47,6 +47,41 @@ def test_resolves_one_exact_source_compatible_profile_with_checksum():
     assert result.selected_profile.checksum.startswith("sha256:")
 
 
+def test_angular_20_source_resolves_with_approved_runtime_profile():
+    result = SourceRuntimeResolver().resolve(
+        request(
+            candidate(
+                "approved-node-22",
+                node="22.23.1",
+                npm_exact="10.9.8",
+                npx_exact="10.9.8",
+                angular_cli_exact=None,
+            ),
+            angular="20.3.27",
+            ts="~5.8.3",
+        )
+    )
+
+    assert result.status == "resolved"
+    assert result.policy_version == "angular-20-source-runtime-v1"
+    assert result.selected_profile is not None
+    assert result.selected_profile.node_exact == "22.23.1"
+
+
+def test_angular_19_source_resolves_with_its_bounded_runtime_profile():
+    result = SourceRuntimeResolver().resolve(
+        request(
+            candidate("approved-node-20", angular_cli_exact=None),
+            angular="19.2.19",
+            ts="5.8.2",
+        )
+    )
+
+    assert result.status == "resolved"
+    assert result.policy_version == "angular-19-source-runtime-v1"
+    assert result.selected_profile is not None
+
+
 def test_multiple_profiles_require_explicit_checksum_bound_selection():
     result = SourceRuntimeResolver().resolve(request(candidate("node-20"), candidate("node-22", node="22.0.0")))
 
@@ -77,6 +112,18 @@ def test_source_version_and_typescript_compatibility_are_fail_closed():
     assert "SOURCE_ANGULAR_VERSION_UNSUPPORTED" in unsupported.blockers
     assert wrong_typescript.status == "blocked"
     assert "SOURCE_TYPESCRIPT_VERSION_INCOMPATIBLE" in wrong_typescript.blockers
+
+    angular_20_wrong_typescript = SourceRuntimeResolver().resolve(
+        request(candidate("node-22", node="22.23.1", angular_cli_exact=None), angular="20.3.27", ts="5.9.0")
+    )
+    assert angular_20_wrong_typescript.status == "blocked"
+    assert "SOURCE_TYPESCRIPT_VERSION_INCOMPATIBLE" in angular_20_wrong_typescript.blockers
+
+    angular_19_wrong_typescript = SourceRuntimeResolver().resolve(
+        request(candidate("node-20", angular_cli_exact=None), angular="19.2.19", ts="5.9.0")
+    )
+    assert angular_19_wrong_typescript.status == "blocked"
+    assert "SOURCE_TYPESCRIPT_VERSION_INCOMPATIBLE" in angular_19_wrong_typescript.blockers
 
 
 def test_selection_rejects_unknown_or_tampered_checksum():

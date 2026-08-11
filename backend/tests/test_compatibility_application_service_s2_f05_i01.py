@@ -87,6 +87,50 @@ def test_resolves_deterministic_ladder_and_checksum_bound_stage1_profile():
     assert result.gate.status == "pending"
 
 
+@pytest.mark.parametrize(
+    ("source_exact", "target_family", "expected_stages"),
+    (
+        ("18.2.13", "angular-21.x", ["angular-18-to-19", "angular-19-to-20", "angular-20-to-21"]),
+        ("19.2.19", "angular-21.x", ["angular-19-to-20", "angular-20-to-21"]),
+        ("20.3.27", "angular-21.x", ["angular-20-to-21"]),
+        ("18.2.13", "angular-19.x", ["angular-18-to-19"]),
+        ("18.2.13", "angular-20.x", ["angular-18-to-19", "angular-19-to-20"]),
+        ("19.2.19", "angular-20.x", ["angular-19-to-20"]),
+    ),
+)
+def test_constructs_only_adjacent_stages_from_detected_supported_source_to_target(
+    source_exact, target_family, expected_stages
+):
+    result = CompatibilityResolver(_catalogue()).resolve(
+        _request(source_angular_exact=source_exact, target_family=target_family)
+    )
+
+    assert result.status == "feasible_with_warnings"
+    assert [stage.stage_id for stage in result.route] == expected_stages
+
+
+@pytest.mark.parametrize("target_family", ("angular-20.x", "angular-19.x"))
+def test_rejects_equal_or_backward_target(target_family):
+    result = CompatibilityResolver(_catalogue()).resolve(
+        _request(source_angular_exact="20.3.27", target_family=target_family)
+    )
+
+    assert result.status == "blocked"
+    assert result.package.blockers == ("TARGET_MUST_BE_GREATER_THAN_SOURCE",)
+
+
+def test_rejects_unsupported_source_and_target_families_deterministically():
+    resolver = CompatibilityResolver(_catalogue())
+
+    unsupported_source = resolver.resolve(_request(source_angular_exact="17.3.12"))
+    unsupported_target = resolver.resolve(
+        _request(source_angular_exact="20.3.27", target_family="angular-22.x")
+    )
+
+    assert unsupported_source.package.blockers == ("SOURCE_FAMILY_UNSUPPORTED",)
+    assert unsupported_target.package.blockers == ("TARGET_FAMILY_UNSUPPORTED",)
+
+
 def test_accepts_node_runtime_versions_with_the_standard_v_prefix():
     result = CompatibilityResolver(_catalogue()).resolve(_request(runtime_candidates=(_candidate(node_exact="v20.11.1"),)))
 

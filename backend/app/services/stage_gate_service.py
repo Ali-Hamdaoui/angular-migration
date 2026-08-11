@@ -760,6 +760,37 @@ class StageGateService:
             "diff_artifact_id": diff_artifact_id,
             "diff_checksum": diff_metadata.checksum,
         }
+        deterministic_metadata = None
+        if attempt.proposer_invocation_id is None:
+            deterministic_metadata = session.scalar(
+                select(ArtifactMetadataModel).where(
+                    ArtifactMetadataModel.run_id == continuation.run_id,
+                    ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                    ArtifactMetadataModel.relative_path
+                    == f"05_repairs/attempt-{attempt.id}/jest-bootstrap-capability.json",
+                )
+            )
+            if deterministic_metadata is None:
+                raise StageGateError(
+                    "G10_LINEAGE_STALE",
+                    "G10 deterministic proposer capability lineage is missing",
+                )
+            expected.update(
+                proposer_authority="deterministic_jest_bootstrap_compatibility",
+                proposer_invocation_request_checksum=None,
+                proposer_invocation_prompt_version=None,
+                proposer_invocation_schema_version=None,
+                deterministic_proposer_artifact_id=deterministic_metadata.id.removeprefix(
+                    "metadata-"
+                ),
+                deterministic_proposer_artifact_checksum=deterministic_metadata.checksum,
+                deterministic_proposer_policy_version="jest-bootstrap-compatibility-v1",
+            )
+        else:
+            # LLM-authored legacy packages remain governed by the invocation
+            # validation below; the explicit authority fields are required
+            # only for the invocation-less deterministic path.
+            pass
         if any(package.get(key) != value for key, value in expected.items()):
             raise StageGateError("G10_LINEAGE_STALE", "G10 inner lineage does not match authoritative state")
         try:
@@ -784,15 +815,21 @@ class StageGateService:
             raise StageGateError("G10_LINEAGE_STALE", "G10 repair artifact roles are not distinct")
         if artifact_set_checksum is not None:
             try:
-                computed_set = canonical_artifact_set_checksum(
-                    [
+                artifact_set = [
                         {"artifact_id": attempt.failure_evidence_artifact_id, "checksum": attempt.failure_evidence_checksum},
                         {"artifact_id": attempt.context_pack_artifact_id, "checksum": attempt.context_pack_checksum},
                         {"artifact_id": attempt.proposal_artifact_id, "checksum": attempt.proposal_checksum},
                         {"artifact_id": attempt.review_artifact_id, "checksum": attempt.review_checksum},
                         {"artifact_id": package_artifact_id, "checksum": package_checksum},
                     ]
-                )
+                if deterministic_metadata is not None:
+                    artifact_set.append(
+                        {
+                            "artifact_id": deterministic_metadata.id.removeprefix("metadata-"),
+                            "checksum": deterministic_metadata.checksum,
+                        }
+                    )
+                computed_set = canonical_artifact_set_checksum(artifact_set)
             except ValueError as error:
                 raise StageGateError("G10_LINEAGE_STALE", "G10 artifact set checksum is invalid") from error
             if computed_set != artifact_set_checksum:
@@ -939,10 +976,46 @@ class StageGateService:
                     or (decision == "request_changes") != review_override_required
                 ):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
-        for invocation_id, role, artifact_id, checksum in (
-            (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
-            (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum),
-        ):
+        if deterministic_metadata is not None:
+            try:
+                deterministic_artifact = store.read_artifact(
+                    continuation.run_id, deterministic_metadata.relative_path
+                )
+                deterministic_payload = json.loads(deterministic_artifact.content)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, TypeError) as error:
+                raise StageGateError(
+                    "G10_LINEAGE_STALE",
+                    "G10 deterministic proposer capability cannot be verified",
+                ) from error
+            envelope = deterministic_artifact.envelope
+            if (
+                deterministic_artifact.ref.artifact_id
+                != deterministic_metadata.id.removeprefix("metadata-")
+                or deterministic_artifact.ref.checksum != deterministic_metadata.checksum
+                or envelope is None
+                or envelope.run_id != continuation.run_id
+                or envelope.stage_id != continuation.current_stage_id
+                or envelope.attempt_id != attempt.id
+                or envelope.producer != "repair-proposer-deterministic"
+                or envelope.policy_version != "jest-bootstrap-compatibility-v1"
+                or envelope.input_hashes.get("failure") != attempt.failure_evidence_checksum
+                or envelope.input_hashes.get("context") != attempt.context_pack_checksum
+                or not isinstance(deterministic_payload, dict)
+                or not deterministic_payload
+            ):
+                raise StageGateError(
+                    "G10_LINEAGE_STALE",
+                    "G10 deterministic proposer capability provenance is stale",
+                )
+        invocation_specs = [
+            (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum)
+        ]
+        if attempt.proposer_invocation_id is not None:
+            invocation_specs.insert(
+                0,
+                (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
+            )
+        for invocation_id, role, artifact_id, checksum in invocation_specs:
             invocation = session.get(LlmInvocationModel, invocation_id)
             expected_task = "repair_diagnosis" if role == "repair_proposer" else "repair_review"
             if (

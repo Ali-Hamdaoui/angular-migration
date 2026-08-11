@@ -84,6 +84,7 @@ from app.services.stage_execution_application_service import validation_executio
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.transformation_continuation_service import (
+    TransformationContinuationService,
     append_continuation_event,
 )
 from app.services.validation_runner import (
@@ -166,6 +167,44 @@ class TransformerOrchestrator:
             self._collect_decisions(continuation_id, worker_id)
         elif node == "create_g07":
             self._create_g07(continuation_id, worker_id)
+        elif node in {
+            "wait_g07",
+            "wait_g08",
+            "wait_g09",
+            "wait_g10",
+            "wait_g11",
+            "wait_g12",
+        }:
+            # A legacy stage-start or operator restart can wake a continuation
+            # after its gate package has already been created.  Gate wait
+            # pointers are durable parking states, not executable work nodes;
+            # reclaiming one must therefore re-park it until the public gate
+            # decision endpoint supplies the governed wake-up transition.
+            with self._scope() as session:
+                continuation = TransformationContinuationService().wait(
+                    session,
+                    continuation_id,
+                    worker_id,
+                    status="waiting_gate",
+                    current_node=node,
+                )
+                gate_id = node.removeprefix("wait_").upper()
+                package = session.scalar(
+                    select(StageGatePackageModel).where(
+                        StageGatePackageModel.run_id == continuation.run_id,
+                        StageGatePackageModel.stage_id == continuation.current_stage_id,
+                        StageGatePackageModel.gate_id == gate_id,
+                        StageGatePackageModel.status == "pending",
+                    )
+                )
+                if package is None:
+                    raise TransformerStageError(
+                        "GATE_PACKAGE_MISSING",
+                        f"{gate_id} wait pointer has no pending gate package",
+                    )
+                package.expected_state_version = continuation.state_version
+                continuation.last_error_code = None
+                continuation.last_error_message = None
         elif node == "bootstrap_install":
             with self._scope() as session:
                 cont = self._owned(session, continuation_id, worker_id)
@@ -1863,18 +1902,58 @@ class TransformerOrchestrator:
                 "risk_level": attempt.risk_level,
                 "validation_targets": [],
             }
-            proposer_invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
-            reviewer_invocation = session.get(LlmInvocationModel, attempt.reviewer_invocation_id)
-            if proposer_invocation is None or reviewer_invocation is None:
-                raise TransformerStageError("REPAIR_INVOCATION_MISSING", "Repair invocation lineage is missing")
+            proposer_invocation = (
+                session.get(LlmInvocationModel, attempt.proposer_invocation_id)
+                if attempt.proposer_invocation_id is not None
+                else None
+            )
+            reviewer_invocation = (
+                session.get(LlmInvocationModel, attempt.reviewer_invocation_id)
+                if attempt.reviewer_invocation_id is not None
+                else None
+            )
+            if reviewer_invocation is None:
+                raise TransformerStageError("REPAIR_INVOCATION_MISSING", "Repair reviewer invocation lineage is missing")
             payload.update(
-                proposer_invocation_request_checksum=proposer_invocation.request_checksum,
-                proposer_invocation_prompt_version=proposer_invocation.prompt_version,
-                proposer_invocation_schema_version=proposer_invocation.schema_version,
                 reviewer_invocation_request_checksum=reviewer_invocation.request_checksum,
                 reviewer_invocation_prompt_version=reviewer_invocation.prompt_version,
                 reviewer_invocation_schema_version=reviewer_invocation.schema_version,
             )
+            if proposer_invocation is not None:
+                payload.update(
+                    proposer_authority="llm",
+                    proposer_invocation_request_checksum=proposer_invocation.request_checksum,
+                    proposer_invocation_prompt_version=proposer_invocation.prompt_version,
+                    proposer_invocation_schema_version=proposer_invocation.schema_version,
+                    deterministic_proposer_artifact_id=None,
+                    deterministic_proposer_artifact_checksum=None,
+                    deterministic_proposer_policy_version=None,
+                )
+            elif gate_id == "G10":
+                capability_metadata = session.scalar(
+                    select(ArtifactMetadataModel).where(
+                        ArtifactMetadataModel.run_id == continuation.run_id,
+                        ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                        ArtifactMetadataModel.relative_path
+                        == f"05_repairs/attempt-{attempt.id}/jest-bootstrap-capability.json",
+                    )
+                )
+                if capability_metadata is None:
+                    raise TransformerStageError(
+                        "REPAIR_INVOCATION_MISSING",
+                        "Repair proposer invocation or deterministic capability lineage is missing",
+                    )
+                payload.update(
+                    proposer_authority="deterministic_jest_bootstrap_compatibility",
+                    proposer_invocation_request_checksum=None,
+                    proposer_invocation_prompt_version=None,
+                    proposer_invocation_schema_version=None,
+                    deterministic_proposer_artifact_id=capability_metadata.id.removeprefix("metadata-"),
+                    deterministic_proposer_artifact_checksum=capability_metadata.checksum,
+                    deterministic_proposer_policy_version="jest-bootstrap-compatibility-v1",
+                )
+            else:
+                raise TransformerStageError("REPAIR_INVOCATION_MISSING", "Repair proposer invocation lineage is missing")
             if gate_id == "G10":
                 store = LocalFilesystemArtifactStore(
                     Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
@@ -1981,15 +2060,21 @@ class TransformerOrchestrator:
             self._stage.register_artifact(session, gate, continuation)
             session.flush()
             if gate_id == "G10":
-                artifact_set_checksum = canonical_artifact_set_checksum(
-                    [
+                artifact_set = [
                         {"artifact_id": attempt.failure_evidence_artifact_id, "checksum": attempt.failure_evidence_checksum},
                         {"artifact_id": attempt.context_pack_artifact_id, "checksum": attempt.context_pack_checksum},
                         {"artifact_id": attempt.proposal_artifact_id, "checksum": attempt.proposal_checksum},
                         {"artifact_id": attempt.review_artifact_id, "checksum": attempt.review_checksum},
                         {"artifact_id": gate.ref.artifact_id, "checksum": gate.ref.checksum},
                     ]
-                )
+                if payload.get("deterministic_proposer_artifact_id"):
+                    artifact_set.append(
+                        {
+                            "artifact_id": payload["deterministic_proposer_artifact_id"],
+                            "checksum": payload["deterministic_proposer_artifact_checksum"],
+                        }
+                    )
+                artifact_set_checksum = canonical_artifact_set_checksum(artifact_set)
             else:
                 artifact_set_checksum = self._stage.checksum(
                     {gate.ref.artifact_id: gate.ref.checksum}

@@ -17,6 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 POLICY_VERSION = "angular-source-runtime-v1"
+ANGULAR_19_POLICY_VERSION = "angular-19-source-runtime-v1"
+ANGULAR_20_POLICY_VERSION = "angular-20-source-runtime-v1"
+SUPPORTED_POLICY_VERSIONS = (POLICY_VERSION, ANGULAR_19_POLICY_VERSION, ANGULAR_20_POLICY_VERSION)
 
 
 class _ImmutableModel(BaseModel):
@@ -119,7 +122,7 @@ class RuntimeResolutionRequest(_ImmutableModel):
     source_typescript_exact: str | None = None
     source_rxjs_exact: str | None = None
     candidates: tuple[RuntimeCandidate, ...] = ()
-    expected_policy_version: str = POLICY_VERSION
+    expected_policy_version: str | None = None
     validated_at: datetime
 
 
@@ -135,10 +138,28 @@ class RuntimeResolutionResult(_ImmutableModel):
 class RuntimePolicyLoader:
     """Loads the versioned, checked-in policy for Sprint 1 source intake."""
 
-    def load(self, policy_version: str = POLICY_VERSION) -> RuntimePolicy:
-        if policy_version != POLICY_VERSION:
+    def load_for_source(self, source: Version | None, expected_policy_version: str | None = None) -> RuntimePolicy:
+        if source is not None and source.major == 19:
+            policy = RuntimePolicy(
+                policy_version=ANGULAR_19_POLICY_VERSION,
+                angular_major=19,
+                supported_angular_minors=(0, 1, 2),
+                typescript_minimum="5.5.0",
+                typescript_exclusive_maximum="5.9.0",
+            )
+        elif source is not None and source.major == 20:
+            policy = RuntimePolicy(
+                policy_version=ANGULAR_20_POLICY_VERSION,
+                angular_major=20,
+                supported_angular_minors=(3,),
+                typescript_minimum="5.8.0",
+                typescript_exclusive_maximum="5.9.0",
+            )
+        else:
+            policy = RuntimePolicy(policy_version=POLICY_VERSION)
+        if expected_policy_version is not None and expected_policy_version != policy.policy_version:
             raise ValueError("unsupported runtime compatibility policy")
-        return RuntimePolicy(policy_version=policy_version)
+        return policy
 
 
 class SourceRuntimeResolver:
@@ -146,9 +167,9 @@ class SourceRuntimeResolver:
         self._loader = policy_loader or RuntimePolicyLoader()
 
     def resolve(self, request: RuntimeResolutionRequest) -> RuntimeResolutionResult:
-        policy = self._loader.load(request.expected_policy_version)
         blockers: list[str] = []
         source = Version.parse(request.source_angular_exact)
+        policy = self._loader.load_for_source(source, request.expected_policy_version)
         if source is None or source.major != policy.angular_major or source.minor not in policy.supported_angular_minors:
             blockers.append("SOURCE_ANGULAR_VERSION_UNSUPPORTED")
         if request.source_typescript_exact and not self._typescript_allowed(request.source_typescript_exact, policy):
@@ -182,7 +203,12 @@ class SourceRuntimeResolver:
     def is_stale(profile: ExecutionProfile, candidate: RuntimeCandidate, policy_version: str) -> bool:
         if profile.compatibility_catalog_version != policy_version:
             return True
-        expected = SourceRuntimeResolver._profile(candidate, RuntimeResolutionRequest(source_angular_exact=profile.source_angular_exact, validated_at=profile.validated_at), RuntimePolicy(policy_version=policy_version))
+        source = Version.parse(profile.source_angular_exact)
+        try:
+            policy = RuntimePolicyLoader().load_for_source(source, policy_version)
+        except ValueError:
+            return True
+        expected = SourceRuntimeResolver._profile(candidate, RuntimeResolutionRequest(source_angular_exact=profile.source_angular_exact, validated_at=profile.validated_at), policy)
         return expected.checksum != profile.checksum
 
     @staticmethod

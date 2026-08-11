@@ -28,6 +28,7 @@ from app.domain.command import (
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NPM_DEPENDENCY_INSTALL_RENDERER,
     NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER,
     TRANSFORMATION_COMMAND_CATALOGUE,
 )
 from app.domain.contracts import ArtifactType
@@ -49,6 +50,7 @@ from app.services.command_executor_service import (
 )
 from app.services.dependency_closure_service import (
     compatible_reinstall_bundle,
+    compatible_reinstall_section,
     compatible_reinstall_version,
     is_exact_version,
     verify_dependency_closure,
@@ -506,6 +508,7 @@ class DependencyTransitionRunner:
                 "package": member.package,
                 "exact_version": member.exact_version,
                 "required": member.required,
+                "section": compatible_reinstall_section(member.package),
             }
             for member in bundle.members
         ]
@@ -691,11 +694,16 @@ class DependencyTransitionRunner:
                 )
             }
         else:
-            renderer = NPM_DEPENDENCY_INSTALL_RENDERER
             member = member or {
                 "package": intent["blocking_package"],
                 "exact_version": intent["target_version"],
+                "section": "devDependencies",
             }
+            renderer = (
+                NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER
+                if member.get("section") == "dependencies"
+                else NPM_DEPENDENCY_INSTALL_RENDERER
+            )
             bindings = {
                 "package": member["package"],
                 "target_version": member["exact_version"],

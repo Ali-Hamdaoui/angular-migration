@@ -68,6 +68,8 @@ from app.services.dependency_addition_policy import (
     DependencyAdditionPolicyError,
 )
 from app.services.dependency_closure_service import (
+    compatible_reinstall_bundle,
+    compatible_reinstall_section,
     installed_dependency_version,
     is_exact_version,
     validate_dependency_transition_evidence,
@@ -77,6 +79,11 @@ from app.services.failure_evidence_service import (
     CONTEXT_PACK_MAX_BYTES_PER_FILE,
     FailureEvidenceService,
     validate_context_pack,
+)
+from app.services.jest_bootstrap_compatibility_service import (
+    JestBootstrapCompatibilityError,
+    JestBootstrapCompatibilityMigration,
+    JestBootstrapCompatibilityService,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import append_continuation_event
@@ -98,6 +105,16 @@ class RequiredPeerRangeCandidate(BaseModel):
 
     package: str | None = None
     version_range: str | None = None
+
+
+class DependencyTransitionTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package: str = Field(min_length=1, max_length=256)
+    section: Literal["dependencies", "devDependencies"]
+    new_version: str = Field(min_length=1, max_length=256)
+    required: bool
+    phase: Literal["post_angular_update_reattach"]
 
 
 class BlockingDependencyCandidate(BaseModel):
@@ -337,11 +354,22 @@ def _render_dependency_transition_intent(operation: dict[str, object]) -> str:
         f"blocking_dependency: {package}",
         f"target_state: angular {major} / {package}@{target_version}",
         f"checkpoint_id: {checkpoint_id}",
+        "package_intents:",
+        *[
+            (
+                f"  - {item['section']}.{item['package']}={item['new_version']} "
+                f"({item['phase']}; {'required' if item['required'] else 'align-if-present'})"
+            )
+            for item in operation.get("transition_targets") or []
+        ],
         (
             f"executed_commands: npm uninstall {package} → "
             f"ng update @angular/cli@{major} @angular/core@{major} --allow-dirty → "
-            f"npm install --save-dev --save-exact {package}@{target_version} → npm ci"
+            "governed exact installs for every package_intent using its declared section → npm ci"
         ),
+        "runtime_peer_plan: @standard-schema/spec is written to dependencies after the Angular update and before npm ci, build, and tests; it is required for both build and test validation",
+        "validation_plan: after G10, the backend regenerates package-lock.json and runs npm ci, integrity/dependency-closure checks, production build, and tests before G08/final human apply; build and test are mandatory gated validation_targets",
+        "test_maintenance_plan: verify the Jest 30 configuration, jest-preset-angular setup bootstrap, and snapshots through the governed test target; any deterministic bootstrap incompatibility is repaired and revalidated before final apply",
     ]
     return "\n".join(lines) + "\n"
 
@@ -542,6 +570,7 @@ class RepairOperationCandidate(BaseModel):
     schema_version: str | None = Field(default=None, min_length=1, max_length=64)
     blocking_dependency: BlockingDependencyCandidateInput | None = None
     target_state: TargetStateCandidateInput | None = None
+    transition_targets: list[DependencyTransitionTarget] = Field(default_factory=list, max_length=32)
     provenance: list[ProvenanceEntry] = Field(default_factory=list, max_length=32)
 
 
@@ -606,6 +635,9 @@ class RepairApplicationService:
     def propose(self, attempt_id: str) -> dict[str, object]:
         self.recover_legacy_fingerprint_authority(attempt_id)
         self._recover_legacy_context_pack(attempt_id)
+        deterministic = self._propose_jest_bootstrap_compatibility(attempt_id)
+        if deterministic is not None:
+            return deterministic
         semantic_retry_count = 0
         retry_of_invocation_key = None
         semantic_retry_code = None
@@ -803,6 +835,87 @@ class RepairApplicationService:
                 )
                 raise
             return proposal
+
+    def _propose_jest_bootstrap_compatibility(
+        self, attempt_id: str
+    ) -> dict[str, object] | None:
+        """Author the one proven Jest bootstrap repair without an LLM call."""
+        context = self._attempt_context(attempt_id)
+        if context.get("proposal_artifact_id") and context.get("proposal_checksum"):
+            recovered = self._attempt_context(attempt_id, include_proposal=True)
+            try:
+                proposal = json.loads(str(recovered["segments"][-1]))
+            except (IndexError, TypeError, ValueError):
+                return None
+            if any(
+                isinstance(entry, dict)
+                and entry.get("key") == "replacement_bootstrap"
+                and entry.get("value") == "setup-env/zone"
+                for operation in proposal.get("operations") or []
+                if isinstance(operation, dict)
+                for entry in operation.get("provenance") or []
+            ):
+                return RepairProposal.model_validate(proposal).model_dump(mode="json")
+            return None
+        failure_text = "\n".join(str(segment) for segment in context.get("segments") or [])
+        if not re.search(
+            r"cannot\s+find\s+module\s+['\"]jest-preset-angular/setup-jest(?:\.js)?['\"]",
+            failure_text,
+            re.IGNORECASE,
+        ):
+            return None
+        try:
+            migration = JestBootstrapCompatibilityService().detect(
+                str(context["workspace_path"]), str(context["run_root"])
+            )
+        except JestBootstrapCompatibilityError as error:
+            raise RepairApplicationError(error.code, error.message) from error
+        if migration is None:
+            return None
+
+        operation = migration.operation()
+        operation["provenance"].extend(
+            [
+                {"key": "setup_preimage_sha256", "value": migration.preimage_sha256},
+                {"key": "package_manifest_sha256", "value": migration.package_manifest_sha256},
+                {"key": "replacement_javascript_sha256", "value": migration.replacement_javascript_sha256},
+                {"key": "replacement_types_sha256", "value": migration.replacement_types_sha256},
+            ]
+        )
+        candidate = {
+            "proposal_format": "operations",
+            "operations": [operation],
+            "unified_diff": None,
+            "rationale": [
+                "Installed jest-preset-angular removed setup-jest and proves setupZoneTestEnv at setup-env/zone."
+            ],
+            "risk_level": "low",
+            "validation_targets": ["test"],
+            "limitations": [
+                "Applies only to the exact known one-line legacy Jest bootstrap preimage."
+            ],
+        }
+        proposal = self.validate_proposal(
+            self._bind_proposal_candidate(candidate, context), context
+        )
+        stored = self._write(context, "proposal", proposal)
+        safe_diff = None
+        capability = None
+        try:
+            safe_diff = self._write_safe_diff(context, proposal, stored.ref.checksum)
+            capability = self._write_jest_bootstrap_capability(context, migration)
+            self._persist_deterministic_proposal(
+                context,
+                proposal=proposal,
+                stored=stored,
+                additional_stored=(safe_diff, capability),
+            )
+        except Exception:
+            for artifact in (stored, safe_diff, capability):
+                if artifact is not None:
+                    self._remove_uncommitted_artifact(artifact)
+            raise
+        return proposal
 
     def review(self, attempt_id: str) -> dict[str, object]:
         self.recover_legacy_fingerprint_authority(attempt_id)
@@ -1862,6 +1975,16 @@ class RepairApplicationService:
                     and continuation.status == "waiting_repair_revision"
                     and continuation.current_node == "review_repair"
                 )
+                deterministic_blocked_revision = (
+                    attempt.status == "request_changes"
+                    and attempt.proposer_invocation_id is None
+                    and attempt.reviewer_invocation_id is not None
+                    and review["decision"] == "request_changes"
+                    and continuation.current_stage_id == attempt.stage_id
+                    and continuation.status == "blocked"
+                    and continuation.current_node == "create_g10"
+                    and continuation.last_error_code == "REPAIR_INVOCATION_MISSING"
+                )
                 accepted_revision = (
                     attempt.status == "waiting_g10"
                     and review["decision"] == "accept"
@@ -1880,7 +2003,12 @@ class RepairApplicationService:
                     and pending_g10 is not None
                     and attempt.g10_gate_package_id == pending_g10.id
                 )
-                if not reviewer_revision and not accepted_revision and not g10_override_revision:
+                if (
+                    not reviewer_revision
+                    and not deterministic_blocked_revision
+                    and not accepted_revision
+                    and not g10_override_revision
+                ):
                     raise RepairApplicationError(
                         "REPAIR_REVISION_NOT_ALLOWED",
                         "Repair attempt is not in its live human revision state",
@@ -2673,6 +2801,26 @@ class RepairApplicationService:
                 "REPAIR_DEPENDENCY_PACKAGE_MISSING",
                 "The backend blocking package is missing or ambiguous in authoritative package.json",
             )
+        try:
+            bundle = compatible_reinstall_bundle(package, expected_major, workspace)
+        except ValueError as error:
+            raise RepairApplicationError(
+                "REPAIR_DEPENDENCY_AUTHORITY_MISSING", str(error)
+            ) from error
+        operation["package"] = package
+        operation["section"] = present[0]
+        operation["new_version"] = str(authority["target_version"])
+        operation["transition_targets"] = [
+            DependencyTransitionTarget(
+                package=member.package,
+                section=compatible_reinstall_section(member.package),
+                new_version=member.exact_version,
+                required=member.required,
+                phase="post_angular_update_reattach",
+            ).model_dump(mode="json")
+            for member in bundle.members
+        ]
+        value["operations"] = [operation]
         return RepairProposal.model_validate(value).model_dump(mode="json")
 
     def _causal_gate_rejection(self, context: dict[str, object], proposal: dict[str, object]):
@@ -5373,6 +5521,113 @@ class RepairApplicationService:
             },
             policy_version=f"repair-{kind}-v1",
         )
+
+    def _write_jest_bootstrap_capability(
+        self,
+        context: dict[str, object],
+        migration: JestBootstrapCompatibilityMigration,
+    ) -> StoredArtifact:
+        root = Path(str(context["artifact_root"]))
+        self._last_artifact_root = root
+        return LocalFilesystemArtifactStore(
+            root.parent, fixed_run_root=root
+        ).write_text_artifact(
+            str(context["run_id"]),
+            f"05_repairs/attempt-{context['attempt_id']}/jest-bootstrap-capability.json",
+            json.dumps(migration.evidence(), sort_keys=True, indent=2),
+            ArtifactType.JSON,
+            stage_id=str(context["stage_id"]),
+            attempt_id=str(context["attempt_id"]),
+            created_by="repair-proposer-deterministic",
+            created_at=self._now(),
+            input_hashes={
+                "failure": str(context["failure_evidence_checksum"]),
+                "context": str(context["context_pack_checksum"]),
+                "setup_preimage": migration.preimage_sha256,
+                "package_manifest": migration.package_manifest_sha256,
+                "replacement_javascript": migration.replacement_javascript_sha256,
+                "replacement_types": migration.replacement_types_sha256,
+            },
+            policy_version="jest-bootstrap-compatibility-v1",
+        )
+
+    def _persist_deterministic_proposal(
+        self,
+        context: dict[str, object],
+        *,
+        proposal: dict[str, object],
+        stored: StoredArtifact,
+        additional_stored: tuple[StoredArtifact, ...],
+    ) -> None:
+        """Persist a backend-authored proposal under the normal repair authority."""
+        fresh = self._attempt_context(str(context["attempt_id"]))
+        if self._backend_authority_snapshot(fresh["authority_snapshot"]) != self._backend_authority_snapshot(
+            context["authority_snapshot"]
+        ):
+            raise RepairApplicationError(
+                "REPAIR_PROPOSAL_STALE",
+                "Repair authority changed before deterministic proposal persistence",
+            )
+        with self._scope() as session:
+            attempt = session.get(RepairAttemptModel, str(context["attempt_id"]))
+            binding = session.get(StageWorkspaceBindingModel, str(context["workspace_binding_id"]))
+            if attempt is None or binding is None:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE", "Deterministic repair authority is missing"
+                )
+            try:
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError as error:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace is unavailable"
+                ) from error
+            if (
+                attempt.run_id != context["run_id"]
+                or attempt.stage_id != context["stage_id"]
+                or attempt.status != context["attempt_status"]
+                or attempt.state_version != context["attempt_state_version"]
+                or attempt.proposal_artifact_id is not None
+                or attempt.proposal_checksum is not None
+                or binding.workspace_path != context["workspace_path"]
+                or binding.workspace_fingerprint != context["workspace_stored_fingerprint"]
+                or live != context["workspace_live_fingerprint"]
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE",
+                    "Repair authority changed before deterministic proposal persistence",
+                )
+            for artifact in (stored, *additional_stored):
+                metadata_id = "metadata-" + artifact.ref.artifact_id
+                if session.get(ArtifactMetadataModel, metadata_id) is not None:
+                    raise RepairApplicationError(
+                        "REPAIR_ARTIFACT_RECOVERY_FAILED",
+                        "Deterministic repair artifact identity already exists",
+                    )
+                self._register_artifact_metadata(session, context, artifact)
+            changed = session.execute(
+                update(RepairAttemptModel)
+                .where(
+                    RepairAttemptModel.id == attempt.id,
+                    RepairAttemptModel.state_version == context["attempt_state_version"],
+                    RepairAttemptModel.status == context["attempt_status"],
+                    RepairAttemptModel.proposal_artifact_id.is_(None),
+                    RepairAttemptModel.proposal_checksum.is_(None),
+                )
+                .values(
+                    proposal_artifact_id=stored.ref.artifact_id,
+                    proposal_checksum=stored.ref.checksum,
+                    status="proposed",
+                    risk_level=str(proposal["risk_level"]),
+                    diagnosis=(attempt.diagnosis or "") + "; deterministic_jest_bootstrap_compatibility",
+                    state_version=RepairAttemptModel.state_version + 1,
+                    updated_at=self._now(),
+                )
+            )
+            if changed.rowcount != 1:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE",
+                    "Repair attempt changed before deterministic proposal persistence",
+                )
 
     def _persist_call(
         self,

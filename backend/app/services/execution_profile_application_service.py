@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.api.execution_profile_contracts import ExecutionProfileResponse
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import ArtifactType, WorkflowEventType
-from app.domain.execution_profile import RuntimeCandidate, RuntimeResolutionRequest, SourceRuntimeResolver
+from app.domain.execution_profile import RuntimeCandidate, RuntimeResolutionRequest, SourceRuntimeResolver, SUPPORTED_POLICY_VERSIONS
 from app.repositories.models import ArtifactMetadataModel, EnvironmentCapabilityModel, ExecutionProfileModel, G02ApprovalModel, MigrationRunModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest, StaleStateVersionError
@@ -18,7 +18,7 @@ class ExecutionProfileApplicationError(ValueError):
         super().__init__(message); self.code=code; self.message=message; self.status_code=status_code
 
 class ExecutionProfileApplicationService:
-    POLICY_VERSION = "angular-source-runtime-v1"
+    POLICY_VERSIONS = SUPPORTED_POLICY_VERSIONS
     def __init__(self, *, session_scope_factory=session_scope, resolver=None, now_provider=None):
         self._scope=session_scope_factory; self._resolver=resolver or SourceRuntimeResolver(); self._now=now_provider or (lambda: datetime.now(UTC))
 
@@ -80,7 +80,7 @@ class ExecutionProfileApplicationService:
                 raise ExecutionProfileApplicationError("STALE_STATE_VERSION", "The run state version is stale.", 409)
             candidates, _ = self._inventory_candidates(session)
             selected = next((profile for profile in record.profiles if profile.get("profile_id") == record.selected_profile_id and profile.get("checksum") == record.selected_checksum), None)
-            if selected is None or record.policy_version != self.POLICY_VERSION or not any(self._candidate_matches_profile(candidate, selected) for candidate in candidates):
+            if selected is None or record.policy_version not in self.POLICY_VERSIONS or not any(self._candidate_matches_profile(candidate, selected) for candidate in candidates):
                 transition = StateTransitionService(session).apply_transition(TransitionRequest(run_id=run_id, expected_state_version=run.state_version, idempotency_key=idempotency_key, event_type=WorkflowEventType.EXECUTION_PROFILE_BLOCKED, actor=actor, reason="selected execution profile is stale at baseline boundary", occurred_at=now, payload={"profile_id": record.selected_profile_id, "checksum": record.selected_checksum}))
                 record.status = "stale"; record.blockers = list(dict.fromkeys([*(record.blockers or []), "EXECUTION_PROFILE_STALE"])); record.state_version = transition.next_state_version; record.event_sequence = transition.event_sequence; record.updated_at = now; session.flush(); session.commit()
                 raise ExecutionProfileApplicationError("STALE_EXECUTION_PROFILE", "The selected executable or compatibility policy changed; resolve the execution profile again.", 409)

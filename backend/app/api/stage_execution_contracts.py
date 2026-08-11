@@ -25,3 +25,5 @@ class StageStartResponse(ContractModel):
     event_sequence: int
     idempotent_replay: bool = False
     workspace_fingerprint: str | None = None
+    first_command_authorization_id: str | None = None
+    first_command_execution_id: str | None = None

@@ -110,7 +110,7 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     actor: str = Field(min_length=1)
     source_angular_exact: str = Field(min_length=1)
-    target_family: str = Field(default="angular-21.x", pattern=r"^angular-21\.x$")
+    target_family: str = Field(default="angular-21.x", pattern=r"^angular-\d+\.x$")
     catalogue_version: str = Field(min_length=1)
     registry_snapshot_id: str = Field(default="registry-snapshot-v1", min_length=1, max_length=128)
     registry_snapshot_checksum: str = Field(default="sha256:" + "0" * 64, pattern=r"^sha256:[0-9a-f]{64}$")

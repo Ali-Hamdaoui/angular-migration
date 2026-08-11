@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$TargetRoot = "C:\Users\hamdaoui.ali\Downloads\MSA-COMMON-STG1",
+    [string]$TargetRoot = "C:\amd",
     [ValidateRange(1, 65535)]
     [int]$Port = 8000
 )

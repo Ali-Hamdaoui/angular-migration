@@ -50,6 +50,7 @@ _COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool]
     ("jest-preset-angular", 19): (("jest-preset-angular", "14.4.0", True),),
     ("jest-preset-angular", 20): (("jest-preset-angular", "14.6.2", True),),
     ("jest-preset-angular", 21): (
+        ("@standard-schema/spec", "1.0.0", True),
         ("jest", "30.4.2", True),
         ("jsdom", "26.1.0", True),
         ("@types/jest", "30.0.0", False),
@@ -101,6 +102,11 @@ def compatible_reinstall_version(package: str, target_major: int) -> str:
             "recovery=add verified package compatibility authority before retrying"
         )
     return primary[1]
+
+
+def compatible_reinstall_section(package: str) -> str:
+    """Return the governed manifest section for a transition member."""
+    return "dependencies" if package == "@standard-schema/spec" else "devDependencies"
 
 
 def compatible_reinstall_bundle(

@@ -942,6 +942,46 @@ def test_corrected_dependency_transition_retry_binds(tmp_path: Path):
     assert bound["operations"][0]["path"] == "package.json"
     assert bound["operations"][0]["checkpoint_id"] == "checkpoint-1"
     assert bound["operations"][0]["target_state"]["target_version"] == context["expected_target_version"]
+    assert bound["operations"][0]["package"]
+    assert bound["operations"][0]["section"] == "devDependencies"
+    assert bound["operations"][0]["new_version"] == context["expected_target_version"]
+    assert bound["operations"][0]["transition_targets"]
+    assert all(
+        target["section"] in {"dependencies", "devDependencies"}
+        and target["phase"] == "post_angular_update_reattach"
+        for target in bound["operations"][0]["transition_targets"]
+    )
+
+
+def test_angular_21_jest_transition_bundle_covers_all_reported_peers(tmp_path: Path):
+    from app.services.dependency_closure_service import compatible_reinstall_bundle
+
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "devDependencies": {
+                    "jest": "^29.7.0",
+                    "@types/jest": "^29.5.0",
+                    "jest-preset-angular": "14.6.2",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = compatible_reinstall_bundle("jest-preset-angular", 21, tmp_path)
+
+    assert [(member.package, member.exact_version) for member in bundle.members] == [
+        ("@standard-schema/spec", "1.0.0"),
+        ("jest", "30.4.2"),
+        ("jsdom", "26.1.0"),
+        ("@types/jest", "30.0.0"),
+        ("jest-preset-angular", "16.1.3"),
+    ]
+    from app.services.dependency_closure_service import compatible_reinstall_section
+
+    assert compatible_reinstall_section("@standard-schema/spec") == "dependencies"
+    assert compatible_reinstall_section("jest") == "devDependencies"
 
 
 def test_npm_eresolve_attempted_resolution_allows_candidate_different_from_installed(
@@ -1388,6 +1428,7 @@ def _seed_service(
     *,
     human_revision: dict | None = None,
     package_json: str = '{"name": "fixture"}',
+    failure: str = "compiler",
 ):
     artifacts = tmp_path / "artifacts"
     workspace = tmp_path / "workspace"
@@ -1402,7 +1443,7 @@ def _seed_service(
     failure = store.write_text_artifact(
         "run-1",
         f"05_repairs/attempt-{attempt_id}/failure-evidence.json",
-        json.dumps({"attempt_id": attempt_id, "failure": "compiler", "stage_id": "stage-1"}),
+        json.dumps({"attempt_id": attempt_id, "failure": failure, "stage_id": "stage-1"}),
         ArtifactType.JSON,
         stage_id="stage-1",
         attempt_id=attempt_id,
@@ -1649,6 +1690,91 @@ def _refresh_seed_authority(factory, tmp_path: Path):
     session.commit()
     session.close()
     return fingerprint
+
+
+def test_proposer_uses_deterministic_jest_bootstrap_capability_without_llm(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    store, attempt_id, _app_ts, _artifacts = _seed_service(
+        factory,
+        tmp_path,
+        failure="Cannot find module 'jest-preset-angular/setup-jest'",
+    )
+    workspace = tmp_path / "workspace"
+    (workspace / "setup-jest.ts").write_text(
+        "import 'jest-preset-angular/setup-jest';", encoding="utf-8", newline=""
+    )
+    package = workspace / "node_modules" / "jest-preset-angular"
+    zone = package / "setup-env" / "zone"
+    zone.mkdir(parents=True)
+    (package / "package.json").write_text(
+        '{"name":"jest-preset-angular","version":"17.0.0"}', encoding="utf-8"
+    )
+    (zone / "index.js").write_text(
+        "const setupZoneTestEnv = () => {}; module.exports = { setupZoneTestEnv };",
+        encoding="utf-8",
+    )
+    (zone / "index.d.ts").write_text(
+        "export declare const setupZoneTestEnv: () => void;", encoding="utf-8"
+    )
+    _refresh_seed_authority(factory, tmp_path)
+
+    transport = _RecordingTransport([])
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    proposal = service.propose(attempt_id)
+
+    assert transport.calls == []
+    assert proposal["operations"][0]["path"] == "setup-jest.ts"
+    assert proposal["operations"][0]["new_text"] == (
+        "import { setupZoneTestEnv } from 'jest-preset-angular/setup-env/zone';\n"
+        "\nsetupZoneTestEnv();\n"
+    )
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    assert attempt.status == "proposed"
+    assert attempt.proposer_invocation_id is None
+    assert session.query(LlmInvocationModel).count() == 0
+    session.close()
+    assert any(
+        "jest-bootstrap-capability.json" in ref.relative_path
+        for ref in store.list_artifacts("run-1")
+    )
+    engine.dispose()
+
+
+def test_jest_bootstrap_capability_does_not_override_unrelated_failure(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _, attempt_id, _, _ = _seed_service(factory, tmp_path)
+    workspace = tmp_path / "workspace"
+    (workspace / "setup-jest.ts").write_text(
+        "import 'jest-preset-angular/setup-jest';", encoding="utf-8"
+    )
+    package = workspace / "node_modules" / "jest-preset-angular"
+    zone = package / "setup-env" / "zone"
+    zone.mkdir(parents=True)
+    (package / "package.json").write_text(
+        '{"name":"jest-preset-angular","version":"16.1.3"}', encoding="utf-8"
+    )
+    (zone / "index.js").write_text(
+        "const setupZoneTestEnv = () => {}; module.exports = { setupZoneTestEnv };",
+        encoding="utf-8",
+    )
+    (zone / "index.d.ts").write_text(
+        "export declare const setupZoneTestEnv: () => void;", encoding="utf-8"
+    )
+    _refresh_seed_authority(factory, tmp_path)
+
+    assert (
+        RepairApplicationService(scope=_scope(factory))._propose_jest_bootstrap_compatibility(
+            attempt_id
+        )
+        is None
+    )
+    engine.dispose()
 
 
 def _recovery_service(factory):

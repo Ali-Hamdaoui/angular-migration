@@ -100,6 +100,7 @@ _MUTATING_COMMAND_IDS = frozenset(
         "npm-lockfile-generate",
         "npm-dependency-uninstall",
         "npm-dependency-install",
+        "npm-runtime-dependency-install",
     }
 )
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -691,6 +692,7 @@ class CommandExecutorService:
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
             NPM_DEPENDENCY_INSTALL_RENDERER,
             NPM_DEPENDENCY_UNINSTALL_RENDERER,
+            NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER,
             TRANSFORMATION_COMMAND_CATALOGUE,
         )
         from app.repositories.models.workflow import RepairAttemptModel
@@ -704,6 +706,7 @@ class CommandExecutorService:
         renderer_for_command = {
             "npm-dependency-uninstall": (NPM_DEPENDENCY_UNINSTALL_RENDERER, 1),
             "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
+            "npm-runtime-dependency-install": (NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER, 1),
             "npm-angular-lockfile-normalize": (NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER, 2),
             "angular-update-exact": (ANGULAR_UPDATE_V3_RENDERER, 3),
         }

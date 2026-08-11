@@ -299,6 +299,19 @@ NPM_DEPENDENCY_INSTALL_RENDERER: Final[TransformationCommandDefinition] = Transf
     description="Install the approved target version of the detached dependency (reattach step of the dependency transition repair)",
 )
 
+NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-runtime-dependency-install",
+    template_id="tpl-npm-runtime-dependency-install",
+    executable="npm",
+    argument_patterns=("install", "--save-exact", "{package}@{target_version}"),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=1800,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Install an approved runtime peer required by the target dependency graph",
+)
+
 NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="npm-angular-lockfile-normalize",
     template_id="tpl-npm-angular-lockfile-normalize-v2",
@@ -372,6 +385,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
     ),
     "npm-dependency-uninstall": NPM_DEPENDENCY_UNINSTALL_RENDERER,
     "npm-dependency-install": NPM_DEPENDENCY_INSTALL_RENDERER,
+    "npm-runtime-dependency-install": NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER,
 }
 
 

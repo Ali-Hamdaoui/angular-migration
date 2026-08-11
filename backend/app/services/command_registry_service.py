@@ -32,6 +32,7 @@ from app.domain.command import (
     DEFAULT_COMMAND_TEMPLATES,
     NPM_DEPENDENCY_INSTALL_RENDERER,
     NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER,
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NetworkProfile,
     command_arguments_match,
@@ -46,6 +47,7 @@ from app.domain.contracts import (
 from app.services.path_validation_service import is_portable_absolute_path
 from app.services.dependency_closure_service import (
     compatible_reinstall_bundle,
+    compatible_reinstall_section,
     installed_dependency_version,
     is_exact_version,
     validate_dependency_transition_evidence,
@@ -939,7 +941,10 @@ class CommandPolicyEngineService:
                         {"package": blocking_package}
                     )
                 )
-            if request.command_id == NPM_DEPENDENCY_INSTALL_RENDERER.command_id:
+            if request.command_id in {
+                NPM_DEPENDENCY_INSTALL_RENDERER.command_id,
+                NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER.command_id,
+            }:
                 try:
                     binding = session.scalar(
                         select(StageWorkspaceBindingModel).where(
@@ -954,7 +959,11 @@ class CommandPolicyEngineService:
                         blocking_package, target_major, Path(binding.workspace_path)
                     )
                     approved_arguments = {
-                        NPM_DEPENDENCY_INSTALL_RENDERER.render_arguments(
+                        (
+                            NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER
+                            if compatible_reinstall_section(member.package) == "dependencies"
+                            else NPM_DEPENDENCY_INSTALL_RENDERER
+                        ).render_arguments(
                             {
                                 "package": member.package,
                                 "target_version": member.exact_version,
@@ -965,7 +974,12 @@ class CommandPolicyEngineService:
                 except (KeyError, TypeError, ValueError, OSError):
                     return False
                 return (
-                    request.template_id == NPM_DEPENDENCY_INSTALL_RENDERER.template_id
+                    request.template_id
+                    == (
+                        NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER.template_id
+                        if request.command_id == NPM_RUNTIME_DEPENDENCY_INSTALL_RENDERER.command_id
+                        else NPM_DEPENDENCY_INSTALL_RENDERER.template_id
+                    )
                     and request.template_version == 1
                     and request.executable == "npm"
                     and tuple(request.arguments) in approved_arguments

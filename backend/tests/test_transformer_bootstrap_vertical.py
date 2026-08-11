@@ -214,6 +214,19 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
         assert durable.status == "waiting_gate"
         assert durable.current_node == "wait_g07"
         assert gate.plan_version == 1
+
+    # A legacy stage-start/restart may wake an already-created gate package.
+    # The wait pointer must be re-parked, not treated as unsupported work.
+    with scope() as session:
+        continuations.wake(session, continuation_id, now=NOW)
+    tick()
+
+    with scope() as session:
+        durable = session.get(TransformationContinuationModel, continuation_id)
+        gate = session.query(StageGatePackageModel).one()
+        assert durable.status == "waiting_gate"
+        assert durable.current_node == "wait_g07"
+        assert durable.last_error_code is None
         StageGateService().decide(
             session,
             durable,
