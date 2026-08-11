@@ -63,10 +63,19 @@ function backendErrorMessage(error: ApiClientError) {
       error?: { code?: string; message?: string };
       error_code?: string;
       message?: string;
+      correlation_id?: string;
+      details?: { errors?: Array<{ loc?: Array<string | number>; msg?: string }> };
     };
+    const validationErrors = body.details?.errors
+      ?.filter((item) => item.msg)
+      .map((item) => `${item.loc?.join(".") || "request"}: ${item.msg}`) ?? [];
     return {
       code: body.error?.code ?? body.error_code ?? "BACKEND_ERROR",
-      message: body.error?.message ?? body.message ?? error.message,
+      message: [
+        body.error?.message ?? body.message ?? error.message,
+        ...validationErrors,
+        body.correlation_id ? `Correlation ID: ${body.correlation_id}` : null,
+      ].filter(Boolean).join(" "),
     };
   } catch {
     return { code: "BACKEND_ERROR", message: error.message };
@@ -183,6 +192,8 @@ export function TransformationPanel({
     && decisionLabel(current.active_gate) !== "Unsupported decision"
     && decisionLabel(current.active_gate) !== "No decision requested"
     && Boolean(current.active_gate_package_checksum && current.workspace_fingerprint);
+  const repairRevisionAvailable = current.status === "waiting_repair_revision"
+    || (current.status === "waiting_gate" && current.active_gate === "G10");
   return <div className={styles.screen} aria-label="Transformer status">
     <section className={styles.hero}>
       <div>
@@ -225,54 +236,96 @@ export function TransformationPanel({
             </p>
           : null}
         {decisionAvailable
-          ? <div className={styles.actions}>
+          ? projection.active_gate !== "G10" ? <div className={styles.actions}>
               <button
                 type="button"
-                disabled={submitting || (projection.active_gate === "G10" && !g10EvidenceAvailable) || (reviewerOverrideRequired && !overrideComment.trim())}
-                title={projection.active_gate === "G10" && !g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
+                disabled={submitting}
                 onClick={() => void decideGate("approve")}
               >
-                {reviewerOverrideRequired ? "Approve despite Reviewer concerns" : approvalActionLabel(projection.active_gate)}
+                {approvalActionLabel(projection.active_gate)}
               </button>
-              {projection.active_gate === "G10" ? <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
-                Request changes
-              </button> : null}
               <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
                 Reject
               </button>
-            </div>
+            </div> : null
           : projection.status === "waiting_gate"
             ? <p className={styles.alert} role="alert">{decisionLabel(projection.active_gate) === "Unsupported decision" ? "This decision type is unsupported by the frontend." : "The active decision lacks the backend package checksum or workspace fingerprint required for a safe decision."}</p>
             : null}
-        {reviewerOverrideRequired ? <>
-          <label htmlFor="repair-override-comment">Override comment (required)</label>
-          <textarea
-            id="repair-override-comment"
-            value={overrideComment}
-            onChange={(event) => setOverrideComment(event.target.value)}
-            maxLength={4000}
-            rows={3}
-            disabled={submitting}
-            placeholder="Explain why you approve despite the Reviewer concerns"
-          />
-        </> : null}
-        {(projection.status === "waiting_repair_revision" || (projection.status === "waiting_gate" && projection.active_gate === "G10")) ? <>
-          <label htmlFor="repair-revision-instruction">Exact revision instruction</label>
-          <textarea
-            id="repair-revision-instruction"
-            value={revisionInstruction}
-            onChange={(event) => setRevisionInstruction(event.target.value)}
-            maxLength={4000}
-            rows={4}
-            disabled={submitting || revisionSubmitting}
-            placeholder="Describe the required revision; repository-relative file names are allowed (no raw patches, host paths, or sandbox paths)"
-          />
-          {submitting ? <p className={styles.note} role="status">Submitting revision…</p> : null}
-          {projection.status === "waiting_repair_revision" ? <div className={styles.actions}>
-            <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>Request changes</button>
-            <button type="button" disabled={submitting} onClick={() => void rejectReviewedRepair()}>Reject repair</button>
-          </div> : null}
-        </> : null}
+        {repairRevisionAvailable ? <div className={styles.decisionWorkspace}>
+          {reviewerOverrideRequired ? <fieldset className={styles.decisionCard}>
+            <legend>Approve despite Reviewer concerns</legend>
+            <p className={styles.fieldHelp} id="repair-override-help">
+              Explain why this proposal is safe to approve despite the unresolved findings.
+            </p>
+            <label htmlFor="repair-override-comment">
+              Override comment <span className={styles.required} aria-hidden="true">Required</span>
+            </label>
+            <textarea
+              id="repair-override-comment"
+              value={overrideComment}
+              onChange={(event) => setOverrideComment(event.target.value)}
+              aria-describedby="repair-override-help"
+              maxLength={4000}
+              rows={4}
+              required
+              disabled={submitting}
+              placeholder="Explain why approval is safe despite the Reviewer concerns"
+            />
+            <div className={styles.actions}>
+              <button
+                type="button"
+                disabled={submitting || !g10EvidenceAvailable || !overrideComment.trim()}
+                title={!g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
+                onClick={() => void decideGate("approve")}
+              >
+                Approve despite Reviewer concerns
+              </button>
+            </div>
+          </fieldset> : null}
+
+          <fieldset className={styles.decisionCard}>
+            <legend>Request changes</legend>
+            <p className={styles.fieldHelp} id="repair-revision-help">
+              Describe the outcome you need. Repository-relative file names are allowed; raw patches, host paths, and sandbox paths are not.
+            </p>
+            <label htmlFor="repair-revision-instruction">
+              Revision instructions <span className={styles.required} aria-hidden="true">Required</span>
+            </label>
+            <textarea
+              id="repair-revision-instruction"
+              value={revisionInstruction}
+              onChange={(event) => setRevisionInstruction(event.target.value)}
+              aria-describedby="repair-revision-help"
+              maxLength={4000}
+              rows={5}
+              required
+              disabled={submitting || revisionSubmitting}
+              placeholder="Describe the exact behavior or files that need revision"
+            />
+            {submitting ? <p className={styles.note} role="status">Submitting revision…</p> : null}
+            <div className={styles.actions}>
+              <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
+                Request changes
+              </button>
+            </div>
+          </fieldset>
+
+          <div className={styles.decisionFooter}>
+            {decisionAvailable && !reviewerOverrideRequired ? <button
+              type="button"
+              disabled={submitting || !g10EvidenceAvailable}
+              title={!g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
+              onClick={() => void decideGate("approve")}
+            >
+              {approvalActionLabel(projection.active_gate)}
+            </button> : null}
+            {decisionAvailable ? <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
+              Reject
+            </button> : <button type="button" disabled={submitting} onClick={() => void rejectReviewedRepair()}>
+              Reject repair
+            </button>}
+          </div>
+        </div> : null}
       </section>
 
       <StageSummary {...shared} />

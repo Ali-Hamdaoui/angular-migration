@@ -33,6 +33,7 @@ from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.repair_application_service import (
     RepairProposal,
     RepairReview,
+    _LEGACY_SEMANTIC_RECOVERY_CODES,
     _SEMANTIC_RETRY_CODES,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -492,7 +493,8 @@ class StageGateService:
             or retry_invocation.status != "failed"
             or retry_invocation.retries != 1
             or retry_invocation.failure_stage != "repair_semantics"
-            or retry_invocation.failure_code not in _SEMANTIC_RETRY_CODES
+            or retry_invocation.failure_code
+            not in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
         ):
             raise StageGateError(
                 "REPAIR_PARENT_LINEAGE_INVALID",

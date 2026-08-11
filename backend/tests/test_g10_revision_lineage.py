@@ -409,7 +409,13 @@ def _seed_child_attempt(
     session.close()
 
 
-def _seed_recovery_child_g10(factory, tmp_path, *, recovery_event=True):
+def _seed_recovery_child_g10(
+    factory,
+    tmp_path,
+    *,
+    recovery_event=True,
+    retry_failure_code="REPAIR_REPLACEMENT_MISSING",
+):
     """Seed a G10-ready recovery child with proposal-less parent evidence."""
     (
         store,
@@ -552,7 +558,7 @@ def _seed_recovery_child_g10(factory, tmp_path, *, recovery_event=True):
         )
     for suffix, retries, failure_code in (
         ("", 0, "REPAIR_REPLACEMENT_MISSING"),
-        (":semantic-retry-1", 1, "REPAIR_REPLACEMENT_MISSING"),
+        (":semantic-retry-1", 1, retry_failure_code),
     ):
         invocation_id = f"{parent_id}:proposer{suffix}"
         session.add(
@@ -623,6 +629,22 @@ def test_g10_child_lineage_accepts_old_writer_representation(factory, tmp_path):
 
 def test_g10_accepts_recovery_child_with_proven_recovery_ancestry(factory, tmp_path):
     _seed_recovery_child_g10(factory, tmp_path)
+
+    _g10_orchestrator(factory).advance("cont-1", "worker-1")
+
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert continuation.status == "waiting_gate"
+    assert continuation.current_node == "wait_g10"
+    session.close()
+
+
+def test_g10_accepts_recovery_child_with_legacy_ambiguous_retry(factory, tmp_path):
+    _seed_recovery_child_g10(
+        factory,
+        tmp_path,
+        retry_failure_code="REPAIR_OPERATION_AMBIGUOUS",
+    )
 
     _g10_orchestrator(factory).advance("cont-1", "worker-1")
 

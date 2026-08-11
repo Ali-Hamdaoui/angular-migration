@@ -1569,7 +1569,11 @@ def _seed_failed_v1_invocation(factory, attempt_id: str):
 
 
 def _seed_exhausted_semantic_retry(
-    factory, tmp_path: Path, *, human_revision: dict | None = None
+    factory,
+    tmp_path: Path,
+    *,
+    human_revision: dict | None = None,
+    retry_failure_code: str = "REPAIR_REPLACEMENT_MISSING",
 ):
     store, attempt_id, app_ts, artifacts = _seed_service(
         factory, tmp_path, human_revision=human_revision
@@ -1623,7 +1627,9 @@ def _seed_exhausted_semantic_retry(
                 stage="repair",
                 redacted_summary=None,
                 status="failed",
-                failure_code="REPAIR_REPLACEMENT_MISSING",
+                failure_code=(
+                    retry_failure_code if retry_number else "REPAIR_REPLACEMENT_MISSING"
+                ),
                 artifact_ids=[],
                 artifact_checksums={},
                 state_version=1,
@@ -1713,6 +1719,27 @@ def test_recover_exhausted_semantic_retry_creates_one_lineage_bound_child(tmp_pa
     old_context_after = store.read_artifact_by_id(old_context.ref.artifact_id)
     assert old_context_after.ref.checksum == old_context.ref.checksum
     assert old_context_after.content == old_context.content
+    engine.dispose()
+
+
+def test_recovery_accepts_legacy_ambiguous_semantic_retry_failure(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(
+        factory,
+        tmp_path,
+        retry_failure_code="REPAIR_OPERATION_AMBIGUOUS",
+    )
+
+    result = _recovery_service(factory).recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-legacy-ambiguous",
+        actor="operator",
+    )
+
+    assert result["attempt_id"] == "repair-stage-1-2"
+    assert result["status"] == "evidence_frozen"
     engine.dispose()
 
 
@@ -2367,6 +2394,34 @@ def test_missing_replace_target_hydrates_authoritative_retry_context(tmp_path: P
     session.close()
     rejected_payload = json.loads(rejected.content)
     assert rejected_payload["candidate"]["operations"][0]["old_text"] == "old\n"
+    engine.dispose()
+
+
+def test_null_replace_preimage_hydrates_authoritative_retry_context(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    initial = _proposal_candidate()
+    initial["operations"][0]["old_text"] = None
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(initial)), _responses_body(json.dumps(_proposal_candidate()))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    proposal = service.propose(attempt_id)
+
+    assert proposal["operations"][0]["old_text"] == "old"
+    retry_request = json.loads(transport.calls[1]["payload"]["input"][0]["content"][0]["text"])
+    hydrated = next(
+        json.loads(segment["content"])
+        for segment in retry_request["context"]
+        if isinstance(segment, dict)
+        and isinstance(segment.get("content"), str)
+        and segment["content"].startswith('{"schema_version": "repair-semantic-retry-context-v1"')
+    )
+    assert hydrated["targets"][0]["content"] == "old"
+    assert hydrated["targets"][0]["path"] == "src/app.ts"
     engine.dispose()
 
 

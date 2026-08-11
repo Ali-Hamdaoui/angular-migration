@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ApiClientError } from "@/api/client";
 import type { TransformationProjection } from "@/types/transformation";
 import { TransformationPanel } from "@/components/TransformationPanel";
-import { decideTransformationGate, decideTransformationPrompt } from "@/api/transformation";
+import { decideTransformationGate, decideTransformationPrompt, requestRepairRevision } from "@/api/transformation";
 
 vi.mock("@/api/transformation", () => ({
   decideTransformationGate: vi.fn(),
@@ -99,6 +100,7 @@ function renderPanel(
 describe("TransformationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(requestRepairRevision).mockReset();
     refreshTransformation.mockResolvedValue(undefined);
     refreshAuthoritativeState.mockResolvedValue(undefined);
     vi.mocked(decideTransformationGate).mockResolvedValue({});
@@ -187,6 +189,130 @@ describe("TransformationPanel", () => {
       expect(refreshTransformation).toHaveBeenCalledTimes(1);
       expect(refreshAuthoritativeState).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("submits the current repair bindings and preserves the exact human instruction", async () => {
+    const baseChecksum = `sha256:${"4".repeat(64)}`;
+    vi.mocked(requestRepairRevision).mockResolvedValue({
+      attempt_id: "repair-4",
+      status: "evidence_frozen",
+      idempotent_replay: false,
+    });
+    renderPanel({
+      ...baseProjection,
+      active_gate: "G10",
+      active_gate_package_checksum: "sha256:g10",
+      repair_attempt_id: "repair-3",
+      repair_attempt_number: 3,
+      repair_status: "waiting_g10",
+      repair_proposal_id: "proposal-3",
+      repair_base_checksum: baseChecksum,
+      repair_safe_diff: "diff evidence",
+      repair_review: {
+        decision: "accept",
+        findings: [],
+        policy_checks: [],
+        risk_assessment: "Low risk",
+        required_validation_targets: ["build"],
+        limitations: [],
+      },
+    });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Revision instructions" }), {
+      target: { value: "  Handle empty values without changing behavior  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+
+    await waitFor(() => expect(requestRepairRevision).toHaveBeenCalledWith(
+      "run-1",
+      "repair-3",
+      {
+        attempt_id: "repair-3",
+        proposal_id: "proposal-3",
+        base_checksum: baseChecksum,
+        instruction: "  Handle empty values without changing behavior  ",
+        idempotency_key: expect.any(String),
+      },
+    ));
+  });
+
+  it("shows structured repair validation details and correlation id", async () => {
+    const baseChecksum = `sha256:${"5".repeat(64)}`;
+    vi.mocked(requestRepairRevision).mockRejectedValue(new ApiClientError(
+      "rejected",
+      422,
+      "POST",
+      "/revisions",
+      JSON.stringify({
+        error_code: "validation_error",
+        message: "Request validation failed.",
+        correlation_id: "corr-1",
+        details: {
+          errors: [{ loc: ["body", "instruction"], msg: "filesystem paths are forbidden" }],
+        },
+      }),
+    ));
+    renderPanel({
+      ...baseProjection,
+      status: "waiting_repair_revision",
+      current_node: "review_repair",
+      active_gate: null,
+      active_gate_package_checksum: null,
+      repair_attempt_id: "repair-3",
+      repair_attempt_number: 3,
+      repair_status: "request_changes",
+      repair_proposal_id: "proposal-3",
+      repair_base_checksum: baseChecksum,
+    });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Revision instructions" }), {
+      target: { value: "Revise the affected configuration" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+
+    const alert = (await screen.findByText(/body\.instruction: filesystem paths are forbidden/)).closest("[role='alert']");
+    expect(alert).not.toBeNull();
+    expect(alert).toHaveTextContent("body.instruction: filesystem paths are forbidden");
+    expect(alert).toHaveTextContent("Correlation ID: corr-1");
+    expect(alert).toHaveTextContent("Error code: validation_error");
+    expect(screen.getByRole("textbox", { name: "Revision instructions" })).toHaveValue("Revise the affected configuration");
+  });
+
+  it("groups each repair explanation with the decision it enables", () => {
+    renderPanel({
+      ...baseProjection,
+      active_gate: "G10",
+      active_gate_package_checksum: "sha256:g10",
+      repair_attempt_id: "repair-3",
+      repair_attempt_number: 3,
+      repair_status: "waiting_g10",
+      repair_proposal_checksum: "sha256:proposal",
+      repair_proposal_id: "proposal-3",
+      repair_base_checksum: `sha256:${"6".repeat(64)}`,
+      repair_safe_diff: "diff evidence",
+      repair_review: {
+        decision: "request_changes",
+        findings: ["One unresolved concern"],
+        policy_checks: [],
+        risk_assessment: "Medium risk",
+        required_validation_targets: ["build"],
+        limitations: [],
+      },
+    });
+
+    const overrideDecision = screen.getByRole("group", { name: "Approve despite Reviewer concerns" });
+    expect(within(overrideDecision).getByRole("textbox", { name: "Override comment" })).toHaveAttribute(
+      "aria-describedby",
+      "repair-override-help",
+    );
+    expect(within(overrideDecision).getByRole("button", { name: "Approve despite Reviewer concerns" })).toBeDisabled();
+
+    const revisionDecision = screen.getByRole("group", { name: "Request changes" });
+    expect(within(revisionDecision).getByRole("textbox", { name: "Revision instructions" })).toHaveAttribute(
+      "aria-describedby",
+      "repair-revision-help",
+    );
+    expect(within(revisionDecision).getByRole("button", { name: "Request changes" })).toBeDisabled();
   });
 
   it("fails closed when a pending gate is missing package or workspace bindings", () => {

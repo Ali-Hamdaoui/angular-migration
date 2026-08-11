@@ -178,6 +178,118 @@
   opacity: .55;
 }
 
+.decisionWorkspace {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: .85rem;
+  margin-top: 1rem;
+}
+
+.decisionCard {
+  display: grid;
+  min-width: 0;
+  gap: .65rem;
+  margin: 0;
+  border: 1px solid #31597e;
+  border-radius: .5rem;
+  background: #091a2b;
+  padding: 1rem;
+}
+
+.decisionCard legend {
+  padding: 0 .35rem;
+  color: #e7f1fd;
+  font-size: .9rem;
+  font-weight: 800;
+}
+
+.decisionCard label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  color: #d8e8fb;
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.required {
+  border: 1px solid #3d73a6;
+  border-radius: 999px;
+  color: #a1c9ff;
+  padding: .18rem .4rem;
+  font-size: .62rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.fieldHelp {
+  margin: 0;
+  color: #9db0c8;
+  font-size: .78rem;
+  line-height: 1.5;
+}
+
+.decisionCard textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 7.5rem;
+  resize: vertical;
+  border: 1px solid #31597e;
+  border-radius: .4rem;
+  background: #071421;
+  color: #e7f1fd;
+  padding: .75rem;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.decisionCard textarea::placeholder {
+  color: #71859c;
+}
+
+.decisionCard textarea:focus-visible,
+.actions button:focus-visible,
+.decisionFooter button:focus-visible {
+  outline: 2px solid #55a7ff;
+  outline-offset: 2px;
+}
+
+.decisionCard .actions {
+  margin-top: auto;
+  padding-top: .15rem;
+}
+
+.decisionFooter {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: .55rem;
+  border-top: 1px solid #244462;
+  padding-top: .85rem;
+}
+
+.decisionFooter button {
+  border: 1px solid #3d73a6;
+  border-radius: .3rem;
+  background: #102b48;
+  color: #d8e8fb;
+  padding: .6rem .75rem;
+  font-weight: 700;
+}
+
+.decisionFooter button:hover:not(:disabled) {
+  border-color: #55a7ff;
+  background: #173b61;
+}
+
+.decisionFooter button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 .danger {
   border-color: #b5546a !important;
   background: #541f30 !important;
@@ -280,5 +392,11 @@
 
   .status {
     width: fit-content;
+  }
+
+  .decisionFooter,
+  .decisionFooter button,
+  .decisionCard .actions button {
+    width: 100%;
   }
 }

@@ -234,6 +234,7 @@ _SEMANTIC_RETRY_CODES = frozenset(
         _CREATE_TARGET_EXISTS,
     }
 )
+_LEGACY_SEMANTIC_RECOVERY_CODES = frozenset({"REPAIR_OPERATION_AMBIGUOUS"})
 _PROPOSER_GROUNDING_INSTRUCTIONS = (
     "CURRENT_WORKSPACE_FILES are the only valid preimage authority. "
     "PREVIOUS_PROPOSAL is reference-only and has not been applied. "
@@ -716,7 +717,12 @@ class RepairApplicationService:
                 retry_error = error
                 hydrated_retry_context = None
                 if (
-                    error.code in {"REPAIR_REPLACEMENT_MISSING", _CREATE_TARGET_EXISTS}
+                    error.code
+                    in {
+                        "REPAIR_REPLACEMENT_MISSING",
+                        _REPLACEMENT_PREIMAGE_REQUIRED,
+                        _CREATE_TARGET_EXISTS,
+                    }
                     and semantic_retry_count == 0
                 ):
                     try:
@@ -1588,7 +1594,8 @@ class RepairApplicationService:
             or retry_invocation.status != "failed"
             or retry_invocation.retries != 1
             or retry_invocation.failure_stage != "repair_semantics"
-            or retry_invocation.failure_code not in _SEMANTIC_RETRY_CODES
+            or retry_invocation.failure_code
+            not in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
         ):
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
