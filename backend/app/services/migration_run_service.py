@@ -241,11 +241,27 @@ class MigrationRunService:
             if existing is not None:
                 self._replay_or_reject(session, existing, self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
                 return self._result_from_event(session, existing, replay=True)
-            if run.status != RunStatus.FAILED.value:
+            approved_g03 = session.scalar(select(WorkflowEventModel).where(
+                WorkflowEventModel.run_id == run_id,
+                WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value,
+            )) is not None
+            post_g03 = previous is not None and previous.last_error_code in {
+                "ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED",
+            } and approved_g03
+            if run.status != RunStatus.FAILED.value and not (
+                post_g03 and run.status == RunStatus.BASELINE_QUALIFIED.value
+            ):
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError"}
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED"}
             if previous is None or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
+            if post_g03:
+                claim = session.scalar(select(ActiveRunClaimModel).where(
+                    ActiveRunClaimModel.run_id == run_id,
+                    ActiveRunClaimModel.target_output_path == run.target_output_path,
+                ))
+                if claim is not None and claim.lease_owner == actor:
+                    claim.expires_at = self._now() + timedelta(seconds=self._lease_seconds)
             self._validate_start_boundary(session, run)
             if run.state_version != expected_state_version:
                 raise MigrationRunError("STALE_STATE_VERSION", "The run state changed. Refresh the authoritative state and retry.")
@@ -253,7 +269,6 @@ class MigrationRunService:
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
-            post_g03 = previous.last_error_code == "ExecutionProfileApplicationError" and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
             accepted = StateTransitionService(session).apply_transition(self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,

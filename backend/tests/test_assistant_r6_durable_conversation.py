@@ -6,6 +6,7 @@ import json
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -24,6 +25,109 @@ from app.repositories.models import (
 from app.services.assistant_capabilities import classify_semantic_intent, default_capability_registry
 from app.services.assistant_context_service import AssistantContextService, AssistantRequestError
 from app.state.transition_service import StateTransitionService, TransitionRequest
+
+
+def test_authoritative_failure_answer_preserves_governed_repair_boundary() -> None:
+    answer = AssistantContextService._authoritative_failure_answer(
+        {
+            "blocker": "COMMAND_EXIT_NONZERO",
+            "latest_command_result": {"command_key": "angular-update-exact", "status": "failed", "exit_code": 1, "failure_code": "COMMAND_EXIT_NONZERO"},
+            "failure_classification": "angular_update_peer_conflict",
+            "failure_reason": "Jest peer dependency conflict.\nYou can use the '--force' option to ignore it.",
+            "repair_state": "attempt 1 accepted by reviewer; G10 approval required",
+            "phase": "Transformation", "stage": "20-to-21", "gate": "G10", "status": "WAITING_GATE",
+            "next_action": "Approve or reject the accepted repair proposal at G10.",
+        }
+    )
+
+    assert "angular-update-exact" in answer
+    assert "exit code 1" in answer
+    assert "G10" in answer
+    assert "--force" not in answer
+    assert "do not bypass" in answer
+
+
+def test_terminal_completed_failure_answer_does_not_promote_successful_command() -> None:
+    answer = AssistantContextService._authoritative_failure_answer(
+        {
+            "blocker": "none",
+            "latest_command_result": {
+                "command_key": "final-validation",
+                "status": "succeeded",
+                "exit_code": 0,
+                "failure_code": None,
+            },
+            "failure_classification": "unknown",
+            "failure_reason": "unknown",
+            "repair_state": "validation_passed",
+            "phase": "Completion",
+            "stage": "sealed-stage",
+            "gate": "final approved",
+            "status": "COMPLETED",
+            "next_action": "Review final evidence and reporting.",
+        }
+    )
+
+    assert "Current blocker: none" in answer
+    assert "Current failed command: none" in answer
+    assert "final-validation" not in answer
+    assert "Failed command:" not in answer
+    assert "not applicable because there is no current failure" in answer
+    assert "Historical/resolved failures" in answer
+    assert "historical/resolved only and are not current" in answer
+    assert "no repair or gate approval is currently required" in answer
+    assert "Review final evidence and reporting" in answer
+    assert "read-only" in answer
+
+
+def test_explicit_migration_plan_question_routes_to_planning():
+    result = classify_semantic_intent("Explain the migration plan and its main risks or repair points.")
+    assert result.intent == "planning_explanation"
+    capability = default_capability_registry().get_for_intent(result.intent)
+    assert capability is not None
+    policy = json.loads(capability.provider_policy(selected_intent=result.intent, selected_excerpt_ids=["excerpt-plan"]))
+    assert any("risks" in item for item in policy["required_answer_content"])
+
+
+def test_completed_migration_summary_routes_to_completed_work_contract():
+    result = classify_semantic_intent(
+        "Summarize the completed migration: what changed, what validations passed, what Angular version is installed, and is the stage sealed?"
+    )
+    assert result.intent == "completed_work"
+    capability = default_capability_registry().get_for_intent(result.intent)
+    assert capability is not None
+    policy = json.loads(capability.provider_policy(selected_intent=result.intent, selected_excerpt_ids=[]))
+    assert "state whether the stage is sealed" in policy["required_answer_content"]
+    assert "state the dependency-closure outcome" in policy["required_answer_content"]
+    assert "cite the final sealed workspace fingerprint when known" in policy["required_answer_content"]
+
+
+def test_completion_answer_includes_dependency_closure_and_sealed_workspace_evidence():
+    answer = AssistantContextService._authoritative_completion_answer({
+        "run_id": "run-complete",
+        "current_angular_version": "21.2.19",
+        "target_angular_version": "21.x",
+        "migration_route": "20→21",
+        "completed_phases": ["Dependency closure passed", "Final npm install passed", "Production build passed", "Tests passed"],
+        "status": "COMPLETED",
+        "phase": "Completion",
+        "stage": "stage-20-21",
+        "gate": "unknown",
+        "stage_fingerprint": "sha256:sealed-workspace",
+    })
+    assert "Dependency closure passed" in answer
+    assert "fingerprint sha256:sealed-workspace" in answer
+    assert "stage is sealed" in answer
+
+
+def test_deterministic_completion_response_retains_v11_metadata_without_provider_artifact():
+    structured = {
+        "answer": "Stage is sealed.", "summary": "Stage is sealed.",
+        "intent": "completed_work", "capability_key": "workflow_status",
+        "proof_label": "authoritative_persisted_fact", "missing_information": [],
+    }
+    row = SimpleNamespace(model_provenance={"assistant_v11": {"deterministic_structured_response": structured}})
+    assert AssistantContextService._structured_response(row, None) == structured
 
 
 class DeterministicGateway:

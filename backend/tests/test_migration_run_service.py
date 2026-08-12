@@ -251,6 +251,45 @@ def test_source_intake_retry_preserves_failed_attempt_and_queues_new_job(tmp_pat
         assert jobs[1].attempt == 2
 
 
+def test_approved_g03_resumes_failed_gate_wait_without_erasing_attempt(tmp_path: Path):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("g03-resume-create"))
+    now = datetime.now(UTC)
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.BASELINE_QUALIFIED.value
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id))
+        assert claim is not None
+        claim.expires_at = now - timedelta(seconds=1)
+        session.add(SourceIntakeJobModel(
+            id="intake-g03-wait", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="failed", actor="operator", idempotency_key="g03-wait", attempt=1,
+            queued_at=now, finished_at=now, last_error_code="G03_APPROVAL_REQUIRED",
+            last_error_message="Approved G03 is required before discovery.", state_version=run.state_version,
+        ))
+        next_sequence = max(event.sequence for event in session.scalars(select(WorkflowEventModel).where(
+            WorkflowEventModel.run_id == created.run_id
+        ))) + 1
+        session.add(WorkflowEventModel(
+            id="event-g03-approved", run_id=created.run_id, stage_id=None,
+            event_type="G03_APPROVED", idempotency_key="g03-approved", actor="operator",
+            reason="approved", sequence=next_sequence, payload={}, occurred_at=now,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(
+        run_id=created.run_id, expected_state_version=expected_version,
+        idempotency_key="retry-after-g03", actor="reviewer",
+    )
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(
+            SourceIntakeJobModel.run_id == created.run_id
+        ).order_by(SourceIntakeJobModel.attempt)))
+        assert [job.status for job in jobs] == ["failed", "waiting_g03"]
+
+
 def test_source_intake_attempt_identity_does_not_change_when_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     service, scope, _ = _service(tmp_path)
     created = service.create(_request("stable-attempt-create"))

@@ -144,9 +144,12 @@ class AssistantContextService:
             return {
                 "application": value("application_name"), "run_id": data.get("run_id", getattr(run, "run_id", "unknown")),
                 "current_angular_version": value("current_angular_version"), "target_angular_version": value("target_angular_version"),
+                "migration_route": value("migration_route"), "stage_fingerprint": value("stage_fingerprint"),
                 "phase": value("phase"), "stage": value("stage"), "step": value("step"), "status": value("status"),
                 "gate": gate_value, "gate_status": gate_status, "blocker": value("blocker"), "waiting_reason": value("waiting_reason"),
                 "failure_reason": value("failure_reason"), "next_action": value("next_permitted_action"),
+                "repair_state": value("repair_state"),
+                "latest_command_result": (data.get("latest_command_result") or {}).get("value"),
                 "completed_phases": data.get("completed_work", []), "remaining_phases": data.get("remaining_work", []),
                 "state_version": int(data.get("semantic_state_version", data.get("workflow_state_version", 1))), "events": [],
                 "next_step_proposals": data.get("next_step_proposals", []),
@@ -310,6 +313,74 @@ class AssistantContextService:
             f"Completed: {', '.join(str(item) for item in completed)}. "
             "Runtime result: execution-profile resolution blocked. "
             f"Next permitted action: {action}"
+        )
+
+    @staticmethod
+    def _ensure_workflow_identity(answer: str, projection: dict[str, object]) -> str:
+        """Keep known migration identity visible in workflow-status answers."""
+        current = str(projection.get("current_angular_version") or "unknown")
+        target = str(projection.get("target_angular_version") or "unknown")
+        route = str(projection.get("migration_route") or "unknown")
+        missing = any(value != "unknown" and value not in answer for value in (current, target, route))
+        if not missing:
+            return answer
+        return f"Migration identity: current Angular {current}; target Angular {target}; route {route}. {answer}"
+
+    @staticmethod
+    def _authoritative_failure_answer(projection: dict[str, object]) -> str:
+        command = projection.get("latest_command_result")
+        command = command if isinstance(command, dict) else {}
+        status = str(projection.get("status", "unknown")).upper()
+        blocker = str(projection.get("blocker", "unknown"))
+        command_status = str(command.get("status", "unknown")).lower()
+        exit_code = command.get("exit_code")
+        command_is_failure = command_status in {"failed", "timed_out", "rejected", "interrupted"} or (
+            isinstance(exit_code, int) and exit_code != 0
+        )
+        if status == "COMPLETED" and blocker.casefold() == "none":
+            return (
+                "Current blocker: none. "
+                "Current failed command: none; no current command failure applies. "
+                "Current root cause/classification: not applicable because there is no current failure. "
+                "Current failure evidence: not applicable because there is no current failure. "
+                "Repair/gate governance: no repair or gate approval is currently required. "
+                "Historical/resolved failures: failures retained in durable run history are historical/resolved only and are not current. "
+                f"Current checkpoint: phase {projection.get('phase', 'unknown')}, stage {projection.get('stage', 'unknown')}, "
+                f"gate {projection.get('gate', 'unknown')}, status {status}. "
+                f"Exact governed next action: {projection.get('next_action', 'Review final evidence and reporting.')} "
+                "The Assistant is read-only; final evidence/reporting is the only current action."
+            )
+        if not command_is_failure:
+            command = {}
+        failure_reason = str(projection.get("failure_reason", "unknown"))
+        failure_reason = " ".join(line.strip() for line in failure_reason.splitlines() if "--force" not in line.casefold())
+        return (
+            f"Current blocker: {projection.get('blocker', 'unknown')}. "
+            f"Failed command: {command.get('command_key', 'unknown')} ended with status {command.get('status', 'unknown')}, "
+            f"exit code {command.get('exit_code', 'unknown')}, and failure code {command.get('failure_code', 'unknown')}. "
+            f"Root cause/classification: {projection.get('failure_classification', 'unknown')}. "
+            f"Failure evidence: {failure_reason}. "
+            f"Repair governance: {projection.get('repair_state', 'unknown')}. "
+            f"Current checkpoint: phase {projection.get('phase', 'unknown')}, stage {projection.get('stage', 'unknown')}, "
+            f"gate {projection.get('gate', 'unknown')}, status {projection.get('status', 'unknown')}. "
+            f"Exact governed next action: {projection.get('next_action', 'unknown')} "
+            "The Assistant is read-only; do not bypass the governed repair or gate controls."
+        )
+
+    @staticmethod
+    def _authoritative_completion_answer(projection: dict[str, object]) -> str:
+        completed = projection.get("completed_phases") or []
+        if not isinstance(completed, list):
+            completed = [completed]
+        return (
+            f"Completed migration summary for run {projection.get('run_id', 'unknown')}: "
+            f"current installed Angular version is {projection.get('current_angular_version', 'unknown')} "
+            f"(target {projection.get('target_angular_version', 'unknown')}, route {projection.get('migration_route', 'unknown')}). "
+            f"Changes and validation results: {'; '.join(str(item) for item in completed)}. "
+            f"Final state: status {projection.get('status', 'unknown')}; phase {projection.get('phase', 'unknown')}; "
+            f"stage {projection.get('stage', 'unknown')}; gate {projection.get('gate', 'unknown')}. "
+            f"Seal/workspace evidence: fingerprint {projection.get('stage_fingerprint', 'unknown')}. "
+            "The stage is sealed and no migration work remains."
         )
 
     def _append_event(self, session, *, run_id: str, conversation_id: str, message_id: str, event_type: str, correlation_id: str, state_version: int, status: str, idempotency_key: str, payload: dict[str, object] | None = None) -> None:
@@ -495,7 +566,7 @@ class AssistantContextService:
             }
             if any(citation.get(key) != value for key, value in exact.items()):
                 return None
-            if exact["proof_label"] != "approved_evidence_supported" or proof_label not in {"approved_evidence_supported", "model_interpretation"}:
+            if exact["proof_label"] != "approved_evidence_supported" or proof_label not in {"approved_evidence_supported", "authoritative_persisted_fact", "model_interpretation"}:
                 return None
             if excerpt_id not in seen:
                 validated.append(exact)
@@ -574,6 +645,10 @@ class AssistantContextService:
         with self._scope() as session:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_STARTED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="started", idempotency_key=request.idempotency_key, payload={"request_id": request.request_id})
         answer, proof = self._compose(intent, projection)
+        authoritative_completion = intent == "completed_work" and str(projection.get("status", "")).upper() == "COMPLETED"
+        if authoritative_completion:
+            answer = self._authoritative_completion_answer(projection)
+            proof = "authoritative_persisted_fact"
         if mutation_request:
             answer = "This Assistant is read-only and cannot approve gates, execute commands, apply patches, or change workflow state. Use the governed cockpit control for that action."
             proof = "model interpretation"
@@ -581,10 +656,13 @@ class AssistantContextService:
         selected_refs: list[dict[str, object]] = []
         validated_citations: list[dict[str, object]] = []
         evidence: list[AssistantEvidenceDto] = []
-        if not mutation_request and capability is not None:
+        if not mutation_request and capability is not None and not authoritative_completion:
             try:
                 with self._scope() as session:
-                    evidence_segments, selected_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
+                    if capability.allowed_evidence_types:
+                        evidence_segments, selected_refs = self._evidence_retrieval.retrieve(session, request.run_id, request.message)
+                    else:
+                        evidence_segments, selected_refs = [], []
                 selected_excerpt_ids = [str(ref["excerpt_id"]) for ref in selected_refs if ref.get("excerpt_id")]
                 policy = capability.provider_policy(selected_intent=intent, selected_excerpt_ids=selected_excerpt_ids)
                 provider_contract = build_assistant_response_contract(intent=intent, capability_key=capability.capability_key, selected_excerpt_ids=selected_excerpt_ids, selected_citations=selected_refs)
@@ -599,6 +677,18 @@ class AssistantContextService:
                 manifest["context_budget"] = prepared.manifest.get("context_budget", {})
                 supplied_ids = set(prepared.manifest.get("selected_item_ids", []))
                 selected_refs = [ref for ref in selected_refs if ref.get("excerpt_id") in supplied_ids]
+                selected_excerpt_ids = [str(ref["excerpt_id"]) for ref in selected_refs]
+                provider_contract = build_assistant_response_contract(
+                    intent=intent, capability_key=capability.capability_key,
+                    selected_excerpt_ids=selected_excerpt_ids, selected_citations=selected_refs,
+                )
+                prepared = prepare_assistant_request(
+                    policy=policy,
+                    schema=_azure_strict_schema(provider_contract.model_json_schema()),
+                    question=sanitized_question,
+                    segments=list(prepared.context),
+                    answer_mode=request.answer_mode,
+                )
                 manifest["selected_evidence"] = [{key: value for key, value in ref.items() if key not in {"text", "excerpt_locator"}} for ref in selected_refs]
                 manifest["evidence_selection"] = self._evidence_retrieval.last_manifest
                 with self._scope() as session:
@@ -621,7 +711,24 @@ class AssistantContextService:
                     if intent in {"workflow_status", "blocker_or_failure"} and projection.get("blocker") == "NO_COMPATIBLE_RUNTIME_PROFILE" and ("unknown" in answer_lower or "stale answer" in answer_lower or "execution-profile resolution blocked" not in answer_lower):
                         answer = self._authoritative_workflow_answer(projection)
                         proof = "authoritative_persisted_fact"
-                governed_response = governed_response.model_copy(update={"structured_output": {**output, "answer": answer, "proof_label": proof, "citations": validated_citations}})
+                    if intent == "workflow_status":
+                        answer = self._ensure_workflow_identity(answer, projection)
+                    if intent == "blocker_or_failure":
+                        answer = self._authoritative_failure_answer(projection)
+                        proof = "authoritative_persisted_fact"
+                    if intent == "completed_work" and str(projection.get("status", "")).upper() == "COMPLETED":
+                        answer = self._authoritative_completion_answer(projection)
+                        proof = "authoritative_persisted_fact"
+                safe_output = {**output, "answer": answer, "proof_label": proof, "citations": validated_citations}
+                if intent == "blocker_or_failure":
+                    safe_output.update({
+                        "summary": answer,
+                        "missing_information": [],
+                        "suggested_follow_ups": [str(projection.get("next_action", "Review the governed repair gate."))],
+                    })
+                if intent == "completed_work" and str(projection.get("status", "")).upper() == "COMPLETED":
+                    safe_output.update({"summary": answer, "missing_information": [], "suggested_follow_ups": []})
+                governed_response = governed_response.model_copy(update={"structured_output": safe_output})
             except ContextBudgetExceeded:
                 failed = self._persist_failed_result(request, conversation_id=conversation_id, message_id=message_id, correlation_id=correlation_id, projection=projection, manifest={**manifest, "context_budget_failure": "mandatory_content_exceeds_hard_limit"}, checksum=checksum, reason="The Assistant input could not be bounded safely.", code="assistant_context_budget_exceeded")
                 raise AssistantRequestError("assistant_context_budget_exceeded", "The Assistant input could not be bounded safely.", 413, correlation_id=correlation_id, details={"message_id": failed.message_id, "conversation_id": failed.conversation_id})
@@ -639,11 +746,11 @@ class AssistantContextService:
         structured = governed_response.structured_output if governed_response is not None else {
             "answer": answer,
             "summary": answer[:240],
-            "intent": "unsupported",
-            "capability_key": "",
+            "intent": intent if authoritative_completion else "unsupported",
+            "capability_key": capability.capability_key if authoritative_completion and capability else "",
             "proof_label": "model_interpretation" if mutation_request else proof.replace(" ", "_") if proof else "unknown_or_unavailable",
             "citations": [], "missing_information": [] if not answer.lower().endswith("unavailable.") else ["authoritative information for this question"],
-            "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "low" if mutation_request else "medium",
+            "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high" if authoritative_completion else ("low" if mutation_request else "medium"),
         }
         if governed_response is not None and hasattr(self._invocations, "persist_validated_response"):
             governed_response = self._invocations.persist_validated_response(governed_response, structured)
@@ -689,6 +796,7 @@ class AssistantContextService:
                 "assistant_v11": {
                     "schema_version": "assistant-response-v1",
                     "validated_response_artifact": {"artifact_id": governed_response.artifact_ids[0], "checksum": governed_response.artifact_checksums[governed_response.artifact_ids[0]]} if governed_response is not None and governed_response.artifact_ids else None,
+                    "deterministic_structured_response": structured if authoritative_completion and governed_response is None else None,
                     "semantic_classifier": semantic_result.model_dump(mode="json"),
                 },
             })
@@ -715,6 +823,9 @@ class AssistantContextService:
     @staticmethod
     def _structured_response(row: AssistantMessageModel, session) -> dict[str, object]:
         envelope = (row.model_provenance or {}).get("assistant_v11") or {}
+        deterministic = envelope.get("deterministic_structured_response")
+        if isinstance(deterministic, dict) and deterministic.get("intent") == "completed_work" and deterministic.get("proof_label") == "authoritative_persisted_fact":
+            return deterministic
         reference = envelope.get("validated_response_artifact")
         if not isinstance(reference, dict) or not reference.get("artifact_id"):
             return {}

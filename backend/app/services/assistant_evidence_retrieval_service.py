@@ -13,12 +13,16 @@ from app.artifact_store import ArtifactStoreError, LocalFilesystemArtifactStore
 from app.core.config import get_settings
 from app.llm_gateway import LlmContextSegment
 from app.repositories.models import (
+    AnalysisMetadataModel,
     ArtifactMetadataModel,
     ExecutionProfileModel,
     G02ApprovalModel,
     MigrationRunModel,
+    RepairAttemptModel,
     SourceSnapshotModel,
+    StageGatePackageModel,
 )
+from app.repositories.planning_review_models import PlanningReviewModel
 
 _SECRET = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[:=]\s*|password\s*[:=]\s*|secret\s*[:=]\s*)[^\s,;]+")
 _PATH = re.compile(r"(?i)([a-z]:\\|/home/|/Users/|/workspace/)[^\s,;]+")
@@ -59,12 +63,34 @@ class AssistantEvidenceRetrievalService:
         snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
         g02 = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.updated_at.desc()))
         profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
+        analysis = session.scalar(select(AnalysisMetadataModel).where(AnalysisMetadataModel.run_id == run_id).order_by(AnalysisMetadataModel.updated_at.desc()))
+        planning = session.scalar(select(PlanningReviewModel).where(PlanningReviewModel.run_id == run_id).order_by(PlanningReviewModel.updated_at.desc()))
+        repair = session.scalar(select(RepairAttemptModel).where(RepairAttemptModel.run_id == run_id).order_by(RepairAttemptModel.attempt_number.desc()))
         if snapshot is not None and snapshot.status == "created":
             authorized.update(snapshot.artifact_ids or [])
         if g02 is not None and g02.status == "approved":
             authorized.update(g02.artifact_ids or [])
         if profile is not None:
             authorized.update(profile.artifact_ids or [])
+        if analysis is not None and analysis.status == "completed" and (analysis.package or {}).get("review_status") == "accepted":
+            authorized.update(analysis.artifact_ids or [])
+        planning_accepted = planning is not None and planning.status == "completed" and (
+            (planning.reviewer_output or {}).get("decision") == "accept"
+            or (planning.package or {}).get("review_status") == "accepted"
+        )
+        if planning_accepted:
+            authorized.update(planning.artifact_ids or [])
+        if repair is not None and repair.status in {"waiting_g10", "approved", "applied", "validated", "completed"}:
+            authorized.update(item for item in (
+                repair.failure_evidence_artifact_id, repair.failure_route_artifact_id,
+                repair.context_pack_artifact_id, repair.proposal_artifact_id,
+                repair.review_artifact_id, repair.apply_ledger_artifact_id,
+                repair.validation_summary_artifact_id,
+            ) if item)
+            if repair.g10_gate_package_id:
+                gate = session.get(StageGatePackageModel, repair.g10_gate_package_id)
+                if gate is not None:
+                    authorized.add(gate.package_artifact_id)
         return authorized
 
     def _store(self, session, run_id: str) -> LocalFilesystemArtifactStore | None:
@@ -84,7 +110,12 @@ class AssistantEvidenceRetrievalService:
         refs: list[dict[str, object]] = []
         omitted: list[dict[str, str]] = []
         terms = self._terms(question)
-        for row in sorted(rows, key=lambda item: (item.relative_path, item.id)):
+        def relevance_key(item: ArtifactMetadataModel) -> tuple[int, str, str]:
+            searchable_path = f"{item.relative_path} {item.artifact_type}".lower()
+            score = sum(1 for term in terms if term in searchable_path)
+            return (-score, item.relative_path, item.id)
+
+        for row in sorted(rows, key=relevance_key):
             metadata = row.safe_metadata or {}
             artifact_id = self._artifact_id(row)
             authorized_record = artifact_id in authorized or row.id in canonical_authorized

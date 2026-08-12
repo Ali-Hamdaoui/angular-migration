@@ -132,6 +132,7 @@ export function PipelineSection({
 
   const expanded = stages.find((stage) => stage.milestone.key === expandedKey);
   const completeCount = journey.filter((milestone) => milestone.state === "complete").length;
+  const applicableCount = journey.filter((milestone) => milestone.state !== "unavailable").length;
 
   return (
     <section className={styles.pipelineSection} aria-label="Migration workflow progress">
@@ -139,7 +140,7 @@ export function PipelineSection({
         <div>
           <span className={styles.kicker}>Authoritative progression</span>
           <h3>{expanded?.milestone.label ?? "No active stage"}</h3>
-          <p>{completeCount} of {journey.length} milestones confirmed complete</p>
+          <p>{completeCount} of {applicableCount} milestones confirmed complete</p>
         </div>
         <strong data-tone={expanded ? SUMMARY_TONE_BY_STATE[expanded.milestone.state] : "neutral"}>{expanded ? STATE_LABELS[expanded.milestone.state] : "Not available"}</strong>
       </div>

@@ -145,6 +145,32 @@ function hasTransformationEvidence(events: WorkflowEventDto[]): boolean {
   return events.some((event) => /^(G(?:0[7-9]|1[0-2])_|TRANSFORMATION_|STAGE(?:D)?_|FINAL_TARGET_|CLI_|VERSION_|REPAIR_)/.test(event.event_type));
 }
 
+function latestGateApproved(events: WorkflowEventDto[], gateId: "G09" | "G11" | "G12"): WorkflowEventDto | null {
+  const created = events.filter((event) => event.event_type === `${gateId}_CREATED`).at(-1);
+  if (!created) return null;
+  return events
+    .filter((event) => event.sequence > created.sequence && event.event_type === `${gateId}_APPROVED`)
+    .at(-1) ?? null;
+}
+
+function finalValidationAccepted(events: WorkflowEventDto[]): WorkflowEventDto | null {
+  return latestGateApproved(events, "G11")
+    ?? (latestGateApproved(events, "G09") && latestGateApproved(events, "G12"));
+}
+
+function finalValidationPassed(transformation: TransformationProjection | null): boolean {
+  if (!transformation) return false;
+  return ["npm_ci", "build", "test"].every(
+    (target) => transformation.validation_results[target]?.status === "PASSED",
+  );
+}
+
+function sealedApplicableRoute(transformation: TransformationProjection | null, runId: string): boolean {
+  return transformation?.run_id === runId
+    && transformation.route_stages.length > 0
+    && transformation.route_stages.every((stage) => stage.status === "sealed");
+}
+
 function applyExplicitRunCurrent(run: AuthoritativeRunStateDto, byKey: Map<JourneyKey, JourneyMilestone>): void {
   const key = run.status === "ANALYSIS_RUNNING" ? "discovery" : null;
   if (key && byKey.get(key)?.state === "not-reached") byKey.get(key)!.state = "current";
@@ -201,12 +227,18 @@ export function buildJourney(
     }
   }
 
-  const stagedMigrationCompleted = events.find((event) => event.event_type === "STAGED_MIGRATION_COMPLETED");
-  const finalTargetVerified = events.find((event) => event.event_type === "FINAL_TARGET_VERIFIED");
-  if (finalTargetVerified) {
-    Object.assign(byKey.get("validate")!, { state: "complete", evidenceEvent: finalTargetVerified.event_id });
+  const validationAcceptance = finalValidationAccepted(events);
+  if (validationAcceptance && finalValidationPassed(transformation)) {
+    Object.assign(byKey.get("validate")!, { state: "complete", evidenceEvent: validationAcceptance.event_id });
   }
-  if (stagedMigrationCompleted && finalTargetVerified) {
+  const stagedMigrationCompleted = events.find((event) => event.event_type === "STAGED_MIGRATION_COMPLETED");
+  if (
+    validationAcceptance
+    && finalValidationPassed(transformation)
+    && stagedMigrationCompleted
+    && run.status === "COMPLETED"
+    && sealedApplicableRoute(transformation, run.run_id)
+  ) {
     Object.assign(byKey.get("complete")!, { state: "complete", evidenceEvent: stagedMigrationCompleted.event_id });
   }
 

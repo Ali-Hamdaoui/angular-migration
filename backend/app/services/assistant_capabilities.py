@@ -74,6 +74,30 @@ class AssistantCapability:
 
     def provider_policy(self, *, selected_intent: str, selected_excerpt_ids: list[str]) -> str:
         """Return the machine-readable response contract for this dispatch."""
+        answer_requirements = {
+            "planning": [
+                "state the migration route and approved stage count",
+                "summarize the ordered transformation and validation intent",
+                "name the material risks or expected governed repair points",
+                "state the current gate/status and whether execution has started",
+            ],
+            "failure_explanation": [
+                "identify the exact current failed command and failure classification when known",
+                "state the causal package, file, or configuration from current evidence",
+                "state the current repair attempt and proposer/reviewer outcome when known",
+                "state whether human approval or revision is required and the exact governed next action",
+                "label any resolved or historical failures as non-current",
+            ],
+        }.get(self.capability_key, [])
+        if selected_intent == "completed_work":
+            answer_requirements = [
+                "summarize the completed governed changes",
+                "state final install, build, and test validation outcomes",
+                "state the dependency-closure outcome",
+                "state the exact installed Angular version when known",
+                "state whether the stage is sealed",
+                "cite the final sealed workspace fingerprint when known",
+            ]
         return json.dumps({
             "selected_intent": selected_intent,
             "selected_capability_key": self.capability_key,
@@ -83,9 +107,11 @@ class AssistantCapability:
             "allowed_proof_labels": (["approved_evidence_supported"] if selected_excerpt_ids else ["unknown_or_unavailable"])
             if selected_intent == "evidence_question" else [
                 "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
+                *(["approved_evidence_supported"] if selected_excerpt_ids else []),
             ],
             "allowed_next_step_proposals": "read_only_navigation_only",
             "unknown_information_behavior": "state_unknown_or_unavailable",
+            "required_answer_content": answer_requirements,
         }, sort_keys=True)
 
 
@@ -133,7 +159,7 @@ def build_next_step_proposals(*, run_id: str, gate_id: str | None, gate_state: s
 def default_capability_registry() -> AssistantCapabilityRegistry:
     registry = AssistantCapabilityRegistry()
     for key, intents, fields, evidence in (
-        ("workflow_status", {"workflow_status", "completed_work", "remaining_work", "comparison"}, {"status", "phase", "stage", "gate", "blocker", "next_action"}, set()),
+        ("workflow_status", {"workflow_status", "completed_work", "remaining_work", "comparison"}, {"current_angular_version", "target_angular_version", "migration_route", "status", "phase", "stage", "gate", "blocker", "next_action"}, set()),
         ("failure_explanation", {"blocker_or_failure"}, {"status", "phase", "stage", "blocker", "failure_reason", "next_action"}, set()),
         ("analysis", {"analysis_explanation", "evidence_question"}, {"events", "evidence", "status", "phase", "stage", "blocker", "next_action"}, {"report", "analysis", "snapshot", "source"}),
         ("planning", {"planning_explanation"}, {"events", "phase", "stage", "gate"}, {"plan", "report"}),
@@ -152,6 +178,10 @@ def classify_semantic_intent(question: str) -> SemanticIntentResult:
     if not isinstance(question, str) or not question.strip() or is_mutation_request(question):
         return SemanticIntentResult(intent="unsupported", rationale="mutation_or_invalid_request")
     normalized = " ".join(question.casefold().split())
+    if re.search(r"\b(completed|finished)\s+migration\b", normalized) and re.search(r"\b(changed|validation|version|sealed|summary|summarize)\b", normalized):
+        return SemanticIntentResult(intent="completed_work", rationale="explicit_completion_summary")
+    if re.search(r"\b(migration\s+plan|plan|planning)\b", normalized):
+        return SemanticIntentResult(intent="planning_explanation", rationale="explicit_planning_question")
     if re.search(r"\b(why|what)\b.*\b(stopped?|blocked?|preventing|blocker)\b", normalized) or "what is preventing progress" in normalized:
         return SemanticIntentResult(intent="blocker_or_failure", rationale="blocker_question")
     composite = (

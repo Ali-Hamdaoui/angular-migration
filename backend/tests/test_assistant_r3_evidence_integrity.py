@@ -2,15 +2,17 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.contracts import AgentKind, ArtifactType, AssistantMessageRequestDto
 from app.llm_gateway import LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
-from app.repositories.models import ArtifactMetadataModel, AssistantMessageModel, Base, MigrationRunModel, SourceSnapshotModel
+from app.repositories.models import AnalysisMetadataModel, ArtifactMetadataModel, AssistantMessageModel, Base, MigrationRunModel, SourceSnapshotModel
 from app.services.assistant_context_service import AssistantContextService, AssistantRequestError
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
+from app.services.llm_evidence_application_service import build_assistant_response_contract
 
 
 def _scope(tmp_path):
@@ -69,6 +71,88 @@ class ExactCitationGateway:
 def _citation_from_segment(request, segment_index=1):
     segment = request.context[segment_index]
     return {"excerpt_id": segment.segment_id, "artifact_id": segment.artifact_ref.removeprefix("excerpt-") if False else "", "checksum_sha256": "", "stage_key": "run", "locator": {"kind": "line_range", "value": "1-1"}, "proof_label": "approved_evidence_supported"}
+
+
+def test_response_contract_forbids_citations_when_no_evidence_was_selected():
+    contract = build_assistant_response_contract(
+        intent="workflow_status",
+        capability_key="workflow_status",
+        selected_excerpt_ids=[],
+    )
+    response = {
+        "answer": "Current durable state.",
+        "summary": "Current durable state.",
+        "intent": "workflow_status",
+        "capability_key": "workflow_status",
+        "proof_label": "authoritative_persisted_fact",
+        "citations": [],
+        "missing_information": [],
+        "suggested_follow_ups": [],
+        "next_step_proposals": [],
+        "confidence": "high",
+    }
+
+    assert contract.model_validate(response).citations == []
+    response["citations"] = [{
+        "excerpt_id": "fabricated",
+        "artifact_id": "fabricated",
+        "checksum_sha256": "sha256:fabricated",
+        "stage_key": "run",
+        "locator": {"kind": "line_range", "value": "1-1"},
+        "proof_label": "approved_evidence_supported",
+    }]
+    with pytest.raises(ValueError):
+        contract.model_validate(response)
+
+
+def test_response_contract_binds_each_excerpt_to_its_own_coordinates():
+    refs = [
+        {"excerpt_id": "excerpt-a", "artifact_id": "artifact-a", "checksum_sha256": "sha256:a", "stage_key": "run", "locator": {"kind": "line_range", "value": "1-2"}},
+        {"excerpt_id": "excerpt-b", "artifact_id": "artifact-b", "checksum_sha256": "sha256:b", "stage_key": "stage", "locator": {"kind": "line_range", "value": "3-4"}},
+    ]
+    contract = build_assistant_response_contract(intent="evidence_question", capability_key="analysis", selected_excerpt_ids=["excerpt-a", "excerpt-b"], selected_citations=refs)
+    response = {"answer": "answer", "summary": "summary", "intent": "evidence_question", "capability_key": "analysis", "proof_label": "approved_evidence_supported", "citations": [{**refs[0], "artifact_id": "artifact-b", "proof_label": "approved_evidence_supported"}], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
+    with pytest.raises(ValueError):
+        contract.model_validate(response)
+
+
+def test_non_evidence_capability_forbids_optional_citations():
+    ref = {"excerpt_id": "excerpt-plan", "artifact_id": "artifact-plan", "checksum_sha256": "sha256:plan", "stage_key": "planning", "locator": {"kind": "line_range", "value": "1-2"}}
+    contract = build_assistant_response_contract(intent="planning_explanation", capability_key="planning", selected_excerpt_ids=["excerpt-plan"], selected_citations=[ref])
+    response = {"answer": "answer", "summary": "summary", "intent": "planning_explanation", "capability_key": "planning", "proof_label": "approved_evidence_supported", "citations": [{**ref, "proof_label": "approved_evidence_supported"}], "missing_information": [], "suggested_follow_ups": [], "next_step_proposals": [], "confidence": "high"}
+    with pytest.raises(ValueError):
+        contract.model_validate(response)
+
+
+def test_reviewer_accepted_analysis_artifacts_are_authorized_at_g04(tmp_path):
+    engine, scope, sessions, root = _scope(tmp_path)
+    stored = _artifact(sessions, root, "analysis", "analysis discovered a current migration risk", approved=False)
+    now = datetime.now(UTC)
+    with sessions() as session:
+        session.add(AnalysisMetadataModel(id="analysis-r3", run_id="run-r3", idempotency_key="analysis", request_checksum="sha256:req", actor="worker", status="completed", artifact_set_checksum="sha256:set", prerequisite_artifact_ids=[], artifact_ids=[stored.ref.artifact_id], artifact_checksums={stored.ref.artifact_id: stored.ref.checksum}, package={"review_status": "accepted"}, state_version=2, event_sequence=2, created_at=now, updated_at=now))
+        session.commit()
+    with scope() as session:
+        segments, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-r3", "analysis discovered risk")
+    assert segments and refs[0]["artifact_id"] == stored.ref.artifact_id
+    engine.dispose()
+
+
+def test_retrieval_prioritizes_phase_relevant_artifact_paths(tmp_path):
+    engine, scope, sessions, root = _scope(tmp_path)
+    analysis = _artifact(sessions, root, "analysis", "shared migration evidence", approved=True)
+    planning = _artifact(sessions, root, "planning", "shared migration evidence for ordered stages", approved=True)
+    with sessions() as session:
+        for row in session.query(ArtifactMetadataModel).all():
+            if row.id.endswith(planning.ref.artifact_id):
+                row.relative_path = "03_planning/planning-package.json"
+            elif row.id.endswith(analysis.ref.artifact_id):
+                row.relative_path = "02_analysis/analysis-package.json"
+        session.commit()
+    _approve_snapshot(sessions, [analysis.ref.artifact_id, planning.ref.artifact_id])
+    with scope() as session:
+        _, refs = AssistantEvidenceRetrievalService().retrieve(session, "run-r3", "What is the migration plan?")
+    assert refs[0]["artifact_id"] == planning.ref.artifact_id
+    engine.dispose()
 
 
 def test_retrieval_reads_store_content_and_excludes_metadata_content(tmp_path):

@@ -256,6 +256,19 @@ describe("control tower presentation state", () => {
     expect(screen.getByRole("button", { name: /^Readiness:/i })).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("excludes unavailable route stages from the confirmed-complete denominator", () => {
+    const applicableJourney = pipelineJourney.map((milestone) => ({
+      ...milestone,
+      state: milestone.key === "18-to-19" || milestone.key === "19-to-20"
+        ? "unavailable" as const
+        : "complete" as const,
+    }));
+
+    render(<PipelineSection {...pipelineProps({ journey: applicableJourney, stageContent: pipelineContent(applicableJourney) })} />);
+
+    expect(screen.getByText("10 of 10 milestones confirmed complete")).toBeInTheDocument();
+  });
+
   it.each([
     ["action-required", "Action required"],
     ["blocked", "Blocked"],

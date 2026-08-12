@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
@@ -94,7 +94,7 @@ def build_assistant_response_contract(*, intent: str, capability_key: str, selec
     evidence_selected = intent == "evidence_question" and bool(selected_excerpt_ids)
     if require_citations is None:
         require_citations = evidence_selected
-    proof_type = Literal[("approved_evidence_supported",)] if evidence_selected else Literal[("unknown_or_unavailable",)] if intent == "evidence_question" else Literal[tuple(("authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable"))]
+    proof_type = Literal[("approved_evidence_supported",)] if evidence_selected else Literal[("unknown_or_unavailable",)] if intent == "evidence_question" else Literal[tuple(("authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable", *(("approved_evidence_supported",) if selected_excerpt_ids else ())))]
     selected_citations = selected_citations or [{"excerpt_id": item} for item in selected_excerpt_ids]
     excerpt_type = Literal[tuple(selected_excerpt_ids or ["__no_selected_excerpt__"])] if bind_excerpt_ids else str
 
@@ -102,13 +102,30 @@ def build_assistant_response_contract(*, intent: str, capability_key: str, selec
         values = [str(item[field]) for item in selected_citations if field in item]
         return Literal[tuple(values)] if bind_excerpt_ids and values else str
 
-    locator_type = _AssistantLocator
-    if bind_excerpt_ids and selected_citations and all(isinstance(item.get("locator"), Mapping) for item in selected_citations):
-        kinds = [str(item["locator"]["kind"]) for item in selected_citations]
-        locations = [str(item["locator"]["value"]) for item in selected_citations]
-        locator_type = create_model("BoundAssistantLocator", __base__=_AssistantLocator, kind=(Literal[tuple(kinds)], ...), value=(Literal[tuple(locations)], ...))
-    citation_type = create_model("BoundAssistantCitation", __base__=_AssistantCitation, excerpt_id=(excerpt_type, ...), artifact_id=(bound_string("artifact_id"), ...), checksum_sha256=(bound_string("checksum_sha256"), ...), stage_key=(bound_string("stage_key"), ...), locator=(locator_type, ...))
-    citations_field = (list[citation_type], Field(min_length=1)) if require_citations else (list[citation_type], ...)
+    if bind_excerpt_ids and selected_citations and require_citations:
+        citation_variants = []
+        for index, item in enumerate(selected_citations):
+            locator = item.get("locator") if isinstance(item.get("locator"), Mapping) else {}
+            locator_type = create_model(
+                f"BoundAssistantLocator{index}", __base__=_AssistantLocator,
+                kind=(Literal[(str(locator.get("kind", "line_range")),)], ...),
+                value=(Literal[(str(locator.get("value", "1-1")),)], ...),
+            )
+            citation_variants.append(create_model(
+                f"BoundAssistantCitation{index}", __base__=_AssistantCitation,
+                excerpt_id=(Literal[(str(item.get("excerpt_id")),)], ...),
+                artifact_id=(Literal[(str(item.get("artifact_id")),)], ...),
+                checksum_sha256=(Literal[(str(item.get("checksum_sha256", item.get("checksum"))),)], ...),
+                stage_key=(Literal[(str(item.get("stage_key", item.get("stage_id") or "run")),)], ...),
+                locator=(locator_type, ...),
+            ))
+        citation_type = citation_variants[0] if len(citation_variants) == 1 else Union[tuple(citation_variants)]
+    else:
+        citation_type = create_model("BoundAssistantCitation", __base__=_AssistantCitation, excerpt_id=(excerpt_type, ...), artifact_id=(bound_string("artifact_id"), ...), checksum_sha256=(bound_string("checksum_sha256"), ...), stage_key=(bound_string("stage_key"), ...), locator=(_AssistantLocator, ...))
+    if require_citations:
+        citations_field = (list[citation_type], Field(min_length=1))
+    else:
+        citations_field = (list[citation_type], Field(max_length=0))
     return create_model("BoundAssistantResponse", __base__=_AssistantResponse, intent=(intent_type, ...), capability_key=(capability_type, ...), proof_label=(proof_type, ...), citations=citations_field)
 
 

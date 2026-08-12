@@ -11,6 +11,7 @@ from app.repositories.models import (
 from app.repositories.planning_review_models import PlanningReviewModel
 from app.repositories.models.workflow import WorkflowEventModel
 from app.services.workflow_projection_service import WorkflowProjectionService
+from app.services.assistant_context_service import AssistantContextService
 
 
 def _scope(tmp_path):
@@ -106,6 +107,36 @@ def test_repair_owner_and_terminal_states_remain_semantically_separate(tmp_path)
     assert all(not proposal.executable_by_assistant for proposal in failed.next_step_proposals)
 
 
+def test_sealed_terminal_projection_is_compact_current_and_failure_free(tmp_path):
+    sessions = _scope(tmp_path)
+    now = datetime.now(UTC)
+    with sessions() as session:
+        run = _run(session, "sealed-run", status="COMPLETED", phase="STAGED_MIGRATION", version=81)
+        run.source_angular_version = "20.3.27"
+        run.target_angular_version = "21.x"
+        session.add(MigrationStageModel(id="stage-20-21", run_id=run.id, stage_order=1, status="sealed", target_angular_version="21.0.0", created_at=now, started_at=now, completed_at=now))
+        session.add(RepairAttemptModel(id="sealed-repair", run_id=run.id, stage_id="stage-20-21", attempt_number=4, status="validation_passed", risk_level="low", created_at=now, diagnosis="resolved historical failure"))
+        for command_id, command_key in (("install", "npm-ci-final"), ("build", "npm-script-build-production"), ("test", "npm-script-test-ci")):
+            session.add(CommandExecutionModel(id=command_id, run_id=run.id, stage_id="stage-20-21", executable="npm", arguments=[], status="succeeded", requested_at=now, started_at=now, finished_at=now, exit_code=0, command_id=command_key))
+        session.add(WorkflowEventModel(id="old-failure", run_id=run.id, stage_id="stage-20-21", event_type="COMMAND_FAILED", reason="resolved historical failure", sequence=1, payload={}, occurred_at=now))
+        session.add(WorkflowEventModel(id="sealed", run_id=run.id, stage_id="stage-20-21", event_type="STAGE_SEALED", reason="sealed", sequence=2, payload={}, occurred_at=now))
+        session.commit()
+        projection = WorkflowProjectionService().build(session, run.id)
+
+    assert projection.phase.value == "Completion"
+    assert projection.current_angular_version.value == "21.0.0"
+    assert projection.status.value == "COMPLETED"
+    assert projection.blocker.value == "none"
+    assert projection.failure_reason.availability == "unavailable"
+    assert projection.failure_classification.availability == "unavailable"
+    assert projection.remaining_work == []
+    assert any("Production build passed" in item for item in projection.completed_work)
+    assert any("Stage stage-20-21 sealed" in item for item in projection.completed_work)
+    answer = AssistantContextService._authoritative_completion_answer(AssistantContextService._projection(type("Run", (), {"assistant_projection": projection})()))
+    assert "current installed Angular version is 21.0.0" in answer
+    assert "stage is sealed" in answer
+
+
 def test_semantic_version_survives_assistant_telemetry_and_pricing_zero_is_available(tmp_path):
     sessions = _scope(tmp_path)
     now = datetime.now(UTC)
@@ -164,3 +195,27 @@ def test_latest_command_is_deterministic_and_missing_pricing_is_unavailable(tmp_
     assert projection.failure_classification.value == "EXIT_NONZERO"
     assert projection.pricing_availability.availability == "unavailable"
     assert projection.pricing_availability.reason == "not_configured"
+
+
+def test_preflight_projection_recovers_detected_version_route_and_completed_baseline(tmp_path):
+    sessions = _scope(tmp_path)
+    now = datetime.now(UTC)
+    with sessions() as session:
+        run = _run(session, "g03-run", status="DIAGNOSTIC_HOLD", phase="PREFLIGHT_SNAPSHOT", version=42)
+        run.source_angular_version = None
+        run.source_version_detected = "20.3.27"
+        run.target_angular_version = "21.x"
+        run.target_policy_snapshot = {}
+        session.add(WorkflowEventModel(id="baseline-qualified", run_id="g03-run", stage_id=None, event_type="BASELINE_QUALIFIED", reason=None, sequence=1, payload={}, occurred_at=now))
+        session.add(WorkflowEventModel(id="g03-created", run_id="g03-run", stage_id=None, event_type="G03_CREATED", reason=None, sequence=2, payload={}, occurred_at=now))
+        session.commit()
+        projection = WorkflowProjectionService().build(session, "g03-run")
+    assert projection.current_angular_version.value == "20.3.27"
+    assert projection.migration_route.value == "20→21"
+    assert projection.remaining_work == ["Planning", "Transformation", "Validation", "Completion"]
+    answer = AssistantContextService._ensure_workflow_identity("G03 is pending.", {
+        "current_angular_version": projection.current_angular_version.value,
+        "target_angular_version": projection.target_angular_version.value,
+        "migration_route": projection.migration_route.value,
+    })
+    assert answer.startswith("Migration identity: current Angular 20.3.27; target Angular 21.x; route 20→21.")

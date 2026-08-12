@@ -306,21 +306,96 @@ describe("buildJourney", () => {
     expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
   });
 
-  it("completes Validate and Complete only from durable final verification", () => {
+  it("projects a sealed completed 20-to-21 route from final validation and completion authority", () => {
     const journey = buildJourney(
       makeAuthoritativeRun({
         status: "COMPLETED",
         workflow_events: [
           makeEvent("RUN_CREATED", 1),
-          makeEvent("STAGED_MIGRATION_COMPLETED", 2),
-          makeEvent("FINAL_TARGET_VERIFIED", 3),
+          makeEvent("G11_CREATED", 2),
+          makeEvent("G11_APPROVED", 3),
+          makeEvent("STAGED_MIGRATION_COMPLETED", 4),
         ],
       }),
-      makeTransformation(),
+      makeTransformation({
+        route_stages: [
+          { stage_id: "stage-20-21", source_version: "20.3.27", target_version: "21.2.19", status: "sealed" },
+        ],
+        validation_results: {
+          npm_ci: { status: "PASSED", execution_id: "install", command_status: "succeeded" },
+          build: { status: "PASSED", execution_id: "build", command_status: "succeeded" },
+          test: { status: "PASSED", execution_id: "test", command_status: "succeeded" },
+        },
+      }),
+      "ready",
+    );
+
+    expect(stateOf(journey, "18-to-19").state).toBe("unavailable");
+    expect(stateOf(journey, "19-to-20").state).toBe("unavailable");
+    expect(stateOf(journey, "20-to-21").state).toBe("complete");
+    expect(stateOf(journey, "validate").state).toBe("complete");
+    expect(stateOf(journey, "complete").state).toBe("complete");
+  });
+
+  it("does not complete final milestones when transformation validation has not passed", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun({
+        status: "COMPLETED",
+        workflow_events: [makeEvent("G11_CREATED", 1), makeEvent("G11_APPROVED", 2), makeEvent("STAGED_MIGRATION_COMPLETED", 3)],
+      }),
+      makeTransformation({
+        route_stages: [{ stage_id: "stage-20-21", source_version: "20", target_version: "21", status: "sealed" }],
+        validation_results: { npm_ci: { status: "PASSED", execution_id: null, command_status: "succeeded" } },
+      }),
+      "ready",
+    );
+
+    expect(stateOf(journey, "20-to-21").state).toBe("complete");
+    expect(stateOf(journey, "validate").state).not.toBe("complete");
+    expect(stateOf(journey, "complete").state).not.toBe("complete");
+  });
+
+  it("keeps Complete pending until the validated route is sealed and terminal", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun({ workflow_events: [makeEvent("G11_CREATED", 1), makeEvent("G11_APPROVED", 2)] }),
+      makeTransformation({
+        route_stages: [{ stage_id: "stage-20-21", source_version: "20", target_version: "21", status: "PASSED" }],
+        validation_results: {
+          npm_ci: { status: "PASSED", execution_id: null, command_status: "succeeded" },
+          build: { status: "PASSED", execution_id: null, command_status: "succeeded" },
+          test: { status: "PASSED", execution_id: null, command_status: "succeeded" },
+        },
+      }),
       "ready",
     );
 
     expect(stateOf(journey, "validate").state).toBe("complete");
-    expect(stateOf(journey, "complete").state).toBe("complete");
+    expect(stateOf(journey, "complete").state).not.toBe("complete");
+  });
+
+  it("counts every applicable transformation in a completed 18-to-21 route", () => {
+    const journey = buildJourney(
+      makeAuthoritativeRun({
+        status: "COMPLETED",
+        workflow_events: [makeEvent("G11_CREATED", 1), makeEvent("G11_APPROVED", 2), makeEvent("STAGED_MIGRATION_COMPLETED", 3)],
+      }),
+      makeTransformation({
+        route_stages: [
+          { stage_id: "stage-18-19", source_version: "18", target_version: "19", status: "sealed" },
+          { stage_id: "stage-19-20", source_version: "19", target_version: "20", status: "sealed" },
+          { stage_id: "stage-20-21", source_version: "20", target_version: "21", status: "sealed" },
+        ],
+        validation_results: {
+          npm_ci: { status: "PASSED", execution_id: null, command_status: "succeeded" },
+          build: { status: "PASSED", execution_id: null, command_status: "succeeded" },
+          test: { status: "PASSED", execution_id: null, command_status: "succeeded" },
+        },
+      }),
+      "ready",
+    );
+
+    for (const key of ["18-to-19", "19-to-20", "20-to-21", "validate", "complete"] as const) {
+      expect(stateOf(journey, key).state).toBe("complete");
+    }
   });
 });
