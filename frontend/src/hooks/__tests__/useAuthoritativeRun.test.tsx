@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { getAuthoritativeRunState } from "@/api/runs";
-import { AUTHORITATIVE_EVENT_TYPES, PARITY_BASELINE_EVENT_TYPES, useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
+import { AUTHORITATIVE_EVENT_TYPES, PARITY_BASELINE_EVENT_TYPES, TRANSFORMATION_EVENT_TYPES, useAuthoritativeRun } from "@/hooks/useAuthoritativeRun";
 import type { AuthoritativeRunStateDto } from "@/types/generated/api";
 
 vi.mock("@/api/runs", () => ({ getAuthoritativeRunState: vi.fn().mockResolvedValue({ workflow_events: [], updated_at: "initial" }) }));
@@ -51,6 +51,13 @@ describe("useAuthoritativeRun Feature 13 SSE", () => {
       "G05_APPROVED",
       "COMMAND_SUCCEEDED",
       "COMMAND_FAILED",
+    ]));
+    expect(TRANSFORMATION_EVENT_TYPES).toEqual(expect.arrayContaining([
+      "TRANSFORMATION_CONTINUATION_CREATED",
+      "CLI_PROMPT_CAPTURED",
+      "G10_CREATED",
+      "STAGE_SEALED",
+      "STAGED_MIGRATION_COMPLETED",
     ]));
     act(() => {
       source!.emit("BASELINE_FAILURES_FINGERPRINTED", { event_id: "e1", event_type: "BASELINE_FAILURES_FINGERPRINTED", sequence: 1, occurred_at: "1" });

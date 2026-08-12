@@ -18,4 +18,17 @@ describe("planning review API client", () => {
       "http://backend.test/api/v1/runs/run%2F1/approvals/G06/decisions",
     ]);
   });
+
+  it.each([undefined, null])("normalizes missing artifact_ids from review projections", async (artifactIds) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      run_id: "run-1",
+      artifact_ids: artifactIds,
+      artifact_checksums: null,
+      artifact_links: null,
+    }), { status: 200 }));
+    const result = await getPlanReview("run-1", createApiClient("http://backend.test", fetchMock));
+    expect(result.artifact_ids).toEqual([]);
+    expect(result.artifact_checksums).toEqual({});
+    expect(result.artifact_links).toEqual({});
+  });
 });

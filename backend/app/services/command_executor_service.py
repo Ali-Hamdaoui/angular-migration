@@ -14,15 +14,17 @@ import subprocess
 import shutil
 import threading
 import queue
+import re
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from uuid import uuid4
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.command_execution.worker import (
@@ -53,16 +55,24 @@ from app.repositories.models.workflow import (
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
+    StagePromptRequestModel,
+    WorkerLeaseModel,
     WorkflowEventModel,
 )
-from app.repositories.models import ExecutionProfileModel
+from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
+from app.domain.command import command_arguments_match
 from app.services.job_supervisor_service import JobSupervisorService
 from app.services.command_log_service import CommandLogService
+from app.services.transformer_prompt_service import (
+    AngularPromptDetector,
+    TransformerPromptService,
+)
+from app.state.event_sequencer import append_workflow_event
 
 
 class CommandExecutorError(ValueError):
@@ -72,6 +82,55 @@ class CommandExecutorError(ValueError):
         self.code = code
         self.message = message
         self.details = details or {}
+
+
+_WORKER_MUTABLE_WORKSPACE_ALIASES = frozenset({
+    "run_workspace",
+    "BASELINE_SANDBOX",
+    "STAGE_SANDBOX",
+    "REPAIR_SANDBOX",
+    "FINAL_ASSURANCE_SANDBOX",
+    "DELIVERY_CANDIDATE",
+})
+_MUTATING_COMMAND_IDS = frozenset(
+    {
+        "npm-ci-bootstrap",
+        "angular-update-exact",
+        "npm-ci-final",
+        "npm-lockfile-generate",
+        "npm-dependency-uninstall",
+        "npm-dependency-install",
+    }
+)
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def worker_workspace_aliases(aliases: Mapping[str, str | Path], authorized_alias: str | None) -> dict[str, Path]:
+    """Expose exactly one approved mutable workspace to the worker."""
+    if not authorized_alias:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized command has no bound workspace alias.")
+    path = aliases.get(authorized_alias)
+    if path is None:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not bound for this run.")
+    try:
+        resolved_path = Path(path).resolve(strict=True)
+    except FileNotFoundError as error:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not available.") from error
+    if not resolved_path.is_dir():
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not a directory.")
+    if re.fullmatch(r"STAGE_WORKSPACE_[A-Z0-9_]+", authorized_alias):
+        stage_root = aliases.get("STAGE_SANDBOX")
+        if stage_root is None:
+            raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized stage workspace alias has no stage sandbox root.")
+        try:
+            resolved_root = Path(stage_root).resolve(strict=True)
+        except FileNotFoundError as error:
+            raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The stage sandbox root is not available.") from error
+        if resolved_path == resolved_root or not resolved_path.is_relative_to(resolved_root):
+            raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized stage workspace alias is outside the bound stage sandbox.")
+    elif authorized_alias not in _WORKER_MUTABLE_WORKSPACE_ALIASES:
+        raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized workspace alias is not mutable.")
+    return {authorized_alias: resolved_path}
 
 
 @dataclass(frozen=True)
@@ -117,6 +176,7 @@ class CommandExecutionResponse:
     cancel_requested_by: str | None = None
     cancelled: bool = False
     timed_out: bool = False
+    claim_attempt: int | None = None
 
 
 class CommandExecutorService:
@@ -151,16 +211,26 @@ class CommandExecutorService:
 
     _LEGAL_EXECUTION_TRANSITIONS = {
         CommandStatus.PENDING.value: {CommandStatus.QUEUED.value, CommandStatus.FAILED.value},
-        CommandStatus.QUEUED.value: {CommandStatus.RUNNING.value, CommandStatus.FAILED.value},
+        CommandStatus.QUEUED.value: {
+            CommandStatus.RUNNING.value,
+            CommandStatus.FAILED.value,
+            CommandStatus.CANCELLED.value,
+        },
         CommandStatus.RUNNING.value: {
             CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value,
             CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value,
+            CommandStatus.INTERRUPTED.value,
         },
+        CommandStatus.INTERRUPTED.value: {CommandStatus.QUEUED.value, CommandStatus.FAILED.value},
         CommandStatus.SUCCEEDED.value: set(),
         CommandStatus.FAILED.value: set(),
         CommandStatus.TIMED_OUT.value: set(),
         CommandStatus.CANCELLED.value: set(),
     }
+
+    # Bounded claim-loss budget: an execution whose lease expired this many
+    # times is blocked instead of being requeued forever.
+    _CLAIM_RETRY_THRESHOLD = 3
 
     @classmethod
     def transition_execution(cls, session: Session, model: CommandExecutionModel, next_status: str, *, now: datetime | None = None) -> None:
@@ -185,6 +255,138 @@ class CommandExecutorService:
             model.finished_at = occurred_at
         session.flush()
 
+    def claim_next_execution(
+        self,
+        session: Session,
+        worker_id: str,
+        now: datetime | None = None,
+        *,
+        lease_seconds: int = 120,
+    ) -> str | None:
+        """Atomically claim the oldest durable queued command."""
+        claimed_at = now or datetime.now(UTC)
+        candidate = session.scalar(
+            select(CommandExecutionModel)
+            .where(CommandExecutionModel.status == CommandStatus.QUEUED.value)
+            .where(
+                or_(
+                    CommandExecutionModel.worker_id.is_(None),
+                    CommandExecutionModel.claim_expires_at <= claimed_at,
+                )
+            )
+            .order_by(CommandExecutionModel.requested_at, CommandExecutionModel.id)
+            .limit(1)
+        )
+        if candidate is None:
+            return None
+        expires_at = claimed_at + timedelta(seconds=lease_seconds)
+        claimed = session.execute(
+            update(CommandExecutionModel)
+            .where(CommandExecutionModel.id == candidate.id)
+            .where(CommandExecutionModel.status == CommandStatus.QUEUED.value)
+            .where(
+                or_(
+                    CommandExecutionModel.worker_id.is_(None),
+                    CommandExecutionModel.claim_expires_at <= claimed_at,
+                )
+            )
+            .values(
+                worker_id=worker_id,
+                claim_attempt=(candidate.claim_attempt or 0) + 1,
+                claim_expires_at=expires_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            session.expire_all()
+            return None
+        session.execute(
+            delete(WorkerLeaseModel).where(
+                WorkerLeaseModel.execution_id == candidate.id,
+                WorkerLeaseModel.expires_at <= claimed_at,
+            )
+        )
+        session.add(
+            WorkerLeaseModel(
+                id=f"lease-{uuid4().hex[:12]}",
+                run_id=candidate.run_id,
+                execution_id=candidate.id,
+                worker_id=worker_id,
+                lease_owner="transformer-worker",
+                backend_instance_id=worker_id,
+                acquired_at=claimed_at,
+                heartbeat_at=claimed_at,
+                expires_at=expires_at,
+            )
+        )
+        session.flush()
+        session.expire(candidate)
+        return candidate.id
+
+    def reconcile_expired_executions(
+        self,
+        session: Session,
+        now: datetime | None = None,
+    ) -> list[str]:
+        """Recover expired claims without rerunning uncertain mutations."""
+        checked_at = now or datetime.now(UTC)
+        rows = list(
+            session.scalars(
+                select(CommandExecutionModel)
+                .where(CommandExecutionModel.status.in_((CommandStatus.QUEUED.value, CommandStatus.RUNNING.value)))
+                .where(CommandExecutionModel.worker_id.is_not(None))
+                .where(CommandExecutionModel.claim_expires_at <= checked_at)
+                .order_by(CommandExecutionModel.requested_at)
+            )
+        )
+        recovered: list[str] = []
+        for model in rows:
+            prior_worker = model.worker_id
+            model.worker_id = None
+            model.claim_expires_at = None
+            if (model.claim_attempt or 0) >= self._CLAIM_RETRY_THRESHOLD:
+                model.status = CommandStatus.FAILED.value
+                model.finished_at = checked_at
+                model.failure_code = "COMMAND_CLAIM_EXHAUSTED"
+                model.failure_message = (
+                    "Command claim was lost repeatedly beyond the bounded claim-retry threshold."
+                )
+                model.blockers = [model.failure_code]
+            elif model.status == CommandStatus.QUEUED.value:
+                model.failure_code = None
+                model.failure_message = None
+            elif model.operation_kind == "mutating":
+                model.status = CommandStatus.INTERRUPTED.value
+                model.finished_at = checked_at
+                model.reconstruction_required = True
+                model.failure_code = "COMMAND_RECOVERY_REQUIRED"
+                model.failure_message = "Worker lease expired during a mutating command; reconstruct before retry."
+            else:
+                model.status = CommandStatus.QUEUED.value
+                model.started_at = None
+                model.failure_code = "COMMAND_WORKER_LOST_REQUEUED"
+                model.failure_message = "Read-only command lease expired before terminal evidence; command requeued."
+            session.execute(
+                delete(WorkerLeaseModel).where(
+                    WorkerLeaseModel.execution_id == model.id,
+                    WorkerLeaseModel.expires_at <= checked_at,
+                )
+            )
+            self._append_event(
+                session,
+                model.run_id,
+                model.stage_id,
+                f"{model.id}:reconcile:{model.claim_attempt or 0}",
+                WorkflowEventType.COMMAND_RECONSTRUCTION_REQUIRED
+                if model.reconstruction_required
+                else WorkflowEventType.COMMAND_INTERRUPTED,
+                model.failure_message or "expired command claim recovered",
+                {"execution_id": model.id, "worker_id": prior_worker, "status": model.status},
+            )
+            recovered.append(model.id)
+        session.flush()
+        return recovered
+
     def queue_authorized_command(
         self,
         session: Session,
@@ -195,11 +397,16 @@ class CommandExecutorService:
         idempotency_key: str,
         requested_by: str | None = None,
         correlation_id: str | None = None,
+        timeout_seconds: int,
     ) -> CommandExecutionResponse:
         """Persist one execution from an accepted, immutable authorization.
 
         No command data is accepted from the caller.  The authorization audit,
         run, template, and profile are the only sources for execution inputs.
+        ``timeout_seconds`` must be the exact policy-validated timeout of the
+        authorized command request (the approved plan reference or the
+        authorized command definition); it is persisted with the execution row
+        and is never patched afterwards.
         Dispatch happens after the surrounding transaction commits.
         """
         existing = session.scalar(select(CommandExecutionModel).where(
@@ -211,6 +418,11 @@ class CommandExecutorService:
                     or existing.authoritative_state_version != expected_state_version):
                 raise CommandExecutorError("IDEMPOTENCY_KEY_REUSED", "Idempotency key is bound to a different request")
             return self._response_from_model(existing, idempotent_replay=True)
+        if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+            raise CommandExecutorError(
+                "TIMEOUT_AUTHORITY_MISSING",
+                "The authorized command timeout must be the validated positive timeout of the command request",
+            )
 
         run = session.get(MigrationRunModel, run_id)
         if run is None:
@@ -245,7 +457,7 @@ class CommandExecutorService:
             raise CommandExecutorError("COMMAND_TEMPLATE_NOT_FOUND", "The authorized command template is unavailable")
         if template.executable not in {authorization.executable, *(template.executable_aliases or [])}:
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized executable no longer matches the template")
-        if list(template.arguments) != list(authorization.arguments or []):
+        if not command_arguments_match(tuple(template.arguments), tuple(authorization.arguments or [])):
             raise CommandExecutorError("AUTHORIZATION_STALE", "Authorized arguments no longer match the template")
         if not authorization.execution_profile_id:
             raise CommandExecutorError("EXECUTION_PROFILE_NOT_FOUND", "Authorization has no execution profile")
@@ -257,6 +469,17 @@ class CommandExecutorService:
             raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Execution profile is not approved for this run")
         if not run.run_root or not run.artifact_root or not run.workspace_aliases:
             raise CommandExecutorError("WORKSPACE_NOT_AVAILABLE", "Run-owned workspace configuration is unavailable")
+        if authorization.stage_id and (authorization.workspace_alias or "").startswith("STAGE_WORKSPACE_"):
+            from app.repositories.models import StageWorkspaceBindingModel
+
+            binding = session.scalar(select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == run_id,
+                StageWorkspaceBindingModel.stage_id == authorization.stage_id,
+                StageWorkspaceBindingModel.alias == authorization.workspace_alias,
+                StageWorkspaceBindingModel.active.is_(True),
+            ))
+            if binding is None or (run.workspace_aliases or {}).get(authorization.workspace_alias) != binding.workspace_path:
+                raise CommandExecutorError("WORKSPACE_ALIAS_NOT_BOUND", "The authorized stage workspace alias has no matching durable binding")
 
         now = datetime.now(UTC)
         normalized_payload = {
@@ -296,13 +519,14 @@ class CommandExecutorService:
             status=CommandStatus.QUEUED.value,
             command_id=authorization.command_id,
             shell=False,
-            timeout_seconds=300,
+            timeout_seconds=timeout_seconds,
             network_profile=authorization.network_profile or "none",
             cancellation_policy="terminate_process_tree",
             requested_at=now,
             state_version=1,
             event_sequence=1,
             worker_id=None,
+            operation_kind="mutating" if authorization.command_id in _MUTATING_COMMAND_IDS else "read_only",
         )
         session.add(model)
         session.flush()
@@ -311,6 +535,410 @@ class CommandExecutorService:
                            {"execution_id": execution_id, "authorization_id": authorization.id,
                             "command_id": authorization.command_id, "state_version": run.state_version})
         return self._response_from_model(model)
+
+    def resolve_authorized_timeout(
+        self, session: Session, authorization_decision_id: str
+    ) -> int:
+        """Resolve the policy-validated timeout of an accepted authorization.
+
+        The policy engine requires an approved-plan command's request timeout
+        to equal the approved plan reference timeout, so the plan reference is
+        the durable authority for the validated timeout.  Authorizations that
+        do not belong to the approved plan (internal repair-transition or
+        supersession authorizations) have no plan reference and fail closed;
+        their callers always pass the timeout explicitly.
+        """
+        from app.repositories.planning_models import (
+            MigrationPlanModel,
+            StageExecutionPlanModel,
+        )
+
+        authorization = session.get(
+            CommandAuthorizationAuditModel, authorization_decision_id
+        )
+        if authorization is None or authorization.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_DECISION_NOT_FOUND",
+                "Authorization decision does not exist",
+            )
+        plan = session.scalar(
+            select(MigrationPlanModel).where(
+                MigrationPlanModel.id == authorization.plan_id,
+                MigrationPlanModel.run_id == authorization.run_id,
+            )
+        )
+        stage_plan = (
+            session.scalar(
+                select(StageExecutionPlanModel).where(
+                    StageExecutionPlanModel.migration_plan_id == plan.id,
+                    StageExecutionPlanModel.run_id == authorization.run_id,
+                    StageExecutionPlanModel.stage_id == authorization.stage_id,
+                    StageExecutionPlanModel.version == authorization.plan_version,
+                )
+            )
+            if plan is not None
+            else None
+        )
+        references = []
+        if stage_plan is not None:
+            references = [
+                reference
+                for group in ((stage_plan.stage_plan or {}).get("commands") or {}).values()
+                for reference in group
+            ]
+        planned = next(
+            (
+                reference
+                for reference in references
+                if reference.get("command_id") == authorization.command_id
+                and reference.get("template_id") == authorization.template_id
+            ),
+            None,
+        )
+        timeout = planned.get("timeout_seconds") if planned is not None else None
+        if not isinstance(timeout, int) or timeout <= 0:
+            raise CommandExecutorError(
+                "TIMEOUT_AUTHORITY_MISSING",
+                "The accepted authorization has no durable approved timeout",
+            )
+        return timeout
+
+    def authorize_retry_command(
+        self,
+        session: Session,
+        failed_execution_id: str,
+        *,
+        template_id: str,
+        template_version: int,
+        executable: str,
+        arguments: list[str],
+        working_directory_alias: str,
+        working_directory: str,
+        plan_id: str,
+        plan_version: int,
+        execution_profile_id: str,
+        network_profile: str,
+        timeout_seconds: int,
+        idempotency_key: str,
+    ) -> str:
+        """Authorize a bounded command-template supersession before retrying."""
+        failed = session.get(CommandExecutionModel, failed_execution_id)
+        run = session.get(MigrationRunModel, failed.run_id) if failed is not None else None
+        if failed is None or run is None:
+            raise CommandExecutorError(
+                "EXECUTION_NOT_FOUND", "Failed execution does not exist"
+            )
+        if failed.command_id != "angular-update-exact":
+            raise CommandExecutorError(
+                "ANGULAR_UPDATE_RETRY_INVALID",
+                "Only an Angular update execution may receive v3 recovery authorization",
+            )
+        self._policy_engine.registry.seed_defaults(session)
+        request = CommandPolicyValidateRequestDto(
+            run_id=failed.run_id,
+            expected_state_version=run.state_version,
+            stage_id=failed.stage_id,
+            command_id=failed.command_id,
+            template_id=template_id,
+            template_version=template_version,
+            executable=executable,
+            arguments=arguments,
+            cwd_alias=working_directory_alias,
+            plan_id=plan_id,
+            plan_version=plan_version,
+            working_directory_alias=working_directory_alias,
+            working_directory=working_directory,
+            execution_profile_id=execution_profile_id,
+            network_profile=network_profile,
+            cancellation_policy="terminate_process_tree",
+            timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key,
+            requested_by="transformer-recovery",
+        )
+        response = self._policy_engine.validate(
+            session,
+            request,
+            supersedes_authorization_id=failed.authorization_id,
+        )
+        if response.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_REJECTED",
+                "Angular v3 recovery authorization was rejected: "
+                + "; ".join(response.reasons),
+            )
+        return response.authorization_id
+
+    def authorize_dependency_transition_command(
+        self,
+        session: Session,
+        *,
+        attempt_id: str,
+        command_id: str,
+        executable: str,
+        arguments: list[str],
+        working_directory_alias: str,
+        working_directory: str,
+        plan_id: str,
+        plan_version: int,
+        execution_profile_id: str,
+        network_profile: str,
+        timeout_seconds: int,
+        idempotency_key: str,
+    ) -> str:
+        """Authorize one detach/reattach command bound to an applied repair proposal."""
+        from app.domain.command import (
+            ANGULAR_UPDATE_V3_RENDERER,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+            NPM_DEPENDENCY_INSTALL_RENDERER,
+            NPM_DEPENDENCY_UNINSTALL_RENDERER,
+            TRANSFORMATION_COMMAND_CATALOGUE,
+        )
+        from app.repositories.models.workflow import RepairAttemptModel
+
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        run = session.get(MigrationRunModel, attempt.run_id) if attempt is not None else None
+        if attempt is None or run is None:
+            raise CommandExecutorError(
+                "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt does not exist"
+            )
+        renderer_for_command = {
+            "npm-dependency-uninstall": (NPM_DEPENDENCY_UNINSTALL_RENDERER, 1),
+            "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
+            "npm-angular-lockfile-normalize": (NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER, 2),
+            "angular-update-exact": (ANGULAR_UPDATE_V3_RENDERER, 3),
+        }
+        renderer = renderer_for_command.get(command_id)
+        if renderer is None:
+            raise CommandExecutorError(
+                "COMMAND_TEMPLATE_NOT_FOUND",
+                "command has no dependency-transition renderer",
+            )
+        template, template_version = renderer
+        self._policy_engine.registry.seed_defaults(session)
+        request = CommandPolicyValidateRequestDto(
+            run_id=attempt.run_id,
+            expected_state_version=run.state_version,
+            stage_id=attempt.stage_id,
+            command_id=command_id,
+            template_id=template.template_id,
+            template_version=template_version,
+            executable=executable,
+            arguments=arguments,
+            cwd_alias=working_directory_alias,
+            plan_id=plan_id,
+            plan_version=plan_version,
+            working_directory_alias=working_directory_alias,
+            working_directory=working_directory,
+            execution_profile_id=execution_profile_id,
+            network_profile=network_profile,
+            cancellation_policy="terminate_process_tree",
+            timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key,
+            requested_by="transformer-recovery",
+        )
+        response = self._policy_engine.validate(
+            session,
+            request,
+            repair_transition_attempt_id=attempt_id,
+        )
+        if response.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_REJECTED",
+                "Dependency transition command authorization was rejected: "
+                + "; ".join(response.reasons),
+            )
+        return response.authorization_id
+
+    def queue_retry_execution(
+        self,
+        session: Session,
+        failed_execution_id: str,
+        *,
+        idempotency_key: str,
+        workspace_recovered: bool = False,
+        replacement_authorization_id: str | None = None,
+        checkpoint_id: str | None = None,
+        authorized_timeout_seconds: int,
+    ) -> CommandExecutionResponse:
+        """Create one immutable successor for a failed or interrupted execution.
+
+        ``authorized_timeout_seconds`` is the freshly validated timeout of the
+        successor's own authorization (or, absent a replacement authorization,
+        the current authorized command definition).  It is never inherited
+        from the historical failed execution row, which remains immutable
+        evidence only.
+        """
+        failed = session.get(CommandExecutionModel, failed_execution_id)
+        if failed is None:
+            raise CommandExecutorError("EXECUTION_NOT_FOUND", "Failed execution does not exist")
+        if (
+            not isinstance(authorized_timeout_seconds, int)
+            or authorized_timeout_seconds <= 0
+        ):
+            raise CommandExecutorError(
+                "TIMEOUT_AUTHORITY_MISSING",
+                "A retry requires the freshly validated timeout of its own authorization",
+            )
+        existing = session.scalar(
+            select(CommandExecutionModel).where(
+                CommandExecutionModel.run_id == failed.run_id,
+                CommandExecutionModel.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            if existing.parent_execution_id != failed.id:
+                raise CommandExecutorError(
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "Retry key is bound to another execution",
+                )
+            return self._response_from_model(existing, idempotent_replay=True)
+        if replacement_authorization_id and (
+            failed.command_id != "angular-update-exact"
+            or failed.template_version != 2
+        ):
+            raise CommandExecutorError(
+                "ANGULAR_UPDATE_RETRY_INVALID",
+                "Only an accepted v2 Angular update may be superseded by v3",
+            )
+        if replacement_authorization_id and failed.template_version == 2:
+            existing_successor = session.scalar(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == failed.run_id,
+                    CommandExecutionModel.parent_execution_id == failed.id,
+                    CommandExecutionModel.template_version == 3,
+                )
+            )
+            if existing_successor is not None:
+                raise CommandExecutorError(
+                    "ANGULAR_UPDATE_V3_RETRY_ALREADY_EXECUTED",
+                    "The version-3 Angular recovery is already bound to this failed execution",
+                )
+        if failed.status in {
+            CommandStatus.INTERRUPTED.value,
+            CommandStatus.TIMED_OUT.value,
+        }:
+            if not failed.reconstruction_required:
+                raise CommandExecutorError(
+                    "EXECUTION_NOT_RETRYABLE",
+                    "An interrupted or timed-out execution may only have a successor after reconstruction is required and verified",
+                )
+        elif failed.status != CommandStatus.FAILED.value:
+            raise CommandExecutorError(
+                "EXECUTION_NOT_RETRYABLE",
+                "Only a terminal failed execution may have a successor",
+            )
+        if (failed.attempt_number or 1) >= self._retry_budget(session, failed):
+            raise CommandExecutorError(
+                "REQUESTED_RETRY_EXCEEDS_LIMIT",
+                "Requested retry exceeds the stage plan repair policy retry budget",
+            )
+        if (
+            failed.process_id is not None or failed.exit_code is not None
+        ) and not workspace_recovered:
+            raise CommandExecutorError(
+                "EXECUTION_RETRY_REQUIRES_RECOVERY",
+                "A command with process evidence requires verified workspace recovery",
+            )
+        active = session.scalar(
+            select(CommandExecutionModel).where(
+                CommandExecutionModel.run_id == failed.run_id,
+                CommandExecutionModel.status.in_(
+                    (
+                        CommandStatus.PENDING.value,
+                        CommandStatus.QUEUED.value,
+                        CommandStatus.RUNNING.value,
+                    )
+                ),
+            )
+        )
+        if active is not None:
+            raise CommandExecutorError(
+                "ACTIVE_COMMAND_EXISTS",
+                "The run already has an active command",
+            )
+        authorization = session.get(
+            CommandAuthorizationAuditModel,
+            replacement_authorization_id or failed.authorization_id,
+        )
+        if authorization is None or authorization.decision != "accepted":
+            raise CommandExecutorError(
+                "AUTHORIZATION_STALE",
+                "The original accepted authorization is unavailable",
+            )
+        if (
+            replacement_authorization_id
+            and (
+                authorization.run_id != failed.run_id
+                or authorization.stage_id != failed.stage_id
+                or authorization.command_id != failed.command_id
+                or authorization.template_id != "tpl-angular-update-exact-v3"
+                or authorization.template_version != 3
+            )
+        ):
+            raise CommandExecutorError(
+                "AUTHORIZATION_STALE",
+                "The replacement authorization does not supersede the failed command",
+            )
+
+        now = datetime.now(UTC)
+        successor = CommandExecutionModel(
+            id=f"exec-{uuid4().hex[:12]}",
+            run_id=failed.run_id,
+            stage_id=failed.stage_id,
+            authorization_id=authorization.id,
+            template_id=authorization.template_id,
+            template_version=authorization.template_version,
+            plan_id=authorization.plan_id,
+            plan_version=authorization.plan_version,
+            idempotency_key=idempotency_key,
+            request_payload_hash=authorization.request_payload_hash,
+            correlation_id=failed.correlation_id,
+            requested_by=authorization.actor or failed.requested_by,
+            executable=authorization.executable,
+            arguments=list(authorization.arguments or []),
+            working_directory_alias=authorization.workspace_alias,
+            safe_relative_working_directory=failed.safe_relative_working_directory,
+            runtime_profile_id=authorization.execution_profile_id,
+            status=CommandStatus.QUEUED.value,
+            requested_at=now,
+            command_id=authorization.command_id,
+            shell=False,
+            timeout_seconds=authorized_timeout_seconds,
+            network_profile=authorization.network_profile,
+            cancellation_policy=failed.cancellation_policy,
+            state_version=1,
+            event_sequence=1,
+            worker_id=None,
+            operation_kind=failed.operation_kind,
+            checkpoint_id=checkpoint_id or failed.checkpoint_id,
+            prompt_request_id=None,
+            authoritative_state_version=failed.authoritative_state_version,
+            parent_execution_id=failed.id,
+            attempt_number=(failed.attempt_number or 1) + 1,
+        )
+        session.add(successor)
+        session.flush()
+        self._append_event(
+            session,
+            successor.run_id,
+            successor.stage_id,
+            f"{idempotency_key}:queued",
+            WorkflowEventType.COMMAND_QUEUED,
+            "authorized command retry queued",
+            {
+                "execution_id": successor.id,
+                "parent_execution_id": failed.id,
+                "attempt_number": successor.attempt_number,
+                "authorization_id": successor.authorization_id,
+                "command_id": successor.command_id,
+                "template_id": successor.template_id,
+                "template_version": successor.template_version,
+                "supersedes_authorization_id": failed.authorization_id
+                if replacement_authorization_id
+                else None,
+            },
+        )
+        return self._response_from_model(successor)
 
     def dispatch_execution(self, execution_id: str) -> None:
         """Transfer a committed execution to the process-owned worker."""
@@ -340,12 +968,20 @@ class CommandExecutorService:
                 ).values(worker_id=None))
             raise
 
-    def _run_execution(self, execution_id: str) -> None:
+    def execute_claimed_execution(self, execution_id: str, worker_id: str) -> None:
+        """Execute a command already claimed by this durable worker."""
+        self._run_execution(execution_id, worker_id)
+
+    def _run_execution(self, execution_id: str, claimed_worker_id: str | None = None) -> None:
         from app.repositories.session import session_scope
-        worker_id = threading.current_thread().name
+        worker_id = claimed_worker_id or threading.current_thread().name
         with session_scope() as session:
             model = session.get(CommandExecutionModel, execution_id)
-            if model is None or model.status != CommandStatus.QUEUED.value:
+            if (
+                model is None
+                or model.status != CommandStatus.QUEUED.value
+                or (claimed_worker_id is not None and model.worker_id != claimed_worker_id)
+            ):
                 return
             run = session.get(MigrationRunModel, model.run_id)
             authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id)
@@ -402,17 +1038,33 @@ class CommandExecutorService:
                 )
                 if selected_profile is None:
                     raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
-                lease = self._job_supervisor.acquire_lease(
-                    session, run_id, execution_id, worker_id, worker_id,
+                existing_lease = session.scalar(
+                    select(WorkerLeaseModel).where(
+                        WorkerLeaseModel.execution_id == execution_id,
+                        WorkerLeaseModel.worker_id == worker_id,
+                        WorkerLeaseModel.expires_at > datetime.now(UTC),
+                    )
                 )
-                lease_id = lease.lease_id
+                if existing_lease is None:
+                    lease = self._job_supervisor.acquire_lease(
+                        session, run_id, execution_id, worker_id, worker_id,
+                    )
+                    lease_id = lease.lease_id
+                else:
+                    lease_id = existing_lease.id
                 if model.cancel_requested_at is not None:
                     cancel_event.set()
+                prompt_stdin = None
+                if model.prompt_request_id:
+                    prompt = session.get(StagePromptRequestModel, model.prompt_request_id)
+                    prompt_stdin = TransformerPromptService.selected_stdin(prompt) if prompt else None
                 artifact_root = Path(run.artifact_root)
                 policy = CommandPolicy(
                     sandbox_root=root,
                     registry=CommandRegistry(),
-                    working_directory_aliases=aliases,
+                    working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
+                    runtime_profiles=frozenset({execution_profile_id}),
+                    network_profiles=frozenset({network_profile}),
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
                 )
                 store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
@@ -441,7 +1093,19 @@ class CommandExecutorService:
                 while not heartbeat_stop.wait(interval):
                     try:
                         with session_scope() as lease_session:
-                            self._job_supervisor.renew_lease(lease_session, lease_id, worker_id)
+                            renewed = self._job_supervisor.renew_lease(lease_session, lease_id, worker_id)
+                            durable_execution = lease_session.get(CommandExecutionModel, execution_id)
+                            if durable_execution is None or durable_execution.cancel_requested_at is not None:
+                                cancel_event.set()
+                            lease_session.execute(
+                                update(CommandExecutionModel)
+                                .where(
+                                    CommandExecutionModel.id == execution_id,
+                                    CommandExecutionModel.worker_id == worker_id,
+                                    CommandExecutionModel.status == CommandStatus.RUNNING.value,
+                                )
+                                .values(claim_expires_at=renewed.expires_at)
+                            )
                     except Exception:
                         cancel_event.set()
                         return
@@ -449,7 +1113,11 @@ class CommandExecutorService:
             heartbeat = threading.Thread(target=renew_lease, name=f"lease-heartbeat-{execution_id}", daemon=True)
             heartbeat.start()
 
+            prompt_buffer = ""
+            prompt_captured = False
+
             def persist_output(stream: str, text: str) -> None:
+                nonlocal prompt_buffer, prompt_captured
                 from app.repositories.session import session_scope
                 with session_scope() as log_session:
                     CommandLogService().append_chunk(
@@ -457,8 +1125,40 @@ class CommandExecutorService:
                         correlation_id=correlation_id,
                         strict_ownership=True,
                     )
+                    if command_id == "angular-update-exact" and not prompt_captured:
+                        prompt_buffer = (prompt_buffer + text)[-8192:]
+                        detected = AngularPromptDetector().detect(prompt_buffer)
+                        if detected is not None:
+                            durable = log_session.get(CommandExecutionModel, execution_id)
+                            TransformerPromptService().capture(log_session, durable, detected)
+                            prompt_captured = True
+                            cancel_event.set()
 
-            result = worker.run(request, cancel_event=cancel_event, output_callback=persist_output)
+            def persist_pid(process_id: int) -> None:
+                from app.repositories.session import session_scope
+                with session_scope() as process_session:
+                    persisted = process_session.execute(
+                        update(CommandExecutionModel)
+                        .where(
+                            CommandExecutionModel.id == execution_id,
+                            CommandExecutionModel.status == CommandStatus.RUNNING.value,
+                            CommandExecutionModel.worker_id == worker_id,
+                        )
+                        .values(process_id=process_id)
+                    )
+                    if persisted.rowcount != 1:
+                        raise CommandExecutorError(
+                            "COMMAND_CLAIM_STALE",
+                            "Process started after its command claim became stale",
+                        )
+
+            result = worker.run(
+                request,
+                cancel_event=cancel_event,
+                output_callback=persist_output,
+                process_started_callback=persist_pid,
+                stdin_text=prompt_stdin,
+            )
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
                 run = session.get(MigrationRunModel, run_id)
@@ -467,6 +1167,16 @@ class CommandExecutorService:
                     return
                 self._finish_execution(session, model, result, run=run, authorization=authorization, profile=selected_profile)
         except Exception as exc:
+            causal_traceback = traceback.format_exc()
+            with session_scope() as session:
+                model = session.get(CommandExecutionModel, execution_id)
+                if model is not None and model.status not in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
+                    self._persist_internal_failure(
+                        session,
+                        model,
+                        exc,
+                        causal_traceback,
+                    )
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
                 if model is not None and model.status not in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
@@ -489,22 +1199,77 @@ class CommandExecutorService:
 
     def _finish_execution(self, session: Session, model: CommandExecutionModel, result, *, run, authorization, profile) -> None:
         finished = datetime.now(UTC)
+        final_status = (
+            CommandStatus.FAILED.value
+            if result.result.status == CommandStatus.REJECTED
+            else CommandStatus.TIMED_OUT.value
+            if result.timed_out
+            else result.result.status.value
+        )
+        terminal_statuses = {
+            CommandStatus.SUCCEEDED.value,
+            CommandStatus.FAILED.value,
+            CommandStatus.TIMED_OUT.value,
+            CommandStatus.CANCELLED.value,
+        }
+        if model.status in terminal_statuses:
+            if (
+                model.status == final_status
+                and model.exit_code == result.result.exit_code
+                and model.duration_ms == result.result.duration_ms
+                and bool(model.timed_out) == bool(result.timed_out)
+                and bool(model.cancelled) == bool(result.cancelled)
+            ):
+                return
+            raise CommandExecutorError(
+                "TERMINAL_RESULT_CONFLICT",
+                "Terminal callback conflicts with immutable command evidence",
+                {
+                    "execution_id": model.id,
+                    "persisted_status": model.status,
+                    "callback_status": final_status,
+                },
+            )
         from app.services.command_log_service import CommandLogService
         log_service = CommandLogService()
         log_service.ensure_summary(session, model.id, model.run_id, correlation_id=model.correlation_id)
         log_service.finalize(session, model.id, finalized_at=finished)
-        final_status = CommandStatus.TIMED_OUT.value if result.timed_out else result.result.status.value
-        self.transition_execution(session, model, final_status, now=finished)
         model.exit_code = result.result.exit_code
-        if model.status == CommandStatus.FAILED.value and model.failure_code is None:
-            model.failure_code = "COMMAND_EXIT_NONZERO"
-            model.failure_message = "The approved command exited with a non-zero status."
-        if model.status == CommandStatus.CANCELLED.value:
+        if final_status == CommandStatus.FAILED.value and model.failure_code is None:
+            if result.result.status == CommandStatus.REJECTED:
+                model.failure_code = "COMMAND_PRESPAWN_FAILED"
+                model.failure_message = self._result_failure_message(
+                    result,
+                    "Command preparation failed before process spawn.",
+                )
+            elif result.result.exit_code is None:
+                model.failure_code = "COMMAND_START_FAILED"
+                model.failure_message = self._result_failure_message(
+                    result,
+                    "Unable to start the approved command.",
+                )
+            else:
+                model.failure_code = "COMMAND_EXIT_NONZERO"
+                model.failure_message = self._result_failure_message(
+                    result,
+                    "The approved command exited with a non-zero status.",
+                )
+            model.blockers = [model.failure_code]
+        if final_status == CommandStatus.CANCELLED.value:
             model.failure_code = "COMMAND_CANCELLED"
             model.failure_message = "Command cancelled; partial output was preserved."
-        if model.status == CommandStatus.TIMED_OUT.value:
+        if final_status == CommandStatus.TIMED_OUT.value:
             model.failure_code = "COMMAND_TIMED_OUT"
             model.failure_message = "Command timed out; partial output was preserved."
+        # A mutating command that terminated without verified success may have
+        # left the workspace partially changed. It must never feed another
+        # governed mutating/repair step until the workspace is reconstructed
+        # against an authorized checkpoint, so mark it reconstruction-required.
+        if (
+            final_status in {CommandStatus.TIMED_OUT.value, CommandStatus.CANCELLED.value}
+            and model.operation_kind == "mutating"
+        ):
+            model.reconstruction_required = True
         model.duration_ms = result.result.duration_ms
         model.timed_out = result.timed_out
         model.cancelled = result.cancelled
@@ -515,7 +1280,7 @@ class CommandExecutorService:
         output_refs = [ref for ref in (result.stdout_artifact.ref, result.stderr_artifact.ref, result.command_log_artifact.ref)]
         result_payload = {
             "schema_version": "command-execution-result.v1", "execution_id": model.id,
-            "run_id": model.run_id, "status": model.status, "exit_code": model.exit_code,
+            "run_id": model.run_id, "status": final_status, "exit_code": model.exit_code,
             "duration_ms": model.duration_ms, "timed_out": bool(model.timed_out),
             "cancelled": bool(model.cancelled), "failure_code": model.failure_code,
             "partial_evidence": bool(model.cancelled or model.timed_out),
@@ -538,7 +1303,7 @@ class CommandExecutorService:
             "safe_relative_working_directory": model.safe_relative_working_directory,
             "network_profile": model.network_profile, "authoritative_state_version": authorization.state_version,
             "worker_id": model.worker_id, "started_at": model.started_at.isoformat() if model.started_at else None,
-            "ended_at": finished.isoformat(), "duration_ms": model.duration_ms, "status": model.status,
+            "ended_at": finished.isoformat(), "duration_ms": model.duration_ms, "status": final_status,
             "exit_code": model.exit_code, "artifact_ids": [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id],
             "cancellation": {"requested": model.cancel_requested_at is not None, "cancelled": bool(model.cancelled), "timed_out": bool(model.timed_out), "partial_evidence": bool(model.cancelled or model.timed_out)},
             "runtime_identity": {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None},
@@ -562,24 +1327,43 @@ class CommandExecutorService:
         model.manifest_artifact_id = manifest_artifact.ref.artifact_id
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
         model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
+        session.flush()
+        # Command evidence is durable before the terminal transition; a
+        # terminal CAS failure must never erase command evidence.
+        session.commit()
+        model = session.get(CommandExecutionModel, model.id)
+        # The terminal status transition, command row update, and the
+        # terminal COMMAND_* event are committed together in ONE transaction.
+        # There is no post-commit event append that a later rollback could
+        # silently discard.
+        self.transition_execution(session, model, final_status, now=finished)
         event_type = (WorkflowEventType.COMMAND_CANCELLED if model.status == CommandStatus.CANCELLED.value else WorkflowEventType.COMMAND_INTERRUPTED if model.status == CommandStatus.TIMED_OUT.value else WorkflowEventType.COMMAND_SUCCEEDED if model.status == CommandStatus.SUCCEEDED.value else WorkflowEventType.COMMAND_FAILED)
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
+        session.commit()
+        # The optional RUN_CANCELLED run-level CAS runs in its own
+        # transaction AFTER the terminal event is committed: a stale run
+        # state version can only roll back the cancellation CAS, never the
+        # terminal command event.
         if model.status in {CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
             current_run = session.get(MigrationRunModel, model.run_id)
             if current_run is not None and current_run.status == "CANCELLING":
-                from app.state.transition_service import StateTransitionService, TransitionRequest
-                StateTransitionService(session).apply_transition(TransitionRequest(
-                    run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
-                    expected_state_version=current_run.state_version,
-                    event_type=WorkflowEventType.RUN_CANCELLED,
-                    next_run_status=RunStatus.CANCELLED,
-                    actor="command-execution-worker",
-                    reason="command cancellation completed; partial evidence retained",
-                    occurred_at=finished,
-                    payload={"execution_id": model.id, "partial_evidence": 1},
-                ))
+                from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionRequest
+                try:
+                    StateTransitionService(session).apply_transition(TransitionRequest(
+                        run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
+                        expected_state_version=current_run.state_version,
+                        event_type=WorkflowEventType.RUN_CANCELLED,
+                        next_run_status=RunStatus.CANCELLED,
+                        actor="command-execution-worker",
+                        reason="command cancellation completed; partial evidence retained",
+                        occurred_at=finished,
+                        payload={"execution_id": model.id, "partial_evidence": 1},
+                    ))
+                    session.commit()
+                except StaleStateVersionError:
+                    session.rollback()
 
     @staticmethod
     def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
@@ -607,11 +1391,63 @@ class CommandExecutorService:
 
     def _fail_execution(self, session: Session, model: CommandExecutionModel, code: str, message: str) -> None:
         self.transition_execution(session, model, CommandStatus.FAILED.value)
-        model.failure_code = code
-        model.failure_message = message[:1000]
-        model.blockers = [code]
+        model.failure_code = model.failure_code or code
+        model.failure_message = model.failure_message or message[:1000]
+        model.blockers = model.blockers or [model.failure_code]
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:failed", WorkflowEventType.COMMAND_FAILED,
-                           message, {"execution_id": model.id, "error_code": code})
+                           model.failure_message, {"execution_id": model.id, "error_code": model.failure_code})
+
+    def _persist_internal_failure(
+        self,
+        session: Session,
+        model: CommandExecutionModel,
+        error: Exception,
+        causal_traceback: str,
+    ) -> None:
+        CommandLogService().append_chunk(
+            session,
+            model.id,
+            model.run_id,
+            "system",
+            causal_traceback,
+            correlation_id=model.correlation_id,
+            strict_ownership=True,
+        )
+        model.failure_code = model.failure_code or getattr(
+            error,
+            "code",
+            "EXECUTION_FAILED",
+        )
+        model.failure_message = model.failure_message or str(error)[:1000]
+        model.blockers = model.blockers or [model.failure_code]
+        model.duration_ms = self._elapsed_ms(model.started_at)
+
+    @staticmethod
+    def _result_failure_message(result, fallback: str) -> str:
+        if result.stderr_artifact and result.stderr_artifact.content.strip():
+            raw = _ANSI_ESCAPE.sub("", result.stderr_artifact.content)
+            if (
+                result.result.command_id == "angular-update-exact"
+                and result.result.exit_code is not None
+                and result.result.exit_code != 0
+            ):
+                # Keep the whole failure tail: the peer-dependency detail block
+                # sits above the "Migration failed" summary line, so slicing
+                # from the marker would discard the evidence the classifier
+                # needs. The last 2000 chars of the stripped stderr contain
+                # both the detail block and the final summary.
+                return raw.strip()[-2000:]
+            return raw.strip()[:1000]
+        return fallback
+
+    @staticmethod
+    def _elapsed_ms(started_at: datetime | None) -> int | None:
+        if started_at is None:
+            return None
+        now = datetime.now(UTC)
+        if started_at.tzinfo is None:
+            now = now.replace(tzinfo=None)
+        return max(0, round((now - started_at).total_seconds() * 1000))
 
     def legacy_queue_command_disabled(
         self,
@@ -642,191 +1478,6 @@ class CommandExecutorService:
             "LEGACY_EXECUTION_DISABLED",
             "Use queue_authorized_command with an accepted authorization decision",
         )
-        """
-        # Check idempotency — same key + identical payload returns cached result
-        existing = session.scalar(
-            select(CommandExecutionModel)
-            .where(CommandExecutionModel.run_id == run_id)
-            .where(CommandExecutionModel.idempotency_key == idempotency_key)
-        )
-        if existing is not None:
-            # Verify payload identity
-            if (existing.executable == executable
-                    and (existing.arguments or []) == (arguments or [])
-                    and existing.command_id == command_id):
-                return self._response_from_model(existing, idempotent_replay=True)
-            raise CommandExecutorError(
-                "IDEMPOTENCY_KEY_CONFLICT",
-                f"Idempotency key '{idempotency_key}' already used with different payload",
-            )
-
-        effective_timeout = timeout_seconds or self._default_timeout_seconds
-        now = datetime.now(UTC)
-
-        # 1. Validate against policy engine
-        policy_request = CommandPolicyValidateRequestDto(
-            run_id=run_id,
-            stage_id=stage_id,
-            command_id=command_id,
-            executable=executable,
-            arguments=arguments or [],
-            cwd_alias=working_directory_alias,
-            plan_id=None,
-            working_directory_alias=working_directory_alias,
-            working_directory=working_directory,
-            execution_profile_id=runtime_profile_id,
-            network_profile=network_profile,
-            cancellation_policy=cancellation_policy,
-            timeout_seconds=effective_timeout,
-            idempotency_key=idempotency_key,
-            requested_by=requested_by,
-            shell=False,
-        )
-        policy_result = self._policy_engine.validate(session, policy_request)
-        if policy_result.decision == "rejected":
-            raise CommandExecutorError(
-                "POLICY_REJECTED",
-                f"Command rejected by policy engine: {'; '.join(policy_result.reasons)}",
-            )
-
-        # 2. Create the execution record in QUEUED state
-        execution_id = f"exec-{uuid4().hex[:12]}"
-        exec_model = CommandExecutionModel(
-            id=execution_id,
-            run_id=run_id,
-            stage_id=stage_id,
-            authorization_id=policy_result.authorization_id,
-            idempotency_key=idempotency_key,
-            requested_by=requested_by,
-            requester=requester,
-            executable=executable,
-            arguments=arguments,
-            working_directory_alias=working_directory_alias,
-            runtime_profile_id=runtime_profile_id,
-            status=CommandStatus.PENDING.value,
-            command_id=command_id,
-            shell=False,
-            timeout_seconds=effective_timeout,
-            network_profile=network_profile,
-            cancellation_policy=cancellation_policy,
-            requested_at=now,
-            state_version=1,
-            event_sequence=1,
-        )
-        session.add(exec_model)
-        session.flush()
-
-        # 2. Emit COMMAND_QUEUED event
-        self._append_event(session, run_id, stage_id, idempotency_key,
-                           WorkflowEventType.COMMAND_QUEUED, "command queued for execution",
-                           {"execution_id": execution_id, "command_id": command_id, "executable": executable})
-
-        # 3. Update status to RUNNING
-        exec_model.status = CommandStatus.RUNNING.value
-        exec_model.state_version = (exec_model.state_version or 1) + 1
-        exec_model.started_at = datetime.now(UTC)
-        session.flush()
-
-        # 4. Emit COMMAND_STARTED event
-        self._append_event(session, run_id, stage_id, idempotency_key + ":started",
-                           WorkflowEventType.COMMAND_STARTED, "command execution started",
-                           {"execution_id": execution_id, "command_id": command_id})
-
-        # 5. Build and run the command using the Sprint 0 WorkerSupervisor
-        try:
-            # Build a CommandRequestDto for the Sprint 0 worker
-            request = CommandRequestDto(
-                command_id=command_id,
-                run_id=run_id,
-                stage_id=stage_id,
-                requested_by=requested_by,
-                requester=requester or requested_by,
-                executable=executable,
-                arguments=arguments,
-                shell=False,
-                working_directory_alias=working_directory_alias,
-                working_directory=working_directory,
-                runtime_profile_id=runtime_profile_id,
-                timeout_seconds=effective_timeout,
-                network_profile=network_profile,
-                cancellation_policy=CancellationPolicy.TERMINATE_PROCESS_TREE,
-                idempotency_key=idempotency_key,
-                requested_at=now,
-            )
-
-            # Find the command definition from registry
-            registry = CommandRegistry()
-            definition = registry.find(command_id)
-
-            # Build working directory path
-            sandbox_root = Path("/tmp/amfa-sandbox")
-            sandbox_root.mkdir(parents=True, exist_ok=True)
-            working_dir = sandbox_root
-            if working_directory_alias:
-                working_dir = sandbox_root / working_directory_alias.lower()
-                working_dir.mkdir(parents=True, exist_ok=True)
-
-            structured = StructuredCommandRequest(
-                dto=request,
-                definition=definition,
-                command=(executable, *arguments),
-                working_directory=working_dir,
-            )
-
-            # Create cancel event for this execution
-            cancel_event = threading.Event()
-            self._cancel_events[execution_id] = cancel_event
-
-            supervised = self._supervisor.run(
-                structured,
-                cancel_event=cancel_event,
-            )
-            finished_at = datetime.now(UTC)
-
-            # Clean up cancel event
-            self._cancel_events.pop(execution_id, None)
-
-            # 6. Update execution record
-            status = self._map_supervised_status(supervised)
-            exec_model.status = status.value
-            exec_model.exit_code = supervised.exit_code
-            exec_model.finished_at = finished_at
-            exec_model.duration_ms = int((finished_at - now).total_seconds() * 1000)
-            exec_model.timed_out = supervised.timed_out
-            exec_model.cancelled = supervised.cancelled
-            exec_model.state_version = (exec_model.state_version or 1) + 1
-
-            # Compute runtime checksum from stdout+stderr output
-            output_data = (supervised.stdout or "") + (supervised.stderr or "")
-            exec_model.runtime_checksum = f"sha256:{hashlib.sha256(output_data.encode('utf-8')).hexdigest()}"
-
-            # 7. Emit completion event
-            event_type = {
-                CommandStatus.SUCCEEDED: WorkflowEventType.COMMAND_SUCCEEDED,
-                CommandStatus.FAILED: WorkflowEventType.COMMAND_FAILED,
-                CommandStatus.CANCELLED: WorkflowEventType.COMMAND_INTERRUPTED,
-                CommandStatus.TIMED_OUT: WorkflowEventType.COMMAND_INTERRUPTED,
-            }.get(status, WorkflowEventType.COMMAND_FAILED)
-
-            self._append_event(session, run_id, stage_id, idempotency_key + ":completed",
-                               event_type, f"command {status.value}",
-                               {"execution_id": execution_id, "command_id": command_id,
-                                "exit_code": supervised.exit_code, "status": status.value})
-
-            session.flush()
-
-            return self._response_from_model(exec_model)
-
-        except (CommandPolicyViolation, OSError) as exc:
-            exec_model.status = CommandStatus.FAILED.value
-            exec_model.finished_at = datetime.now(UTC)
-            session.flush()
-            self._append_event(session, run_id, stage_id, idempotency_key + ":failed",
-                               WorkflowEventType.COMMAND_FAILED, str(exc),
-                               {"execution_id": execution_id, "command_id": command_id, "error": str(exc)})
-            return self._response_from_model(exec_model)
-
-        """
 
     def get_command_execution(
         self,
@@ -892,6 +1543,29 @@ class CommandExecutorService:
         return CommandStatus.FAILED
 
     @staticmethod
+    def _retry_budget(session: Session, execution: CommandExecutionModel) -> int:
+        """Resolve the bounded retry budget from the stage plan repair policy."""
+        stage_plan = session.scalar(
+            select(StageExecutionPlanModel)
+            .where(
+                StageExecutionPlanModel.run_id == execution.run_id,
+                StageExecutionPlanModel.stage_id == execution.stage_id,
+            )
+            .order_by(StageExecutionPlanModel.version.desc())
+            .limit(1)
+        )
+        repair_policy = (
+            ((stage_plan.stage_plan or {}).get("repair_policy") or {})
+            if stage_plan is not None
+            else {}
+        )
+        try:
+            budget = int(repair_policy.get("max_attempts") or 3)
+        except (TypeError, ValueError):
+            budget = 3
+        return max(1, budget)
+
+    @staticmethod
     def _append_event(
         session: Session,
         run_id: str,
@@ -901,26 +1575,17 @@ class CommandExecutorService:
         reason: str,
         payload: dict[str, Any],
     ) -> WorkflowEventModel:
-        latest = session.scalar(
-            select(WorkflowEventModel)
-            .where(WorkflowEventModel.run_id == run_id)
-            .order_by(WorkflowEventModel.sequence.desc())
-            .limit(1)
-        )
-        event = WorkflowEventModel(
-            id=f"event-{uuid4().hex[:12]}",
+        return append_workflow_event(
+            session,
             run_id=run_id,
             stage_id=stage_id,
             event_type=event_type.value,
             idempotency_key=idempotency_key,
             actor="command-executor",
             reason=reason,
-            sequence=(latest.sequence + 1) if latest else 1,
             payload=payload,
             occurred_at=datetime.now(UTC),
         )
-        session.add(event)
-        return event
 
     @staticmethod
     def _response_from_model(
@@ -968,4 +1633,5 @@ class CommandExecutorService:
             cancelled=bool(model.cancelled),
             timed_out=bool(model.timed_out),
             request_payload_hash=model.request_payload_hash,
+            claim_attempt=model.claim_attempt,
         )

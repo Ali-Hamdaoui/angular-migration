@@ -52,7 +52,7 @@ export function BaselinePreparationPanel({ runId, initialState }: { runId: strin
   return (
     <section className={styles.panel} aria-labelledby="baseline-preparation-title">
       <div className={styles.header}>
-        <div><p className={styles.kicker}>S1-F10 baseline boundary</p><h2 id="baseline-preparation-title">Baseline sandbox and package safety</h2><p className={styles.note}>The backend owns the sandbox path, fingerprints, package metadata, and install decision.</p></div>
+        <div><p className={styles.kicker}>Baseline preparation</p><h2 id="baseline-preparation-title">Baseline sandbox and package safety</h2><p className={styles.note}>The backend owns the sandbox path, fingerprints, package metadata, and install decision.</p></div>
         <span className={styles.status}>{status.replaceAll("_", " ")}</span>
       </div>
       {loading ? <p role="status">Loading baseline evidence…</p> : null}

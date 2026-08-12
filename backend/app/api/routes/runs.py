@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -14,9 +15,11 @@ from app.domain.contracts import (
     AuthoritativeRunStateDto,
     CancelAuthoritativeRunRequestDto,
     CreateAuthoritativeRunRequestDto,
+    RunTimingDto,
     StartAuthoritativeRunRequestDto,
 )
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
+from app.services.run_timing_service import RunTimingError, RunTimingService
 from app.repositories.models import WorkflowEventModel
 from app.repositories.session import session_scope
 
@@ -25,6 +28,10 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 def get_run_service() -> MigrationRunService:
     return MigrationRunService(get_settings())
+
+
+def get_run_timing_service() -> RunTimingService:
+    return RunTimingService()
 
 
 def _error(request: Request, error: MigrationRunError):
@@ -90,6 +97,15 @@ def cancel_run(run_id: str, request: CancelAuthoritativeRunRequestDto, http_requ
     )
 
 
+@router.get("/{run_id}/timing", response_model=RunTimingDto)
+def read_run_timing(run_id: str, http_request: Request, service: RunTimingService = Depends(get_run_timing_service)):
+    try:
+        with session_scope() as session:
+            return service.build(session, run_id)
+    except RunTimingError as error:
+        return _error(http_request, error)
+
+
 @router.get("/{run_id}/state", response_model=AuthoritativeRunStateDto)
 def read_run_state(run_id: str, http_request: Request, service: MigrationRunService = Depends(get_run_service)):
     try:
@@ -105,6 +121,7 @@ def stream_run_events(run_id: str, request: Request):
 
     async def event_stream():
         nonlocal last_sequence
+        last_activity = time.monotonic()
         while not await request.is_disconnected():
             with session_scope() as session:
                 events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).where(WorkflowEventModel.sequence > last_sequence).order_by(WorkflowEventModel.sequence)))
@@ -112,6 +129,10 @@ def stream_run_events(run_id: str, request: Request):
                 last_sequence = event.sequence
                 payload = {"event_id": event.id, "run_id": event.run_id, "stage_id": event.stage_id, "event_type": event.event_type, "occurred_at": event.occurred_at.isoformat(), "sequence": event.sequence, "payload": event.payload}
                 yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(payload, sort_keys=True)}\n\n"
+                last_activity = time.monotonic()
+            if not events and time.monotonic() - last_activity >= 15:
+                yield ": heartbeat\n\n"
+                last_activity = time.monotonic()
             await asyncio.sleep(0.25)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})

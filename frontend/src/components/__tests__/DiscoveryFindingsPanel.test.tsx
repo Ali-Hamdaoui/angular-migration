@@ -13,19 +13,20 @@ describe("DiscoveryFindingsPanel", () => {
     render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="open" />);
     expect(await screen.findByText('"single_application_cli_workspace"')).toBeInTheDocument();
     expect(screen.getByText("Unknown: PACKAGE_JSON_MISSING")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Raw evidence identifiers"));
     expect(screen.getByRole("link", { name: "Open artifact artifact-workspace" })).toHaveAttribute("href", "/api/v1/artifacts/artifact-workspace");
     fireEvent.change(screen.getByLabelText("Filter scanners"), { target: { value: "none" } });
-    expect(screen.getByText("No discovery findings match this filter.")).toBeInTheDocument();
+    expect(screen.getByText("No scanner results match this filter.")).toBeInTheDocument();
   });
   it("renders an empty authoritative state when discovery has not run", async () => {
     vi.mocked(getDiscovery).mockRejectedValue(new ApiClientError("not found", 404));
     render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="open" />);
-    expect(await screen.findByText("No authoritative discovery findings are available yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No authoritative analysis findings are available yet.")).toBeInTheDocument();
   });
   it("renders a readable backend failure without treating it as workflow progress", async () => {
     vi.mocked(getDiscovery).mockRejectedValue(new ApiClientError("unavailable", 500));
     render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="reconnecting" />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Discovery findings could not be loaded.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Analysis findings could not be loaded.");
   });
 });
 
@@ -34,8 +35,8 @@ describe("DiscoveryFindingsPanel", () => {
     vi.mocked(getDiscovery).mockResolvedValue({ ...evidence, status: "blocked", error_code: "DISCOVERY_SCANNER_BLOCKED" } as never);
     vi.mocked(captureDiscovery).mockRejectedValue(new ApiClientError("stale", 409));
     render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="open" artifacts={[{ artifact_id: "baseline", checksum: "sha256:baseline" }]} />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Discovery is blocked");
-    fireEvent.click(screen.getByRole("button", { name: "Run discovery" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The analysis scan is blocked");
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis scan" }));
     expect(await screen.findByText(/Authoritative state was reloaded before retrying/)).toBeInTheDocument();
     expect(captureDiscovery).toHaveBeenCalledWith("run-1", expect.objectContaining({ expected_state_version: 8, prerequisite_artifact_ids: ["baseline"] }));
   });
@@ -44,7 +45,7 @@ describe("DiscoveryFindingsPanel", () => {
     vi.mocked(getDiscovery).mockRejectedValueOnce(new ApiClientError("not found", 404));
     vi.mocked(captureDiscovery).mockRejectedValue(new ApiClientError("forbidden", 403, "POST", "/api/v1/runs/run-1/discovery", '{"correlation_id":"corr-7"}'));
     render(<DiscoveryFindingsPanel runId="run-1" stateVersion={8} connectionStatus="open" artifacts={[{ artifact_id: "baseline", checksum: "sha256:baseline" }]} />);
-    await screen.findByText("No authoritative discovery findings are available yet.");
-    fireEvent.click(screen.getByRole("button", { name: "Run discovery" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("not authorized to run discovery. Correlation ID: corr-7");
+    await screen.findByText("No authoritative analysis findings are available yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis scan" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("not authorized to run the analysis scan. Correlation ID: corr-7");
   });

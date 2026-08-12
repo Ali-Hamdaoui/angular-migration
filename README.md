@@ -101,7 +101,7 @@ Use [docs/developer-setup.md](docs/developer-setup.md) for PowerShell-compatible
 
 ## Run The Solution Locally
 
-Start the backend and frontend in separate PowerShell terminals:
+Start the backend and frontend in two separate PowerShell terminals:
 
 ```powershell
 .\scripts\dev-backend.ps1
@@ -113,9 +113,14 @@ Start the backend and frontend in separate PowerShell terminals:
 
 The scripts launch:
 
-- Backend: python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+- Backend: database migrations, FastAPI/Uvicorn, and the separate Transformer/command worker
 - Frontend: $env:NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8000"
             npm run dev
+
+The backend launcher sets `ALLOWED_TARGET_ROOTS` to
+`C:\Users\hamdaoui.ali\Downloads\MSA-COMMON-STG1` by default. Override it when
+needed with `-TargetRoot`; the API and Transformer remain separate processes
+under the single backend launcher.
 
 If you want to validate the full workspace after startup, run:
 

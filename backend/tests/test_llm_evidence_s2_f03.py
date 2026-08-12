@@ -12,10 +12,10 @@ from app.api.llm_contracts import LlmSmokeRequest
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.core.config import Settings
 from app.domain.contracts import AgentKind, WorkflowEventType
-from app.llm_gateway import AzureGatewayError, LlmFailureCode, LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, build_usage_record
+from app.llm_gateway import AzureGatewayError, AzureOpenAILLMGateway, LlmFailureCode, LlmRequest, LlmResponse, LlmRole, LlmTaskType, PromptRedactionResult, PromptSchemaRegistry, build_usage_record
 from app.llm_gateway.contracts import LlmContextSegment
-from app.repositories.models import ArtifactMetadataModel, Base, LlmInvocationModel, MigrationRunModel, UsageCostRecordModel, WorkflowEventModel
-from app.services.llm_evidence_application_service import LlmEvidenceApplicationService
+from app.repositories.models import ArtifactMetadataModel, Base, LlmInvocationModel, MigrationRunModel, MigrationStageModel, UsageCostRecordModel, WorkflowEventModel
+from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService, _AssistantResponse, aggregate_run_llm_usage
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 
@@ -53,6 +53,14 @@ def fixture(tmp_path: Path):
 
 def request(key='smoke-1', version=1):
     return LlmSmokeRequest(run_id='run-1', expected_state_version=version, idempotency_key=key, correlation_id='corr-1')
+
+
+def _invocation(run_id, invocation_id, *, role, task_type, stage=None, stage_id=None, status='completed', retries=0, provider='azure_openai'):
+    return LlmInvocationModel(id=invocation_id, run_id=run_id, stage_id=stage_id, idempotency_key=f'{invocation_id}-key', request_checksum='checksum', input_hashes=[], correlation_id=f'{invocation_id}-corr', actor='owner', role=role, task_type=task_type, provider=provider, deployment_alias='test', prompt_version='v1', schema_version='v1', pricing_version='pricing', stage=stage, redacted_summary=None, status=status, failure_code=None, artifact_ids=[], artifact_checksums={}, state_version=1, event_sequence=1, retries=retries, started_at=NOW, completed_at=NOW if status != 'in_progress' else None, created_at=NOW)
+
+
+def _usage(invocation_id, run_id, input_tokens, output_tokens, total_tokens):
+    return UsageCostRecordModel(id=f'usage-{invocation_id}', invocation_id=invocation_id, run_id=run_id, stage_id=None, pricing_version='pricing', input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens, input_price_per_million=0.25, output_price_per_million=2.0, input_cost_usd=input_tokens / 1_000_000 * 0.25, output_cost_usd=output_tokens / 1_000_000 * 2.0, total_cost_usd=input_tokens / 1_000_000 * 0.25 + output_tokens / 1_000_000 * 2.0, created_at=NOW)
 
 
 def test_smoke_persists_immutable_artifacts_usage_and_ordered_events(tmp_path):
@@ -116,4 +124,134 @@ def test_smoke_persists_specific_provider_failure_metadata(tmp_path):
         artifact = LocalFilesystemArtifactStore(tmp_path / 'artifacts', fixed_run_root=tmp_path / 'artifacts').read_artifact_by_id(result.artifact_ids[0])
         payload = json.loads(artifact.content)
         assert payload == {'error_code': 'server', 'message': 'LLM invocation failed.', 'provider_error_code': 'InternalServerError', 'provider_http_status': 500, 'provider_message': 'safe provider message', 'provider_request_id': 'azure-request-1', 'resolved_deployment': 'resolved-deployment'}
+
+
+def test_assistant_persists_safe_gateway_diagnostics(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    failure = AzureGatewayError(LlmFailureCode.PROTOCOL, 'bad response', provider_code='MISSING_STRUCTURED_CONTENT', provider_message='status=completed; output_types=message', provider_request_id='azure-request-2', deployment_alias='resolved-deployment', failure_stage='response_contract_validation', failure_subtype='MISSING_STRUCTURED_CONTENT', response_received=True, response_kind='json', transport_started=True)
+    service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=FakeGateway(fail=failure), now_provider=lambda: NOW)
+
+    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-failure', correlation_id='corr-assistant-failure', question='safe question', context=[]))
+
+    assert result.status == 'failed'
+    assert result.failure_stage == 'response_contract_validation'
+    assert result.failure_subtype == 'MISSING_STRUCTURED_CONTENT'
+    assert result.provider_request_id == 'azure-request-2'
+    assert result.deployment_alias == 'resolved-deployment'
+    with sessions() as session:
+        row = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
+        assert row.failure_code == 'protocol'
+        assert row.sanitized_provider_message == 'status=completed; output_types=message'
+        assert row.transport_started is True
+        assert 'safe question' not in (row.sanitized_provider_message or '')
     engine.dispose()
+
+
+def test_assistant_service_reaches_real_gateway_with_typed_policy_and_mocked_azure(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    settings = settings.model_copy(update={
+        'llm_enabled': True,
+        'azure_openai_endpoint': 'https://example.openai.azure.com',
+        'azure_openai_deployment': 'gpt-5-mini',
+        'azure_openai_api_version': '2025-04-01-preview',
+    })
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, **kwargs):
+            self.calls.append(kwargs)
+            return {'status': 'completed', 'output': [{'type': 'reasoning', 'content': [], 'summary': []}, {'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps({'answer': 'ok', 'citations': []})}]}], 'usage': {'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5}}
+
+    transport = Transport()
+    registry = PromptSchemaRegistry()
+    registry.register('assistant-response-v1', _AssistantResponse)
+    gateway = AzureOpenAILLMGateway(settings=settings, transport=transport, registry=registry)
+    service = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope, gateway=gateway, now_provider=lambda: NOW)
+
+    result = service.assistant(AssistantInvocationRequest(run_id='run-1', expected_state_version=1, idempotency_key='assistant-1', correlation_id='corr-1', question='SENTINEL_QUESTION', context=[LlmContextSegment(segment_id='history', label='SENTINEL_LABEL', content='SENTINEL_CONTEXT')]))
+
+    assert result.status == 'completed'
+    assert transport.calls[0]['deployment'] == 'gpt-5-mini'
+    assert transport.calls[0]['payload']['model'] == 'gpt-5-mini'
+    assert transport.calls[0]['payload']['max_output_tokens'] == 20_000
+    assert transport.calls[0]['payload']['text']['format']['strict'] is True
+    assert transport.calls[0]['payload']['text']['format']['name'] == 'assistant-response-v1'
+    assert transport.calls[0]['payload']['text']['format']['type'] == 'json_schema'
+    assert set(transport.calls[0]['payload']['text']['format']['schema']['required']) == {'answer', 'citations'}
+    schema = transport.calls[0]['payload']['text']['format']['schema']
+    citation_schema = transport.calls[0]['payload']['text']['format']['schema']['properties']['citations']['items']
+    assert schema['additionalProperties'] is False
+    assert citation_schema['additionalProperties'] is False
+    assert set(citation_schema['required']) == {'artifact_id', 'checksum', 'stage_id'}
+    assert 'response_format' not in transport.calls[0]['payload']
+    assert 'temperature' not in transport.calls[0]['payload']
+    assert result.role == 'assistant'
+    assert result.task_type == 'assistant_response'
+    assert result.prompt_version == 'assistant-response-v1'
+    assert result.latency_ms is not None
+    assert result.structured_output == {'answer': 'ok', 'citations': []}
+    assert result.artifact_ids
+    assert 'SENTINEL_QUESTION' not in (result.redacted_summary or '')
+    assert 'SENTINEL_CONTEXT' not in (result.redacted_summary or '')
+    assert 'SENTINEL_LABEL' in (result.redacted_summary or '')
+    activity = service.activity('run-1')
+    assert activity.invocations[0].structured_output == {'answer': 'ok', 'citations': []}
+    assert 'SENTINEL_CONTEXT' not in (activity.invocations[0].redacted_summary or '')
+    with sessions() as session:
+        invocation = session.scalar(select(LlmInvocationModel).where(LlmInvocationModel.id == result.invocation_id))
+        assert invocation is not None and invocation.status == 'completed' and invocation.failure_code is None and invocation.latency_ms is not None
+        assert session.scalar(select(UsageCostRecordModel).where(UsageCostRecordModel.invocation_id == result.invocation_id)) is not None
+    engine.dispose()
+
+
+def test_usage_aggregates_same_run_calls_retries_breakdowns_and_unavailable_usage(tmp_path):
+    scope, sessions, settings, engine = fixture(tmp_path)
+    with sessions() as session:
+        session.add(MigrationRunModel(id='run-2', status='CREATED', run_phase='DISCOVERY_BASELINE', phase_status='running', approval_status='approved', repair_status='not_required', state_version=1, artifact_root=str(tmp_path / 'artifacts-2'), created_at=NOW, updated_at=NOW))
+        session.add(MigrationStageModel(id='stage-a', run_id='run-1', stage_order=1, status='PENDING', created_at=NOW))
+        session.add_all([
+            _invocation('run-1', 'analysis-call', role='phase_proposer', task_type='analysis_summary', stage='analysis', retries=1),
+            _invocation('run-1', 'repair-call', role='repair_proposer', task_type='repair_diagnosis', stage='repair', stage_id='stage-a', retries=2),
+            _invocation('run-1', 'missing-call', role='assistant', task_type='assistant_response', status='failed'),
+            _invocation('run-1', 'zero-call', role='assistant', task_type='smoke_check', stage='smoke'),
+            _invocation('run-1', 'fallback-call', role='fallback', task_type='repair_diagnosis', stage='repair', provider='deterministic_fallback'),
+            _invocation('run-2', 'other-run-call', role='assistant', task_type='assistant_response'),
+        ])
+        session.add_all([
+            _usage('analysis-call', 'run-1', 10, 2, 99),
+            _usage('repair-call', 'run-1', 20, 3, 24),
+            _usage('zero-call', 'run-1', 0, 0, 0),
+            _usage('fallback-call', 'run-1', 100, 100, 200),
+            _usage('other-run-call', 'run-2', 1000, 1000, 2000),
+            _usage('missing-call', 'run-2', 5000, 5000, 10000),
+        ])
+        session.commit()
+        result = LlmEvidenceApplicationService(settings=settings, session_scope_factory=scope).usage('run-1')
+        aggregate = aggregate_run_llm_usage(session, 'run-1')
+    engine.dispose()
+
+    assert result.model_dump() == aggregate.model_dump()
+    assert result.invocation_count == 3
+    assert result.llm_calls == 4
+    assert result.retry_calls == 3
+    assert result.usage_recorded_calls == 3
+    assert result.usage_unavailable_calls == 1
+    assert result.input_tokens == 30
+    assert result.output_tokens == 5
+    assert result.total_tokens == 123
+    assert [row.key for row in result.by_phase] == ['analysis', 'transformation', 'diagnostics', 'unassigned']
+    assert [row.key for row in result.by_stage] == ['unassigned', 'stage-a']
+    assert [row.key for row in result.by_role] == ['phase_proposer', 'repair_proposer', 'assistant']
+    assert [row.key for row in result.by_purpose] == ['analysis_summary', 'repair_diagnosis', 'assistant_response', 'smoke_check']
+    for buckets in (result.by_phase, result.by_stage, result.by_role, result.by_purpose):
+        assert sum(row.calls for row in buckets) == result.llm_calls
+        assert sum(row.input_tokens for row in buckets) == result.input_tokens
+        assert sum(row.output_tokens for row in buckets) == result.output_tokens
+        assert sum(row.total_tokens for row in buckets) == result.total_tokens
+    assert result.by_stage[1].label == 'stage-a'
+    assert result.by_stage[0].label == 'Run-level / unassigned'
+    assert 'fallback-call' not in {row.invocation_id for row in result.records}
+    assert result.by_role[-1].usage_unavailable_calls == 1
+    assert result.by_role[-1].usage_recorded_calls == 1

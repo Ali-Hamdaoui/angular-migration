@@ -4,6 +4,7 @@ import type {
   AuthoritativeRunStateDto,
   CancelAuthoritativeRunRequestDto,
   CreateAuthoritativeRunRequestDto,
+  RunTimingDto,
   StartAuthoritativeRunRequestDto,
 } from "@/types/generated/api";
 
@@ -45,4 +46,11 @@ export function getAuthoritativeRunState(
   client: ApiClient = apiClient,
 ): Promise<AuthoritativeRunStateDto> {
   return client.get<AuthoritativeRunStateDto>(`/api/v1/runs/${encodeURIComponent(runId)}/state`);
+}
+
+export function getAuthoritativeRunTiming(
+  runId: string,
+  client: ApiClient = apiClient,
+): Promise<RunTimingDto> {
+  return client.get<RunTimingDto>(`/api/v1/runs/${encodeURIComponent(runId)}/timing`);
 }

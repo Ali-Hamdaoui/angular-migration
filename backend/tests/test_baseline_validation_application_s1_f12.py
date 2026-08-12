@@ -41,7 +41,8 @@ def test_inventory_and_validation_execute_registered_targets(tmp_path):
 def test_missing_lint_is_persisted_as_not_configured(tmp_path):
     scope, sessions, engine = fixture(tmp_path); service = BaselineValidationApplicationService(scope=scope, now_provider=lambda: NOW)
     result = service.execute("run-1", "lint", BaselineValidationRequest(expected_state_version=1, idempotency_key="lint-1", actor="operator"))
-    assert result.status == "passed"; assert result.results[0]["status"] == BaselineTargetStatus.SKIPPED_NOT_CONFIGURED.value
+    assert result.status == BaselineTargetStatus.SKIPPED_NOT_CONFIGURED.value
+    assert result.results[0]["status"] == BaselineTargetStatus.SKIPPED_NOT_CONFIGURED.value
     engine.dispose()
 
 
@@ -50,6 +51,12 @@ def test_parser_extracts_warnings_counts_and_failed_tests():
     assert BaselineValidationApplicationService._warnings(output) == ("WARNING bundle size",)
     assert BaselineValidationApplicationService._test_count(output) == 2
     assert "FAIL should render header" in BaselineValidationApplicationService._failed_tests(output)
+
+
+def test_parser_prefers_jest_test_count_over_test_suite_count():
+    output = "Test Suites: 2 passed, 2 total\nTests:       14 passed, 14 total"
+
+    assert BaselineValidationApplicationService._test_count(output) == 14
 
 def test_cancel_sets_active_matrix_event():
     import threading

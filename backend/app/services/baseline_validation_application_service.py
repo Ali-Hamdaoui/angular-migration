@@ -102,7 +102,7 @@ class BaselineValidationApplicationService:
                 artifact_ids.extend(command.artifact_ids); session.add(command)
             summary = self._summary(results); report_id = self._write_report(session, run, kind, targets, result_dicts, summary, request.idempotency_key); artifact_ids.append(report_id)
             if kind == "build": artifact_ids.append(self._write_generated_output_inventory(session, run, baseline))
-            status = "blocked" if any(r.status is BaselineTargetStatus.BLOCKED for r in results) and not any(r.status is BaselineTargetStatus.FAILED for r in results) else "failed" if execution_error is not None or any(r.status in {BaselineTargetStatus.FAILED, BaselineTargetStatus.CANCELLED, BaselineTargetStatus.INTERRUPTED} for r in results) else "passed"
+            status = "blocked" if any(r.status is BaselineTargetStatus.BLOCKED for r in results) and not any(r.status is BaselineTargetStatus.FAILED for r in results) else "failed" if execution_error is not None or any(r.status in {BaselineTargetStatus.FAILED, BaselineTargetStatus.CANCELLED, BaselineTargetStatus.INTERRUPTED} for r in results) else results[0].status.value if results and all(r.status is results[0].status for r in results) and results[0].status in {BaselineTargetStatus.SKIPPED_NOT_CONFIGURED, BaselineTargetStatus.SKIPPED_NOT_APPLICABLE} else "passed"
             completed = self._transition(session, run, request, self._EVENTS[kind][1], f"baseline {kind} validation completed", {"kind": kind, "status": status, "artifact_count": len(artifact_ids)}, expected_state_version=run.state_version)
             record.status, record.results, record.parser_summary, record.artifact_ids = status, result_dicts, summary, artifact_ids; record.artifact_checksums = {artifact_id: self._artifact_checksum(run, artifact_id) for artifact_id in artifact_ids}; record.state_version, record.event_sequence, record.updated_at = completed.next_state_version, completed.event_sequence, self._now(); session.flush(); self._ACTIVE.pop((run_id, kind), None); return self._response(record)
     def _worker(self, run, sandbox, definitions, runtime_id, environment_overrides=None):
@@ -204,11 +204,14 @@ class BaselineValidationApplicationService:
         return encoded[:max(0, limit - len(suffix.encode("utf-8")))].decode("utf-8", errors="replace") + suffix
     @staticmethod
     def _test_count(output):
-        match = re.search(r"(\d+)\s+(?:tests?\s+)?(?:passed|failed)", output, re.IGNORECASE); return int(match.group(1)) if match else None
+        match = re.search(r"^\s*Tests:\s+(\d+)\s+(?:passed|failed)", output, re.IGNORECASE | re.MULTILINE)
+        if match is None:
+            match = re.search(r"(\d+)\s+(?:tests?\s+)?(?:passed|failed)", output, re.IGNORECASE)
+        return int(match.group(1)) if match else None
     @staticmethod
     def _failed_tests(output): return tuple(line.strip() for line in output.splitlines() if "fail" in line.lower())
     @staticmethod
-    def _summary(results): return {"target_count": len(results), "passed": sum(r.status is BaselineTargetStatus.PASSED for r in results), "failed": sum(r.status is BaselineTargetStatus.FAILED for r in results), "blocked": sum(r.status is BaselineTargetStatus.BLOCKED for r in results), "skipped_not_configured": sum(r.status is BaselineTargetStatus.SKIPPED_NOT_CONFIGURED for r in results), "cancelled": sum(r.status is BaselineTargetStatus.CANCELLED for r in results), "interrupted": sum(r.status is BaselineTargetStatus.INTERRUPTED for r in results)}
+    def _summary(results): return {"target_count": len(results), "passed": sum(r.status is BaselineTargetStatus.PASSED for r in results), "failed": sum(r.status is BaselineTargetStatus.FAILED for r in results), "blocked": sum(r.status is BaselineTargetStatus.BLOCKED for r in results), "skipped_not_configured": sum(r.status is BaselineTargetStatus.SKIPPED_NOT_CONFIGURED for r in results), "skipped_not_applicable": sum(r.status is BaselineTargetStatus.SKIPPED_NOT_APPLICABLE for r in results), "cancelled": sum(r.status is BaselineTargetStatus.CANCELLED for r in results), "interrupted": sum(r.status is BaselineTargetStatus.INTERRUPTED for r in results)}
     def _write_target_inventory(self, session, run, inventory):
         payload = {"run_id": run.id, "package_json_checksum": inventory.package_json_checksum, "angular_json_present": inventory.angular_json_present, "targets": [self._target_dict(target) for target in inventory.targets]}
         store = LocalFilesystemArtifactStore(Path(run.artifact_root).resolve(), fixed_run_root=Path(run.artifact_root).resolve())

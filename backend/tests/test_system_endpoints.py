@@ -193,7 +193,7 @@ def test_approval_policy_and_assistant_shells() -> None:
     )
     assistant = client.post(
         "/assistant/messages",
-        json={"run_id": "mock-run", "message": "What is waiting?"},
+        json={"run_id": "mock-run", "message": "What is waiting?", "idempotency_key": "legacy-shell-waiting"},
     )
 
     assert policy.status_code == 409

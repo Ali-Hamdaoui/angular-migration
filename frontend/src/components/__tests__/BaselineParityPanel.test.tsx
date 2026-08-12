@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BaselineParityPanel } from "@/components/BaselineParityPanel";
 import { ApiClientError } from "@/api/client";
+import { analysisPrerequisites } from "@/test/authoritativeFixtures";
 
 const mocks = vi.hoisted(() => ({ getBaselineParitySection: vi.fn(), captureBaselineParity: vi.fn() }));
 const { getBaselineParitySection, captureBaselineParity } = mocks;
@@ -16,9 +17,14 @@ const evidence = {
 describe("BaselineParityPanel", () => {
   beforeEach(() => { vi.clearAllMocks(); getBaselineParitySection.mockRejectedValue(new ApiClientError("missing", 404)); captureBaselineParity.mockResolvedValue(evidence); });
 
+  it("renders a subordinate heading when embedded in a pipeline stage", () => {
+    render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" headingLevel={4} />);
+    expect(screen.getByRole("heading", { name: "Baseline parity anchors", level: 4 })).toBeInTheDocument();
+  });
+
   it("shows an empty state and captures evidence", async () => {
     render(<BaselineParityPanel runId="run-1" stateVersion={1} connectionStatus="open" workflowEvents={[{ event_type: "BASELINE_BUILD_COMPLETED" }, { event_type: "BASELINE_TESTS_COMPLETED" }, { event_type: "BASELINE_LINT_COMPLETED" }]} />);
-    expect(await screen.findByText("No parity evidence has been captured.")).toBeInTheDocument();
+    expect(await screen.findByText("Baseline validation is complete; parity capture is ready.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Capture baseline parity" }));
     await waitFor(() => { expect(captureBaselineParity).toHaveBeenCalled(); });
   });
@@ -43,8 +49,8 @@ describe("BaselineParityPanel", () => {
   });
 
   it("shows an integrity warning when G03 exists without S1-F13 evidence", async () => {
-    render(<BaselineParityPanel runId="run-1" stateVersion={9} connectionStatus="open" workflowEvents={[{ event_type: "G03_CREATED" }]} />);
-    expect(await screen.findByText("Required S1-F13 evidence is missing. The current G03 package is not valid for approval.")).toBeInTheDocument();
+    render(<BaselineParityPanel runId="run-1" stateVersion={9} connectionStatus="open" workflowEvents={analysisPrerequisites} />);
+    expect(await screen.findByText("Required parity evidence is missing. The current baseline package is not valid for approval.")).toBeInTheDocument();
     expect(screen.getByText("integrity error")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Capture baseline parity" })).not.toBeInTheDocument();
   });

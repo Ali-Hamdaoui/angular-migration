@@ -99,6 +99,8 @@ export type PlanReviewResponse = {
   gate_status: string;
   gate_decision: G06Decision | null;
   package_checksum: string | null;
+  artifact_set_checksum?: string | null;
+  computed_artifact_set_checksum?: string | null;
   state_version: number;
   event_sequence: number;
   idempotent_replay: boolean;
@@ -141,4 +143,18 @@ export type G06DecisionRequest = {
   comment?: string | null;
   correlation_id?: string | null;
 };
-export type G06DecisionResponse = PlanReviewResponse & { decision: G06Decision; accepted: boolean };
+export type G06DecisionResponse = {
+  run_id: string;
+  gate_id: "G06";
+  gate_version: string;
+  decision: G06Decision;
+  status: string;
+  accepted: boolean;
+  package_checksum: string;
+  artifact_set_checksum: string;
+  plan_checksum: string;
+  stage_plan_checksum: string;
+  state_version: number;
+  event_sequence: number;
+  idempotent_replay: boolean;
+};

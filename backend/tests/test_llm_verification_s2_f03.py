@@ -23,7 +23,7 @@ class StubLlmService:
         return LlmActivityResponse(run_id=run_id, invocations=[invocation()])
 
     def usage(self, run_id):
-        return LlmUsageResponse(run_id=run_id, invocation_count=1, input_tokens=10, output_tokens=5, total_tokens=15, input_cost_usd=0.0000025, output_cost_usd=0.00001, total_cost_usd=0.0000125, pricing_versions=["mvp-pricing-2026-01"])
+        return LlmUsageResponse(run_id=run_id, invocation_count=1, llm_calls=1, retry_calls=1, usage_recorded_calls=1, usage_unavailable_calls=0, input_tokens=10, output_tokens=5, total_tokens=15, input_cost_usd=0.0000025, output_cost_usd=0.00001, total_cost_usd=0.0000125, pricing_versions=["mvp-pricing-2026-01"])
 
 
 class RejectingLlmService(StubLlmService):
@@ -41,6 +41,7 @@ def test_llm_api_contract_exposes_readiness_smoke_activity_and_usage() -> None:
             assert smoke.json()["total_cost_usd"] == 0.0000125
             assert client.get("/api/v1/runs/run-1/llm/activity").json()["invocations"][0]["invocation_id"] == "llm-invocation-1"
             assert client.get("/api/v1/runs/run-1/usage").json()["total_tokens"] == 15
+            assert client.get("/api/v1/runs/run-1/usage").json()["llm_calls"] == 1
     finally:
         app.dependency_overrides.pop(llm_routes.get_service, None)
 
@@ -63,8 +64,12 @@ def test_llm_api_returns_stable_correlation_safe_errors_for_invalid_and_stale_re
         app.dependency_overrides.pop(llm_routes.get_service, None)
 
 
-def test_unconfigured_read_only_diagnostics_do_not_construct_azure_gateway(tmp_path) -> None:
+def test_unconfigured_read_only_diagnostics_do_not_construct_azure_gateway(tmp_path, monkeypatch) -> None:
+    def fail_if_constructed(*_args, **_kwargs):
+        raise AssertionError("Azure gateway must not be constructed for read-only diagnostics")
+
+    monkeypatch.setattr("app.services.llm_evidence_application_service.AzureOpenAILLMGateway", fail_if_constructed)
     settings = Settings(_env_file=None, artifact_root=tmp_path / "runs", workspace_root=tmp_path / "workspaces", snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes")
     service = LlmEvidenceApplicationService(settings=settings)
-    assert service.readiness().status == "blocked"
+    assert service.readiness().status == "disabled"
     assert service.gateway is None

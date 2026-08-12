@@ -1,0 +1,254 @@
+/* ===== AssistantDock: launcher + minimized chip =====
+   Floating by default; inside the sidebar slot ControlTowerLayout.module.css
+   forces position:static and width:100% on [data-assistant-presentation]. */
+
+.assistantDock { position: fixed; right: 20px; bottom: 20px; z-index: 80; max-width: 100%; }
+
+.assistantLauncher {
+  display: inline-flex; align-items: center; justify-content: center; gap: .55rem;
+  min-height: 2.75rem; box-sizing: border-box;
+  border: 1px solid #55a7ff; border-radius: 999px;
+  background: #0d3153; color: #eff7ff;
+  padding: .6rem 1.1rem; font-size: .95rem; font-weight: 800;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.assistantLauncher:hover, .assistantLauncher:focus-visible { background: #123f6b; border-color: #7cc4ff; }
+
+.assistantMinimized {
+  display: flex; align-items: center; gap: .65rem; box-sizing: border-box;
+  width: min(320px, calc(100vw - 40px)); min-height: 52px; padding: .6rem .7rem;
+  border: 1px solid #3d73a6; border-radius: .85rem;
+  background: #0d2035; color: #eff7ff;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .35);
+}
+.assistantMinimizedLabel { display: grid; min-width: 0; flex: 1; }
+.assistantMinimizedLabel strong, .assistantMinimizedLabel small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistantMinimizedLabel small { color: #8fa5bf; }
+.assistantIcon { color: #55a7ff; font-size: 1.15rem; line-height: 1; }
+.assistantPending {
+  flex: 0 0 auto; width: .5rem; height: .5rem; border-radius: 50%;
+  background: #55a7ff; animation: assistantPulse 1.6s ease-in-out infinite;
+}
+.assistantErrorMarker {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 1.2rem; height: 1.2rem; border-radius: 50%;
+  background: #c85b68; color: #fff; font-size: .75rem; font-weight: 800;
+}
+.assistantDockButton {
+  flex: 0 0 auto; width: 2.25rem; height: 2.25rem;
+  border: 1px solid #3d73a6; border-radius: .5rem;
+  background: #102b48; color: #e0e8f4; font-size: 1.05rem; cursor: pointer;
+}
+.assistantDockButton:hover { border-color: #55a7ff; color: #fff; }
+
+.assistantDock[data-assistant-presentation="expanded"] .assistantMinimized,
+.assistantDock[data-assistant-presentation="expanded"] .assistantLauncher,
+.assistantDock[data-assistant-presentation="minimized"] .assistantPopup,
+.assistantDock[data-assistant-presentation="minimized"] .assistantLauncher,
+.assistantDock[data-assistant-presentation="closed"] .assistantPopup,
+.assistantDock[data-assistant-presentation="closed"] .assistantMinimized { display: none; }
+
+:global(.controlTowerAssistantSlot) .assistantLauncher,
+:global(.controlTowerAssistantSlot) .assistantMinimized { width: 100%; }
+
+/* ===== Expanded drawer (desktop: right-edge panel) ===== */
+
+.assistantPopup {
+  position: fixed; top: 16px; right: 16px; bottom: 16px;
+  box-sizing: border-box; display: grid;
+  width: min(420px, calc(100vw - 32px));
+  min-width: 0; min-height: 0;
+  overflow: hidden;
+  border: 1px solid #3d73a6; border-radius: 1rem;
+  background: #081827; color: #eff7ff;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+}
+.assistantPopup:not([hidden]) { animation: assistantDrawerIn .18s ease-out; }
+.assistantPopup[hidden] { display: none !important; }
+
+.assistantPanel {
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: .6rem; box-sizing: border-box;
+  min-width: 0; min-height: 0;
+  padding: 1rem;
+  overflow: hidden;
+}
+
+/* Header: title + muted read-only note, window controls on the right */
+.assistantHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; min-width: 0; }
+.assistantHeaderMain { min-width: 0; }
+.assistantHeader h2 { margin: .1rem 0 0; font-size: 1rem; overflow-wrap: anywhere; }
+.kicker {
+  display: flex; align-items: center; gap: .35rem; margin: 0;
+  color: #8fa5bf; font-size: .72rem; letter-spacing: .05em; text-transform: uppercase;
+}
+.kicker svg { flex: 0 0 auto; color: #8fa5bf; }
+.assistantControls { display: flex; flex: 0 0 auto; gap: .35rem; }
+.assistantClose {
+  width: 2.25rem; height: 2.25rem;
+  border: 1px solid #3d73a6; border-radius: .5rem;
+  background: #102b48; color: #e0e8f4; font-size: 1.1rem; cursor: pointer;
+}
+.assistantClose:hover { border-color: #55a7ff; color: #fff; }
+
+/* Status strip: transient states only, compact */
+.assistantInfo { display: grid; gap: .25rem; min-width: 0; }
+.assistantInfo p { margin-block: .15rem; font-size: 13px; }
+.note { color: #b6c4d6; line-height: 1.45; }
+.assistantError {
+  display: grid; gap: .15rem; margin: .2rem 0;
+  padding: .45rem .6rem; border: 1px solid #9b4c58; border-radius: .4rem;
+  background: #321c27; color: #ffd9de; font-size: 13px;
+}
+
+/* Conversation */
+.assistantConversationRegion {
+  min-width: 0; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  overscroll-behavior: contain; scrollbar-gutter: stable;
+}
+.assistantConversation { margin: 0; padding: 0 .25rem 0 0; list-style: none; }
+.assistantConversationItem {
+  display: grid; gap: .5rem; padding: .7rem 0;
+  border-top: 1px solid #244462;
+  min-width: 0; max-width: 100%; overflow-wrap: anywhere;
+}
+.assistantConversationItem:first-child { border-top: 0; }
+.assistantConversationItem article { display: grid; gap: .3rem; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.assistantConversationItem article[data-role="assistant"] { padding: .15rem 0 .15rem .4rem; border-left: 2px solid #2b4e73; }
+.assistantConversationItem article[data-role="user"] {
+  margin-left: auto; max-width: 88%;
+  border-radius: .65rem; background: #102b48; padding: .7rem .8rem;
+}
+.assistantConversationItem article p { margin: 0; line-height: 1.5; white-space: pre-wrap; }
+.assistantConversationItem article small { color: #8fa5bf; font-size: 12px; }
+.assistantConversationItem details, .assistantConversationItem small { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.assistantMessageMeta {
+  display: flex; flex-wrap: wrap; gap: .35rem .9rem;
+  color: #8fa5bf; font-size: 13px;
+}
+
+/* Latest-response summary reads as conversation content */
+.responseHierarchy {
+  display: grid; gap: .15rem; margin-bottom: .6rem;
+  padding: .6rem .7rem;
+  border: 1px solid #244462; border-radius: .6rem;
+  background: #0d2035;
+}
+.responseHierarchy h3 { margin: .35rem 0 0; color: #9ecbff; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+.responseHierarchy h3:first-child { margin-top: 0; }
+.responseHierarchy p { margin: 0; line-height: 1.4; font-size: 13.5px; }
+
+/* Suggested questions: compact actionable chips */
+.assistantSuggestions { display: grid; gap: .4rem; padding: .5rem .25rem .1rem 0; }
+.assistantSuggestions button {
+  display: flex; align-items: center; justify-content: space-between; gap: .6rem;
+  width: 100%; min-width: 0; box-sizing: border-box;
+  border: 1px solid #2b4e73; border-radius: .55rem;
+  background: #0a1c30; color: #cfe3ff;
+  padding: .45rem .6rem; font-size: 13px; text-align: left;
+  overflow-wrap: anywhere; cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+}
+.assistantSuggestions button:hover,
+.assistantSuggestions button:focus-visible { border-color: #55a7ff; background: #0d3153; color: #eff7ff; }
+.assistantSuggestions button > span:first-child { min-width: 0; }
+.suggestionChevron {
+  flex: 0 0 auto; color: #55a7ff; opacity: .65;
+  transition: opacity .15s ease, transform .15s ease;
+}
+.assistantSuggestions button:hover .suggestionChevron,
+.assistantSuggestions button:focus-visible .suggestionChevron { opacity: 1; transform: translateX(2px); }
+
+/* Composer: primary action, always visible */
+.assistantComposer { display: grid; gap: .45rem; min-width: 0; border-top: 1px solid #244462; padding-top: .7rem; }
+.composerLabel { color: #9db0c8; font-size: 12.5px; font-weight: 600; }
+.composerInputRow { display: flex; align-items: flex-end; gap: .5rem; min-width: 0; }
+.composerInputRow textarea {
+  flex: 1 1 auto; box-sizing: border-box; min-width: 0;
+  min-height: 72px; max-height: 160px; resize: vertical;
+  border: 1px solid #2b4e73; border-radius: .6rem;
+  background: #0d2035; color: #eff7ff;
+  padding: .55rem .65rem; font: inherit;
+}
+.composerInputRow textarea:focus { outline: 2px solid #55a7ff; outline-offset: 1px; border-color: #55a7ff; }
+.assistantSend {
+  flex: 0 0 auto; min-height: 2.5rem; padding: 0 1.15rem;
+  border: 0; border-radius: .6rem;
+  background: #55a7ff; color: #06202f;
+  font-weight: 800; cursor: pointer;
+}
+.assistantSend:hover:not(:disabled) { background: #7cc4ff; }
+.assistantSend:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Answer depth + retry: tertiary, under the composer edge */
+.composerMetaRow { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.composerMetaRow label { margin-left: auto; color: #6f86a3; font-size: 12px; }
+.composerMetaRow select {
+  min-width: 0; max-width: 100%;
+  border: 1px solid #2b4e73; border-radius: .4rem;
+  background: #0d2035; color: #cfe3ff;
+  padding: .25rem .4rem; font-size: 12.5px;
+}
+.assistantRetry {
+  border: 1px solid #9b4c58; border-radius: .4rem;
+  background: #321c27; color: #ffd9de;
+  padding: .25rem .6rem; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+
+/* Details disclosure: state version + workflow status stay accessible at the bottom */
+.assistantDetails { min-width: 0; border-top: 1px solid #1d3a5c; padding-top: .4rem; }
+.assistantDetails summary { cursor: pointer; color: #6f86a3; font-size: 12px; font-weight: 700; user-select: none; }
+.assistantDetails summary:hover { color: #9ecbff; }
+.assistantDetailsBody { display: grid; gap: .4rem; padding: .5rem 0 .15rem; }
+.assistantBadge {
+  justify-self: start;
+  border: 1px solid #2b4e73; border-radius: 999px;
+  background: #0d2035; color: #a1c9ff;
+  padding: .2rem .55rem; font-size: 12px;
+}
+
+/* Per-message technical details */
+.responseDetails { margin-top: .45rem; }
+.responseDetails summary { cursor: pointer; color: #9ecbff; font-weight: 700; font-size: 13px; }
+.responseDetailsBody { display: grid; gap: .35rem; padding: .5rem 0; color: #b6c4d6; font-size: 12.5px; }
+
+/* Shared visually-hidden utility (used by AssistantEvidenceDrawer) */
+:global(.srOnly) {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+@keyframes assistantDrawerIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes assistantSheetIn { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes assistantFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes assistantPulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.assistantLauncher:not([hidden]),
+.assistantMinimized:not([hidden]) { animation: assistantFadeIn .18s ease-out; }
+
+/* ===== Mobile: full-width bottom sheet ===== */
+@media (max-width: 767px) {
+  .assistantDock { right: 8px; bottom: 8px; left: 8px; }
+  .assistantLauncher { width: 100%; justify-content: center; }
+  .assistantPopup {
+    top: 0; right: 0; bottom: 0; left: 0;
+    width: 100%; height: 100dvh; max-height: 100dvh;
+    border: 0; border-radius: 0;
+  }
+  .assistantPopup:not([hidden]) { animation-name: assistantSheetIn; }
+  .assistantPanel { padding: .9rem .9rem calc(.9rem + env(safe-area-inset-bottom)); }
+  .assistantHeader { align-items: center; }
+  .assistantSuggestions button { padding: .5rem .6rem; }
+}
+
+/* ===== Reduced motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  .assistantDock *, .assistantDock *::before, .assistantDock *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

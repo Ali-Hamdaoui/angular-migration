@@ -28,6 +28,8 @@ from app.api.routes.compatibility import router as compatibility_router
 from app.api.routes.plans import router as plans_router
 from app.api.routes.planning_review import router as planning_review_router
 from app.api.routes.stage_execution import router as stage_execution_router
+from app.api.routes.assistant import router as run_assistant_router
+from app.api.routes.transformation import router as transformation_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -42,6 +44,7 @@ api_router.include_router(compatibility_router)
 api_router.include_router(plans_router)
 api_router.include_router(planning_review_router)
 api_router.include_router(stage_execution_router)
+api_router.include_router(transformation_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -49,6 +52,7 @@ api_router.include_router(baseline_g03_router)
 api_router.include_router(g02_router)
 api_router.include_router(migrations_router)
 api_router.include_router(assistant_router)
+api_router.include_router(run_assistant_router)
 api_router.include_router(artifacts_router)
 api_router.include_router(environment_router)
 api_router.include_router(execution_profiles_router)
@@ -75,12 +79,14 @@ api_v1_router.include_router(compatibility_router)
 api_v1_router.include_router(plans_router)
 api_v1_router.include_router(planning_review_router)
 api_v1_router.include_router(stage_execution_router)
+api_v1_router.include_router(transformation_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)
 api_v1_router.include_router(g02_router)
 api_v1_router.include_router(migrations_router)
 api_v1_router.include_router(assistant_router)
+api_v1_router.include_router(run_assistant_router)
 api_v1_router.include_router(artifacts_router)
 api_v1_router.include_router(environment_router)
 api_v1_router.include_router(execution_profiles_router)

@@ -12,10 +12,12 @@ import os
 import signal
 import subprocess
 import shutil
+import sys
 import threading
 import queue
 import codecs
-from dataclasses import dataclass, field
+import ctypes
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -28,6 +30,13 @@ from app.domain.contracts import (
     CommandRequestDto,
     CommandResultDto,
     CommandStatus,
+)
+from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
+    ANGULAR_UPDATE_V3_RENDERER,
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    TRANSFORMATION_COMMAND_CATALOGUE,
+    command_arguments_match,
 )
 from app.llm_gateway.redaction import redact_prompt_text
 
@@ -51,6 +60,77 @@ _MUTABLE_WORKSPACE_ALIASES: Final = frozenset(
 )
 
 
+class _JobBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_longlong),
+        ("PerJobUserTimeLimit", ctypes.c_longlong),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _JobIoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _JobExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobBasicLimitInformation),
+        ("IoInfo", _JobIoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _WindowsJobObject:
+    """Own one Windows process tree with kill-on-close semantics."""
+
+    _KILL_ON_JOB_CLOSE = 0x00002000
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32 = kernel32
+        self._handle = kernel32.CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = _JobExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = self._KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            self._handle,
+            9,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            self.close()
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.AssignProcessToJobObject(self._handle, int(process._handle)):
+            self.close()
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def terminate(self) -> None:
+        if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        if getattr(self, "_handle", None):
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
 class CommandPolicyViolation(ValueError):
     """Raised when a command request violates the execution policy."""
 
@@ -69,6 +149,40 @@ class CommandDefinition:
         """Executable names permitted for this fixed command shape."""
         return frozenset((self.executable, *self.executable_aliases))
 
+    def matches_arguments(self, arguments: tuple[str, ...]) -> bool:
+        return command_arguments_match(self.arguments, arguments)
+
+
+def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
+    return tuple(
+        CommandDefinition(
+            definition.command_id,
+            definition.executable,
+            definition.argument_patterns,
+            definition.executable_aliases,
+        )
+        for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
+    ) + (
+        CommandDefinition(
+            ANGULAR_UPDATE_V2_RENDERER.command_id,
+            ANGULAR_UPDATE_V2_RENDERER.executable,
+            ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
+            ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
+        ),
+        CommandDefinition(
+            ANGULAR_UPDATE_V3_RENDERER.command_id,
+            ANGULAR_UPDATE_V3_RENDERER.executable,
+            ANGULAR_UPDATE_V3_RENDERER.argument_patterns,
+            ANGULAR_UPDATE_V3_RENDERER.executable_aliases,
+        ),
+        CommandDefinition(
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.argument_patterns,
+            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable_aliases,
+        ),
+    )
+
 
 @dataclass(frozen=True)
 class StructuredCommandRequest:
@@ -80,6 +194,7 @@ class StructuredCommandRequest:
     working_directory: Path
     environment_allowlist: tuple[str, ...] = ()
     environment_overrides: dict[str, str] = field(default_factory=dict)
+    stdin_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,14 +236,30 @@ class CommandRegistry:
         CommandDefinition("npm-registry", "npm", ("config", "get", "registry"), ("npm.cmd",)),
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
         CommandDefinition("git-version", "git", ("--version",), ("git.exe",)),
-        CommandDefinition("npm-ci-bootstrap", "npm", ("ci",), ("npm.cmd",)),
+        *_transformation_command_definitions(),
     )
 
-    def find(self, command_id: str) -> CommandDefinition:
-        for definition in self.definitions:
-            if definition.command_id == command_id:
-                return definition
-        raise CommandPolicyViolation("Command ID is not registered for Sprint 0 execution")
+    def find(self, command_id: str, arguments: tuple[str, ...] | None = None) -> CommandDefinition:
+        candidates = [
+            definition
+            for definition in self.definitions
+            if definition.command_id == command_id
+        ]
+        if not candidates:
+            raise CommandPolicyViolation("Command ID is not registered for Sprint 0 execution")
+        if arguments is None:
+            return candidates[-1]
+        # The registry holds multiple immutable shapes of one command_id
+        # (e.g. angular-update-exact v1/v2/v3). Bind the request to the shape
+        # that matches its concrete arguments; zero or several matches reject.
+        matching = [
+            definition for definition in candidates if definition.matches_arguments(arguments)
+        ]
+        if len(matching) != 1:
+            raise CommandPolicyViolation(
+                "Arguments do not match a registered command definition"
+            )
+        return matching[0]
 
 
 @dataclass(frozen=True)
@@ -145,7 +276,7 @@ class CommandPolicy:
 
     def __post_init__(self) -> None:
         aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
-        if not set(aliases).issubset(_MUTABLE_WORKSPACE_ALIASES):
+        if any(name not in _MUTABLE_WORKSPACE_ALIASES and not name.startswith("STAGE_WORKSPACE_") for name in aliases):
             raise CommandPolicyViolation("Only registered mutable workspace aliases may execute commands")
         object.__setattr__(self, "working_directory_aliases", aliases)
 
@@ -164,10 +295,10 @@ class CommandPolicy:
         if request.cancellation_policy is not CancellationPolicy.TERMINATE_PROCESS_TREE:
             raise CommandPolicyViolation("Cancellation policy is not supported by the Sprint 0 supervisor")
 
-        definition = self.registry.find(request.command_id)
+        definition = self.registry.find(request.command_id, tuple(request.arguments))
         if request.executable not in definition.allowed_executables:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
-        if tuple(request.arguments) != definition.arguments:
+        if not definition.matches_arguments(tuple(request.arguments)):
             raise CommandPolicyViolation("Arguments do not match the registered command definition")
 
         working_directory = self._resolve_working_directory(request)
@@ -177,7 +308,7 @@ class CommandPolicy:
         return StructuredCommandRequest(
             dto=request,
             definition=definition,
-            command=(request.executable, *definition.arguments),
+            command=(request.executable, *request.arguments),
             working_directory=working_directory,
             environment_allowlist=self.environment_allowlist,
             environment_overrides=dict(self.environment_overrides),
@@ -333,11 +464,17 @@ class WorkerSupervisor:
         "HERMES_", "API_KEY", "ACCESS_KEY", "PRIVATE_KEY",
     )
 
+    def __init__(self) -> None:
+        self._jobs: dict[int, _WindowsJobObject] = {}
+        self._jobs_lock = threading.Lock()
+
     @staticmethod
     def _build_safe_environment(allowlist: tuple[str, ...] = (), overrides: dict[str, str] | None = None) -> dict[str, str]:
         """Build a sanitized environment blocking secret and backend variables."""
         clean: dict[str, str] = {}
         allowed = set(allowlist)
+        if os.name == "nt":
+            allowed.add("SYSTEMROOT")
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
@@ -351,7 +488,12 @@ class WorkerSupervisor:
         return clean
 
     def run(
-        self, request: StructuredCommandRequest, *, cancel_event: threading.Event | None = None, output_callback=None
+        self,
+        request: StructuredCommandRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+        output_callback=None,
+        process_started_callback=None,
     ) -> SupervisedProcessResult:
         creationflags = 0
         popen_kwargs: dict[str, object] = {}
@@ -361,7 +503,11 @@ class WorkerSupervisor:
             popen_kwargs["start_new_session"] = True
         command = list(request.command)
         if os.name == "nt":
-            resolved_executable = shutil.which(command[0])
+            resolved_executable = (
+                sys.executable
+                if command[0].lower() in {"python", "python.exe"}
+                else shutil.which(command[0])
+            )
             if resolved_executable:
                 command[0] = resolved_executable
         process = subprocess.Popen(
@@ -369,12 +515,31 @@ class WorkerSupervisor:
             cwd=request.working_directory,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE if request.stdin_text is not None else subprocess.DEVNULL,
             text=False,
             shell=False,
             env=self._build_safe_environment(request.environment_allowlist, request.environment_overrides),
             creationflags=creationflags,
             **popen_kwargs,
         )
+        if request.stdin_text is not None and process.stdin is not None:
+            process.stdin.write(request.stdin_text.encode("utf-8"))
+            process.stdin.close()
+        if os.name == "nt":
+            try:
+                job = _WindowsJobObject(process)
+            except Exception:
+                process.kill()
+                process.wait()
+                raise
+            with self._jobs_lock:
+                self._jobs[process.pid] = job
+        if process_started_callback is not None:
+            try:
+                process_started_callback(process.pid)
+            except Exception:
+                self.terminate_process_tree(process)
+                raise
         chunks: list[tuple[str, str]] = []
         output_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
 
@@ -427,6 +592,11 @@ class WorkerSupervisor:
             thread.join(timeout=1)
         stdout = "".join(value for name, value in chunks if name == "stdout")
         stderr = "".join(value for name, value in chunks if name == "stderr")
+        if os.name == "nt":
+            with self._jobs_lock:
+                job = self._jobs.pop(process.pid, None)
+            if job is not None:
+                job.close()
         status = (
             CommandStatus.CANCELLED
             if cancelled
@@ -448,6 +618,12 @@ class WorkerSupervisor:
         if process.poll() is not None:
             return
         if os.name == "nt":
+            with self._jobs_lock:
+                job = self._jobs.get(process.pid)
+            if job is not None:
+                job.terminate()
+                process.wait(timeout=2)
+                return
             try:
                 process.send_signal(signal.CTRL_BREAK_EVENT)
                 process.wait(timeout=1)
@@ -489,7 +665,13 @@ class ExecutionWorker:
         self._idempotency_records: dict[tuple[str, str], CommandExecutionResult] = {}
 
     def run(
-        self, request: CommandRequestDto, *, cancel_event: threading.Event | None = None, output_callback=None
+        self,
+        request: CommandRequestDto,
+        *,
+        cancel_event: threading.Event | None = None,
+        output_callback=None,
+        process_started_callback=None,
+        stdin_text: str | None = None,
     ) -> CommandExecutionResult:
         replay = self._find_idempotent_result(request)
         if replay is not None:
@@ -511,6 +693,8 @@ class ExecutionWorker:
 
         try:
             structured_request = self._policy.validate(normalized_request)
+            if stdin_text is not None:
+                structured_request = replace(structured_request, stdin_text=stdin_text)
         except CommandPolicyViolation as exc:
             execution = self._record(
                 normalized_request,
@@ -528,10 +712,15 @@ class ExecutionWorker:
             return execution
 
         try:
+            supervisor_kwargs = {
+                "cancel_event": cancel_event,
+                "output_callback": output_callback,
+            }
+            if process_started_callback is not None:
+                supervisor_kwargs["process_started_callback"] = process_started_callback
             supervised = self._supervisor.run(
                 structured_request,
-                cancel_event=cancel_event,
-                output_callback=output_callback,
+                **supervisor_kwargs,
             )
         except OSError as exc:
             execution = self._record(

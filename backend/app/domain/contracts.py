@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,6 +26,8 @@ class RunStatus(str, Enum):
     WAITING_ANALYSIS_APPROVAL = "WAITING_ANALYSIS_APPROVAL"
     PLANNING_RUNNING = "PLANNING_RUNNING"
     WAITING_PLAN_APPROVAL = "WAITING_PLAN_APPROVAL"
+    WAITING_STAGE_PREPARATION = "WAITING_STAGE_PREPARATION"
+    WAITING_G07_APPROVAL = "WAITING_G07_APPROVAL"
     STAGE_CREATED = "STAGE_CREATED"
     TOOLCHAIN_PROFILE_SELECTED = "TOOLCHAIN_PROFILE_SELECTED"
     SANDBOX_READY = "SANDBOX_READY"
@@ -289,6 +291,11 @@ class WorkflowEventType(str, Enum):
     APPROVAL_POLICY_DISABLED_FOR_PRODUCTION = "APPROVAL_POLICY_DISABLED_FOR_PRODUCTION"
     RUN_STATE_CHANGED = "run_state_changed"
     STAGE_STATE_CHANGED = "stage_state_changed"
+    STAGE_CREATED = "STAGE_CREATED"
+    STAGE_PREPARATION_STARTED = "STAGE_PREPARATION_STARTED"
+    STAGE_SANDBOX_COPIED = "STAGE_SANDBOX_COPIED"
+    STAGE_WORKSPACE_BOUND = "STAGE_WORKSPACE_BOUND"
+    STAGE_PREPARATION_COMPLETED = "STAGE_PREPARATION_COMPLETED"
     STEP_STATE_CHANGED = "step_state_changed"
     COMPONENT_STATE_CHANGED = "component_state_changed"
     AGENT_STATE_CHANGED = "agent_state_changed"
@@ -359,9 +366,15 @@ class WorkflowEventType(str, Enum):
     PARITY_BASELINE_BLOCKED = "PARITY_BASELINE_BLOCKED"
     MIGRATION_PLAN_CREATED = "MIGRATION_PLAN_CREATED"
     STAGE_PLAN_CREATED = "STAGE_PLAN_CREATED"
+    PLANNING_RETRY_SCHEDULED = "PLANNING_RETRY_SCHEDULED"
+    PLANNING_INPUT_RESOLUTION_FAILED = "PLANNING_INPUT_RESOLUTION_FAILED"
+    PLANNING_FAILED = "PLANNING_FAILED"
     PLAN_REVISION_CREATED = "PLAN_REVISION_CREATED"
     APPROVAL_MARKED_STALE = "APPROVAL_MARKED_STALE"
     PLANNING_AGENT_COMPLETED = "PLANNING_AGENT_COMPLETED"
+    PLANNING_REVIEW_REVISION_REQUIRED = "PLANNING_REVIEW_REVISION_REQUIRED"
+    PLANNING_REVIEW_REJECTED = "PLANNING_REVIEW_REJECTED"
+    PLANNING_REVIEW_INSUFFICIENT_CONTEXT = "PLANNING_REVIEW_INSUFFICIENT_CONTEXT"
     G06_CREATED = "G06_CREATED"
     G06_APPROVED = "G06_APPROVED"
     G06_MODIFICATION_REQUESTED = "G06_MODIFICATION_REQUESTED"
@@ -374,6 +387,75 @@ class WorkflowEventType(str, Enum):
     COMMAND_FAILED = "COMMAND_FAILED"
     RUN_CANCEL_REQUESTED = "RUN_CANCEL_REQUESTED"
     RUN_CANCELLED = "RUN_CANCELLED"
+    TRANSFORMATION_CONTINUATION_CREATED = "TRANSFORMATION_CONTINUATION_CREATED"
+    TRANSFORMATION_CONTINUATION_CLAIMED = "TRANSFORMATION_CONTINUATION_CLAIMED"
+    TRANSFORMATION_CONTINUATION_WAITING = "TRANSFORMATION_CONTINUATION_WAITING"
+    TRANSFORMATION_CONTINUATION_RESUMED = "TRANSFORMATION_CONTINUATION_RESUMED"
+    REPAIR_INVOCATION_RECOVERED = "REPAIR_INVOCATION_RECOVERED"
+    TRANSFORMATION_CONTINUATION_FAILED = "TRANSFORMATION_CONTINUATION_FAILED"
+    TRANSFORMATION_CONTINUATION_COMPLETED = "TRANSFORMATION_CONTINUATION_COMPLETED"
+    TRANSFORMATION_CONTINUATION_BLOCKED = "TRANSFORMATION_CONTINUATION_BLOCKED"
+    STAGE_INPUT_CHECKPOINT_CREATED = "STAGE_INPUT_CHECKPOINT_CREATED"
+    STAGE_WORKSPACE_RECONSTRUCTION_STARTED = "STAGE_WORKSPACE_RECONSTRUCTION_STARTED"
+    STAGE_WORKSPACE_RECONSTRUCTED = "STAGE_WORKSPACE_RECONSTRUCTED"
+    STAGE_WORKSPACE_FINGERPRINT_MISMATCH = "STAGE_WORKSPACE_FINGERPRINT_MISMATCH"
+    STAGE_RUNTIME_PROFILE_VALIDATED = "STAGE_RUNTIME_PROFILE_VALIDATED"
+    STAGE_RUNTIME_PROFILE_BLOCKED = "STAGE_RUNTIME_PROFILE_BLOCKED"
+    COMPATIBILITY_PREFLIGHT_STARTED = "COMPATIBILITY_PREFLIGHT_STARTED"
+    COMPATIBILITY_PREFLIGHT_PASSED = "COMPATIBILITY_PREFLIGHT_PASSED"
+    COMPATIBILITY_PREFLIGHT_BLOCKED = "COMPATIBILITY_PREFLIGHT_BLOCKED"
+    KNOWN_STAGE_DECISION_REQUIRED = "KNOWN_STAGE_DECISION_REQUIRED"
+    KNOWN_STAGE_DECISION_RECORDED = "KNOWN_STAGE_DECISION_RECORDED"
+    G07_CREATED = "G07_CREATED"
+    G07_APPROVED = "G07_APPROVED"
+    G07_REJECTED = "G07_REJECTED"
+    G07_STALE = "G07_STALE"
+    STAGE_BOOTSTRAP_VERIFIED = "STAGE_BOOTSTRAP_VERIFIED"
+    STAGE_TRANSFORMATION_STARTED = "STAGE_TRANSFORMATION_STARTED"
+    CLI_PROMPT_CAPTURED = "CLI_PROMPT_CAPTURED"
+    CLI_PROMPT_EXPLANATION_COMPLETED = "CLI_PROMPT_EXPLANATION_COMPLETED"
+    CLI_PROMPT_DECIDED = "CLI_PROMPT_DECIDED"
+    COMMAND_RECONSTRUCTION_REQUIRED = "COMMAND_RECONSTRUCTION_REQUIRED"
+    VERSION_VERIFICATION_PASSED = "VERSION_VERIFICATION_PASSED"
+    VERSION_VERIFICATION_FAILED = "VERSION_VERIFICATION_FAILED"
+    STAGE_TRANSFORMATION_COMPLETED = "STAGE_TRANSFORMATION_COMPLETED"
+    G08_CREATED = "G08_CREATED"
+    G08_APPROVED = "G08_APPROVED"
+    G08_REJECTED = "G08_REJECTED"
+    G08_STALE = "G08_STALE"
+    STAGE_VALIDATION_STARTED = "STAGE_VALIDATION_STARTED"
+    STAGE_VALIDATION_COMPLETED = "STAGE_VALIDATION_COMPLETED"
+    STAGE_VALIDATION_FAILED = "STAGE_VALIDATION_FAILED"
+    G09_CREATED = "G09_CREATED"
+    G09_APPROVED = "G09_APPROVED"
+    G09_REJECTED = "G09_REJECTED"
+    G09_STALE = "G09_STALE"
+    FAILURE_EVIDENCE_FROZEN = "FAILURE_EVIDENCE_FROZEN"
+    FAILURE_CLASSIFIED = "FAILURE_CLASSIFIED"
+    REPAIR_PROPOSAL_CREATED = "REPAIR_PROPOSAL_CREATED"
+    REPAIR_REVIEW_COMPLETED = "REPAIR_REVIEW_COMPLETED"
+    G10_CREATED = "G10_CREATED"
+    G10_APPROVED = "G10_APPROVED"
+    G10_REJECTED = "G10_REJECTED"
+    G10_STALE = "G10_STALE"
+    REPAIR_APPLY_STARTED = "REPAIR_APPLY_STARTED"
+    REPAIR_APPLY_COMPLETED = "REPAIR_APPLY_COMPLETED"
+    REPAIR_APPLY_FAILED = "REPAIR_APPLY_FAILED"
+    REPAIR_REVALIDATION_COMPLETED = "REPAIR_REVALIDATION_COMPLETED"
+    G11_CREATED = "G11_CREATED"
+    G11_APPROVED = "G11_APPROVED"
+    G11_REJECTED = "G11_REJECTED"
+    G11_STALE = "G11_STALE"
+    G12_CREATED = "G12_CREATED"
+    G12_APPROVED = "G12_APPROVED"
+    G12_REJECTED = "G12_REJECTED"
+    G12_STALE = "G12_STALE"
+    STAGE_SEALED = "STAGE_SEALED"
+    NEXT_STAGE_MATERIALIZED = "NEXT_STAGE_MATERIALIZED"
+    FINAL_TARGET_VERIFIED = "FINAL_TARGET_VERIFIED"
+    STAGED_MIGRATION_COMPLETED = "STAGED_MIGRATION_COMPLETED"
+    TRANSFORMATION_CANCEL_REQUESTED = "TRANSFORMATION_CANCEL_REQUESTED"
+    TRANSFORMATION_CANCELLED = "TRANSFORMATION_CANCELLED"
 
 
 class ErrorEnvelope(ContractModel):
@@ -446,12 +528,100 @@ class ApprovalPolicyDto(ContractModel):
 class AssistantMessageRequestDto(ContractModel):
     run_id: str | None = None
     message: str = Field(min_length=1)
+    conversation_id: str | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    request_id: str | None = None
+    retry_of_message_id: str | None = None
+    answer_mode: str = Field(default="concise", pattern="^(concise|detailed|deep)$")
+    client_known_state_version: int | None = Field(default=None, ge=1)
 
 
 class AssistantMessageResponseDto(ContractModel):
     run_id: str | None = None
     response: str
     status: str
+
+
+class AssistantEvidenceDto(ContractModel):
+    artifact_id: str
+    checksum: str
+    label: str
+    excerpt_id: str | None = None
+    checksum_sha256: str | None = None
+    stage_key: str | None = None
+    locator: dict[str, str] | None = None
+    proof_label: str | None = None
+
+
+class AssistantUsageDto(ContractModel):
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    estimated_input_cost: float = Field(ge=0)
+    estimated_output_cost: float = Field(ge=0)
+    estimated_total_cost: float = Field(ge=0)
+
+
+class AssistantNextStepProposalDto(ContractModel):
+    """Read-only governed action proposed from the authoritative projection."""
+
+    action_key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    target_route: str | None = Field(default=None, min_length=1)
+    requires_human_approval: bool = False
+    executable_by_assistant: bool = False
+
+    @model_validator(mode="after")
+    def enforce_read_only(self) -> "AssistantNextStepProposalDto":
+        if self.executable_by_assistant:
+            raise ValueError("Assistant next-step proposals cannot execute actions")
+        return self
+
+
+class AssistantMessageResultDto(ContractModel):
+    message_id: str
+    model: str = "deterministic_projection"
+    message_order: int = Field(ge=1)
+    conversation_id: str
+    run_id: str
+    role: str = "assistant"
+    answer: str
+    current_phase: str
+    current_stage: str
+    workflow_status: str
+    current_gate: str
+    current_blocker: str
+    next_permitted_action: str
+    workflow_state_version: int = Field(ge=1)
+    stale: bool = False
+    evidence_references: list[AssistantEvidenceDto] = Field(default_factory=list)
+    proof_label: str
+    usage: AssistantUsageDto
+    response_status: str
+    failure_reason: str | None = None
+    error_code: str | None = None
+    operational_statistics: "AssistantOperationalStatisticsDto | None" = None
+    request_id: str | None = None
+    retry_of_message_id: str | None = None
+    intent: str = "unsupported"
+    capability_key: str = ""
+    summary: str = ""
+    citations: list[dict[str, object]] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    suggested_follow_ups: list[str] = Field(default_factory=list)
+    next_step_proposals: list[AssistantNextStepProposalDto] = Field(default_factory=list)
+    confidence: str = Field(min_length=1)
+    correlation_id: str | None = None
+    semantic_state_version: int = Field(default=1, ge=1)
+    operational_event_sequence: int = Field(default=0, ge=0)
+    answer_mode: str = "concise"
+
+
+class AssistantHistoryDto(ContractModel):
+    run_id: str
+    conversation_id: str
+    messages: list[AssistantMessageResultDto] = Field(default_factory=list)
 
 
 class MigrationStageDto(ContractModel):
@@ -700,6 +870,7 @@ class CommandExecutionResponseDto(ContractModel):
     cancel_requested_by: str | None = None
     cancelled: bool = False
     timed_out: bool = False
+    claim_attempt: int | None = None
 
 
 class CancelCommandRequestDto(ContractModel):
@@ -925,6 +1096,21 @@ class CancelAuthoritativeRunRequestDto(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class PlanningJobProjectionDto(ContractModel):
+    id: str
+    status: str
+    current_step: str
+    attempt: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    retryable: bool | None = None
+    next_attempt_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_error_stage: str | None = None
+    correlation_id: str | None = None
+    updated_at: datetime
+
+
 class AuthoritativeRunStateDto(ContractModel):
     run_id: str
     status: RunStatus
@@ -950,8 +1136,10 @@ class AuthoritativeRunStateDto(ContractModel):
     registry_snapshot: dict[str, object] | None = None
     runtime_candidates: list[dict[str, object]] = Field(default_factory=list)
     plan_inputs: dict[str, object] | None = None
+    planning_job: PlanningJobProjectionDto | None = None
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
     workflow_events: list[WorkflowEventDto] = Field(default_factory=list)
+    assistant_projection: "AssistantWorkflowProjectionDto | None" = None
 
 
 class AuthoritativeRunMutationResultDto(ContractModel):
@@ -963,6 +1151,120 @@ class AuthoritativeRunMutationResultDto(ContractModel):
     graph_thread_id: str
     idempotent_replay: bool = False
     artifacts: list[ArtifactRefDto] = Field(default_factory=list)
+
+
+class TimingActivityDto(ContractModel):
+    duration_seconds: float | None = Field(default=None, ge=0)
+    measured_count: int = Field(ge=0)
+    unmeasured_count: int = Field(ge=0)
+    active_count: int = Field(default=0, ge=0)
+    measurement_status: Literal["complete", "partial", "unavailable"]
+
+
+class TimingSpanDto(ContractModel):
+    key: str
+    label: str
+    status: Literal["not_started", "running", "completed", "unavailable"]
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+
+
+class RunTimingActivityDto(ContractModel):
+    llm: TimingActivityDto
+    commands: TimingActivityDto
+    human_approval_wait: TimingActivityDto
+    repair: TimingActivityDto
+    validation: TimingActivityDto
+    sealing: TimingActivityDto
+
+
+class RunTimingDto(ContractModel):
+    run_id: str
+    status: RunStatus
+    as_of: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    total_duration_seconds: float | None = Field(default=None, ge=0)
+    total_measurement_status: Literal["running", "complete", "unavailable"]
+    activity: RunTimingActivityDto
+    phases: list[TimingSpanDto] = Field(default_factory=list)
+    stages: list[TimingSpanDto] = Field(default_factory=list)
+
+
+class ProjectionValue(ContractModel):
+    value: Any | None = None
+    availability: str = "unavailable"
+    reason: str | None = None
+
+
+class AssistantEvidenceReferenceDto(ContractModel):
+    artifact_id: str
+    label: str
+    checksum: str
+    run_id: str
+    stage_id: str | None = None
+    category: str | None = None
+    lineage: str | None = None
+    approval_status: str | None = None
+    immutable: bool | None = None
+
+
+class AssistantOperationalStatisticsDto(ContractModel):
+    run_start_timestamp: datetime | None = None
+    recorded_workflow_duration_seconds: float | None = None
+    current_active_run_age_seconds: float | None = None
+    phase_durations_seconds: dict[str, float] | None = None
+    stage_durations_seconds: dict[str, float] | None = None
+    command_totals_by_status: dict[str, int] | None = None
+    successful_commands: int | None = None
+    failed_commands: int | None = None
+    relevant_command_ids: list[str] = Field(default_factory=list)
+    llm_calls_by_role: dict[str, int] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    input_cost_usd: float | None = None
+    output_cost_usd: float | None = None
+    total_cost_usd: float | None = None
+
+
+class AssistantWorkflowProjectionDto(ContractModel):
+    application_name: ProjectionValue = ProjectionValue()
+    current_angular_version: ProjectionValue = ProjectionValue()
+    target_angular_version: ProjectionValue = ProjectionValue()
+    node_execution_profile: ProjectionValue = ProjectionValue()
+    package_manager: ProjectionValue = ProjectionValue()
+    run_id: str
+    migration_route: ProjectionValue = ProjectionValue()
+    stage_workspace_reference: ProjectionValue = ProjectionValue()
+    source_fingerprint: ProjectionValue = ProjectionValue()
+    stage_fingerprint: ProjectionValue = ProjectionValue()
+    phase: ProjectionValue = ProjectionValue()
+    stage: ProjectionValue = ProjectionValue()
+    step: ProjectionValue = ProjectionValue()
+    gate: ProjectionValue = ProjectionValue()
+    current_gate_id: ProjectionValue = ProjectionValue()
+    gate_state: ProjectionValue = ProjectionValue()
+    status: ProjectionValue = ProjectionValue()
+    completed_work: list[str] = Field(default_factory=list)
+    remaining_work: list[str] = Field(default_factory=list)
+    blocker: ProjectionValue = ProjectionValue()
+    waiting_reason: ProjectionValue = ProjectionValue()
+    failure_reason: ProjectionValue = ProjectionValue()
+    failure_classification: ProjectionValue = ProjectionValue()
+    repair_state: ProjectionValue = ProjectionValue()
+    next_permitted_action: ProjectionValue = ProjectionValue()
+    next_step_proposals: list[AssistantNextStepProposalDto] = Field(default_factory=list)
+    latest_command_result: ProjectionValue = ProjectionValue()
+    semantic_state_version: int
+    operational_event_sequence: int = 0
+    phase_duration_seconds: ProjectionValue = ProjectionValue()
+    stage_duration_seconds: ProjectionValue = ProjectionValue()
+    pricing_availability: ProjectionValue = ProjectionValue()
+    workflow_state_version: int
+    operational_statistics: AssistantOperationalStatisticsDto = AssistantOperationalStatisticsDto()
+    evidence_references: list[AssistantEvidenceReferenceDto] = Field(default_factory=list)
 
 
 # Deterministic component and AI-agent contracts (AMF-S0-10)

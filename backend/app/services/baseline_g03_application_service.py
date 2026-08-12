@@ -111,7 +111,7 @@ class BaselineG03ApplicationService:
     def validation_status(self,v):
         statuses = [r.get("status") for r in (v.results or [])]
         if statuses and all(status in {"skipped_not_configured", "skipped_not_applicable"} for status in statuses):
-            return "not_configured"
+            return statuses[0] if all(status == statuses[0] for status in statuses) else "skipped_not_configured"
         return "passed" if statuses and all(status in {"passed","skipped_not_configured","skipped_not_applicable"} for status in statuses) else v.status
     def installation_status(self, installation):
         if installation is None:

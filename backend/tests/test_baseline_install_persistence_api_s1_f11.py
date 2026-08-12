@@ -58,6 +58,13 @@ class VerboseNpmSupervisor(WorkerSupervisor):
             output_callback("stdout", output)
         return SupervisedProcessResult(CommandStatus.SUCCEEDED, 0, output, "")
 
+
+class VulnerableNpmSupervisor(WorkerSupervisor):
+    def run(self, request, *, cancel_event=None, output_callback=None):
+        output = "added 946 packages\n86 vulnerabilities (10 low, 24 moderate, 48 high, 4 critical)\n"
+        return SupervisedProcessResult(CommandStatus.SUCCEEDED, 0, output, "")
+
+
 def _fixture(tmp_path: Path, supervisor=None):
     sandbox = tmp_path / "baseline"
     (sandbox / "node_modules").mkdir(parents=True)
@@ -124,6 +131,53 @@ def test_install_persists_execution_events_artifacts_and_idempotent_replay(tmp_p
         assert len(metadata) == 4
     assert service.get("run-1", first.execution_id).artifact_ids == first.artifact_ids
     engine.dispose()
+
+
+def test_install_persists_structured_dependency_security_risk(tmp_path):
+    _scope, sessions, engine, service = _fixture(tmp_path, supervisor=VulnerableNpmSupervisor())
+
+    result = service.install("run-1", _request(key="vulnerable-install"))
+
+    assert result.status == CommandStatus.SUCCEEDED.value
+    store = LocalFilesystemArtifactStore(tmp_path / "artifacts", fixed_run_root=tmp_path / "artifacts")
+    report = json.loads(
+        store.read_artifact("run-1", "01_baseline/dependency-security-summary.json").content
+    )
+    assert report == {
+        "source": "npm-ci-output",
+        "status": "risk_detected",
+        "total": 86,
+        "severity_counts": {"low": 10, "moderate": 24, "high": 48, "critical": 4},
+        "policy_decision": "report_only",
+        "risks": ["DEPENDENCY_VULNERABILITIES_REPORTED"],
+        "blockers": [],
+    }
+    summary = json.loads(store.read_artifact("run-1", "01_baseline/baseline_install_summary.json").content)
+    assert summary["risks"] == ["DEPENDENCY_VULNERABILITIES_REPORTED"]
+    with sessions() as session:
+        metadata = list(
+            session.scalars(
+                select(ArtifactMetadataModel).where(
+                    ArtifactMetadataModel.run_id == "run-1",
+                    ArtifactMetadataModel.relative_path == "01_baseline/dependency-security-summary.json",
+                )
+            )
+        )
+        assert len(metadata) == 1
+        assert metadata[0].immutable is True
+    engine.dispose()
+
+
+def test_dependency_security_parser_marks_missing_summary_not_reported():
+    assert BaselineInstallApplicationService._dependency_security_summary("npm ci completed") == {
+        "source": "npm-ci-output",
+        "status": "not_reported",
+        "total": 0,
+        "severity_counts": {"low": 0, "moderate": 0, "high": 0, "critical": 0},
+        "policy_decision": "report_only",
+        "risks": [],
+        "blockers": [],
+    }
 
 
 def test_install_rejects_stale_state_before_execution(tmp_path):
@@ -252,6 +306,13 @@ def test_restart_recovery_reconstructs_and_does_not_create_a_second_process(tmp_
         command.status = CommandStatus.RUNNING.value
         command.worker_id = "old-backend:pid-1"
         command.finished_at = None
+        lease = session.scalar(
+            select(WorkerLeaseModel).where(
+                WorkerLeaseModel.execution_id == first.execution_id
+            )
+        )
+        assert lease is not None
+        lease.backend_instance_id = "old-backend"
         session.commit()
     assert service.reconcile_orphans() == 1
     recovered = service.get("run-1", first.execution_id)
@@ -260,6 +321,43 @@ def test_restart_recovery_reconstructs_and_does_not_create_a_second_process(tmp_
     assert recovered.reconstruction_required is True
     assert "BASELINE_RECONSTRUCTED" in recovered.blockers
     assert supervisor.calls == 1
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("execution_id", "command_id", "status"),
+    [
+        ("exec-transformer-target", "angular-version-verify", CommandStatus.RUNNING.value),
+        ("exec-repair", "npm-dependency-uninstall", CommandStatus.PENDING.value),
+        ("exec-validation", "npm-run-build", CommandStatus.RUNNING.value),
+    ],
+)
+def test_restart_recovery_ignores_commands_owned_by_other_lifecycles(
+    tmp_path, execution_id, command_id, status
+):
+    _scope, sessions, engine, service = _fixture(tmp_path)
+    with sessions() as session:
+        session.add(
+            CommandExecutionModel(
+                id=execution_id,
+                run_id="run-1",
+                stage_id="stage-1",
+                authorization_id=f"authz-{execution_id}",
+                command_id=command_id,
+                executable="npx" if command_id == "angular-version-verify" else "npm",
+                working_directory_alias="STAGE_WORKSPACE_STAGE_1",
+                status=status,
+                requested_at=NOW,
+                started_at=NOW if status == CommandStatus.RUNNING.value else None,
+            )
+        )
+        session.commit()
+
+    assert service.reconcile_orphans() == 0
+    with sessions() as session:
+        record = session.get(CommandExecutionModel, execution_id)
+        assert record.status == status
+        assert not record.reconstruction_required
     engine.dispose()
 def test_cancelled_install_reconstructs_the_baseline_sandbox_and_persists_evidence(tmp_path):
     _scope, sessions, engine, service = _fixture(tmp_path, supervisor=CancelledNpmSupervisor())

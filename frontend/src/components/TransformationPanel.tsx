@@ -1,0 +1,496 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { ArtifactRefDto, WorkflowEventDto } from "@/types/generated/api";
+import type { CommandExecutionResponseDto } from "@/types/generated/api";
+import type { TransformationProjection } from "@/types/transformation";
+import { ApiClientError } from "@/api/client";
+import {
+  cancelTransformation,
+  decideTransformationGate,
+  decideTransformationPrompt,
+  rejectRepair,
+  requestRepairRevision,
+  restartTransformation,
+} from "@/api/transformation";
+import {
+  LogsAndDiagnostics,
+  RepairEvidence,
+  SealAndRoute,
+  StageSummary,
+  TransformationEvidence,
+  ValidationEvidence,
+  WorkerStatus,
+  TechnicalDetails,
+  approvalActionLabel,
+  decisionLabel,
+  displayStatus,
+} from "./TransformationSections";
+import styles from "./TransformationPanel.module.css";
+
+export interface TransformationPanelProps {
+  runId: string;
+  projection: TransformationProjection | null;
+  projectionStatus: "disabled" | "loading" | "ready" | "empty" | "failed";
+  executions: CommandExecutionResponseDto[];
+  executionStatus: "idle" | "loading" | "ready" | "unavailable";
+  workflowEvents: WorkflowEventDto[];
+  artifacts: ArtifactRefDto[];
+  refreshTransformation: () => Promise<void>;
+  refreshAuthoritativeState: () => Promise<void>;
+  onActionRequiredChange?: (required: boolean) => void;
+};
+
+const terminalStatuses = new Set(["completed", "cancelled", "failed"]);
+
+function conflictMessage(error: ApiClientError) {
+  let code = "STALE_STATE";
+  try {
+    const body = JSON.parse(error.responseBody ?? "{}") as {
+      error?: { code?: string };
+      error_code?: string;
+    };
+    code = body.error?.code ?? body.error_code ?? code;
+  } catch {
+    // The status code is sufficient; provider text is never rendered.
+  }
+  return `Authoritative state changed (${code}). Latest state has been reloaded.`;
+}
+
+function backendErrorMessage(error: ApiClientError) {
+  try {
+    const body = JSON.parse(error.responseBody ?? "{}") as {
+      error?: { code?: string; message?: string };
+      error_code?: string;
+      message?: string;
+      correlation_id?: string;
+      details?: { errors?: Array<{ loc?: Array<string | number>; msg?: string }> };
+    };
+    const validationErrors = body.details?.errors
+      ?.filter((item) => item.msg)
+      .map((item) => `${item.loc?.join(".") || "request"}: ${item.msg}`) ?? [];
+    return {
+      code: body.error?.code ?? body.error_code ?? "BACKEND_ERROR",
+      message: [
+        body.error?.message ?? body.message ?? error.message,
+        ...validationErrors,
+        body.correlation_id ? `Correlation ID: ${body.correlation_id}` : null,
+      ].filter(Boolean).join(" "),
+    };
+  } catch {
+    return { code: "BACKEND_ERROR", message: error.message };
+  }
+}
+
+const inFlightCommandStatuses = new Set(["queued", "pending", "running"]);
+
+function bannerLabel(
+  projection: TransformationProjection,
+  submitting: boolean,
+): string | null {
+  if (submitting) return "Revision submitting";
+  const { status, current_node, repair_status, active_gate } = projection;
+  if (status === "completed") return "Completed";
+  if (status === "failed") return "Failed";
+  if (status === "blocked") return "Blocked";
+  if (status === "waiting_repair_revision" || repair_status === "request_changes") return "Human revision required";
+  if (status === "waiting_gate" && active_gate) return `Waiting for ${decisionLabel(active_gate)}`;
+  if (current_node === "propose_repair") return "Waiting for Main LLM";
+  if (current_node === "review_repair") return "Waiting for Reviewer";
+  if (current_node === "apply_repair" || repair_status === "applying") return "Applying approved repair";
+  if (["build", "test", "final_install", "repair_revalidate", "aggregate_validation"].includes(current_node)) return "Validating repair";
+  if (current_node === "angular_update_retry") return "Retrying Angular migration";
+  if (
+    current_node === "handle_prompt"
+    && projection.angular_update_retry_status
+    && inFlightCommandStatuses.has(projection.angular_update_retry_status)
+  ) {
+    return "Retrying Angular migration";
+  }
+  if (current_node === "target_inspection" || current_node === "version_verify") return "Verifying target Angular version";
+  if (status === "waiting_command") return "Command in flight";
+  return null;
+}
+
+export function TransformationPanel({
+  runId,
+  projection,
+  projectionStatus,
+  executions,
+  executionStatus,
+  workflowEvents,
+  artifacts,
+  refreshTransformation,
+  refreshAuthoritativeState,
+  onActionRequiredChange,
+}: TransformationPanelProps) {
+  const [actionError, setActionError] = useState<{ message: string; code?: string } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [revisionSubmitting, setRevisionSubmitting] = useState(false);
+  const [revisionInstruction, setRevisionInstruction] = useState("");
+  const [overrideComment, setOverrideComment] = useState("");
+  const [revisionAccepted, setRevisionAccepted] = useState<{
+    attempt_id: string;
+    status: string;
+    idempotent_replay: boolean;
+  } | null>(null);
+  const submittingRef = useRef(false);
+  const actionRequired = projection?.status === "waiting_prompt"
+    || projection?.status === "waiting_repair_revision"
+    || (projection?.status === "waiting_gate" && decisionLabel(projection.active_gate) !== "Unsupported decision" && decisionLabel(projection.active_gate) !== "No decision requested");
+
+  useEffect(() => {
+    if (projectionStatus !== "loading") onActionRequiredChange?.(Boolean(actionRequired));
+  }, [actionRequired, onActionRequiredChange, projectionStatus]);
+
+  if (projectionStatus === "loading" && !projection) {
+    return <section className={styles.empty} aria-label="Transformer status" role="status">
+      <p>Loading authoritative Transformer state…</p>
+    </section>;
+  }
+  if (projectionStatus === "empty") {
+    return <section className={styles.empty} aria-label="Transformer status">
+      <span className={styles.eyebrow}>Transformation prerequisite</span>
+      <h3>Transformer continuation has not been created</h3>
+      <p>Accept the migration plan in Planning to create the durable Transformer continuation. This screen remains available while Planning is pending, rejected, stale, or unavailable.</p>
+      <dl className={styles.metadata}>
+        <div><dt>Planning evidence</dt><dd>{workflowEvents.some((event) => event.event_type.startsWith("G06_")) ? "Recorded" : "Unavailable"}</dd></div>
+      </dl>
+    </section>;
+  }
+  if (projectionStatus === "failed" || !projection) {
+    return <section className={styles.empty} aria-label="Transformer status">
+      <h3>Transformer state unavailable</h3>
+      <p role="alert">The backend projection could not be loaded. The frontend has not inferred a workflow result.</p>
+      <button type="button" onClick={() => void refreshTransformation()}>Retry Transformer state</button>
+    </section>;
+  }
+
+  const current = projection;
+  const shared = {
+    projection: current,
+    workflowEvents,
+    artifacts,
+    executions,
+    executionStatus: executionStatus === "idle" ? "loading" as const : executionStatus,
+  };
+  const banner = bannerLabel(current, revisionSubmitting);
+  const diffAvailable = Boolean(current.repair_safe_diff && current.repair_safe_diff.trim());
+  const g10EvidenceAvailable = current.dependency_operation?.operation === "dependency_transition"
+    ? Boolean(
+        current.repair_proposal_checksum
+        && current.dependency_operation.checkpoint_id
+        && current.workspace_fingerprint,
+      )
+    : current.dependency_operation
+      ? Boolean(current.repair_proposal_checksum && current.workspace_fingerprint)
+      : diffAvailable;
+  const reviewerOverrideRequired = current.status === "waiting_gate"
+    && current.active_gate === "G10"
+    && current.repair_review?.decision === "request_changes";
+  const decisionAvailable = current.status === "waiting_gate"
+    && decisionLabel(current.active_gate) !== "Unsupported decision"
+    && decisionLabel(current.active_gate) !== "No decision requested"
+    && Boolean(current.active_gate_package_checksum && current.workspace_fingerprint);
+  const repairRevisionAvailable = current.status === "waiting_repair_revision"
+    || (current.status === "waiting_gate" && current.active_gate === "G10");
+  return <div className={styles.screen} aria-label="Transformer status">
+    <section className={styles.hero}>
+      <div>
+        <span className={styles.eyebrow}>Durable Transformer / backend truth</span>
+        <h3>{projection.source_version ?? "source"} → {projection.target_version ?? "target"}</h3>
+        <p>Workflow progress: {displayStatus(projection.status)}</p>
+        {projection.next_backend_action ? <p>Next backend action: {projection.next_backend_action}</p> : null}
+      </div>
+      <span className={styles.status}>{displayStatus(projection.status)}</span>
+    </section>
+
+    {banner ? <div className={styles.banner} role="status" aria-live="polite">{banner}</div> : null}
+    {actionError ? <div className={styles.alert} role="alert"><p>{actionError.message}</p>{actionError.code ? <TechnicalDetails><code>Error code: {actionError.code}</code></TechnicalDetails> : null}</div> : null}
+
+    <div className={styles.grid}>
+      <section className={`${styles.card} ${styles.cardWide}`} aria-labelledby="transform-current-action">
+        <span className={styles.eyebrow}>Current action or gate</span>
+        <div className={styles.cardHeader}>
+          <div>
+            <h3 id="transform-current-action">
+              {projection.status === "waiting_prompt" ? "CLI prompt decision" : projection.status === "waiting_repair_revision" ? "Repair revision required" : projection.status === "waiting_gate" && projection.active_gate ? decisionLabel(projection.active_gate) : "No human action requested"}
+            </h3>
+            <p className={styles.note}>The backend exposes the current action and required evidence.</p>
+            <TechnicalDetails>
+              <code>Workflow node: {projection.current_node}</code>
+              <code>Decision type: {projection.active_gate ?? "unavailable"}</code>
+              <code>State version: {projection.state_version}</code>
+              <code>Package checksum: {projection.active_gate_package_checksum ?? "unavailable"}</code>
+              <code>Workspace fingerprint: {projection.workspace_fingerprint ?? "unavailable"}</code>
+            </TechnicalDetails>
+          </div>
+        </div>
+        {reviewerOverrideRequired ? <div className={styles.alert} role="alert">
+          <strong>Reviewer raised unresolved concerns.</strong>
+          <p>Review the findings, policy checks, limitations, validation targets, and {current.dependency_operation?.operation === "dependency_transition" ? "Dependency Transition Plan" : "exact candidate diff"} before approving.</p>
+        </div> : null}
+        {revisionAccepted
+          ? <p className={styles.success} role="status">
+              Revision accepted — child attempt {revisionAccepted.attempt_id} created (status: {revisionAccepted.status}).
+            </p>
+          : null}
+        {decisionAvailable
+          ? projection.active_gate !== "G10" ? <div className={styles.actions}>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => void decideGate("approve")}
+              >
+                {approvalActionLabel(projection.active_gate)}
+              </button>
+              <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
+                Reject
+              </button>
+            </div> : null
+          : projection.status === "waiting_gate"
+            ? <p className={styles.alert} role="alert">{decisionLabel(projection.active_gate) === "Unsupported decision" ? "This decision type is unsupported by the frontend." : "The active decision lacks the backend package checksum or workspace fingerprint required for a safe decision."}</p>
+            : null}
+        {repairRevisionAvailable ? <div className={styles.decisionWorkspace}>
+          {reviewerOverrideRequired ? <fieldset className={styles.decisionCard}>
+            <legend>Approve despite Reviewer concerns</legend>
+            <p className={styles.fieldHelp} id="repair-override-help">
+              Explain why this proposal is safe to approve despite the unresolved findings.
+            </p>
+            <label htmlFor="repair-override-comment">
+              Override comment <span className={styles.required} aria-hidden="true">Required</span>
+            </label>
+            <textarea
+              id="repair-override-comment"
+              value={overrideComment}
+              onChange={(event) => setOverrideComment(event.target.value)}
+              aria-describedby="repair-override-help"
+              maxLength={4000}
+              rows={4}
+              required
+              disabled={submitting}
+              placeholder="Explain why approval is safe despite the Reviewer concerns"
+            />
+            <div className={styles.actions}>
+              <button
+                type="button"
+                disabled={submitting || !g10EvidenceAvailable || !overrideComment.trim()}
+                title={!g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
+                onClick={() => void decideGate("approve")}
+              >
+                Approve despite Reviewer concerns
+              </button>
+            </div>
+          </fieldset> : null}
+
+          <fieldset className={styles.decisionCard}>
+            <legend>Request changes</legend>
+            <p className={styles.fieldHelp} id="repair-revision-help">
+              Describe the outcome you need. Repository-relative file names are allowed; raw patches, host paths, and sandbox paths are not.
+            </p>
+            <label htmlFor="repair-revision-instruction">
+              Revision instructions <span className={styles.required} aria-hidden="true">Required</span>
+            </label>
+            <textarea
+              id="repair-revision-instruction"
+              value={revisionInstruction}
+              onChange={(event) => setRevisionInstruction(event.target.value)}
+              aria-describedby="repair-revision-help"
+              maxLength={4000}
+              rows={5}
+              required
+              disabled={submitting || revisionSubmitting}
+              placeholder="Describe the exact behavior or files that need revision"
+            />
+            {submitting ? <p className={styles.note} role="status">Submitting revision…</p> : null}
+            <div className={styles.actions}>
+              <button type="button" disabled={submitting || revisionSubmitting || !revisionInstruction.trim()} onClick={() => void reviseRepair()}>
+                Request changes
+              </button>
+            </div>
+          </fieldset>
+
+          <div className={styles.decisionFooter}>
+            {decisionAvailable && !reviewerOverrideRequired ? <button
+              type="button"
+              disabled={submitting || !g10EvidenceAvailable}
+              title={!g10EvidenceAvailable ? "Required repair evidence is incomplete — Repair approval disabled" : undefined}
+              onClick={() => void decideGate("approve")}
+            >
+              {approvalActionLabel(projection.active_gate)}
+            </button> : null}
+            {decisionAvailable ? <button type="button" disabled={submitting} onClick={() => void decideGate("reject")}>
+              Reject
+            </button> : <button type="button" disabled={submitting} onClick={() => void rejectReviewedRepair()}>
+              Reject repair
+            </button>}
+          </div>
+        </div> : null}
+      </section>
+
+      <StageSummary {...shared} />
+      <WorkerStatus projection={projection} />
+      <LogsAndDiagnostics {...shared} />
+
+      <section className={`${styles.card} ${styles.cardWide} ${projection.status === "waiting_prompt" ? styles.prompt : ""}`} aria-labelledby="transform-prompt">
+        <span className={styles.eyebrow}>Prompt decision and reconstruction</span>
+        <h3 id="transform-prompt">Angular CLI prompt</h3>
+        {projection.status === "waiting_prompt"
+          && projection.active_prompt_id
+          && projection.active_prompt_checksum
+          ? <>
+              <p className={styles.promptText}>{projection.active_prompt_text ?? "Prompt text unavailable"}</p>
+              {projection.active_prompt_explanation ? <>
+                <p className={styles.promptText}>{projection.active_prompt_explanation.summary}</p>
+                <ul className={styles.optionEffects}>
+                  {projection.active_prompt_explanation.option_effects.map((effect) => <li key={effect}>{effect}</li>)}
+                </ul>
+                <p className={styles.promptText}>{projection.active_prompt_explanation.risk_note}</p>
+                <small>Explanation status: {projection.active_prompt_explanation.source}</small>
+              </> : <p className={styles.note}>Azure explanation is not available yet.</p>}
+              <div className={styles.actions}>
+                {projection.active_prompt_options.map((option) => <button
+                  key={option.option_id}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void decidePrompt(option.option_id)}
+                >
+                  {option.label}
+                </button>)}
+              </div>
+            </>
+          : <p className={styles.note}>No unresolved CLI prompt is projected. Reconstruction and deterministic retry status appear in the current step and workflow diagnostics.</p>}
+      </section>
+
+      <TransformationEvidence {...shared} />
+      <ValidationEvidence {...shared} />
+      <RepairEvidence {...shared} />
+      <SealAndRoute {...shared} />
+    </div>
+
+    <div className={styles.actions}>
+      {!terminalStatuses.has(projection.status)
+        ? <button className={styles.danger} type="button" disabled={submitting} onClick={() => void cancel()}>
+            Cancel Transformer
+          </button>
+        : null}
+      {["blocked", "waiting_retry", "waiting_repair_revision"].includes(projection.status)
+        ? <button type="button" disabled={submitting} onClick={() => void restart()}>
+            Restart from durable state
+          </button>
+        : null}
+    </div>
+  </div>;
+
+  async function refreshAll() {
+    await Promise.all([refreshTransformation(), refreshAuthoritativeState()]);
+  }
+
+  async function mutate(action: (key: string) => Promise<unknown>, fallback: string) {
+    if (submittingRef.current) return undefined;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setActionError(null);
+    setRevisionAccepted(null);
+    const key = crypto.randomUUID();
+    try {
+      const result = await action(key);
+      await refreshAll();
+      return result;
+    } catch (error) {
+      if (error instanceof ApiClientError && error.status === 409) {
+        await Promise.allSettled([refreshTransformation(), refreshAuthoritativeState()]);
+        setActionError({ message: conflictMessage(error), code: "STALE_STATE" });
+      } else if (error instanceof ApiClientError) {
+        const { code, message } = backendErrorMessage(error);
+        setActionError({ message, code });
+      } else {
+        setActionError({ message: error instanceof Error ? error.message : fallback });
+      }
+      return undefined;
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  function decideGate(decision: "approve" | "reject") {
+    if (!decisionAvailable || !current.active_gate || !current.active_gate_package_checksum || !current.workspace_fingerprint) return;
+    if (decision === "approve" && reviewerOverrideRequired) {
+      if (!overrideComment.trim() || !window.confirm("Approve this repair despite the Reviewer's unresolved concerns?")) return;
+    }
+    return mutate((key) => decideTransformationGate(runId, current.active_gate!, {
+      expected_state_version: current.state_version,
+      idempotency_key: key,
+      package_checksum: current.active_gate_package_checksum!,
+      workspace_fingerprint: current.workspace_fingerprint!,
+      decision,
+      comment: reviewerOverrideRequired && decision === "approve" ? overrideComment.trim() : undefined,
+      correlation_id: key,
+    }), "Gate decision failed.");
+  }
+
+  function decidePrompt(selectedOptionId: string) {
+    if (!current.active_prompt_id || !current.active_prompt_checksum) return;
+    return mutate((key) => decideTransformationPrompt(runId, current.active_prompt_id!, {
+      expected_state_version: current.state_version,
+      idempotency_key: key,
+      prompt_checksum: current.active_prompt_checksum!,
+      selected_option_id: selectedOptionId,
+      correlation_id: key,
+    }), "Prompt decision failed.");
+  }
+
+  function cancel() {
+    return mutate((key) => cancelTransformation(runId, {
+      expected_state_version: current.state_version,
+      idempotency_key: key,
+      correlation_id: key,
+    }), "Cancellation failed.");
+  }
+
+  function restart() {
+    return mutate((key) => restartTransformation(runId, {
+      expected_state_version: current.state_version,
+      idempotency_key: key,
+      correlation_id: key,
+    }), "Restart failed.");
+  }
+
+  async function reviseRepair() {
+    if (!current.repair_attempt_id || !current.repair_proposal_id || !current.repair_base_checksum || !revisionInstruction.trim()) return;
+    setRevisionSubmitting(true);
+    try {
+      return await mutate(async (key) => {
+        const result = await requestRepairRevision(runId, current.repair_attempt_id!, {
+          attempt_id: current.repair_attempt_id!,
+          proposal_id: current.repair_proposal_id!,
+          base_checksum: current.repair_base_checksum!,
+          instruction: revisionInstruction,
+          idempotency_key: key,
+        });
+        if (result.attempt_id) {
+          setRevisionAccepted({
+            attempt_id: result.attempt_id,
+            status: result.status,
+            idempotent_replay: result.idempotent_replay,
+          });
+        }
+        setRevisionInstruction("");
+        return result;
+      }, "Repair revision request failed.");
+    } finally {
+      setRevisionSubmitting(false);
+    }
+  }
+
+  function rejectReviewedRepair() {
+    if (!current.repair_attempt_id || !current.repair_proposal_id || !current.repair_base_checksum) return;
+    return mutate((key) => rejectRepair(runId, current.repair_attempt_id!, {
+      attempt_id: current.repair_attempt_id!,
+      proposal_id: current.repair_proposal_id!,
+      base_checksum: current.repair_base_checksum!,
+      idempotency_key: key,
+    }), "Repair rejection failed.");
+  }
+}

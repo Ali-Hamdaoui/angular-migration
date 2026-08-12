@@ -15,7 +15,8 @@ def _generation():
         run_id="run-1", expected_state_version=4, idempotency_key="plan-1", actor="operator",
         source_exact="18.2.13", source_family="angular-18.x", target_family="angular-21.x",
         catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
-        execution_profile_id="profile-node22-npm10", builder="@angular-devkit/build-angular:application",
+        execution_profile_id="profile-node22-npm10", execution_profile_checksum="sha256:" + "4" * 64,
+        builder="@angular-devkit/build-angular:application", resolved_scripts={"build": "build", "test": "test"},
         target_cli_exact="19.2.0", stage_route=(
             ("angular-18.x", "angular-19.x", "stage-18-to-19", "19.2.0"),
             ("angular-19.x", "angular-20.x", "stage-19-to-20", "20.0.0"),

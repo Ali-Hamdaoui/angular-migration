@@ -17,7 +17,7 @@ from app.api.planning_review_contracts import (
     PlanReviewResponse,
 )
 from app.artifact_store import ArtifactNotFoundError, LocalFilesystemArtifactStore
-from app.domain.contracts import ArtifactType, WorkflowEventType
+from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.domain.planning import MigrationPlan, StageExecutionPlan
 from app.domain.planning_review import (
     G06DecisionRequest,
@@ -25,6 +25,8 @@ from app.domain.planning_review import (
     PlanRevisionRequest,
     PlanningExplanationRequest,
     PlanningPackage,
+    PlanningReviewDecision,
+    PlanningReviewOutcome,
 )
 from app.repositories.models import (
     ActivePlanVersionModel,
@@ -33,9 +35,11 @@ from app.repositories.models import (
     G04ApprovalModel,
     G05ApprovalModel,
     G06ApprovalModel,
+    G06DecisionModel,
     LlmInvocationModel,
     MigrationPlanModel,
     MigrationRunModel,
+    PlanningJobModel,
     PlanApprovalStaleModel,
     PlanRevisionModel,
     PlanningReviewModel,
@@ -43,6 +47,8 @@ from app.repositories.models import (
     UsageCostRecordModel,
 )
 from app.repositories.session import session_scope
+from app.services.planning_job_service import PLANNING_JOB_NONTERMINAL_STATES
+from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.planning_review_application_service import (
     PlanRevisionService,
     PlanningAgentService,
@@ -54,6 +60,9 @@ from app.state.transition_service import (
     TransitionError,
     TransitionRequest,
 )
+
+
+G06_APPROVAL_NEXT_RUN_STATUS = RunStatus.WAITING_STAGE_PREPARATION
 
 
 class PlanningReviewEvidenceError(ValueError):
@@ -237,6 +246,10 @@ class PlanningReviewEvidenceApplicationService:
                 artifact_set_checksum=request.artifact_set_checksum,
                 status="in_progress",
                 package=None,
+                proposer_output=None,
+                reviewer_output=None,
+                revision_count=None,
+                outcome=None,
                 artifact_ids=[],
                 artifact_checksums={},
                 proposer_invocation_id=proposer_invocation.id,
@@ -251,7 +264,7 @@ class PlanningReviewEvidenceApplicationService:
             session.flush()
 
         try:
-            package = self._agent(run_id).explain(request)
+            outcome = self._review_outcome(self._agent(run_id).explain(request))
         except PlanningReviewApplicationError as error:
             self._mark_planning_failed(run_id, request.idempotency_key, error.code)
             raise PlanningReviewEvidenceError(error.code, error.message, error.status_code) from error
@@ -260,7 +273,9 @@ class PlanningReviewEvidenceApplicationService:
             raise PlanningReviewEvidenceError(
                 "PLANNING_DEPENDENCY_FAILED", "The Planning dependency failed; G06 remains unavailable.", 503
             ) from error
-        return self._complete_explanation(run_id, request, request_checksum, package)
+        if outcome.package is None:
+            return self._complete_nonaccepted_review(run_id, request, request_checksum, outcome)
+        return self._complete_explanation(run_id, request, request_checksum, outcome.package, outcome)
 
     def decide_g06(self, run_id: str, payload: G06DecisionApiRequest, actor: str) -> G06DecisionResponse:
         request = G06DecisionRequest(**payload.model_dump(exclude={"correlation_id"}, mode="json"))
@@ -268,6 +283,29 @@ class PlanningReviewEvidenceApplicationService:
         now = self._now()
         with self._scope() as session:
             run = self._authorized_run(session, run_id, actor)
+            stored_decision = session.scalar(
+                select(G06DecisionModel).where(
+                    G06DecisionModel.run_id == run_id,
+                    G06DecisionModel.idempotency_key == request.idempotency_key,
+                )
+            )
+            if stored_decision:
+                if stored_decision.request_checksum != request_checksum:
+                    raise PlanningReviewEvidenceError("IDEMPOTENCY_PAYLOAD_MISMATCH", "The idempotency key was already used with a different payload.", 409)
+                return G06DecisionResponse(
+                    run_id=stored_decision.run_id,
+                    gate_version=stored_decision.gate_version,
+                    decision=stored_decision.decision,
+                    status=stored_decision.status,
+                    accepted=stored_decision.status == "approved",
+                    package_checksum=stored_decision.package_checksum,
+                    artifact_set_checksum=stored_decision.artifact_set_checksum,
+                    plan_checksum=stored_decision.plan_checksum,
+                    stage_plan_checksum=stored_decision.stage_plan_checksum,
+                    state_version=stored_decision.resulting_state_version,
+                    event_sequence=run.state_version,
+                    idempotent_replay=True,
+                )
             existing = session.scalar(
                 select(G06ApprovalModel).where(
                     G06ApprovalModel.run_id == run_id, G06ApprovalModel.idempotency_key == request.idempotency_key
@@ -363,7 +401,22 @@ class PlanningReviewEvidenceApplicationService:
                     "plan_version": gate.plan_version,
                     "decision": request.decision.value,
                 },
+                next_run_status=G06_APPROVAL_NEXT_RUN_STATUS if request.decision.value in {"approve", "approve_with_comment"} else RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="completed" if request.decision.value in {"approve", "approve_with_comment"} else "waiting_approval",
+                next_approval_status="approved" if request.decision.value in {"approve", "approve_with_comment"} else "pending",
             )
+            if request.decision.value in {"approve", "approve_with_comment"}:
+                active_pointer = session.scalar(select(ActivePlanVersionModel).where(ActivePlanVersionModel.run_id == run_id, ActivePlanVersionModel.scope == "migration"))
+                if active_pointer is not None:
+                    active_pointer.migration_plan_id = active_plan.id
+                    active_pointer.stage_plan_id = active_stage.id
+                active_plan.status = "approved_for_execution"
+                active_plan.state_version = transition.next_state_version
+                active_plan.updated_at = now
+                active_stage.status = "approved_for_execution"
+                active_stage.state_version = transition.next_state_version
+                active_stage.updated_at = now
             gate.status = result.status
             gate.decision = request.decision.value
             gate.actor = actor
@@ -372,6 +425,46 @@ class PlanningReviewEvidenceApplicationService:
             gate.state_version = transition.next_state_version
             gate.event_sequence = transition.event_sequence
             gate.updated_at = now
+            if request.decision.value in {"approve", "approve_with_comment"}:
+                job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES)).order_by(PlanningJobModel.created_at.desc()))
+                if job is not None:
+                    job.status = "completed"
+                    job.current_step = "completed"
+                    job.state_version = transition.next_state_version
+                    job.completed_at = now
+                    job.updated_at = now
+            session.add(G06DecisionModel(
+                id="g06-decision-" + uuid4().hex[:12],
+                run_id=run_id,
+                gate_id=gate.gate_id,
+                gate_version=gate.gate_version,
+                idempotency_key=request.idempotency_key,
+                request_checksum=request_checksum,
+                decision=request.decision.value,
+                status=result.status,
+                package_checksum=gate.package_checksum,
+                artifact_set_checksum=gate.artifact_set_checksum,
+                plan_checksum=gate.plan_checksum,
+                stage_plan_checksum=gate.stage_plan_checksum,
+                expected_state_version=request.expected_state_version,
+                resulting_state_version=transition.next_state_version,
+                workspace_fingerprint=gate.workspace_fingerprint,
+                comment=gate.comment,
+                created_at=now,
+            ))
+            if result.accepted:
+                TransformationContinuationService().ensure_created_in_session(
+                    session,
+                    run_id=run_id,
+                    stage_id=active_stage.stage_id,
+                    g06_approval_id=gate.id,
+                    plan_id=active_plan.id,
+                    plan_checksum=active_plan.checksum,
+                    stage_plan_id=active_stage.id,
+                    stage_plan_checksum=active_stage.checksum,
+                    idempotency_key=f"{request.idempotency_key}:transformer",
+                    now=now,
+                )
             session.flush()
             return self._decision_response(gate)
 
@@ -389,10 +482,18 @@ class PlanningReviewEvidenceApplicationService:
                     .where(PlanRevisionModel.run_id == run_id)
                     .order_by(PlanRevisionModel.created_at.desc())
                 )
-                return self._revision_response(session, revision) if revision else None
+                if revision:
+                    return self._revision_response(session, revision)
+                try:
+                    plan, stage = self._active_plan_pair(session, run_id)
+                except PlanningReviewEvidenceError as error:
+                    if error.code == "PLAN_NOT_FOUND":
+                        return None
+                    raise
+                return self._bootstrap_response(plan, stage)
             return self._planning_response(session, review)
 
-    def _complete_explanation(self, run_id, request, request_checksum, package):
+    def _complete_explanation(self, run_id, request, request_checksum, package, outcome):
         now = self._now()
         with self._scope() as session:
             run = self._authorized_run(session, run_id, request.actor)
@@ -417,6 +518,10 @@ class PlanningReviewEvidenceApplicationService:
                 request.actor,
                 now,
                 {"artifact_ids": artifacts[0], "plan_version": request.plan_version},
+                next_run_status=RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="waiting_approval",
+                next_approval_status="pending",
             )
             reviewer_invocation = self._completed_invocation(
                 run, request, request_checksum, package, "phase_reviewer", "planning_review", completed, now
@@ -472,14 +577,129 @@ class PlanningReviewEvidenceApplicationService:
                 updated_at=now,
             )
             session.add(gate)
+            job = session.scalar(select(PlanningJobModel).where(PlanningJobModel.run_id == run_id, PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES)).order_by(PlanningJobModel.created_at.desc()))
+            if job is not None:
+                job.status = "waiting_g06"
+                job.current_step = "waiting_g06"
+                job.attempt = 0
+                job.state_version = completed.next_state_version
+                job.updated_at = now
             row.status = "completed"
             row.package = package_json
+            row.proposer_output = outcome.narrative.model_dump(mode="json")
+            row.reviewer_output = outcome.reviewer.model_dump(mode="json")
+            row.revision_count = outcome.revision_count
+            row.outcome = outcome.decision.value
             row.artifact_ids = artifacts[0]
             row.artifact_checksums = artifacts[1]
             row.reviewer_invocation_id = reviewer_invocation.id
             row.state_version = completed.next_state_version
             row.event_sequence = completed.event_sequence
             row.updated_at = now
+            session.flush()
+            return self._planning_response(session, row)
+
+    def _complete_nonaccepted_review(self, run_id, request, request_checksum, outcome):
+        now = self._now()
+        event_types = {
+            PlanningReviewDecision.REQUEST_REVISION: WorkflowEventType.PLANNING_REVIEW_REVISION_REQUIRED,
+            PlanningReviewDecision.REJECT: WorkflowEventType.PLANNING_REVIEW_REJECTED,
+            PlanningReviewDecision.INSUFFICIENT_CONTEXT: WorkflowEventType.PLANNING_REVIEW_INSUFFICIENT_CONTEXT,
+        }
+        review_statuses = {
+            PlanningReviewDecision.REQUEST_REVISION: "review_revision_required",
+            PlanningReviewDecision.REJECT: "review_rejected",
+            PlanningReviewDecision.INSUFFICIENT_CONTEXT: "review_insufficient_context",
+        }
+        with self._scope() as session:
+            run = self._authorized_run(session, run_id, request.actor)
+            row = session.scalar(
+                select(PlanningReviewModel).where(
+                    PlanningReviewModel.run_id == run_id,
+                    PlanningReviewModel.idempotency_key == request.idempotency_key,
+                )
+            )
+            if row is None:
+                raise PlanningReviewEvidenceError(
+                    "PLANNING_REVIEW_NOT_FOUND",
+                    "The Planning review request was not found.",
+                    404,
+                )
+            artifacts = self._write_review_outcome_artifacts(session, run, request, outcome, now)
+            status = review_statuses[outcome.decision]
+            completed = self._transition(
+                session,
+                run,
+                request.idempotency_key + ":completed",
+                run.state_version,
+                event_types[outcome.decision],
+                request.actor,
+                now,
+                {
+                    "artifact_ids": artifacts[0],
+                    "plan_version": request.plan_version,
+                    "review_outcome": outcome.decision.value,
+                },
+                next_run_status=RunStatus.WAITING_PLAN_APPROVAL,
+                next_run_phase="FEASIBILITY_PLANNING",
+                next_phase_status="waiting_approval",
+                next_approval_status="pending",
+            )
+            reviewer_invocation = self._completed_invocation(
+                run,
+                request,
+                request_checksum,
+                outcome,
+                "phase_reviewer",
+                "planning_review",
+                completed,
+                now,
+            )
+            reviewer_invocation.artifact_ids = artifacts[0]
+            reviewer_invocation.artifact_checksums = artifacts[1]
+            session.add(reviewer_invocation)
+            self._record_usage(session, run_id, reviewer_invocation.id, outcome.reviewer_usage, now)
+            invocation = session.get(LlmInvocationModel, row.proposer_invocation_id)
+            if invocation:
+                invocation.status = "completed"
+                invocation.deployment_alias = outcome.usage.get("model_deployment_alias", "azure-openai")
+                invocation.prompt_version = "planning_agent_v1"
+                invocation.schema_version = "planning-schema-registry-v1"
+                invocation.pricing_version = outcome.usage.get("pricing_version", "unknown")
+                invocation.artifact_ids = artifacts[0]
+                invocation.artifact_checksums = artifacts[1]
+                invocation.completed_at = now
+                invocation.state_version = completed.next_state_version
+                invocation.event_sequence = completed.event_sequence
+                self._record_usage(session, run_id, invocation.id, outcome.usage, now)
+            row.status = status
+            row.package = outcome.model_dump(mode="json", exclude={"package"})
+            row.proposer_output = outcome.narrative.model_dump(mode="json")
+            row.reviewer_output = outcome.reviewer.model_dump(mode="json")
+            row.revision_count = outcome.revision_count
+            row.outcome = outcome.decision.value
+            row.artifact_ids = artifacts[0]
+            row.artifact_checksums = artifacts[1]
+            row.reviewer_invocation_id = reviewer_invocation.id
+            row.error_code = None
+            row.state_version = completed.next_state_version
+            row.event_sequence = completed.event_sequence
+            row.updated_at = now
+            job = session.scalar(
+                select(PlanningJobModel)
+                .where(
+                    PlanningJobModel.run_id == run_id,
+                    PlanningJobModel.status.in_(PLANNING_JOB_NONTERMINAL_STATES),
+                )
+                .order_by(PlanningJobModel.created_at.desc())
+            )
+            if job is not None:
+                job.status = status
+                job.current_step = status
+                job.attempt = 0
+                job.state_version = completed.next_state_version
+                job.retryable = False
+                job.updated_at = now
             session.flush()
             return self._planning_response(session, row)
 
@@ -527,6 +747,50 @@ class PlanningReviewEvidenceApplicationService:
             session, run, values, package.plan_checksum, package.stage_plan_checksum, "s2-f07-i02", now
         )
 
+    def _write_review_outcome_artifacts(self, session, run, request, outcome, now):
+        final = {
+            "outcome": outcome.decision.value,
+            "narrative": outcome.narrative.model_dump(mode="json"),
+            "reviewer": outcome.reviewer.model_dump(mode="json"),
+            "plan_checksum": outcome.plan_checksum,
+            "stage_plan_checksum": outcome.stage_plan_checksum,
+        }
+        values = {
+            f"03_planning/versions/v{request.plan_version}/planning-input-manifest.json": {
+                "artifact_set_checksum": request.artifact_set_checksum,
+                "artifact_ids": [item.artifact_id for item in request.prerequisite_artifacts],
+                "checksums": {item.artifact_id: item.checksum for item in request.prerequisite_artifacts},
+            },
+            f"03_planning/versions/v{request.plan_version}/planning-proposer-output.json": outcome.narrative.model_dump(mode="json"),
+            f"03_planning/versions/v{request.plan_version}/planning-reviewer-output.json": outcome.reviewer.model_dump(mode="json"),
+            f"03_planning/versions/v{request.plan_version}/planning-explanation.json": final,
+            f"03_planning/versions/v{request.plan_version}/planning-usage-cost.json": {
+                "proposer": outcome.usage,
+                "reviewer": outcome.reviewer_usage,
+            },
+        }
+        return self._write_values(
+            session,
+            run,
+            values,
+            outcome.plan_checksum,
+            outcome.stage_plan_checksum,
+            "s2-f07-i02",
+            now,
+        )
+
+    @staticmethod
+    def _review_outcome(value):
+        if isinstance(value, PlanningReviewOutcome):
+            return value
+        if isinstance(value, PlanningPackage):
+            return PlanningReviewOutcome(
+                **value.model_dump(exclude={"review_status"}),
+                decision=PlanningReviewDecision.ACCEPT,
+                package=value,
+            )
+        raise TypeError("Planning agent returned an unsupported review result")
+
     def _write_values(self, session, run, values, plan_checksum, stage_checksum, policy_version, now):
         store = self._store_for_run(run)
         ids, checksums = [], {}
@@ -547,7 +811,15 @@ class PlanningReviewEvidenceApplicationService:
                 ArtifactMetadataModel(
                     id="metadata-" + stored.ref.artifact_id,
                     run_id=run.id,
-                    stage_id=stored.ref.stage_id,
+                    # Artifact-store layout segments such as ``03_planning``
+                    # are phase folders, not MigrationStage foreign keys.
+                    # Only the canonical ``stages/<stage-id>/...`` namespace
+                    # may populate relational stage ownership.
+                    stage_id=(
+                        stored.ref.stage_id
+                        if stored.ref.relative_path.startswith("stages/")
+                        else None
+                    ),
                     artifact_type=stored.ref.artifact_type.value,
                     relative_path=stored.ref.relative_path,
                     checksum=stored.ref.checksum,
@@ -943,7 +1215,7 @@ class PlanningReviewEvidenceApplicationService:
             artifact_checksums=current_checksums,
             artifact_links={item: f"/api/v1/artifacts/{item}" for item in current_checksums},
             gate_version=gate.gate_version if gate else self.GATE_VERSION,
-            gate_status=gate.status if gate else "blocked",
+            gate_status=gate.status if gate else "not_created",
             gate_decision=gate.decision if gate else None,
             package_checksum=gate.package_checksum if gate else None,
             artifact_set_checksum=gate.artifact_set_checksum if gate else None,
@@ -951,6 +1223,27 @@ class PlanningReviewEvidenceApplicationService:
             state_version=row.state_version,
             event_sequence=row.event_sequence,
             idempotent_replay=replay,
+        )
+
+    def _bootstrap_response(self, plan, stage):
+        checksums = dict(plan.artifact_checksums or {})
+        checksums.update(stage.artifact_checksums or {})
+        artifact_ids = sorted(checksums)
+        return PlanReviewResponse(
+            run_id=plan.run_id,
+            status="not_started",
+            plan=plan.plan,
+            stage_plan=stage.stage_plan,
+            plan_checksum=plan.checksum,
+            stage_plan_checksum=stage.checksum,
+            artifact_ids=artifact_ids,
+            artifact_checksums=checksums,
+            artifact_links={item: f"/api/v1/artifacts/{item}" for item in artifact_ids},
+            gate_version=self.GATE_VERSION,
+            gate_status="not_created",
+            computed_artifact_set_checksum=self._aggregate_artifact_checksum(checksums),
+            state_version=max(plan.state_version, stage.state_version),
+            event_sequence=max(plan.event_sequence, stage.event_sequence),
         )
 
     @staticmethod
@@ -995,7 +1288,7 @@ class PlanningReviewEvidenceApplicationService:
         gate.event_sequence = transition.event_sequence
         gate.updated_at = now
 
-    def _transition(self, session, run, key, expected, event_type, actor, now, payload):
+    def _transition(self, session, run, key, expected, event_type, actor, now, payload, **state_changes):
         try:
             return StateTransitionService(session).apply_transition(
                 TransitionRequest(
@@ -1007,6 +1300,7 @@ class PlanningReviewEvidenceApplicationService:
                     reason=event_type.value.lower(),
                     occurred_at=now,
                     payload=payload,
+                    **state_changes,
                 )
             )
         except StaleStateVersionError as error:

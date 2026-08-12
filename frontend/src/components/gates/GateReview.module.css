@@ -1,0 +1,50 @@
+.review { display: grid; min-width: 0; gap: var(--space-4); }
+.hero { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-6); border-bottom: 1px solid var(--color-border); padding-bottom: var(--space-6); }
+.eyebrow { margin: 0; color: var(--color-accent); font-size: 13px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+.hero h1, .hero h2 { margin: var(--space-1) 0 0; color: var(--color-text); font-size: clamp(1.75rem, 4vw, 2.5rem); line-height: 1.15; }
+.section, .decisionPanel { min-width: 0; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-1); padding: var(--space-6); }
+.section > h2, .section > h3, .decisionPanel h2, .decisionPanel h3 { margin: 0 0 var(--space-3); color: var(--color-text); font-size: 1.15rem; }
+.section p, .decisionPanel p { max-width: 72ch; margin: 0; color: var(--color-text-muted); font-size: 1rem; overflow-wrap: anywhere; }
+.consequence { margin-top: var(--space-3) !important; color: var(--color-text) !important; }
+.outcome { display: grid; gap: var(--space-2); margin-top: var(--space-4); border: 1px solid var(--color-border); border-left: 4px solid var(--color-warning); border-radius: 8px; background: var(--color-surface-2); padding: var(--space-4); }
+.outcome[data-status='approved'] { border-left-color: var(--color-success); }
+.outcome[data-status='rejected'] { border-left-color: var(--color-danger); }
+.outcome h3, .outcome h4 { margin: 0; color: var(--color-text); font-size: 1.1rem; }
+.outcomeComment { border-top: 1px solid var(--color-border); padding-top: var(--space-3); color: var(--color-text) !important; }
+.findingList { display: grid; gap: var(--space-2); margin: 0; padding-left: 1.25rem; color: var(--color-text); }
+.findingList li { padding-left: var(--space-1); overflow-wrap: anywhere; }
+.blockers { border-color: var(--color-danger); }
+.warnings { border-color: var(--color-warning); }
+.blockers .findingList li::marker { color: var(--color-danger); }
+.warnings .findingList li::marker { color: var(--color-warning); }
+.empty { color: var(--color-text-muted) !important; }
+.evidenceGrid { display: grid; gap: var(--space-3); }
+.evidenceCard { min-width: 0; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-2); padding: var(--space-4); }
+.evidenceHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.evidenceHeading h3, .evidenceHeading h4 { margin: 0; color: var(--color-text); font-size: 1rem; }
+.evidenceCard > p { margin-top: var(--space-2); }
+.artifactLinks { margin: var(--space-3) 0 0; padding-left: 1.25rem; }
+.artifactLinks a { display: inline-flex; min-height: 44px; align-items: center; color: var(--color-accent); font-weight: 700; overflow-wrap: anywhere; }
+.decisionRegion { position: sticky; z-index: 1; top: var(--space-4); min-width: 0; }
+.decisionPanel { border-color: var(--color-accent); }
+.decisionPanel label { display: grid; gap: var(--space-1); margin: var(--space-4) 0 var(--space-2); color: var(--color-text); font-weight: 700; }
+.decisionPanel label span { color: var(--color-text-muted); font-size: 14px; font-weight: 400; }
+.decisionPanel textarea { width: 100%; min-height: 7rem; resize: vertical; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-bg); color: var(--color-text); padding: var(--space-3); font: inherit; }
+.decisionActions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-3); }
+.decisionActions button { min-height: 44px; border: 1px solid var(--color-accent); border-radius: 8px; background: var(--color-surface-2); color: var(--color-text); padding: var(--space-2) var(--space-3); font: inherit; font-weight: 700; cursor: pointer; }
+.decisionActions button:first-child { background: var(--color-accent); color: var(--color-bg); }
+.decisionActions button:nth-child(2) { border-color: var(--color-warning); color: var(--color-warning); }
+.decisionActions button:last-child { border-color: var(--color-danger); color: var(--color-danger); }
+.decisionActions button:disabled { cursor: not-allowed; opacity: .5; }
+.bindings { display: grid; gap: var(--space-3); margin: 0; }
+.bindings div { display: grid; grid-template-columns: minmax(9rem, .4fr) minmax(0, 1fr); gap: var(--space-3); border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
+.bindings div:first-child { border-top: 0; padding-top: 0; }
+.bindings dt { color: var(--color-text-muted); font-weight: 700; }
+.bindings dd { min-width: 0; margin: 0; color: var(--color-text); }
+.bindings code { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .hero, .evidenceHeading { flex-direction: column; gap: var(--space-3); }
+  .section, .decisionPanel { padding: var(--space-4); }
+  .decisionActions, .bindings div { grid-template-columns: 1fr; }
+  .decisionRegion { position: static; }
+}

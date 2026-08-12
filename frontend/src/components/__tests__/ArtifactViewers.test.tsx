@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ArtifactPreviewPanel } from "@/components/ArtifactPreviewPanel";
+import type { ArtifactContentResponse } from "@/api/migrations";
 import { StaticLogArtifactViewer } from "@/components/LogViewer";
 import { MarkdownReportViewer } from "@/components/MarkdownReportViewer";
 import { UnifiedDiffViewer } from "@/components/UnifiedDiffViewer";
@@ -70,5 +71,34 @@ describe("artifact viewers", () => {
     expect(screen.getByText("attempt-001")).toBeInTheDocument();
     expect(screen.getByText("sha256:repair")).toBeInTheDocument();
     expect(screen.getByText(/\+import \{ NewModule \}/)).toBeInTheDocument();
+  });
+
+  it("does not let a late preview response from artifact A bleed into artifact B", async () => {
+    const artifactB: ArtifactRefDto = { ...artifact, artifact_id: "artifact-next", checksum: "sha256:next", relative_path: "reports/next.json", artifact_type: "json" };
+    let resolveA!: (value: ArtifactContentResponse) => void;
+    let resolveB!: (value: ArtifactContentResponse) => void;
+    const loadArtifact = vi.fn((artifactId: string): Promise<ArtifactContentResponse> => new Promise<ArtifactContentResponse>((resolve) => {
+      if (artifactId === artifact.artifact_id) resolveA = resolve;
+      else resolveB = resolve;
+    }));
+    const view = render(<ArtifactPreviewPanel artifact={artifact} loadArtifact={loadArtifact} />);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    view.rerender(<ArtifactPreviewPanel artifact={artifactB} loadArtifact={loadArtifact} />);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    resolveA({ artifact, content: "STALE ARTIFACT A", created_by: "old-service" });
+    await waitFor(() => expect(screen.queryByText("STALE ARTIFACT A")).not.toBeInTheDocument());
+    resolveB({ artifact: artifactB, content: "CURRENT ARTIFACT B", created_by: "new-service" });
+    expect(await screen.findByText("CURRENT ARTIFACT B")).toBeInTheDocument();
+    expect(screen.queryByText("STALE ARTIFACT A")).not.toBeInTheDocument();
+  });
+
+  it("shows missing creator provenance as unavailable", async () => {
+    const loadArtifact = vi.fn().mockResolvedValue({ artifact, content: "log", created_by: null });
+    render(<ArtifactPreviewPanel artifact={artifact} loadArtifact={loadArtifact} />);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByText("Provenance");
+    expect(await screen.findByText("Unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("backend")).not.toBeInTheDocument();
   });
 });
