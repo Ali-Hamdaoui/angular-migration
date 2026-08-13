@@ -10,8 +10,6 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _PLATFORM_REPOSITORY_ROOT = _BACKEND_ROOT.parent
-_STABLE_TARGET_ROOT = Path(r"C:\Users\abdelilah.mortaki\Desktop\angularRus")
-
 def _default_application_data_root() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     return Path(base) / "AngularMigrationControlTower" if base else Path.home() / ".local" / "share" / "AngularMigrationControlTower"
@@ -53,7 +51,10 @@ class Settings(BaseSettings):
     delivery_root: Path | None = None
     sandbox_root: Path | None = None
     allowed_source_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
-    allowed_target_roots: Annotated[list[Path], NoDecode] = Field(default_factory=lambda: [_STABLE_TARGET_ROOT])
+    allowed_target_roots: Annotated[list[Path], NoDecode] = Field(default_factory=list)
+    # Each entry is `profile-id|node-executable|npm-executable|npx-executable`.
+    # Multiple entries are separated with `;;` in environment configuration.
+    approved_runtime_profiles: Annotated[list[str], NoDecode] = Field(default_factory=list)
     platform_repository_root: Path = _PLATFORM_REPOSITORY_ROOT
 
     backend_cors_origins: Annotated[list[str], NoDecode] = Field(
@@ -107,6 +108,24 @@ class Settings(BaseSettings):
     def parse_path_list(cls, value: str | list[str] | list[Path] | None) -> list[Path]:
         """Accept comma-delimited path lists from environment variables."""
         return [] if not value else [Path(item) for item in _parse_csv(value)]
+
+    @field_validator("approved_runtime_profiles", mode="before")
+    @classmethod
+    def parse_runtime_profiles(cls, value: str | list[str] | None) -> list[str]:
+        if value is None or value == "":
+            return []
+        return [item.strip() for item in value.split(";;") if item.strip()] if isinstance(value, str) else value
+
+    @field_validator("approved_runtime_profiles", mode="after")
+    @classmethod
+    def validate_runtime_profiles(cls, value: list[str]) -> list[str]:
+        for item in value:
+            parts = item.split("|")
+            if len(parts) != 4 or not all(part.strip() for part in parts):
+                raise ValueError("approved_runtime_profiles entries must contain profile-id|node|npm|npx")
+            if not all(Path(path).is_absolute() for path in parts[1:]):
+                raise ValueError("approved runtime executable paths must be absolute")
+        return value
 
     @field_validator(
         "application_data_root", "artifact_root", "workspace_root", "snapshot_root", "delivery_root", "sandbox_root",

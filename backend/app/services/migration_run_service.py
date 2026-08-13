@@ -248,14 +248,23 @@ class MigrationRunService:
             post_g03 = previous is not None and previous.last_error_code in {
                 "ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED",
             } and approved_g03
+            baseline_retry = previous is not None and (
+                previous.last_error_code == "BASELINE_PREQUALIFICATION_BLOCKED"
+                or (
+                    previous.last_error_code == "BaselineApplicationError"
+                    and previous.last_error_message == "The run state version is stale."
+                )
+            )
             if run.status != RunStatus.FAILED.value and not (
                 post_g03 and run.status == RunStatus.BASELINE_QUALIFIED.value
+            ) and not (
+                baseline_retry and run.status == RunStatus.DIAGNOSTIC_HOLD.value
             ):
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED"}
-            if previous is None or previous.last_error_code not in retryable_codes:
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED", "BASELINE_PREQUALIFICATION_BLOCKED"}
+            if previous is None or (previous.last_error_code not in retryable_codes and not baseline_retry):
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
-            if post_g03:
+            if post_g03 or baseline_retry:
                 claim = session.scalar(select(ActiveRunClaimModel).where(
                     ActiveRunClaimModel.run_id == run_id,
                     ActiveRunClaimModel.target_output_path == run.target_output_path,
@@ -265,14 +274,14 @@ class MigrationRunService:
             self._validate_start_boundary(session, run)
             if run.state_version != expected_state_version:
                 raise MigrationRunError("STALE_STATE_VERSION", "The run state changed. Refresh the authoritative state and retry.")
-            active_job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection"})))
+            active_job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_baseline_retry"})))
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
             accepted = StateTransitionService(session).apply_transition(self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
-                status="waiting_g03" if post_g03 else "queued", actor=actor, idempotency_key=idempotency_key,
+                status="waiting_g03" if post_g03 else ("waiting_baseline_retry" if baseline_retry else "queued"), actor=actor, idempotency_key=idempotency_key,
                 attempt=previous.attempt + 1, queued_at=self._now(), state_version=accepted.next_state_version,
             )
             session.add(queued)

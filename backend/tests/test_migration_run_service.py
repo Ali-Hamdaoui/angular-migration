@@ -251,6 +251,48 @@ def test_source_intake_retry_preserves_failed_attempt_and_queues_new_job(tmp_pat
         assert jobs[1].attempt == 2
 
 
+@pytest.mark.parametrize(("error_code", "error_message"), [
+    ("BASELINE_PREQUALIFICATION_BLOCKED", "npm v1 lockfile was misread"),
+    ("BaselineApplicationError", "The run state version is stale."),
+])
+def test_baseline_prequalification_hold_retries_from_preserved_workspace(
+    tmp_path: Path, error_code: str, error_message: str,
+):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("baseline-retry-create"))
+    now = datetime.now(UTC)
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.DIAGNOSTIC_HOLD.value
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id))
+        assert claim is not None
+        claim.expires_at = now - timedelta(seconds=1)
+        session.add(SourceIntakeJobModel(
+            id="intake-baseline-blocked", run_id=created.run_id,
+            thread_id=created.graph_thread_id, status="failed", actor="operator",
+            idempotency_key="baseline-blocked", attempt=1, queued_at=now,
+            finished_at=now, last_error_code=error_code,
+            last_error_message=error_message, state_version=run.state_version,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(
+        run_id=created.run_id, expected_state_version=expected_version,
+        idempotency_key="retry-baseline-prequalification", actor="reviewer",
+    )
+
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(
+            SourceIntakeJobModel.run_id == created.run_id
+        ).order_by(SourceIntakeJobModel.attempt)))
+        assert [job.status for job in jobs] == ["failed", "waiting_baseline_retry"]
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id))
+        assert claim is not None and service._utc(claim.expires_at) > now
+
+
 def test_approved_g03_resumes_failed_gate_wait_without_erasing_attempt(tmp_path: Path):
     service, scope, graph = _service(tmp_path)
     created = service.create(_request("g03-resume-create"))

@@ -276,6 +276,22 @@ def test_windows_safe_environment_keeps_systemroot_for_npm_cmd():
     assert environment["SYSTEMROOT"] == os.environ["SYSTEMROOT"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process path contract")
+def test_windows_long_working_directory_uses_identity_preserving_short_path(tmp_path: Path):
+    from app.command_execution.worker import _windows_short_process_path
+
+    long_directory = tmp_path
+    while len(str(long_directory)) < 210:
+        long_directory /= "long-stage-workspace-segment"
+    long_directory.mkdir(parents=True)
+
+    process_path = _windows_short_process_path(long_directory.resolve(strict=True))
+
+    assert process_path.is_dir()
+    assert process_path.resolve(strict=True) == long_directory.resolve(strict=True)
+    assert len(str(process_path)) < len(str(long_directory))
+
+
 def test_nonzero_exit_persists_exit_code_logs_and_duration(tmp_path: Path):
     engine, factory = _database(tmp_path)
     session, run, authorization, execution = _seed_execution(factory, tmp_path)

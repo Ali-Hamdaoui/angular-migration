@@ -5,8 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from pathlib import Path
 
-from app.domain.command import ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
+    NPM_LOCKFILE_RECREATE_V2_RENDERER,
+    TRANSFORMATION_COMMAND_CATALOGUE,
+)
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -14,8 +19,8 @@ from app.domain.planning import (
     MigrationPlan,
     PlanGenerationRequest,
     PlanGenerationResult,
-    RepairPolicy,
     RecoveryPolicy,
+    RepairPolicy,
     StageExecutionPlan,
     ValidationPolicy,
     checksum_model,
@@ -87,20 +92,108 @@ class StageExecutionPlanService:
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
         }
+        if request.catalogue_version == "catalog-v3":
+            commands["angular_update"] = self._proven_stage_commands(request, source_family, target_family)
         draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
+
+    def _proven_stage_commands(self, request: PlanGenerationRequest, source_family: str, target_family: str):
+        """Render the exact manifest/lock/migration sequence proven by catalog-v3."""
+        from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
+
+        entry = CompatibilityCatalogueProvider().load("catalog-v3").entry_for(source_family, target_family)
+        if entry is None:
+            raise PlanningApplicationError("CATALOGUE_STAGE_MISSING", "The proven stage is absent from catalog-v3", 409)
+        target_major = int(target_family.removeprefix("angular-").removesuffix(".x"))
+        source_major = target_major - 1
+        assignments = {
+            **{f"dependencies[@angular/{name}]": entry.target_angular_exact for name in (
+                "animations", "common", "compiler", "core", "forms", "platform-browser",
+                "platform-browser-dynamic", "router",
+            )},
+            "dependencies[rxjs]": entry.rxjs_exact,
+            "dependencies[zone.js]": entry.zone_js_exact,
+            "devDependencies[@angular-devkit/build-angular]": entry.target_cli_exact,
+            "devDependencies[@angular/cli]": entry.target_cli_exact,
+            "devDependencies[@angular/compiler-cli]": entry.target_angular_exact,
+            "devDependencies[typescript]": entry.typescript_exact,
+        }
+        deletes: list[str] = []
+        if target_major == 12:
+            assignments.update({
+                "devDependencies[codelyzer]": "6.0.2",
+                "devDependencies[@babel/core]": "7.14.8",
+                "devDependencies[browserslist]": "4.28.2",
+                "devDependencies[tmp]": "0.2.1",
+                "devDependencies[node-releases]": "2.0.44",
+                "devDependencies[karma]": "6.4.4",
+                "devDependencies[karma-jasmine-html-reporter]": "1.5.4",
+                "overrides[tmp]": "0.2.1",
+                "overrides[node-releases]": "2.0.44",
+            })
+        if target_major >= 13:
+            deletes.extend(("devDependencies[codelyzer]", "devDependencies[tslint]"))
+            for name in ("builder", "eslint-plugin", "eslint-plugin-template", "schematics", "template-parser"):
+                assignments[f"devDependencies[@angular-eslint/{name}]"] = entry.angular_eslint_exact
+            if target_major == 13:
+                assignments["overrides[@nrwl/cli]"] = "13.1.3"
+            elif target_major >= 14:
+                deletes.append("overrides[@nrwl/cli]")
+        if target_major == 18:
+            assignments.update({
+                "devDependencies[chokidar]": "3.6.0",
+                "devDependencies[@typescript-eslint/eslint-plugin]": "^7.2.0",
+                "devDependencies[@typescript-eslint/parser]": "^7.2.0",
+                "devDependencies[eslint]": "^8.57.0",
+                "overrides[@angular-devkit/core][chokidar]": "3.6.0",
+                "overrides[@angular/compiler-cli][chokidar]": "4.0.3",
+            })
+        elif target_major >= 19:
+            deletes.extend((
+                "devDependencies[chokidar]",
+                "overrides[@angular-devkit/core]",
+                "overrides[@angular/compiler-cli]",
+            ))
+        commands = [
+            *(self._command("npm-pkg-delete", request, {"field": field}) for field in dict.fromkeys(deletes)),
+            *(self._command("npm-pkg-set", request, {"assignment": f"{field}={value}"}) for field, value in assignments.items() if value),
+            self._command("npm-lockfile-generate", request),
+            self._command("npm-ci-final", request),
+            self._command("angular-migrate-only", request, {
+                "package": "@angular/cli", "source_floor": f"{source_major}.0.0", "target_exact": entry.target_cli_exact,
+            }),
+            self._command("angular-migrate-only", request, {
+                "package": "@angular/core", "source_floor": f"{source_major}.0.0", "target_exact": entry.target_angular_exact,
+            }),
+        ]
+        if entry.angular_eslint_exact and target_major in {13, 14, 15, 16, 17, 18, 20}:
+            commands.append(self._command("angular-migrate-only", request, {
+                "package": "@angular-eslint/schematics", "source_floor": f"{source_major}.0.0", "target_exact": entry.angular_eslint_exact,
+            }))
+        if target_major == 20:
+            commands.append(self._command("angular-generate-inject", request))
+        return tuple(commands)
 
     @staticmethod
     def _command(command_id, request, parameter_bindings=None):
         if command_id == "angular-update-exact":
-            definition = ANGULAR_UPDATE_V3_RENDERER
-            template_version = 3
+            definition = ANGULAR_UPDATE_V2_RENDERER
+            template_version = 2
+        elif command_id == "npm-lockfile-generate" and request.catalogue_version == "catalog-v3":
+            definition = NPM_LOCKFILE_RECREATE_V2_RENDERER
+            template_version = 2
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
             template_version = 1
         stage_id = run_scoped_stage_id(request.run_id, request.stage_route[0][2])
         alias = "STAGE_WORKSPACE_" + stage_id.upper().replace("-", "_")
         bindings = dict(parameter_bindings or {})
+        if command_id == "angular-migrate-only":
+            bindings["runner_path"] = str(
+                Path(__file__).resolve().parents[1]
+                / "command_execution"
+                / "run_installed_migrations.cjs"
+            )
         return CommandTemplateReference(
             command_id=definition.command_id,
             template_id=definition.template_id,

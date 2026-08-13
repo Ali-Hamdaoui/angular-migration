@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -45,8 +46,8 @@ from app.repositories.models import (
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
-    StageGatePackageModel,
     StageGateDecisionModel,
+    StageGatePackageModel,
     StagePromptRequestModel,
     StageStepModel,
     StageWorkspaceBindingModel,
@@ -65,9 +66,13 @@ from app.services.dependency_transition_runner import (
     DependencyTransitionRunner,
 )
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.g08_pre_update_evidence_resolver import (
+    G08PreUpdateEvidenceError,
+    G08PreUpdateEvidenceResolver,
+)
 from app.services.lockfile_generation_runner import (
-    LOCKFILE_GENERATION_ETARGET,
     LOCKFILE_GENERATION_ERESOLVE,
+    LOCKFILE_GENERATION_ETARGET,
     LockfileGenerationError,
     LockfileGenerationRunner,
 )
@@ -79,14 +84,14 @@ from app.services.repair_application_service import (
     RepairLlmError,
     RepairProposal,
 )
-from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.stage_execution_application_service import validation_execution_key
+from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.transformation_continuation_service import (
     TransformationContinuationService,
     append_continuation_event,
 )
+from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
 from app.services.validation_runner import (
     BuildAgent,
     TestAgent,
@@ -132,6 +137,7 @@ class TransformerOrchestrator:
         self._stage = stage_service or TransformerStageService(scope=scope)
         self._gates = gate_service or StageGateService()
         self._evidence = transformation_evidence or AngularTransformationEvidenceService()
+        self._g08_pre_update = G08PreUpdateEvidenceResolver()
         self._prompt_explainer = prompt_explainer or PromptExplanationService(scope=scope)
         self._validation = validation_runner or ValidationRunner()
         self._build_agent = BuildAgent(self._validation)
@@ -454,12 +460,47 @@ class TransformerOrchestrator:
     def _handle_prompt(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
-            step = session.scalar(
-                select(StageStepModel).where(
-                    StageStepModel.stage_id == continuation.current_stage_id,
-                    StageStepModel.name == "angular_update-0",
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            references = ((stage_plan.stage_plan or {}).get("commands") or {}).get(
+                "angular_update"
+            ) if stage_plan is not None else None
+            if stage_plan is None:
+                historical_steps = session.scalars(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name.like("angular_update-%"),
+                    )
+                ).all()
+                references = [{} for _item in historical_steps]
+            if not references:
+                self._block(
+                    session,
+                    continuation,
+                    "ANGULAR_UPDATE_EVIDENCE_MISSING",
+                    "Approved Angular update command group is missing",
                 )
+                return
+            indexed_steps = [
+                session.scalar(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name == f"angular_update-{index}",
+                    )
+                )
+                for index in range(len(references))
+            ]
+            current = next(
+                (
+                    (index, item)
+                    for index, item in enumerate(indexed_steps)
+                    if item is not None and item.status != "PASSED"
+                ),
+                None,
             )
+            if current is None:
+                self._queue(continuation, "target_inspection")
+                return
+            command_index, step = current
             execution = session.get(CommandExecutionModel, step.execution_id) if step and step.execution_id else None
             prompt = (
                 session.get(StagePromptRequestModel, execution.prompt_request_id)
@@ -473,7 +514,29 @@ class TransformerOrchestrator:
                 if execution.status == "succeeded":
                     step.status = "PASSED"
                     step.completed_at = datetime.now(UTC)
-                    attempt = self._latest_repair(session, continuation)
+                    step.artifact_ids = list(execution.artifact_ids or [])
+                    step.output_checksum = execution.runtime_checksum
+                    next_index = command_index + 1
+                    if next_index < len(references):
+                        if not execution.checkpoint_id:
+                            self._block(
+                                session,
+                                continuation,
+                                "ANGULAR_UPDATE_EVIDENCE_MISSING",
+                                "Angular update command lacks its reconstruction checkpoint",
+                            )
+                            return
+                        self._stage.queue_angular_update_command(
+                            session,
+                            continuation,
+                            command_index=next_index,
+                            checkpoint_id=execution.checkpoint_id,
+                        )
+                        return
+                    attempt = session.query(RepairAttemptModel).filter_by(
+                        run_id=continuation.run_id,
+                        stage_id=continuation.current_stage_id,
+                    ).order_by(RepairAttemptModel.attempt_number.desc()).first()
                     if attempt is not None and attempt.status == "applied_verified":
                         attempt.status = "migration_retried"
                         attempt.updated_at = datetime.now(UTC)
@@ -658,9 +721,18 @@ class TransformerOrchestrator:
             if plan is None or plan.run_id != continuation.run_id:
                 raise TransformerStageError("PLAN_BINDING_MISSING", "Migration plan for the run is missing")
             stage_value = stage_plan.stage_plan or {}
+            try:
+                pre_update = self._g08_pre_update.resolve(
+                    session, run, continuation, checkpoint
+                )
+            except G08PreUpdateEvidenceError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
             context = {
                 "workspace_path": binding.workspace_path,
-                "checkpoint_path": checkpoint.workspace_path,
+                "checkpoint_path": pre_update.path,
+                "pre_update_checkpoint_id": pre_update.checkpoint_id,
+                "pre_update_fingerprint": pre_update.fingerprint,
                 "target_core": stage_value.get("target_exact"),
                 "target_cli": stage_value.get("target_cli_exact") or stage_value.get("target_exact"),
                 "ng_version_output": output,
@@ -673,6 +745,14 @@ class TransformerOrchestrator:
                 "workspace_fingerprint": binding.workspace_fingerprint,
             }
         try:
+            actual_pre_fingerprint = StageSandboxCopier.fingerprint(
+                Path(context["checkpoint_path"])
+            )
+            if actual_pre_fingerprint != context["pre_update_fingerprint"]:
+                raise AngularTransformationEvidenceError(
+                    "G08_PRE_UPDATE_EVIDENCE_CHANGED",
+                    "The immutable pre-update evidence no longer matches its recorded fingerprint.",
+                )
             context["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
                 Path(context["workspace_path"])
             )
@@ -683,6 +763,8 @@ class TransformerOrchestrator:
                 target_cli=context["target_cli"],
                 ng_version_output=context["ng_version_output"],
                 angular_execution_id=context["angular_execution_id"],
+                expected_pre_fingerprint=context["pre_update_fingerprint"],
+                expected_post_fingerprint=context["workspace_fingerprint"],
             )
         except AngularTransformationEvidenceError as error:
             with self._scope() as session:
@@ -706,6 +788,8 @@ class TransformerOrchestrator:
             "version_evidence_checksum": version_artifact.ref.checksum,
             "migration_ledger_artifact_id": ledger_artifact.ref.artifact_id,
             "migration_ledger_checksum": ledger_artifact.ref.checksum,
+            "pre_update_checkpoint_id": context["pre_update_checkpoint_id"],
+            "pre_update_checkpoint_fingerprint": context["pre_update_fingerprint"],
         }
         gate_artifact = self._stage.write_gate_package(
             run_id=context["run_id"],
@@ -1098,6 +1182,10 @@ class TransformerOrchestrator:
     def _classify_failure(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
+            if self._resume_validation_identity_collision(session, continuation):
+                return
+            if self._resume_missing_chrome_validation(session, continuation):
+                return
             if self._resume_stale_g08_validation(session, continuation):
                 return
             if self._recover_pre_materialization_revalidation(session, continuation):
@@ -1280,9 +1368,8 @@ class TransformerOrchestrator:
                                 and execution.status == "failed"
                                 and execution.template_version == 2
                             ):
-                                # First-time dirty-workspace failure (legacy v2
-                                # plan): the v3 --allow-dirty retry is the fix,
-                                # no repair is needed. Restore the execution-
+                                # First-time update failure (legacy v2 plan):
+                                # restore the execution-
                                 # bound checkpoint, persist a post-repair
                                 # checkpoint so the v2->v3 supersession binds
                                 # correctly, and queue the governed retry.
@@ -1732,6 +1819,10 @@ class TransformerOrchestrator:
                 return
             if self._resume_stale_g08_validation(session, continuation):
                 return
+            if self._resume_missing_chrome_validation(session, continuation):
+                return
+            if self._resume_validation_identity_collision(session, continuation):
+                return
             attempt = self._latest_repair(
                 session, continuation, exclude_statuses={"superseded"}
             )
@@ -1761,6 +1852,194 @@ class TransformerOrchestrator:
             attempt = self._latest_repair(session, continuation)
             attempt.risk_level = str(proposal["risk_level"])
             self._queue(continuation, "review_repair")
+
+    def _resume_missing_chrome_validation(self, session, continuation) -> bool:
+        """Retry only tests after a proven sanitized-environment Chrome omission."""
+        if continuation.current_node not in {"classify_failure", "propose_repair"} or (
+            continuation.last_error_code
+            not in {"STAGE_PLAN_COMMAND_AUTHORITY_MISSING", "FAILURE_ROUTE_NO_PROGRESS"}
+        ):
+            return False
+        gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.gate_id == "G08",
+                StageGatePackageModel.status == "approved",
+            )
+            .order_by(StageGatePackageModel.created_at.desc())
+            .limit(1)
+        )
+        binding = self._stage._binding(session, continuation)
+        steps = {
+            step.name: step
+            for step in session.scalars(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == continuation.run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name.in_(("final_install-0", "builds-0", "tests-0")),
+                )
+            )
+        }
+        test_step = steps.get("tests-0")
+        execution = (
+            session.get(CommandExecutionModel, test_step.execution_id)
+            if test_step is not None and test_step.execution_id
+            else None
+        )
+        chrome_bin = Path(os.environ.get("CHROME_BIN", ""))
+        if (
+            gate is None
+            or gate.workspace_fingerprint != binding.workspace_fingerprint
+            or steps.get("final_install-0") is None
+            or steps["final_install-0"].status != "PASSED"
+            or steps.get("builds-0") is None
+            or steps["builds-0"].status != "PASSED"
+            or test_step is None
+            or test_step.status != "FAILED"
+            or execution is None
+            or execution.command_id != "npm-script-test-ci"
+            or execution.status != "failed"
+            or not execution.stdout_artifact_id
+            or not chrome_bin.is_absolute()
+            or not chrome_bin.is_file()
+        ):
+            return False
+        run = session.get(MigrationRunModel, continuation.run_id)
+        metadata = session.get(
+            ArtifactMetadataModel, f"metadata-{execution.stdout_artifact_id}"
+        )
+        if run is None or metadata is None or metadata.run_id != run.id:
+            return False
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            ).read_artifact(run.id, metadata.relative_path)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError):
+            return False
+        if (
+            stored.ref.artifact_id != execution.stdout_artifact_id
+            or stored.ref.checksum != metadata.checksum
+            or "No binary for Chrome browser on your platform." not in stored.content
+            or 'set "CHROME_BIN" env variable' not in stored.content
+        ):
+            return False
+        now = datetime.now(UTC)
+        attempt = (
+            session.query(RepairAttemptModel)
+            .filter_by(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        if attempt is not None and not attempt.proposal_artifact_id:
+            attempt.status = "environment_revalidating"
+            attempt.completed_at = None
+            attempt.updated_at = now
+        test_step.status = "PENDING"
+        test_step.execution_id = None
+        test_step.started_at = None
+        test_step.completed_at = None
+        test_step.updated_at = now
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "test")
+        return True
+
+    def _resume_validation_identity_collision(self, session, continuation) -> bool:
+        """Resume validation after the legacy cross-stage initial-key collision."""
+        if continuation.current_node not in {"classify_failure", "propose_repair"} or (
+            continuation.last_error_code
+            not in {"IDEMPOTENCY_KEY_REUSED", "REPAIR_DEPENDENCY_EVIDENCE_INVALID"}
+        ):
+            return False
+        gate = session.scalar(
+            select(StageGatePackageModel)
+            .where(
+                StageGatePackageModel.run_id == continuation.run_id,
+                StageGatePackageModel.stage_id == continuation.current_stage_id,
+                StageGatePackageModel.gate_id == "G08",
+                StageGatePackageModel.status == "approved",
+            )
+            .order_by(StageGatePackageModel.created_at.desc())
+            .limit(1)
+        )
+        binding = self._stage._binding(session, continuation)
+        steps = list(
+            session.scalars(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == continuation.run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                    StageStepModel.name.in_(("final_install-0", "builds-0", "tests-0")),
+                )
+            )
+        )
+        attempt = (
+            session.query(RepairAttemptModel)
+            .filter_by(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        run = session.get(MigrationRunModel, continuation.run_id)
+        metadata = (
+            session.get(
+                ArtifactMetadataModel,
+                f"metadata-{attempt.failure_evidence_artifact_id}",
+            )
+            if attempt is not None and attempt.failure_evidence_artifact_id
+            else None
+        )
+        if (
+            gate is None
+            or gate.workspace_fingerprint != binding.workspace_fingerprint
+            or len(steps) != 3
+            or any(step.status != "PENDING" or step.execution_id for step in steps)
+            or attempt is None
+            or attempt.status != "evidence_frozen"
+            or attempt.proposal_artifact_id
+            or run is None
+            or metadata is None
+            or metadata.run_id != run.id
+        ):
+            return False
+        try:
+            stored = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            ).read_artifact(run.id, metadata.relative_path)
+            evidence = json.loads(stored.content)
+        except (
+            ArtifactNotFoundError,
+            ArtifactStoreError,
+            OSError,
+            json.JSONDecodeError,
+        ):
+            return False
+        normalized = evidence.get("normalized_failure") or {}
+        if (
+            stored.ref.artifact_id != attempt.failure_evidence_artifact_id
+            or stored.ref.checksum != metadata.checksum
+            or evidence.get("workspace_fingerprint") != gate.workspace_fingerprint
+            or normalized.get("error_code") != "IDEMPOTENCY_KEY_REUSED"
+            or normalized.get("command_id") != "angular-version-verify"
+            or normalized.get("exit_code") != 0
+        ):
+            return False
+        now = datetime.now(UTC)
+        attempt.status = "superseded"
+        attempt.completed_at = now
+        attempt.updated_at = now
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "final_install")
+        return True
 
     def _review_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
@@ -3126,21 +3405,26 @@ class TransformerOrchestrator:
         return route.value in {"repairable_source", "angular_update_peer_conflict"}
 
     @staticmethod
-    def _is_angular_update_failure(session, continuation) -> bool:
-        step = session.scalar(
+    def _failed_angular_update_step(session, continuation):
+        return session.scalar(
             select(StageStepModel).where(
                 StageStepModel.run_id == continuation.run_id,
                 StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == "angular_update-0",
+                StageStepModel.name.like("angular_update-%"),
                 StageStepModel.status == "FAILED",
-            )
+            ).order_by(StageStepModel.updated_at.desc(), StageStepModel.id.desc())
         )
+
+    @staticmethod
+    def _is_angular_update_failure(session, continuation) -> bool:
+        step = TransformerOrchestrator._failed_angular_update_step(session, continuation)
         if step is None or not step.execution_id:
             return False
         execution = session.get(CommandExecutionModel, step.execution_id)
         return (
             execution is not None
-            and execution.command_id == "angular-update-exact"
+            and execution.operation_kind == "mutating"
+            and execution.status in {"failed", "interrupted", "timed_out"}
         )
 
     @staticmethod
@@ -3154,13 +3438,7 @@ class TransformerOrchestrator:
         """
         if not TransformerOrchestrator._is_angular_update_failure(session, continuation):
             return False
-        step = session.scalar(
-            select(StageStepModel).where(
-                StageStepModel.run_id == continuation.run_id,
-                StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == "angular_update-0",
-            )
-        )
+        step = TransformerOrchestrator._failed_angular_update_step(session, continuation)
         execution = (
             session.get(CommandExecutionModel, step.execution_id)
             if step is not None and step.execution_id
@@ -3168,6 +3446,7 @@ class TransformerOrchestrator:
         )
         return (
             execution is not None
+            and execution.command_id == "angular-update-exact"
             and execution.prompt_request_id is None
             and (
                 execution.status in ("failed", "interrupted")
@@ -3636,13 +3915,7 @@ class TransformerOrchestrator:
         decision that drove it (prompt.reconstruction_checkpoint_id), and the
         checkpoint must still agree with the durable workspace binding.
         """
-        step = session.scalar(
-            select(StageStepModel).where(
-                StageStepModel.run_id == continuation.run_id,
-                StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == "angular_update-0",
-            )
-        )
+        step = TransformerOrchestrator._failed_angular_update_step(session, continuation)
         execution = (
             session.get(CommandExecutionModel, step.execution_id)
             if step is not None and step.execution_id
@@ -3835,7 +4108,13 @@ class TransformerOrchestrator:
         ).filter(
             RepairAttemptModel.status != "superseded"
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-        return attempt.id if attempt and attempt.status in {"applied", "applied_verified", "migration_retried", "revalidating"} else "initial"
+        return attempt.id if attempt and attempt.status in {
+            "applied",
+            "applied_verified",
+            "migration_retried",
+            "revalidating",
+            "environment_revalidating",
+        } else f"initial:{continuation.current_stage_id}"
 
     @staticmethod
     def _target_version_recovery_required(execution) -> bool:

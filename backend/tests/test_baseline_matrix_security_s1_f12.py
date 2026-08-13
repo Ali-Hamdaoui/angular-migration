@@ -1,6 +1,8 @@
 import json
+from types import SimpleNamespace
 
 from app.domain.baseline_matrix import BaselineTargetDiscoveryService, BaselineTargetKind, BaselineTargetStatus, normalize_command_result
+from app.services.baseline_validation_application_service import BaselineValidationApplicationService
 
 
 def test_discovery_is_read_only_and_does_not_execute_package_scripts(tmp_path):
@@ -34,3 +36,22 @@ def test_missing_lint_is_not_a_successful_validation(tmp_path):
     result = normalize_command_result(lint, exit_code=0, duration_ms=0)
 
     assert result.status is BaselineTargetStatus.SKIPPED_NOT_CONFIGURED
+
+
+def test_runtime_environment_passes_only_a_valid_explicit_chrome_binary(tmp_path, monkeypatch):
+    chrome = tmp_path / "chrome.exe"
+    chrome.write_bytes(b"")
+    monkeypatch.setenv("CHROME_BIN", str(chrome))
+    selected = {
+        "profile_id": "node12-npm8", "checksum": "sha256:runtime",
+        "node_executable": str(tmp_path / "node.exe"),
+        "package_manager_executable": str(tmp_path / "npm.cmd"),
+        "npx_executable": str(tmp_path / "npx.cmd"),
+    }
+    profile = SimpleNamespace(
+        selected_profile_id="node12-npm8", selected_checksum="sha256:runtime", profiles=[selected],
+    )
+
+    environment = BaselineValidationApplicationService._runtime_environment(profile)
+
+    assert environment["CHROME_BIN"] == str(chrome)

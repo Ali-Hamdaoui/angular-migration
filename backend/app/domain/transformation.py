@@ -194,6 +194,18 @@ class StageGateDecisionRequest(ContractModel):
     correlation_id: str = Field(min_length=1, max_length=128)
 
 
+class G08LedgerRegenerationRequest(ContractModel):
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    rejected_package_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    superseded_package_checksum: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    version_evidence_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    correlation_id: str = Field(min_length=1, max_length=128)
+
+
 class PromptDecisionRequest(ContractModel):
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=128)

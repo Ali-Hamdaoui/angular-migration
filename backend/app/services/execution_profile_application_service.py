@@ -97,15 +97,37 @@ class ExecutionProfileApplicationService:
         if environment is None:
             return (), None
         snapshot = environment.snapshot
+        configured_profiles = snapshot.get("runtime_profiles") or []
+        network = snapshot.get("network", {})
+        controlled = snapshot.get("controlled_probes", {})
+        registry_probe = controlled.get("npm_registry", {})
+        registry_configured = registry_probe.get("status") == "passed" and bool(registry_probe.get("value"))
+        if configured_profiles:
+            candidates = tuple(
+                RuntimeCandidate(
+                    profile_id=item["profile_id"],
+                    operating_system="windows",
+                    architecture="amd64",
+                    node_executable=item["node_executable"], node_exact=item["node_exact"],
+                    npm_executable=item["npm_executable"], npm_exact=item["npm_exact"],
+                    npx_executable=item["npx_executable"], npx_exact=item["npx_exact"],
+                    registry_configured=registry_configured,
+                    proxy_configured=bool(network.get("proxy_configured") or network.get("https_proxy_configured")),
+                    certificate_valid=bool(network.get("strict_ssl")),
+                    environment_allowlist_valid=True,
+                    cache_policy_valid=True,
+                    network_policy="approved-registries-only",
+                    available=True,
+                )
+                for item in configured_profiles
+            )
+            return candidates, environment.checksum
         runtimes = {item["name"]: item for item in snapshot.get("runtimes", [])}
         required = [runtimes.get(name) for name in ("node", "npm", "npx")]
         if snapshot.get("status") == "blocked" or any(not item or item.get("status") != "available" or not item.get("executable") or not item.get("version") for item in required):
             return (), environment.checksum
-        network = snapshot.get("network", {})
-        controlled = snapshot.get("controlled_probes", {})
         if any(controlled.get(name, {}).get("status") != "passed" for name in ("node_exec_path", "npm_registry")):
             return (), environment.checksum
-        registry_probe = controlled.get("npm_registry", {})
         registry_configured = (
             registry_probe.get("status") == "passed"
             and bool(registry_probe.get("value"))

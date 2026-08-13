@@ -116,7 +116,10 @@ class BaselineTargetDiscoveryService:
             if isinstance(script, str) and script.strip():
                 target_id = f"script:{script_name}"
                 if not any(item.target_id == target_id for item in targets):
-                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", ("run", script_name)))
+                    arguments = ["run", script_name]
+                    if kind is BaselineTargetKind.TEST and self._angular_cli_test_script(script):
+                        arguments.extend(("--", "--watch=false", "--browsers=ChromeHeadless"))
+                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", tuple(arguments)))
 
         # Keep the matrix honest: absent test/lint configuration is represented
         # explicitly and never interpreted as a successful command.
@@ -145,7 +148,14 @@ class BaselineTargetDiscoveryService:
             arguments = ["ng", kind.value, project]
             if configuration:
                 arguments.extend(("--configuration", configuration))
+            if kind is BaselineTargetKind.TEST and builder.endswith(":karma"):
+                arguments.extend(("--watch=false", "--browsers=ChromeHeadless"))
             yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments), builder=builder)
+
+    @staticmethod
+    def _angular_cli_test_script(script: str) -> bool:
+        tokens = script.strip().lower().split()
+        return len(tokens) >= 2 and tokens[:2] in (["ng", "test"], ["ng.cmd", "test"])
 
     @staticmethod
     def _jest_alias(builder: Any, scripts: Any, definition: dict[str, Any]) -> bool:

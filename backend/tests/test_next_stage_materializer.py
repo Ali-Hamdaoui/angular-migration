@@ -70,3 +70,22 @@ def test_next_stage_blocks_when_sealed_package_and_lock_disagree(tmp_path: Path)
 
     with pytest.raises(NextStageMaterializerError, match="disagree"):
         NextStageMaterializerService().materialize(_context(tmp_path))
+
+
+def test_next_stage_supports_sealed_npm_v1_lockfile(tmp_path: Path):
+    (tmp_path / "package.json").write_text(
+        '{"dependencies":{"@angular/core":"^19.2.0"}}', encoding="utf-8"
+    )
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 1,
+                "dependencies": {"@angular/core": {"version": "19.2.0"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = NextStageMaterializerService().materialize(_context(tmp_path))
+
+    assert plan.source_exact == "19.2.0"

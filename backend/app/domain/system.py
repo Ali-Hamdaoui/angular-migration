@@ -55,6 +55,7 @@ class EnvironmentCapabilitySnapshot(BaseModel):
     policy_version: str
     status: Literal["available", "degraded", "blocked"]
     runtimes: list[RuntimeInventoryEntry]
+    runtime_profiles: list[dict[str, str]] = Field(default_factory=list)
     node_npm_npx_paired: bool
     git_ready: bool
     python_ready: bool

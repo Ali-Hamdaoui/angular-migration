@@ -605,7 +605,17 @@ class CommandPolicyEngineService:
             return reject("PLAN_NOT_FOUND", "stage plan version is not authoritative")
 
         refs = [ref for group in (stage_data.get("commands") or {}).values() for ref in group]
-        planned = next((ref for ref in refs if ref.get("command_id") == request.command_id), None)
+        command_refs = [ref for ref in refs if ref.get("command_id") == request.command_id]
+        planned = next(
+            (
+                ref for ref in command_refs
+                if ref.get("template_id") == request.template_id
+                and ref.get("template_version") == request.template_version
+                and ref.get("executable") == request.executable
+                and list(ref.get("arguments") or []) == list(request.arguments)
+            ),
+            command_refs[0] if len(command_refs) == 1 else None,
+        )
         repair_transition = bool(
             repair_transition_attempt_id
             and self._valid_repair_dependency_transition(

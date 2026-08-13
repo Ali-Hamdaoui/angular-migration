@@ -14,6 +14,7 @@ from app.repositories.baseline_g03_models import G03ApprovalModel
 from app.artifact_store import ArtifactNotFoundError
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest
+from app.services.workspace_fingerprint import workspace_fingerprint_v1
 class BaselineG03ApplicationError(ValueError):
     def __init__(self, code: str, message: str, status_code: int = 422):
         super().__init__(message)
@@ -24,7 +25,14 @@ class BaselineG03ApplicationService:
     def get(self, run_id):
         with self.scope() as s:
             row=s.scalar(select(BaselineAssessmentModel).where(BaselineAssessmentModel.run_id==run_id).order_by(BaselineAssessmentModel.created_at.desc()))
-            approval = s.scalar(select(G03ApprovalModel).where(G03ApprovalModel.run_id == run_id).order_by(G03ApprovalModel.updated_at.desc()))
+            approval = None if row is None else s.scalar(
+                select(G03ApprovalModel)
+                .where(
+                    G03ApprovalModel.run_id == run_id,
+                    G03ApprovalModel.package_checksum == row.package_checksum,
+                )
+                .order_by(G03ApprovalModel.updated_at.desc())
+            )
             return self.dto(row, g03_decision=approval.decision if approval else None) if row else None
     def qualify(self, run_id, request):
         with self.scope() as s:
@@ -39,7 +47,8 @@ class BaselineG03ApplicationService:
             parity=s.scalar(select(BaselineParityEvidenceModel).where(BaselineParityEvidenceModel.run_id==run_id).order_by(BaselineParityEvidenceModel.created_at.desc()))
             if parity is None or parity.status != "captured":
                 raise BaselineG03ApplicationError("BASELINE_PARITY_EVIDENCE_REQUIRED", "Baseline parity evidence must be captured before G03 qualification.", 409)
-            vals=list(s.scalars(select(BaselineValidationModel).where(BaselineValidationModel.run_id==run_id)))
+            validation_history=list(s.scalars(select(BaselineValidationModel).where(BaselineValidationModel.run_id==run_id).order_by(BaselineValidationModel.created_at,BaselineValidationModel.id)))
+            vals=self._latest_validations(validation_history)
             profile=s.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id==run_id).order_by(ExecutionProfileModel.updated_at.desc()))
             self._validate_parity(s, run, baseline, parity, vals, profile)
             installation = s.scalar(select(CommandExecutionModel).where(CommandExecutionModel.run_id == run_id, CommandExecutionModel.command_id == "npm-ci-bootstrap").order_by(CommandExecutionModel.finished_at.desc()))
@@ -58,7 +67,8 @@ class BaselineG03ApplicationService:
             evidence_artifacts = tuple({"artifact_id": artifact_id, "checksum": registered[artifact_id].checksum} for artifact_id in evidence_ids)
             runtime_status = "selected" if profile and profile.selected_profile_id and profile.selected_checksum else "not_proven"
             install_status = self.installation_status(installation)
-            evidence=BaselineEvidence(runtime={"status":runtime_status},install={"status":install_status},validations=tuple({"kind":v.kind,"status":self.validation_status(v)} for v in vals),parity={"failures":parity.failures if parity else [],"confidence":parity.confidence if parity else {}},source_integrity={"verified":True},evidence_artifacts=evidence_artifacts,sandbox_fingerprint=baseline.sandbox_fingerprint or "",execution_profile_checksum=profile.selected_checksum if profile and profile.selected_checksum else "",state_version=run.state_version)
+            current_sandbox_fingerprint=workspace_fingerprint_v1(Path(baseline.sandbox_path))
+            evidence=BaselineEvidence(runtime={"status":runtime_status},install={"status":install_status},validations=tuple({"kind":v.kind,"status":self.validation_status(v)} for v in vals),parity={"failures":parity.failures if parity else [],"confidence":parity.confidence if parity else {}},source_integrity={"verified":True},evidence_artifacts=evidence_artifacts,sandbox_fingerprint=current_sandbox_fingerprint,execution_profile_checksum=profile.selected_checksum if profile and profile.selected_checksum else "",state_version=run.state_version)
             q=BaselinePolicyService().evaluate(evidence,policy=KnownFailurePolicy(request.policy),company_policy_allows_known_failures=request.company_policy_allows_known_failures)
             package=G03ApprovalPackageBuilder().build(run_id=run_id,actor=request.actor,evidence=evidence,qualification=q)
             parity_binding = self._parity_binding(parity)
@@ -113,6 +123,12 @@ class BaselineG03ApplicationService:
         if statuses and all(status in {"skipped_not_configured", "skipped_not_applicable"} for status in statuses):
             return statuses[0] if all(status == statuses[0] for status in statuses) else "skipped_not_configured"
         return "passed" if statuses and all(status in {"passed","skipped_not_configured","skipped_not_applicable"} for status in statuses) else v.status
+    @staticmethod
+    def _latest_validations(history):
+        latest = {}
+        for validation in history:
+            latest[validation.kind] = validation
+        return list(latest.values())
     def installation_status(self, installation):
         if installation is None:
             return "not_run"

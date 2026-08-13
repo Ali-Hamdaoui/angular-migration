@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.command import ANGULAR_UPDATE_V3_RENDERER
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER
 from app.domain.contracts import AgentKind
 from app.domain.planning import (
     APPROVED_BUILDERS,
@@ -371,19 +371,27 @@ class PlanRevisionService:
                 raise PlanningReviewApplicationError("UNAPPROVED_EXECUTION_PROFILE", "The execution profile is not approved.", 409)
             stage_values["execution_profile_id"] = changes.execution_profile_id
         commands = dict(stage_values["commands"])
-        update = dict(commands["angular_update"][0])
-        definition = ANGULAR_UPDATE_V3_RENDERER
-        target_cli_exact = changes.target_cli_exact or stage.target_cli_exact
-        stage_values["target_cli_exact"] = target_cli_exact
-        update["template_version"] = 3
-        update["template_id"] = definition.template_id
-        update["parameter_bindings"] = {
-            "target_cli_exact": target_cli_exact,
-            "target_exact": stage.target_exact,
-        }
-        update["arguments"] = definition.render_arguments(update["parameter_bindings"])
-        commands["angular_update"] = (update,)
-        stage_values["commands"] = commands
+        if plan.catalogue_version == "catalog-v3":
+            if changes.target_cli_exact is not None and changes.target_cli_exact != stage.target_cli_exact:
+                raise PlanningReviewApplicationError(
+                    "CATALOGUE_EXACT_VERSION_IMMUTABLE",
+                    "catalog-v3 exact toolchain changes require a new compatibility catalogue version.",
+                    409,
+                )
+        else:
+            update = dict(commands["angular_update"][0])
+            definition = ANGULAR_UPDATE_V2_RENDERER
+            target_cli_exact = changes.target_cli_exact or stage.target_cli_exact
+            stage_values["target_cli_exact"] = target_cli_exact
+            update["template_version"] = 2
+            update["template_id"] = definition.template_id
+            update["parameter_bindings"] = {
+                "target_cli_exact": target_cli_exact,
+                "target_exact": stage.target_exact,
+            }
+            update["arguments"] = definition.render_arguments(update["parameter_bindings"])
+            commands["angular_update"] = (update,)
+            stage_values["commands"] = commands
         if changes.validation_policy_id is not None:
             if changes.validation_policy_id not in APPROVED_VALIDATION_POLICIES:
                 raise PlanningReviewApplicationError("UNAPPROVED_VALIDATION_POLICY", "The validation policy is not approved.", 409)

@@ -7,16 +7,16 @@ persists bounded command evidence as artifacts.
 
 from __future__ import annotations
 
-import json
-import os
-import signal
-import subprocess
-import shutil
-import sys
-import threading
-import queue
 import codecs
 import ctypes
+import json
+import os
+import queue
+import shutil
+import signal
+import subprocess
+import sys
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,19 +24,20 @@ from time import monotonic
 from typing import Final
 
 from app.artifact_store import LocalFilesystemArtifactStore, StoredArtifact
+from app.domain.command import (
+    ANGULAR_UPDATE_V2_RENDERER,
+    ANGULAR_UPDATE_V3_RENDERER,
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    NPM_LOCKFILE_RECREATE_V2_RENDERER,
+    TRANSFORMATION_COMMAND_CATALOGUE,
+    command_arguments_match,
+)
 from app.domain.contracts import (
     ArtifactType,
     CancellationPolicy,
     CommandRequestDto,
     CommandResultDto,
     CommandStatus,
-)
-from app.domain.command import (
-    ANGULAR_UPDATE_V2_RENDERER,
-    ANGULAR_UPDATE_V3_RENDERER,
-    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
-    TRANSFORMATION_COMMAND_CATALOGUE,
-    command_arguments_match,
 )
 from app.llm_gateway.redaction import redact_prompt_text
 
@@ -164,16 +165,22 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
         for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
     ) + (
         CommandDefinition(
-            ANGULAR_UPDATE_V2_RENDERER.command_id,
-            ANGULAR_UPDATE_V2_RENDERER.executable,
-            ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
-            ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
+            NPM_LOCKFILE_RECREATE_V2_RENDERER.command_id,
+            NPM_LOCKFILE_RECREATE_V2_RENDERER.executable,
+            NPM_LOCKFILE_RECREATE_V2_RENDERER.argument_patterns,
+            NPM_LOCKFILE_RECREATE_V2_RENDERER.executable_aliases,
         ),
         CommandDefinition(
             ANGULAR_UPDATE_V3_RENDERER.command_id,
             ANGULAR_UPDATE_V3_RENDERER.executable,
             ANGULAR_UPDATE_V3_RENDERER.argument_patterns,
             ANGULAR_UPDATE_V3_RENDERER.executable_aliases,
+        ),
+        CommandDefinition(
+            ANGULAR_UPDATE_V2_RENDERER.command_id,
+            ANGULAR_UPDATE_V2_RENDERER.executable,
+            ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
+            ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
         ),
         CommandDefinition(
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,
@@ -340,7 +347,29 @@ class CommandPolicy:
             resolved.relative_to(sandbox_root)
         except ValueError as exc:
             raise CommandPolicyViolation("Working directory must stay inside the sandbox root") from exc
-        return resolved
+        return _windows_short_process_path(resolved)
+
+
+def _windows_short_process_path(path: Path) -> Path:
+    """Keep nested npm child working directories below legacy Windows limits.
+
+    Authorization and containment are evaluated against the canonical resolved
+    path before this helper is called.  The 8.3 spelling is an identity-
+    preserving alias for that same directory and prevents npm lifecycle script
+    working directories from crossing the legacy MAX_PATH boundary.
+    """
+    if os.name != "nt" or len(str(path)) < 200:
+        return path
+    get_short_path_name = ctypes.windll.kernel32.GetShortPathNameW
+    required = get_short_path_name(str(path), None, 0)
+    if required <= 0:
+        return path
+    buffer = ctypes.create_unicode_buffer(required)
+    written = get_short_path_name(str(path), buffer, required)
+    if written <= 0 or written >= required:
+        return path
+    short_path = Path(buffer.value)
+    return short_path if short_path.is_dir() else path
 
 
 class CommandLogWriter:

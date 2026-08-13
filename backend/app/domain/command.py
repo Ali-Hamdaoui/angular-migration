@@ -261,7 +261,6 @@ ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = Transformat
         "update",
         "@angular/cli@{target_cli_exact}",
         "@angular/core@{target_exact}",
-        "--allow-dirty",
     ),
     executable_aliases=("npx.cmd",),
     timeout_seconds=1800,
@@ -333,8 +332,43 @@ NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER: Final[TransformationCommandDefinition] 
     description="Normalize Angular lockfile resolution without changing the manifest",
 )
 
+NPM_LOCKFILE_RECREATE_V2_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-lockfile-generate",
+    template_id="tpl-npm-lockfile-generate-v2",
+    executable="npm",
+    argument_patterns=("update", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Re-resolve a fresh npm lock graph from the approved exact manifest",
+)
+
 # Default command templates for Sprint 3 pipeline
 TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinition]] = {
+    "npm-pkg-set": TransformationCommandDefinition(
+        command_id="npm-pkg-set", template_id="tpl-npm-pkg-set-v1", executable="npm",
+        argument_patterns=("pkg", "set", "{assignment}"), executable_aliases=("npm.cmd",),
+        timeout_seconds=300, description="Set one catalogue-authorized package manifest value",
+    ),
+    "npm-pkg-delete": TransformationCommandDefinition(
+        command_id="npm-pkg-delete", template_id="tpl-npm-pkg-delete-v1", executable="npm",
+        argument_patterns=("pkg", "delete", "{field}"), executable_aliases=("npm.cmd",),
+        timeout_seconds=300, description="Delete one catalogue-authorized obsolete manifest value",
+    ),
+    "angular-migrate-only": TransformationCommandDefinition(
+        command_id="angular-migrate-only", template_id="tpl-angular-migrate-only-v1", executable="node",
+        argument_patterns=("{runner_path}", "{package}", "{source_floor}", "{target_exact}"),
+        executable_aliases=("node.exe",), timeout_seconds=1800,
+        description="Run the exact installed package's official migration collection with force disabled",
+    ),
+    "angular-generate-inject": TransformationCommandDefinition(
+        command_id="angular-generate-inject", template_id="tpl-angular-generate-inject-v1", executable="node",
+        argument_patterns=("node_modules/@angular/cli/bin/ng.js", "generate", "@angular/core:inject", "--path", "./", "--migrate-abstract-classes=false", "--backwards-compatible-constructors=false", "--non-nullable-optional=false", "--interactive=false"),
+        executable_aliases=("node.exe",), timeout_seconds=1800,
+        description="Run the installed official Angular inject migration with safe explicit options",
+    ),
     "npm-ci-bootstrap": TransformationCommandDefinition(
         command_id="npm-ci-bootstrap", template_id="tpl-npm-ci", executable="npm", argument_patterns=("ci",),
         executable_aliases=("npm.cmd",), timeout_seconds=3600,
@@ -393,6 +427,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
     definition.to_template() for definition in TRANSFORMATION_COMMAND_CATALOGUE.values()
 ) + (
     CommandTemplate(
+        template_id=NPM_LOCKFILE_RECREATE_V2_RENDERER.template_id,
+        command_id=NPM_LOCKFILE_RECREATE_V2_RENDERER.command_id,
+        executable=NPM_LOCKFILE_RECREATE_V2_RENDERER.executable,
+        arguments=NPM_LOCKFILE_RECREATE_V2_RENDERER.argument_patterns,
+        executable_aliases=NPM_LOCKFILE_RECREATE_V2_RENDERER.executable_aliases,
+        description=NPM_LOCKFILE_RECREATE_V2_RENDERER.description,
+        version=2,
+        allowed_env_vars=NPM_LOCKFILE_RECREATE_V2_RENDERER.allowed_env_vars,
+        max_output_bytes=NPM_LOCKFILE_RECREATE_V2_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
         template_id=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.template_id,
         command_id=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,
         executable=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable,
@@ -404,17 +449,6 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         max_output_bytes=NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.max_output_bytes,
     ),
     CommandTemplate(
-        template_id=ANGULAR_UPDATE_V2_RENDERER.template_id,
-        command_id=ANGULAR_UPDATE_V2_RENDERER.command_id,
-        executable=ANGULAR_UPDATE_V2_RENDERER.executable,
-        arguments=ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
-        executable_aliases=ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
-        description=ANGULAR_UPDATE_V2_RENDERER.description,
-        version=2,
-        allowed_env_vars=ANGULAR_UPDATE_V2_RENDERER.allowed_env_vars,
-        max_output_bytes=ANGULAR_UPDATE_V2_RENDERER.max_output_bytes,
-    ),
-    CommandTemplate(
         template_id=ANGULAR_UPDATE_V3_RENDERER.template_id,
         command_id=ANGULAR_UPDATE_V3_RENDERER.command_id,
         executable=ANGULAR_UPDATE_V3_RENDERER.executable,
@@ -424,6 +458,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         version=3,
         allowed_env_vars=ANGULAR_UPDATE_V3_RENDERER.allowed_env_vars,
         max_output_bytes=ANGULAR_UPDATE_V3_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V2_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V2_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V2_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V2_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V2_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V2_RENDERER.description,
+        version=2,
+        allowed_env_vars=ANGULAR_UPDATE_V2_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V2_RENDERER.max_output_bytes,
     ),
 )
 

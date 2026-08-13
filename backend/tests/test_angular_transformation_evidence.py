@@ -89,6 +89,138 @@ def test_four_source_version_proof_rejects_one_mismatch(tmp_path: Path):
         )
 
 
+def test_four_source_version_proof_supports_npm_v1_lockfile(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"dependencies": {"@angular/core": "11.0.4"}})
+    _write_json(
+        workspace / "package.json",
+        {"dependencies": {"@angular/core": "12.2.17"}, "devDependencies": {"@angular/cli": "12.2.18"}},
+    )
+    _write_json(
+        workspace / "package-lock.json",
+        {
+            "lockfileVersion": 1,
+            "dependencies": {
+                "@angular/core": {"version": "12.2.17"},
+                "@angular/cli": {"version": "12.2.18"},
+            },
+        },
+    )
+    _write_json(workspace / "node_modules/@angular/core/package.json", {"version": "12.2.17"})
+    _write_json(workspace / "node_modules/@angular/cli/package.json", {"version": "12.2.18"})
+
+    versions, _ = AngularTransformationEvidenceService().build(
+        str(workspace),
+        str(before),
+        target_core="12.2.17",
+        target_cli="12.2.18",
+        ng_version_output="Angular CLI: 12.2.18\nAngular: 12.2.17\n",
+        angular_execution_id="execution-angular",
+    )
+
+    assert versions["resolved_core"] == "12.2.17"
+    assert versions["resolved_cli"] == "12.2.18"
+
+
+def test_migration_ledger_compares_distinct_pre_update_evidence_without_mutation(
+    tmp_path: Path,
+):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"dependencies": {"@angular/core": "11.0.4"}})
+    _write_json(
+        workspace / "package.json", {"dependencies": {"@angular/core": "12.2.17"}}
+    )
+    _write_json(workspace / "package-lock.json", {"lockfileVersion": 1})
+    before_bytes = (before / "package.json").read_bytes()
+    workspace_bytes = (workspace / "package.json").read_bytes()
+
+    ledger = AngularTransformationEvidenceService().migration_ledger(
+        before,
+        workspace,
+        angular_execution_id="execution-angular",
+    )
+
+    assert ledger["changed_file_count"] == 2
+    assert {item["path"] for item in ledger["changed_files"]} == {
+        "package-lock.json",
+        "package.json",
+    }
+    assert all(
+        item["attributed_execution_id"] == "execution-angular"
+        for item in ledger["changed_files"]
+    )
+    assert (before / "package.json").read_bytes() == before_bytes
+    assert (workspace / "package.json").read_bytes() == workspace_bytes
+
+
+def test_migration_ledger_excludes_repository_metadata(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"version": "11.0.0"})
+    _write_json(workspace / "package.json", {"version": "12.0.0"})
+    (before / ".git").mkdir()
+    (before / ".git" / "HEAD").write_text("ref: refs/heads/dev\n", encoding="utf-8")
+
+    ledger = AngularTransformationEvidenceService().migration_ledger(
+        before,
+        workspace,
+        angular_execution_id="execution-angular",
+    )
+
+    assert ledger["changed_file_count"] == 1
+    assert [item["path"] for item in ledger["changed_files"]] == ["package.json"]
+
+
+def test_migration_ledger_excludes_generated_and_dependency_metadata(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"version": "13.0.0"})
+    _write_json(workspace / "package.json", {"version": "14.0.0"})
+    for excluded in ("node_modules", ".angular", ".git", "dist", "build", ".cache"):
+        path = workspace / excluded
+        path.mkdir()
+        (path / "generated.txt").write_text("generated", encoding="utf-8")
+
+    ledger = AngularTransformationEvidenceService().migration_ledger(
+        before,
+        workspace,
+        angular_execution_id="execution-angular",
+    )
+
+    assert [item["path"] for item in ledger["changed_files"]] == ["package.json"]
+
+
+def test_migration_ledger_rejects_zero_changes_when_fingerprints_differ(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"version": "13.0.0"})
+    _write_json(workspace / "package.json", {"version": "13.0.0"})
+
+    with pytest.raises(
+        AngularTransformationEvidenceError,
+        match="fingerprints differ",
+    ):
+        AngularTransformationEvidenceService().migration_ledger(
+            before,
+            workspace,
+            angular_execution_id="execution-angular",
+            expected_pre_fingerprint="sha256:angular-13",
+            expected_post_fingerprint="sha256:angular-14",
+        )
+
+
 def test_ng_version_output_with_aligned_columns_parses_cli_and_core(tmp_path: Path):
     before = tmp_path / "before"
     workspace = tmp_path / "workspace"

@@ -105,7 +105,7 @@ def test_candidate_integrity_and_environment_constraints_block_resolution():
 
 
 def test_source_version_and_typescript_compatibility_are_fail_closed():
-    unsupported = SourceRuntimeResolver().resolve(request(candidate("node-20"), angular="17.3.12"))
+    unsupported = SourceRuntimeResolver().resolve(request(candidate("node-20"), angular="10.2.5"))
     wrong_typescript = SourceRuntimeResolver().resolve(request(candidate("node-20"), ts="5.6.0"))
 
     assert unsupported.status == "blocked"
@@ -114,7 +114,7 @@ def test_source_version_and_typescript_compatibility_are_fail_closed():
     assert "SOURCE_TYPESCRIPT_VERSION_INCOMPATIBLE" in wrong_typescript.blockers
 
     angular_20_wrong_typescript = SourceRuntimeResolver().resolve(
-        request(candidate("node-22", node="22.23.1", angular_cli_exact=None), angular="20.3.27", ts="5.9.0")
+        request(candidate("node-22", node="22.23.1", angular_cli_exact=None), angular="20.3.27", ts="6.0.0")
     )
     assert angular_20_wrong_typescript.status == "blocked"
     assert "SOURCE_TYPESCRIPT_VERSION_INCOMPATIBLE" in angular_20_wrong_typescript.blockers

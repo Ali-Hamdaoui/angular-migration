@@ -153,11 +153,15 @@ class LockfilePrequalificationService:
         packages = payload.get("packages", {}) if isinstance(payload, dict) else {}
         root = packages.get("", {}) if isinstance(packages, dict) else {}
         locked_root = root.get("dependencies", {}) if isinstance(root, dict) else {}
+        legacy_dependencies = payload.get("dependencies", {}) if isinstance(payload, dict) else {}
         for name, requested in package.dependencies.items():
             locked = locked_root.get(name)
             if locked is None and isinstance(packages, dict):
                 entry = packages.get(f"node_modules/{name}")
                 locked = entry.get("version") if isinstance(entry, dict) else None
+            if locked is None and isinstance(legacy_dependencies, dict):
+                legacy_entry = legacy_dependencies.get(name)
+                locked = legacy_entry.get("version") if isinstance(legacy_entry, dict) else None
             if locked is None:
                 blockers.append(f"NPM_LOCKFILE_DEPENDENCY_MISSING:{name}")
             elif _is_exact_version(requested) and locked != requested:

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.api.authentication import authenticated_actor, authorize_run
 from app.api.errors import error_response
 from app.domain.transformation import (
+    G08LedgerRegenerationRequest,
     RepairDecisionRequest,
     RepairInvocationRecoveryRequest,
     RepairRevisionRequest,
@@ -44,6 +45,10 @@ from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalF
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_prompt_service import TransformerPromptError, TransformerPromptService
 from app.services.transformer_stage_service import TransformerStageService
+from app.services.g08_ledger_regeneration_service import (
+    G08LedgerRegenerationError,
+    G08LedgerRegenerationService,
+)
 from app.domain.transformation import PromptDecisionRequest
 
 router = APIRouter(prefix="/runs", tags=["transformation"])
@@ -1014,6 +1019,26 @@ def decide_stage_gate(
             "state_version": continuation.state_version,
             "idempotent_replay": replay,
         }
+
+
+@router.post("/{run_id}/transformation/gates/G08/regenerate-ledger")
+def regenerate_g08_ledger(
+    run_id: str,
+    body: G08LedgerRegenerationRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+    try:
+        return G08LedgerRegenerationService().regenerate(run_id, body, actor)
+    except G08LedgerRegenerationError as error:
+        return error_response(
+            request,
+            status_code=error.status_code,
+            error_code=error.code,
+            message=error.message,
+        )
 
 
 @router.post("/{run_id}/transformation/cancel")

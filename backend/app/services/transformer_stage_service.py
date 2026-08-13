@@ -46,8 +46,10 @@ from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
-from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
-from app.services.workspace_fingerprint import LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE
+from app.services.workspace_fingerprint import (
+    LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE,
+    STAGE_FINGERPRINT_PROFILE,
+)
 from app.state import StateTransitionService, TransitionRequest
 
 
@@ -410,6 +412,24 @@ class TransformerStageService:
             attempt_key=prompt_id or "initial",
             checkpoint_id=checkpoint_id,
             prompt_id=prompt_id,
+        )
+
+    def queue_angular_update_command(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        *,
+        command_index: int,
+        checkpoint_id: str,
+    ):
+        return self._queue_group(
+            session,
+            continuation,
+            group="angular_update",
+            next_node="handle_prompt",
+            attempt_key=f"initial:{command_index}",
+            checkpoint_id=checkpoint_id,
+            command_index=command_index,
         )
 
     def queue_angular_update_retry(
@@ -941,6 +961,7 @@ class TransformerStageService:
         checkpoint_id=None,
         prompt_id=None,
         recovery_of=None,
+        command_index=0,
     ):
         run = session.get(MigrationRunModel, continuation.run_id)
         plan = session.get(MigrationPlanModel, continuation.plan_id)
@@ -953,9 +974,10 @@ class TransformerStageService:
             0,
             False,
         )
+        execution_epoch = f":replan-{continuation.attempt}" if continuation.attempt else ""
         request = SimpleNamespace(
             idempotency_key=(
-                f"{continuation.id}:{continuation.current_stage_id}:command:{attempt_key}"
+                f"{continuation.id}:{continuation.current_stage_id}{execution_epoch}:command:{attempt_key}"
             )
         )
         try:
@@ -968,13 +990,14 @@ class TransformerStageService:
                 request,
                 run.actor or "transformer",
                 group,
+                command_index=command_index,
             )
         except StageExecutionError as error:
             raise TransformerStageError(error.code, error.message) from error
         step = session.scalar(
             select(StageStepModel).where(
                 StageStepModel.stage_id == continuation.current_stage_id,
-                StageStepModel.name == f"{group}-0",
+                StageStepModel.name == f"{group}-{command_index}",
             )
         )
         execution = session.get(CommandExecutionModel, result.execution_id)
@@ -1222,17 +1245,12 @@ class TransformerStageService:
                 )
             )
         ):
-            if execution.parent_execution_id is not None or (execution.attempt_number or 1) > 1:
-                raise TransformerStageError(
-                    execution.failure_code or 'BOOTSTRAP_INSTALL_FAILED',
-                    execution.failure_message or 'Bootstrap retry failed.',
-                )
             self._bootstrap_recovery(session, continuation, execution)
             try:
                 retry = self._command_executor.queue_retry_execution(
                     session,
                     execution.id,
-                    idempotency_key=f"{execution.id}:retry:1",
+                    idempotency_key=f"{execution.id}:retry:{execution.attempt_number or 1}",
                     workspace_recovered=True,
                     authorized_timeout_seconds=self._planned_bootstrap_timeout(
                         session, continuation
@@ -1337,9 +1355,12 @@ class TransformerStageService:
 
     @staticmethod
     def _request(run, continuation, gate):
+        execution_epoch = f":replan-{continuation.attempt}" if continuation.attempt else ""
         return SimpleNamespace(
             expected_state_version=run.state_version,
-            idempotency_key=f"{continuation.id}:{continuation.current_stage_id}:prepare",
+            idempotency_key=(
+                f"{continuation.id}:{continuation.current_stage_id}{execution_epoch}:prepare"
+            ),
             artifact_set_checksum=gate.artifact_set_checksum,
             plan_checksum=continuation.plan_checksum,
             stage_plan_checksum=continuation.stage_plan_checksum,

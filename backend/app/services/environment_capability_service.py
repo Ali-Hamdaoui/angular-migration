@@ -18,7 +18,13 @@ from app.domain.system import (
     LocalStorageReadiness,
     RuntimeInventoryEntry,
 )
-from app.command_execution.worker import ExecutionWorker
+from app.command_execution.worker import (
+    CommandDefinition,
+    CommandLogWriter,
+    CommandPolicy,
+    CommandRegistry,
+    ExecutionWorker,
+)
 from app.core.config import Settings
 
 
@@ -61,6 +67,7 @@ class EnvironmentCapabilityService:
         self._artifact_store.ensure_run_layout(snapshot_id)
 
         runtimes = [self._probe_runtime(name, snapshot_id, idempotency_key, captured_at) for name in self.runtime_names]
+        runtime_profiles = self._configured_runtime_profiles(snapshot_id, idempotency_key, captured_at)
         controlled_probes = self._controlled_probes(runtimes, snapshot_id, idempotency_key, captured_at)
         blockers: list[str] = []
         warnings: list[str] = []
@@ -102,6 +109,7 @@ class EnvironmentCapabilityService:
             "policy_version": self.policy_version,
             "status": status,
             "runtimes": [runtime.model_dump(mode="json") for runtime in runtimes],
+            "runtime_profiles": runtime_profiles,
             "node_npm_npx_paired": paired,
             "git_ready": git_ready,
             "python_ready": python_ready,
@@ -125,7 +133,7 @@ class EnvironmentCapabilityService:
             snapshot_id,
             "global/00_setup/runtime_inventory.json",
             json.dumps(
-                {"runtimes": [runtime.model_dump(mode="json") for runtime in runtimes]}, indent=2, sort_keys=True
+                {"runtimes": [runtime.model_dump(mode="json") for runtime in runtimes], "runtime_profiles": runtime_profiles}, indent=2, sort_keys=True
             ),
             ArtifactType.JSON,
             created_by="environment-capability-service",
@@ -139,6 +147,59 @@ class EnvironmentCapabilityService:
                 "runtime_inventory": inventory.ref.artifact_id,
             },
         )
+
+    def _configured_runtime_profiles(self, snapshot_id: str, idempotency_key: str, now: datetime) -> list[dict[str, str]]:
+        """Probe every explicitly approved runtime triplet through the structured worker."""
+        profiles: list[dict[str, str]] = []
+        run_root = self._artifact_store.ensure_run_layout(snapshot_id).resolve()
+        for encoded in self._settings.approved_runtime_profiles:
+            profile_id, node_raw, npm_raw, npx_raw = (part.strip() for part in encoded.split("|"))
+            paths = {"node": Path(node_raw).resolve(), "npm": Path(npm_raw).resolve(), "npx": Path(npx_raw).resolve()}
+            if not all(path.is_file() for path in paths.values()):
+                continue
+            definitions = tuple(
+                CommandDefinition(f"configured-{profile_id}-{name}-version", str(path), ("--version",))
+                for name, path in paths.items()
+            )
+            directories = list(dict.fromkeys(str(path.parent) for path in paths.values()))
+            current_path = os.environ.get("PATH", "")
+            policy = CommandPolicy(
+                sandbox_root=run_root,
+                registry=CommandRegistry(definitions=definitions),
+                working_directory_aliases={"run_workspace": run_root},
+                runtime_profiles=frozenset({profile_id}),
+                network_profiles=frozenset({"none"}),
+                environment_allowlist=("PATH",),
+                environment_overrides={"PATH": os.pathsep.join([*directories, current_path])},
+            )
+            worker = ExecutionWorker(policy, CommandLogWriter(self._artifact_store))
+            versions: dict[str, str] = {}
+            for name, path in paths.items():
+                execution = worker.run(CommandRequestDto(
+                    command_id=f"configured-{profile_id}-{name}-version",
+                    run_id=snapshot_id,
+                    requester="environment-capability-service",
+                    executable=str(path),
+                    arguments=["--version"],
+                    working_directory_alias="run_workspace",
+                    runtime_profile_id=profile_id,
+                    timeout_seconds=10,
+                    network_profile="none",
+                    idempotency_key=f"{idempotency_key}:{profile_id}:{name}",
+                    requested_at=now,
+                ))
+                if execution.result.status is not CommandStatus.SUCCEEDED or execution.stdout_artifact is None:
+                    versions = {}
+                    break
+                versions[name] = execution.stdout_artifact.content.splitlines()[0].strip().lstrip("v")
+            if len(versions) == 3:
+                profiles.append({
+                    "profile_id": profile_id,
+                    "node_executable": str(paths["node"]), "node_exact": versions["node"],
+                    "npm_executable": str(paths["npm"]), "npm_exact": versions["npm"],
+                    "npx_executable": str(paths["npx"]), "npx_exact": versions["npx"],
+                })
+        return profiles
 
     def _controlled_probes(self, runtimes, snapshot_id, idempotency_key, now):
         """Prove executable identity/configuration through the command authority."""

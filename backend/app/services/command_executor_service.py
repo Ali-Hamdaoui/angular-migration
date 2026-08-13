@@ -75,6 +75,19 @@ from app.services.transformer_prompt_service import (
 from app.state.event_sequencer import append_workflow_event
 
 
+def bind_runtime_executable(executable: str, profile: Mapping[str, Any]) -> str:
+    """Replace a Node tool alias with its checksum-bound selected executable."""
+    selected = {
+        "node": profile.get("node_executable"),
+        "node.exe": profile.get("node_executable"),
+        "npm": profile.get("package_manager_executable"),
+        "npm.cmd": profile.get("package_manager_executable"),
+        "npx": profile.get("npx_executable"),
+        "npx.cmd": profile.get("npx_executable"),
+    }.get(Path(executable).name.lower())
+    return str(Path(selected).resolve(strict=True)) if selected else executable
+
+
 class CommandExecutorError(ValueError):
     """Raised when a command execution operation fails."""
     def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
@@ -95,7 +108,11 @@ _WORKER_MUTABLE_WORKSPACE_ALIASES = frozenset({
 _MUTATING_COMMAND_IDS = frozenset(
     {
         "npm-ci-bootstrap",
+        "npm-pkg-set",
+        "npm-pkg-delete",
         "angular-update-exact",
+        "angular-migrate-only",
+        "angular-generate-inject",
         "npm-ci-final",
         "npm-lockfile-generate",
         "npm-dependency-uninstall",
@@ -1041,6 +1058,7 @@ class CommandExecutorService:
                 )
                 if selected_profile is None:
                     raise CommandExecutorError("EXECUTION_PROFILE_NOT_APPROVED", "Selected execution profile checksum is not current")
+                executable = bind_runtime_executable(executable, selected_profile)
                 existing_lease = session.scalar(
                     select(WorkerLeaseModel).where(
                         WorkerLeaseModel.execution_id == execution_id,
@@ -1062,13 +1080,46 @@ class CommandExecutorService:
                     prompt = session.get(StagePromptRequestModel, model.prompt_request_id)
                     prompt_stdin = TransformerPromptService.selected_stdin(prompt) if prompt else None
                 artifact_root = Path(run.artifact_root)
+                base_registry = CommandRegistry()
+                runtime_registry = CommandRegistry(definitions=tuple(
+                    CommandDefinition(
+                        definition.command_id,
+                        definition.executable,
+                        definition.arguments,
+                        tuple(dict.fromkeys((*definition.executable_aliases, executable)))
+                        if authorization.executable in definition.allowed_executables
+                        else definition.executable_aliases,
+                    )
+                    for definition in base_registry.definitions
+                ))
+                runtime_directories = list(dict.fromkeys(
+                    str(Path(path).resolve().parent)
+                    for path in (
+                        selected_profile.get("node_executable"),
+                        selected_profile.get("package_manager_executable"),
+                        selected_profile.get("npx_executable"),
+                    )
+                    if path
+                ))
+                ambient_path = os.environ.get("PATH", "")
+                effective_path = os.pathsep.join([*runtime_directories, ambient_path])
+                environment_overrides = {"PATH": effective_path}
+                if command_id == "npm-script-test-ci":
+                    chrome_bin = os.environ.get("CHROME_BIN")
+                    if (
+                        chrome_bin
+                        and Path(chrome_bin).is_absolute()
+                        and Path(chrome_bin).is_file()
+                    ):
+                        environment_overrides["CHROME_BIN"] = chrome_bin
                 policy = CommandPolicy(
                     sandbox_root=root,
-                    registry=CommandRegistry(),
+                    registry=runtime_registry,
                     working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
                     runtime_profiles=frozenset({execution_profile_id}),
                     network_profiles=frozenset({network_profile}),
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
+                    environment_overrides=environment_overrides,
                 )
                 store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
                 worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)

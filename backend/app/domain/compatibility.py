@@ -42,13 +42,14 @@ class CompatibilityArtifact(CompatibilityModel):
 
 class CompatibilityCatalogueEntry(CompatibilityModel):
     stage_id: str = Field(min_length=1)
-    source_family: str = Field(pattern=r"^angular-(18|19|20|21)\.x$")
-    target_family: str = Field(pattern=r"^angular-(18|19|20|21)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
+    target_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     target_angular_exact: str = Field(min_length=1)
     target_cli_exact: str = Field(min_length=1)
     typescript_exact: str | None = None
     rxjs_exact: str | None = None
     zone_js_exact: str | None = None
+    angular_eslint_exact: str | None = None
     node_major: int = Field(ge=0)
     npm_major: int = Field(ge=0)
     node_exact: str | None = None
@@ -84,6 +85,8 @@ class CompatibilityCatalogue(CompatibilityModel):
         serialized_entries = []
         for entry in entries:
             serialized = entry.model_dump(mode="json")
+            if entry.angular_eslint_exact is None:
+                serialized.pop("angular_eslint_exact", None)
             if not entry.validated_runtime_profiles:
                 serialized.pop("validated_runtime_profiles", None)
             serialized_entries.append(serialized)
@@ -160,6 +163,10 @@ class CompatibilityStage(CompatibilityModel):
     target_cli_exact: str
     node_exact: str | None = None
     npm_exact: str | None = None
+    typescript_exact: str | None = None
+    rxjs_exact: str | None = None
+    zone_js_exact: str | None = None
+    angular_eslint_exact: str | None = None
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 

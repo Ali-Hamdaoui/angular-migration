@@ -1,6 +1,7 @@
 import json
 
 from app.services.workspace_integrity_service import WorkspaceIntegrityError, WorkspaceIntegrityService
+from app.services.workspace_fingerprint import LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE
 from app.workspaces.baseline import BaselineSandboxService
 
 
@@ -39,6 +40,20 @@ def test_added_file_changes_the_authoritative_tree_fingerprint(tmp_path):
         assert error.actual_fingerprint != expected
     else:
         raise AssertionError("added file unexpectedly passed integrity verification")
+
+
+def test_approved_complete_tree_binding_is_verified_then_normalized_for_planning(tmp_path):
+    (tmp_path / "angular.json").write_text("{}", encoding="utf-8")
+    generated = tmp_path / "node_modules" / "package" / "index.js"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("module.exports = true;", encoding="utf-8")
+    approved = LEGACY_STAGE_COMPLETE_FINGERPRINT_PROFILE.fingerprint(tmp_path)
+
+    result = WorkspaceIntegrityService().verify(tmp_path, expected_fingerprint=approved)
+
+    assert result.expected_fingerprint == approved
+    assert result.actual_fingerprint == WorkspaceIntegrityService.fingerprint(tmp_path)
+    assert result.actual_fingerprint != approved
 
 
 def test_baseline_fingerprint_remains_valid_after_expected_generated_outputs(tmp_path):

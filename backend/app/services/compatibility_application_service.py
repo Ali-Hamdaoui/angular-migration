@@ -172,6 +172,10 @@ class CompatibilityResolver:
             "target_cli_exact": entry.target_cli_exact,
             "node_exact": entry.node_exact,
             "npm_exact": entry.npm_exact,
+            "typescript_exact": entry.typescript_exact,
+            "rxjs_exact": entry.rxjs_exact,
+            "zone_js_exact": entry.zone_js_exact,
+            "angular_eslint_exact": entry.angular_eslint_exact,
             "blockers": tuple(blockers),
             "warnings": tuple(warnings),
         }

@@ -138,7 +138,7 @@ def test_accepts_node_runtime_versions_with_the_standard_v_prefix():
 
 
 def test_current_catalogue_accepts_validated_node_22_profile_without_blocking_route():
-    catalogue = CompatibilityCatalogueProvider().load()
+    catalogue = CompatibilityCatalogueProvider().load("catalog-v2")
     candidate = _candidate(profile_id="node-22-approved", node_exact="22.23.1", npm_exact="10.9.8", npx_exact="10.9.8")
     result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
 
@@ -152,7 +152,7 @@ def test_current_catalogue_accepts_validated_node_22_profile_without_blocking_ro
 
 
 def test_current_catalogue_preserves_validated_node_20_profile():
-    catalogue = CompatibilityCatalogueProvider().load()
+    catalogue = CompatibilityCatalogueProvider().load("catalog-v2")
     result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version))
 
     assert result.status == "feasible_with_warnings"

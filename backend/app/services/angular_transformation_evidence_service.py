@@ -23,7 +23,9 @@ class AngularTransformationEvidenceError(ValueError):
 
 class AngularTransformationEvidenceService:
     _semver = re.compile(r"(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)")
-    _excluded = frozenset({"node_modules", ".angular", "dist", "build", ".cache"})
+    _excluded = frozenset(
+        {"node_modules", ".angular", ".git", "dist", "build", ".cache"}
+    )
 
     def build(
         self,
@@ -34,6 +36,8 @@ class AngularTransformationEvidenceService:
         target_cli: str,
         ng_version_output: str,
         angular_execution_id: str,
+        expected_pre_fingerprint: str | None = None,
+        expected_post_fingerprint: str | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
         workspace = Path(workspace_path).resolve(strict=True)
         checkpoint = Path(checkpoint_path).resolve(strict=True)
@@ -42,16 +46,15 @@ class AngularTransformationEvidenceService:
         installed_core = self._json(workspace / "node_modules" / "@angular" / "core" / "package.json")
         installed_cli = self._json(workspace / "node_modules" / "@angular" / "cli" / "package.json")
         dependencies = {**(package.get("dependencies") or {}), **(package.get("devDependencies") or {})}
-        lock_packages = lock.get("packages") or {}
         core_sources = {
             "package_json": self._version(dependencies.get("@angular/core")),
-            "package_lock": self._version((lock_packages.get("node_modules/@angular/core") or {}).get("version")),
+            "package_lock": self._lock_version(lock, "@angular/core"),
             "installed_metadata": self._version(installed_core.get("version")),
             "ng_version": self._line_version(ng_version_output, "Angular:"),
         }
         cli_sources = {
             "package_json": self._version(dependencies.get("@angular/cli")),
-            "package_lock": self._version((lock_packages.get("node_modules/@angular/cli") or {}).get("version")),
+            "package_lock": self._lock_version(lock, "@angular/cli"),
             "installed_metadata": self._version(installed_cli.get("version")),
             "ng_version": self._line_version(ng_version_output, "Angular CLI:"),
         }
@@ -84,6 +87,26 @@ class AngularTransformationEvidenceService:
             "core_sources": core_sources,
             "cli_sources": cli_sources,
         }
+        ledger = self.migration_ledger(
+            checkpoint,
+            workspace,
+            angular_execution_id=angular_execution_id,
+            expected_pre_fingerprint=expected_pre_fingerprint,
+            expected_post_fingerprint=expected_post_fingerprint,
+        )
+        return version_evidence, ledger
+
+    def migration_ledger(
+        self,
+        checkpoint_path: str | Path,
+        workspace_path: str | Path,
+        *,
+        angular_execution_id: str,
+        expected_pre_fingerprint: str | None = None,
+        expected_post_fingerprint: str | None = None,
+    ) -> dict[str, object]:
+        checkpoint = Path(checkpoint_path).resolve(strict=True)
+        workspace = Path(workspace_path).resolve(strict=True)
         before = self._manifest(checkpoint)
         after = self._manifest(workspace)
         paths = sorted(set(before) | set(after))
@@ -98,13 +121,23 @@ class AngularTransformationEvidenceService:
             for path in paths
             if before.get(path) != after.get(path)
         ]
+        if (
+            not changed
+            and expected_pre_fingerprint
+            and expected_post_fingerprint
+            and expected_pre_fingerprint != expected_post_fingerprint
+        ):
+            raise AngularTransformationEvidenceError(
+                "MIGRATION_LEDGER_ZERO_CHANGE_CONTRADICTION",
+                "Pre/post workspace fingerprints differ but the migration ledger is empty.",
+            )
         ledger = {
             "status": "recorded",
             "changed_file_count": len(changed),
             "changed_files": changed,
             "unattributed_files": [],
         }
-        return version_evidence, ledger
+        return ledger
 
     def write(
         self,
@@ -159,6 +192,21 @@ class AngularTransformationEvidenceService:
     def _version(self, value: object) -> str | None:
         match = self._semver.search(value) if isinstance(value, str) else None
         return match.group(1) if match else None
+
+    def _lock_version(self, lock: dict[str, object], package_name: str) -> str | None:
+        packages = lock.get("packages") or {}
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package_name}") or {}
+            if isinstance(entry, dict):
+                version = self._version(entry.get("version"))
+                if version is not None:
+                    return version
+        dependencies = lock.get("dependencies") or {}
+        if isinstance(dependencies, dict):
+            entry = dependencies.get(package_name) or {}
+            if isinstance(entry, dict):
+                return self._version(entry.get("version"))
+        return None
 
     @staticmethod
     def _major(value: str | None) -> int | None:

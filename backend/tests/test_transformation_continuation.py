@@ -144,6 +144,70 @@ def test_creation_is_idempotent_and_payload_bound(tmp_path: Path):
     engine.dispose()
 
 
+def test_stale_g06_replan_boundary_rebinds_same_continuation(tmp_path: Path):
+    engine, session = _session(tmp_path)
+    service = TransformationContinuationService()
+    continuation = _create(service, session)
+    old_id = continuation.id
+    old_request_checksum = continuation.request_checksum
+    old_gate = session.get(G06ApprovalModel, "g06-1")
+    old_gate.status = "stale"
+    continuation.status = "waiting_gate"
+    continuation.current_node = "validate_g06"
+    continuation.last_error_code = "REPLAN_G06_REQUIRED"
+    session.add(
+        MigrationPlanModel(
+            id="plan-2", run_id="run-1", idempotency_key="plan-2",
+            request_checksum="sha256:plan-request-2", actor="planner",
+            status="regenerated", version=2, plan={}, checksum="sha256:plan-2",
+            artifact_ids=[], artifact_checksums={}, state_version=8, event_sequence=4,
+            created_at=NOW, updated_at=NOW,
+        )
+    )
+    session.add(
+        StageExecutionPlanModel(
+            id="stage-plan-2", run_id="run-1", migration_plan_id="plan-2",
+            stage_id="stage-1", idempotency_key="stage-plan-2",
+            request_checksum="sha256:stage-plan-request-2", actor="planner",
+            status="regenerated", version=2, stage_plan={"commands": {}},
+            checksum="sha256:stage-plan-2", artifact_ids=[], artifact_checksums={},
+            state_version=8, event_sequence=5, created_at=NOW, updated_at=NOW,
+        )
+    )
+    session.add(
+        G06ApprovalModel(
+            id="g06-2", run_id="run-1", gate_id="G06", gate_version="g06-v1",
+            idempotency_key="g06-2", actor="operator", status="approved",
+            decision="approve", package_checksum="sha256:g06-package-2",
+            artifact_set_checksum="sha256:g06-set", plan_checksum="sha256:plan-2",
+            stage_plan_checksum="sha256:stage-plan-2", plan_version=2,
+            artifact_ids=[], state_version=9, event_sequence=6,
+            created_at=NOW, updated_at=NOW,
+        )
+    )
+    session.flush()
+
+    rebound = service.ensure_created_in_session(
+        session,
+        run_id="run-1", stage_id="stage-1", g06_approval_id="g06-2",
+        plan_id="plan-2", plan_checksum="sha256:plan-2",
+        stage_plan_id="stage-plan-2", stage_plan_checksum="sha256:stage-plan-2",
+        idempotency_key="transform-2", now=NOW,
+    )
+
+    assert rebound.id == old_id
+    assert session.query(TransformationContinuationModel).count() == 1
+    assert rebound.plan_id == "plan-2"
+    assert rebound.g06_approval_id == "g06-2"
+    assert rebound.status == "queued"
+    assert rebound.current_node == "validate_g06"
+    assert rebound.attempt == 1
+    assert rebound.request_checksum != old_request_checksum
+    assert rebound.last_error_code is None
+    session.close()
+    engine.dispose()
+
+
 def test_claim_is_single_owner_and_expired_claim_is_recovered(tmp_path: Path):
     engine, session = _session(tmp_path)
     service = TransformationContinuationService(lease_seconds=10)

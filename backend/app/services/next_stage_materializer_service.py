@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -11,7 +13,9 @@ from sqlalchemy import select
 from app.domain.planning import PlanGenerationRequest, StageExecutionPlan
 from app.repositories.models import (
     CompatibilityResolutionModel,
+    EnvironmentCapabilityModel,
     ExecutionProfileModel,
+    MigrationRunModel,
     MigrationPlanModel,
     StageExecutionPlanModel,
 )
@@ -74,12 +78,20 @@ class NextStageMaterializerService:
             raise NextStageMaterializerError(
                 "ROUTE_STAGE_MISSING", "Current stage is absent from the approved route"
             )
+        remaining_route = route[current_index + 1 :]
+        if remaining_route and resolution.catalogue_version == "catalog-v3":
+            profile = self._select_successor_profile(
+                session,
+                continuation.run_id,
+                str((current_plan.stage_plan or {}).get("target_exact") or ""),
+                remaining_route[0],
+            )
         return {
             "run_id": continuation.run_id,
             "sealed_path": sealed_path,
             "sealed_fingerprint": sealed_fingerprint,
             "current_target_exact": (current_plan.stage_plan or {}).get("target_exact"),
-            "remaining_route": route[current_index + 1 :],
+            "remaining_route": remaining_route,
             "catalogue_version": resolution.catalogue_version,
             "execution_profile_id": profile.selected_profile_id,
             "execution_profile_checksum": profile.selected_checksum,
@@ -100,13 +112,95 @@ class NextStageMaterializerService:
             "plan_version": migration_plan.version,
         }
 
+    @staticmethod
+    def _select_successor_profile(session, run_id: str, source_exact: str, route_entry: dict) -> ExecutionProfileModel:
+        """Persist the exact catalogue/runtime binding for the successor stage."""
+        environment = session.scalar(
+            select(EnvironmentCapabilityModel).order_by(EnvironmentCapabilityModel.created_at.desc())
+        )
+        profiles = (environment.snapshot or {}).get("runtime_profiles", []) if environment else []
+        node_exact = str(route_entry.get("node_exact") or "")
+        npm_exact = str(route_entry.get("npm_exact") or "")
+        candidate = next(
+            (
+                item for item in profiles
+                if str(item.get("node_exact")) == node_exact
+                and str(item.get("npm_exact")) == npm_exact
+                and str(item.get("npx_exact")) == npm_exact
+            ),
+            None,
+        )
+        if candidate is None:
+            raise NextStageMaterializerError(
+                "NEXT_STAGE_RUNTIME_UNAVAILABLE",
+                f"No configured runtime matches Node {node_exact} / npm {npm_exact}",
+            )
+        now = datetime.now(UTC)
+        key = f"stage-runtime:{route_entry['stage_id']}"
+        existing = session.scalar(select(ExecutionProfileModel).where(
+            ExecutionProfileModel.run_id == run_id,
+            ExecutionProfileModel.idempotency_key == key,
+        ))
+        existing_payload = (
+            (existing.profiles or [None])[0]
+            if existing is not None
+            else None
+        )
+        validated_at = (
+            existing_payload.get("validated_at")
+            if isinstance(existing_payload, dict)
+            else candidate.get("validated_at")
+        ) or environment.created_at.isoformat()
+        payload = {
+            "profile_id": str(candidate["profile_id"]),
+            "operating_system": "windows", "architecture": "amd64",
+            "node_executable": str(candidate["node_executable"]), "node_exact": node_exact,
+            "package_manager": "npm",
+            "package_manager_executable": str(candidate["npm_executable"]),
+            "package_manager_exact": npm_exact,
+            "npx_executable": str(candidate["npx_executable"]), "npx_exact": npm_exact,
+            "angular_cli_execution": "npx",
+            "angular_cli_exact": str(route_entry.get("target_cli_exact") or route_entry.get("target_angular_exact")),
+            "proxy_profile": "configured", "certificate_profile": "validated",
+            "network_policy": "approved-registries-only",
+            "environment_allowlist": ["PATH", "HTTP_PROXY", "HTTPS_PROXY"],
+            "cache_policy": "approved",
+            "compatibility_catalog_version": "catalog-v3-stage-runtime-v1",
+            "source_angular_exact": source_exact,
+            "validated_at": str(validated_at),
+        }
+        checksum = "sha256:" + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        payload["checksum"] = checksum
+        if existing:
+            if existing.selected_checksum != checksum:
+                raise NextStageMaterializerError(
+                    "NEXT_STAGE_RUNTIME_DRIFT", "Persisted successor runtime no longer matches inventory"
+                )
+            return existing
+        run = session.get(MigrationRunModel, run_id)
+        record = ExecutionProfileModel(
+            id=f"profile-{hashlib.sha256((run_id + key).encode()).hexdigest()[:24]}",
+            run_id=run_id, idempotency_key=key, request_checksum=checksum,
+            policy_version="catalog-v3-stage-runtime-v1", status="resolved",
+            source_angular_exact=source_exact,
+            selected_profile_id=payload["profile_id"], selected_checksum=checksum,
+            profiles=[payload], blockers=[], guidance=[], artifact_ids=[],
+            state_version=run.state_version, event_sequence=0,
+            created_at=now, updated_at=now,
+        )
+        session.add(record)
+        session.flush()
+        return record
+
     def materialize(self, context: dict[str, object]) -> StageExecutionPlan | None:
         observed = self._sealed_source_exact(Path(str(context["sealed_path"])))
         expected = self._version(context["current_target_exact"])
         if (
             not expected
             or not observed
-            or expected.split(".", 1)[0] != observed.split(".", 1)[0]
+            or expected != observed
         ):
             raise NextStageMaterializerError(
                 "SEALED_VERSION_MISMATCH",
@@ -162,15 +256,25 @@ class NextStageMaterializerService:
             ((package.get("dependencies") or {}).get("@angular/core"))
             or ((package.get("devDependencies") or {}).get("@angular/core"))
         )
-        locked = self._version(
-            ((lock.get("packages") or {}).get("node_modules/@angular/core") or {}).get(
-                "version"
-            )
+        packages = lock.get("packages") or {}
+        modern = (
+            packages.get("node_modules/@angular/core") or {}
+            if isinstance(packages, dict)
+            else {}
+        )
+        dependencies = lock.get("dependencies") or {}
+        legacy = (
+            dependencies.get("@angular/core") or {}
+            if isinstance(dependencies, dict)
+            else {}
+        )
+        locked = self._version(modern.get("version")) or self._version(
+            legacy.get("version")
         )
         if (
             not declared
             or not locked
-            or declared.split(".", 1)[0] != locked.split(".", 1)[0]
+            or declared != locked
         ):
             raise NextStageMaterializerError(
                 "SEALED_VERSION_EVIDENCE_INVALID",

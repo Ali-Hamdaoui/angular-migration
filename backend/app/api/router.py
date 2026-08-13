@@ -16,6 +16,7 @@ from app.api.routes.version import router as version_router
 from app.api.routes.baseline import router as baseline_router
 from app.api.routes.baseline_g03 import router as baseline_g03_router
 from app.api.routes.baseline_matrix import router as baseline_matrix_router
+from app.api.routes.baseline_repair import router as baseline_repair_router
 from app.api.routes.discovery import router as discovery_router
 from app.api.routes.baseline_parity import router as baseline_parity_router
 from app.api.routes.commands import router as commands_router
@@ -30,6 +31,7 @@ from app.api.routes.planning_review import router as planning_review_router
 from app.api.routes.stage_execution import router as stage_execution_router
 from app.api.routes.assistant import router as run_assistant_router
 from app.api.routes.transformation import router as transformation_router
+from app.api.routes.transformation_replan import router as transformation_replan_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -45,6 +47,7 @@ api_router.include_router(plans_router)
 api_router.include_router(planning_review_router)
 api_router.include_router(stage_execution_router)
 api_router.include_router(transformation_router)
+api_router.include_router(transformation_replan_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -60,6 +63,7 @@ api_router.include_router(preflights_router)
 api_router.include_router(baseline_router)
 api_router.include_router(baseline_parity_router)
 api_router.include_router(baseline_matrix_router)
+api_router.include_router(baseline_repair_router)
 api_router.include_router(discovery_router)
 api_router.include_router(parity_baseline_router)
 api_router.include_router(commands_router)
@@ -80,6 +84,7 @@ api_v1_router.include_router(plans_router)
 api_v1_router.include_router(planning_review_router)
 api_v1_router.include_router(stage_execution_router)
 api_v1_router.include_router(transformation_router)
+api_v1_router.include_router(transformation_replan_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)
@@ -95,6 +100,7 @@ api_v1_router.include_router(draft_approval_router)
 api_v1_router.include_router(baseline_router)
 api_v1_router.include_router(baseline_parity_router)
 api_v1_router.include_router(baseline_matrix_router)
+api_v1_router.include_router(baseline_repair_router)
 api_v1_router.include_router(discovery_router)
 api_v1_router.include_router(parity_baseline_router)
 api_v1_router.include_router(commands_router)

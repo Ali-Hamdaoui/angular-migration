@@ -2,6 +2,7 @@ import asyncio
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -81,6 +82,24 @@ def test_capture_replays_idempotently_and_rejects_stale_state(tmp_path):
     engine.dispose()
 
 
+def test_recapture_preserves_old_artifacts_and_versions_changed_evidence(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    service = BaselineParityApplicationService(scope=scope, now_provider=lambda: NOW)
+    first = service.capture("run-1", BaselineParityCaptureRequest(expected_state_version=1, idempotency_key="parity-1", actor="operator"))
+    with sessions() as session:
+        validation = session.get(BaselineValidationModel, "validation-1")
+        validation.results = [{"kind": "test", "target_id": "script:test", "status": "failed", "failed_tests": ["a newer failure"]}]
+        session.commit()
+
+    second = service.capture("run-1", BaselineParityCaptureRequest(
+        expected_state_version=first.state_version, idempotency_key="parity-2", actor="operator",
+    ))
+
+    assert second.artifact_ids != first.artifact_ids
+    assert any("a newer failure" in item["message"] for item in second.failures)
+    engine.dispose()
+
+
 
 def test_capture_is_available_through_versioned_api(monkeypatch, tmp_path):
     scope, _sessions, engine = fixture(tmp_path)
@@ -150,3 +169,17 @@ def test_installation_failure_diagnostics_are_fingerprinted():
     failures, diagnostics = service._failures([], [installation], store)
     assert any(item["kind"] == "install" for item in diagnostics)
     assert any(item["kind"] == "install" for item in failures)
+
+
+def test_parity_recapture_uses_only_the_latest_validation_for_each_kind():
+    history = [
+        SimpleNamespace(id="test-old", kind="test"),
+        SimpleNamespace(id="lint-current", kind="lint"),
+        SimpleNamespace(id="test-current", kind="test"),
+    ]
+
+    selected = BaselineParityApplicationService._latest_validations(history)
+
+    assert [(item.kind, item.id) for item in selected] == [
+        ("test", "test-current"), ("lint", "lint-current"),
+    ]

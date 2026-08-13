@@ -74,3 +74,17 @@ def test_unrelated_custom_test_builder_remains_blocked(tmp_path):
     inventory = BaselineTargetDiscoveryService().discover(tmp_path)
     target = next(item for item in inventory.targets if item.target_id == "angular:app:test")
     assert normalize_command_result(target, exit_code=None, duration_ms=None).status is BaselineTargetStatus.BLOCKED
+
+
+def test_angular_karma_targets_and_scripts_are_bound_to_one_shot_headless_execution(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "ng test"}}), encoding="utf-8")
+    (tmp_path / "angular.json").write_text(json.dumps({"projects": {"app": {"architect": {
+        "test": {"builder": "@angular-devkit/build-angular:karma"},
+    }}}}), encoding="utf-8")
+
+    inventory = BaselineTargetDiscoveryService().discover(tmp_path)
+    angular = next(item for item in inventory.targets if item.target_id == "angular:app:test")
+    script = next(item for item in inventory.targets if item.target_id == "script:test")
+
+    assert angular.arguments == ("ng", "test", "app", "--watch=false", "--browsers=ChromeHeadless")
+    assert script.arguments == ("run", "test", "--", "--watch=false", "--browsers=ChromeHeadless")

@@ -56,6 +56,29 @@ def test_lockfile_mismatch_is_blocked_without_rewriting_metadata(tmp_path: Path)
     assert (tmp_path / "package-lock.json").read_bytes() == lockfile_before
 
 
+def test_npm_v1_lockfile_uses_top_level_dependency_versions_without_mutation(tmp_path: Path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "legacy-fixture",
+        "dependencies": {"@angular/core": "~11.0.4", "typescript": "4.0.5"},
+    }), encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "dependencies": {
+            "@angular/core": {"version": "11.0.4"},
+            "typescript": {"version": "4.0.5"},
+        },
+    }), encoding="utf-8")
+    lockfile_before = (tmp_path / "package-lock.json").read_bytes()
+
+    package = PackageMetadataInspector().inspect(tmp_path)
+    result = LockfilePrequalificationService().inspect(tmp_path, package)
+
+    assert result.status == "valid"
+    assert result.lockfile_version == 1
+    assert result.blockers == ()
+    assert (tmp_path / "package-lock.json").read_bytes() == lockfile_before
+
+
 def test_source_inventory_classifies_non_registry_sources(tmp_path: Path):
     (tmp_path / "package.json").write_text(json.dumps({"dependencies": {
         "git-dep": "git+https://example.test/repo.git",

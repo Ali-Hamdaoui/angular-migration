@@ -399,6 +399,43 @@ def test_classify_failure_repairable_restores_pre_update_checkpoint_before_repai
     engine.dispose()
 
 
+def test_later_angular_update_step_uses_its_execution_bound_checkpoint(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path)
+    session = factory()
+    step = session.get(StageStepModel, "step-1")
+    step.name = "angular_update-26"
+    execution = session.get(CommandExecutionModel, "exec-1")
+    execution.command_id = "angular-migrate-only"
+    checkpoint = StageCheckpointModel(
+        id="ckpt-pre",
+        run_id="run-1",
+        stage_id="stage-1",
+        kind="pre_angular_update",
+        sequence=1,
+        workspace_alias="STAGE_SANDBOX",
+        workspace_path=str(tmp_path / "workspace"),
+        workspace_fingerprint="fingerprint-1",
+        safe_for_resume=True,
+        sealed=False,
+        state_version=1,
+        created_at=NOW,
+    )
+    session.add(checkpoint)
+    session.commit()
+
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert TransformerOrchestrator._is_angular_update_failure(session, continuation)
+    assert (
+        TransformerOrchestrator._angular_update_reconstruction_checkpoint(
+            session, continuation
+        ).id
+        == checkpoint.id
+    )
+    session.close()
+    engine.dispose()
+
+
 def test_repair_replay_checkpoint_lookup_is_run_scoped(tmp_path: Path):
     engine, factory = _database(tmp_path)
     workspace, _artifacts = _seed(factory, tmp_path)

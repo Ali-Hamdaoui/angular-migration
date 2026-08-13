@@ -77,7 +77,7 @@ class SourceIntakeDispatcher:
     def recover(self) -> int:
         """Re-dispatch jobs left queued, running, or waiting at restart."""
         with session_scope() as session:
-            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_g03", "waiting_retry"}))))
+            jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.status.in_({"queued", "running", "waiting_g02", "waiting_runtime_selection", "waiting_g03", "waiting_baseline_retry", "waiting_retry"}))))
             # A new backend instance owns recovery. Requeue work owned by a
             # previous process before dispatching it; attempt-specific
             # idempotency keys keep resumed steps from creating duplicate
@@ -104,6 +104,9 @@ class SourceIntakeDispatcher:
                 return
             if getattr(job, "_resume_after_g03", False):
                 self._continue_after_g03(job.id, run_id, job.actor)
+                return
+            if getattr(job, "_resume_baseline", False):
+                self._continue_after_g02_once(job.id, run_id, job.actor, resume_baseline=True)
                 return
             with session_scope() as session:
                 run = session.get(MigrationRunModel, run_id)
@@ -205,7 +208,7 @@ class SourceIntakeDispatcher:
             with self._lock:
                 self._continuing.discard(run_id)
 
-    def _continue_after_g02_once(self, job_id: str, run_id: str, actor: str) -> None:
+    def _continue_after_g02_once(self, job_id: str, run_id: str, actor: str, *, resume_baseline: bool = False) -> None:
         """Run the approved source boundary through runtime and baseline checks."""
         try:
             G02ApprovalApplicationService().authorize_baseline(run_id)
@@ -249,13 +252,19 @@ class SourceIntakeDispatcher:
             g02_service=G02ApprovalApplicationService(),
             execution_profile_service=profiles,
         )
-        workspace = baseline.create_workspace(run_id, BaselineWorkspaceRequest(
-            expected_state_version=expected_version,
-            idempotency_key=f"intake-{job_id}:baseline-workspace",
-            actor=actor,
-        ))
+        if resume_baseline:
+            workspace = baseline.get(run_id)
+            if workspace is None or workspace.status not in {"workspace_ready", "blocked"}:
+                self._fail(job_id, "BASELINE_WORKSPACE_REQUIRED", "The preserved baseline workspace is unavailable for retry.")
+                return
+        else:
+            workspace = baseline.create_workspace(run_id, BaselineWorkspaceRequest(
+                expected_state_version=expected_version,
+                idempotency_key=f"intake-{job_id}:baseline-workspace",
+                actor=actor,
+            ))
         prequalified = baseline.prequalify(run_id, BaselinePrequalifyRequest(
-            expected_state_version=workspace.state_version,
+            expected_state_version=expected_version if resume_baseline else workspace.state_version,
             idempotency_key=f"intake-{job_id}:baseline-prequalify",
             actor=actor,
         ))
@@ -497,11 +506,12 @@ class SourceIntakeDispatcher:
 
     def _claim(self, run_id: str) -> SourceIntakeJobModel | None:
         with session_scope() as session:
-            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "waiting_g02", "waiting_runtime_selection", "waiting_g03"})).order_by(SourceIntakeJobModel.queued_at.desc()))
+            job = session.scalar(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == run_id, SourceIntakeJobModel.status.in_({"queued", "waiting_g02", "waiting_runtime_selection", "waiting_g03", "waiting_baseline_retry"})).order_by(SourceIntakeJobModel.queued_at.desc()))
             if job is None:
                 return None
             resume_g03 = job.status == "waiting_g03"
             job._resume_after_g03 = resume_g03
+            job._resume_baseline = job.status == "waiting_baseline_retry"
             job.status = "running"
             # Attempt is the durable retry identity, not a worker-claim
             # counter. It must remain stable when recovery reclaims a job.

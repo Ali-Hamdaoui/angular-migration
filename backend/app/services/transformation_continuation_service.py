@@ -17,6 +17,7 @@ from app.repositories.models import (
     MigrationPlanModel,
     MigrationStageModel,
     StageExecutionPlanModel,
+    StageStepModel,
     TransformationContinuationModel,
 )
 from app.state import StateTransitionService
@@ -94,12 +95,13 @@ class TransformationContinuationService:
             )
         )
         if existing is not None:
-            if existing.request_checksum != request_checksum:
+            if existing.request_checksum == request_checksum:
+                return existing
+            if not self._eligible_for_replan_rebind(session, existing):
                 raise TransformationContinuationError(
                     "IDEMPOTENCY_PAYLOAD_MISMATCH",
                     "Transformation continuation already exists with a different payload",
                 )
-            return existing
         g06 = session.get(G06ApprovalModel, g06_approval_id)
         plan = session.get(MigrationPlanModel, plan_id)
         stage_plan = session.get(StageExecutionPlanModel, stage_plan_id)
@@ -141,6 +143,43 @@ class TransformationContinuationService:
             session.flush()
         if stage.run_id != run_id:
             raise TransformationContinuationError("STAGE_PLAN_STALE", "Stage does not belong to the run")
+        if existing is not None:
+            existing.current_stage_id = stage_id
+            existing.g06_approval_id = g06_approval_id
+            existing.plan_id = plan_id
+            existing.plan_checksum = plan_checksum
+            existing.stage_plan_id = stage_plan_id
+            existing.stage_plan_checksum = stage_plan_checksum
+            existing.idempotency_key = idempotency_key
+            existing.request_checksum = request_checksum
+            existing.status = TransformationStatus.QUEUED.value
+            existing.current_node = TransformationNode.VALIDATE_G06.value
+            existing.worker_id = None
+            existing.lease_expires_at = None
+            existing.next_attempt_at = None
+            existing.waiting_execution_id = None
+            existing.last_error_code = None
+            existing.last_error_message = None
+            existing.attempt += 1
+            existing.wake_sequence += 1
+            existing.state_version += 1
+            existing.updated_at = created_at
+            self._reset_stage_steps(session, existing, stage_plan)
+            append_continuation_event(
+                session,
+                existing,
+                event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_REBOUND,
+                key=f"rebind:{g06_approval_id}",
+                reason="continuation rebound to an explicitly approved regenerated plan",
+                payload={
+                    "plan_id": plan_id,
+                    "stage_plan_id": stage_plan_id,
+                    "execution_epoch": existing.attempt,
+                },
+                occurred_at=created_at,
+            )
+            session.flush()
+            return existing
         model = TransformationContinuationModel(
             id=f"transform-{uuid4().hex[:12]}",
             run_id=run_id,
@@ -175,6 +214,71 @@ class TransformationContinuationService:
             payload={"continuation_id": model.id, "stage_id": stage_id},
         )
         return model
+
+    @staticmethod
+    def _eligible_for_replan_rebind(session: Session, model: TransformationContinuationModel) -> bool:
+        old_gate = session.get(G06ApprovalModel, model.g06_approval_id)
+        return (
+            model.status == TransformationStatus.WAITING_GATE.value
+            and model.current_node == TransformationNode.VALIDATE_G06.value
+            and model.last_error_code == "REPLAN_G06_REQUIRED"
+            and old_gate is not None
+            and old_gate.status == "stale"
+        )
+
+    @staticmethod
+    def _reset_stage_steps(
+        session: Session,
+        continuation: TransformationContinuationModel,
+        stage_plan: StageExecutionPlanModel,
+    ) -> None:
+        planned = {
+            f"{group}-{index}"
+            for group, references in ((stage_plan.stage_plan or {}).get("commands") or {}).items()
+            for index, _reference in enumerate(references)
+        }
+        existing = {
+            item.name: item
+            for item in session.scalars(
+                select(StageStepModel).where(
+                    StageStepModel.run_id == continuation.run_id,
+                    StageStepModel.stage_id == continuation.current_stage_id,
+                )
+            ).all()
+        }
+        for name in planned:
+            step = existing.get(name)
+            if step is None:
+                session.add(
+                    StageStepModel(
+                        id=f"step-{continuation.run_id}-{continuation.current_stage_id}-{name}",
+                        run_id=continuation.run_id,
+                        stage_id=continuation.current_stage_id,
+                        name=name,
+                        status="PENDING",
+                        component_type="command",
+                        idempotency_key=f"{continuation.run_id}:{continuation.current_stage_id}:{name}",
+                        state_version=1,
+                        updated_at=continuation.updated_at,
+                    )
+                )
+                continue
+            step.status = "PENDING"
+            step.attempt_id = None
+            step.execution_id = None
+            step.started_at = None
+            step.completed_at = None
+            step.input_checksum = None
+            step.output_checksum = None
+            step.workspace_fingerprint = None
+            step.artifact_ids = []
+            step.state_version += 1
+            step.updated_at = continuation.updated_at
+        for name, step in existing.items():
+            if name not in planned:
+                step.status = "SUPERSEDED"
+                step.state_version += 1
+                step.updated_at = continuation.updated_at
 
     def claim_next(
         self,

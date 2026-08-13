@@ -64,9 +64,10 @@ class BaselineParityApplicationService:
             self._require_state(run, request.expected_state_version)
             self._require_prerequisites(session, run, baseline, request.prerequisite_artifact_ids, request.prerequisite_artifact_checksums)
             self._invalidate_bound_g03(session, run, actor=request.actor)
-            validations = session.scalars(select(BaselineValidationModel).where(
+            validation_history = session.scalars(select(BaselineValidationModel).where(
                 BaselineValidationModel.run_id == run_id,
-            )).all()
+            ).order_by(BaselineValidationModel.created_at, BaselineValidationModel.id)).all()
+            validations = self._latest_validations(validation_history)
             profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
             run_root = Path(run.artifact_root).resolve()
             sandbox = Path(baseline.sandbox_path).resolve()
@@ -75,7 +76,10 @@ class BaselineParityApplicationService:
             baseline_checksum = baseline.checksum
             runtime_profile_id = profile.selected_profile_id if profile else None
             runtime_checksum = profile.selected_checksum if profile else None
-            installations = session.scalars(select(CommandExecutionModel).where(CommandExecutionModel.run_id == run_id)).all()
+            installations = session.scalars(select(CommandExecutionModel).where(
+                CommandExecutionModel.run_id == run_id,
+                CommandExecutionModel.command_id == "npm-ci-bootstrap",
+            )).all()
             source_artifact_ids.extend(artifact for row in installations for artifact in (row.artifact_ids or []))
 
         store = LocalFilesystemArtifactStore(run_root, fixed_run_root=run_root)
@@ -103,7 +107,11 @@ class BaselineParityApplicationService:
             "baseline_parser_diagnostics.json": {"schema_version": SCHEMA_VERSION, "parser_version": PARSER_VERSION, "diagnostics": diagnostics},
         }
         store = LocalFilesystemArtifactStore(run_root, fixed_run_root=run_root)
-        stored = [self._store_or_reuse(store, run_id, f"01_baseline/{name}", json.dumps(value, indent=2, sort_keys=True), baseline_checksum) for name, value in payloads.items()]
+        evidence_key = request_checksum.removeprefix("sha256:")[:16]
+        stored = [self._store_or_reuse(
+            store, run_id, f"01_baseline/{name}", json.dumps(value, indent=2, sort_keys=True), baseline_checksum,
+            fallback_relative_path=f"01_baseline/parity/{evidence_key}/{name}",
+        ) for name, value in payloads.items()]
         self._verify_artifacts(store, stored)
         artifact_ids = [item.ref.artifact_id for item in stored]
         artifact_checksums = {item.ref.artifact_id: item.ref.checksum for item in stored}
@@ -119,7 +127,9 @@ class BaselineParityApplicationService:
             record = BaselineParityEvidenceModel(id=f"parity-{uuid4().hex[:12]}", run_id=run_id, idempotency_key=request.idempotency_key, request_checksum=request_checksum, actor=request.actor, status="captured", parser_version=PARSER_VERSION, schema_version=SCHEMA_VERSION, baseline_checksum=baseline_checksum, runtime_profile_id=runtime_profile_id, runtime_checksum=runtime_checksum, failures=failures, routes=routes, backend_integration=backend_integration, anchors=anchors, diagnostics=diagnostics, confidence=confidence, source_artifact_ids=sorted(set(source_artifact_ids)), artifact_ids=artifact_ids, artifact_checksums=artifact_checksums, state_version=transition.next_state_version, event_sequence=transition.event_sequence, created_at=self._now(), updated_at=self._now())
             session.add(record)
             for artifact in stored:
-                session.add(ArtifactMetadataModel(id=f"metadata-{artifact.ref.artifact_id}", run_id=run_id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at))
+                metadata_id = f"metadata-{artifact.ref.artifact_id}"
+                if session.get(ArtifactMetadataModel, metadata_id) is None:
+                    session.add(ArtifactMetadataModel(id=metadata_id, run_id=run_id, stage_id=None, artifact_type=artifact.ref.artifact_type.value, relative_path=artifact.ref.relative_path, checksum=artifact.ref.checksum, created_at=artifact.ref.created_at))
             session.flush()
             return self._response(record)
 
@@ -154,6 +164,13 @@ class BaselineParityApplicationService:
         failures = [self._jsonable(item) for item in self._fingerprints.from_diagnostics(diagnostics)]
         return failures, diagnostics
 
+    @staticmethod
+    def _latest_validations(history):
+        latest = {}
+        for validation in history:
+            latest[validation.kind] = validation
+        return list(latest.values())
+
     def _invalidate_bound_g03(self, session, run, *, actor: str) -> None:
         assessment = session.scalar(select(BaselineAssessmentModel).where(
             BaselineAssessmentModel.run_id == run.id,
@@ -186,12 +203,14 @@ class BaselineParityApplicationService:
         return "sha256:" + hashlib.sha256(payload).hexdigest()
 
     @staticmethod
-    def _store_or_reuse(store, run_id, relative_path, content, baseline_checksum):
+    def _store_or_reuse(store, run_id, relative_path, content, baseline_checksum, *, fallback_relative_path=None):
         try:
             existing = store.read_artifact(run_id, relative_path)
             expected = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
             if existing.ref.checksum != expected:
-                raise BaselineParityApplicationError("BASELINE_PARITY_ARTIFACT_CHECKSUM_MISMATCH", f"Existing parity artifact is modified: {relative_path}", 409)
+                if fallback_relative_path is None:
+                    raise BaselineParityApplicationError("BASELINE_PARITY_ARTIFACT_CHECKSUM_MISMATCH", f"Existing parity artifact is modified: {relative_path}", 409)
+                return store.write_text_artifact(run_id, fallback_relative_path, content, ArtifactType.JSON, created_by="baseline-parity-service", created_at=datetime.now(UTC), input_hashes={"baseline": baseline_checksum or ""}, policy_version=PARSER_VERSION)
             return existing
         except Exception as error:
             if isinstance(error, BaselineParityApplicationError):

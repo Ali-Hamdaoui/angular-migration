@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from sqlalchemy import select
 
@@ -16,7 +17,7 @@ class RegistrySnapshotBuildError(ValueError):
 
 
 class RegistrySnapshotBuilder:
-    def build(self, session, run) -> RegistrySnapshotModel:
+    def build(self, session, run, *, source_angular_exact: str | None = None) -> RegistrySnapshotModel:
         preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
         binding = preflight.binding if preflight else None
         if not binding:
@@ -27,11 +28,7 @@ class RegistrySnapshotBuilder:
         if environment is None or analysis is None or probe.get("status") != "passed" or not probe.get("value"):
             raise RegistrySnapshotBuildError("Approved environment registry-probe evidence is unavailable.")
         versions = (analysis.snapshot or {}).get("versions", [])
-        packages = [
-            {"package": item.get("package"), "declared": item.get("declared"), "resolved": item.get("resolved")}
-            for item in versions
-            if item.get("package") in {"@angular/core", "typescript", "rxjs"} and item.get("resolved")
-        ]
+        packages = self._resolved_packages(versions, source_angular_exact)
         if not any(item["package"] == "@angular/core" for item in packages):
             raise RegistrySnapshotBuildError("Source analysis lacks resolved @angular/core evidence.")
         payload = {
@@ -59,3 +56,20 @@ class RegistrySnapshotBuilder:
         session.add(record)
         session.flush()
         return record
+
+    @staticmethod
+    def _resolved_packages(versions, source_angular_exact: str | None):
+        packages = [
+            {"package": item.get("package"), "declared": item.get("declared"), "resolved": item.get("resolved")}
+            for item in versions
+            if item.get("package") in {"@angular/core", "typescript", "rxjs"} and item.get("resolved")
+        ]
+        if not any(item["package"] == "@angular/core" for item in packages) and source_angular_exact and re.fullmatch(r"\d+\.\d+\.\d+", source_angular_exact):
+            declared = next((item.get("declared") for item in versions if item.get("package") == "@angular/core"), None)
+            packages.append({
+                "package": "@angular/core",
+                "declared": declared,
+                "resolved": source_angular_exact,
+                "resolution_source": "approved_source_snapshot",
+            })
+        return packages

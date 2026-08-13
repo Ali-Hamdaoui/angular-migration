@@ -204,9 +204,9 @@ class TestCommandRegistryService:
         """Both v1 and v2 angular-update-exact templates are seeded."""
         seeded = registry.seed_defaults(db_session)
         angular = [t for t in seeded if t.command_id == "angular-update-exact"]
-        assert len(angular) == 2
+        assert len(angular) == 3
         versions = {t.version for t in angular}
-        assert versions == {1, 2}
+        assert versions == {1, 2, 3}
 
     def test_find_registered_template_returns_correct_version(self, registry, db_session):
         """find_registered_template returns the right template by version."""

@@ -19,7 +19,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 POLICY_VERSION = "angular-source-runtime-v1"
 ANGULAR_19_POLICY_VERSION = "angular-19-source-runtime-v1"
 ANGULAR_20_POLICY_VERSION = "angular-20-source-runtime-v1"
-SUPPORTED_POLICY_VERSIONS = (POLICY_VERSION, ANGULAR_19_POLICY_VERSION, ANGULAR_20_POLICY_VERSION)
+HISTORICAL_POLICY_VERSIONS = {
+    major: f"angular-{major}-source-runtime-v1" for major in (*range(11, 18), 21)
+}
+SUPPORTED_POLICY_VERSIONS = (
+    POLICY_VERSION,
+    ANGULAR_19_POLICY_VERSION,
+    ANGULAR_20_POLICY_VERSION,
+    *HISTORICAL_POLICY_VERSIONS.values(),
+)
 
 
 class _ImmutableModel(BaseModel):
@@ -139,7 +147,27 @@ class RuntimePolicyLoader:
     """Loads the versioned, checked-in policy for Sprint 1 source intake."""
 
     def load_for_source(self, source: Version | None, expected_policy_version: str | None = None) -> RuntimePolicy:
-        if source is not None and source.major == 19:
+        historical = {
+            11: ("4.0.0", "4.2.0", {12: "12.22.12"}),
+            12: ("4.2.3", "4.4.0", {12: "12.22.12"}),
+            13: ("4.4.3", "4.7.0", {16: "16.20.2"}),
+            14: ("4.6.2", "4.9.0", {16: "16.20.2"}),
+            15: ("4.8.2", "5.0.0", {16: "16.20.2"}),
+            16: ("4.9.3", "5.2.0", {16: "16.20.2"}),
+            17: ("5.2.0", "5.5.0", {20: "20.11.1"}),
+            21: ("5.9.0", "6.1.0", {22: "22.23.1"}),
+        }
+        if source is not None and source.major in historical:
+            typescript_minimum, typescript_maximum, node_minimums = historical[source.major]
+            policy = RuntimePolicy(
+                policy_version=HISTORICAL_POLICY_VERSIONS[source.major],
+                angular_major=source.major,
+                supported_angular_minors=(0, 1, 2, 3),
+                node_minimums=node_minimums,
+                typescript_minimum=typescript_minimum,
+                typescript_exclusive_maximum=typescript_maximum,
+            )
+        elif source is not None and source.major == 19:
             policy = RuntimePolicy(
                 policy_version=ANGULAR_19_POLICY_VERSION,
                 angular_major=19,
@@ -153,7 +181,7 @@ class RuntimePolicyLoader:
                 angular_major=20,
                 supported_angular_minors=(3,),
                 typescript_minimum="5.8.0",
-                typescript_exclusive_maximum="5.9.0",
+                typescript_exclusive_maximum="6.0.0",
             )
         else:
             policy = RuntimePolicy(policy_version=POLICY_VERSION)

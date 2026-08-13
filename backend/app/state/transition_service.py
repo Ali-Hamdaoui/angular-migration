@@ -122,6 +122,7 @@ class StateTransitionService:
         WorkflowEventType.PLANNING_REVIEW_REVISION_REQUIRED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
         WorkflowEventType.PLANNING_REVIEW_REJECTED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
         WorkflowEventType.PLANNING_REVIEW_INSUFFICIENT_CONTEXT: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
+        WorkflowEventType.TRANSFORMATION_REPLAN_RECOVERY_COMPLETED: frozenset({RunStatus.WAITING_PLAN_APPROVAL}),
         WorkflowEventType.PLANNING_FAILED: frozenset({RunStatus.FAILED}),
         WorkflowEventType.STAGED_MIGRATION_COMPLETED: frozenset({RunStatus.COMPLETED}),
         WorkflowEventType.STAGE_CREATED: frozenset({RunStatus.STAGE_CREATED}),
