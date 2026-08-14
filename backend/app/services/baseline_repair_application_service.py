@@ -16,6 +16,7 @@ from app.repositories.models import ArtifactMetadataModel, BaselineAssessmentMod
 from app.repositories.session import session_scope
 from app.services.patch_apply_service import PatchApplyService
 from app.services.workspace_fingerprint import SOURCE_CONFIG_FINGERPRINT_PROFILE, workspace_fingerprint_v1
+from app.services.workspace_integrity_service import WorkspaceIntegrityError, WorkspaceIntegrityService
 from app.state.transition_service import StateTransitionService, TransitionRequest
 
 
@@ -77,7 +78,11 @@ class BaselineRepairApplicationService:
                 raise BaselineRepairApplicationError("BASELINE_REPAIR_NOT_APPLICABLE", "The approved test-evidence blocker is not present.")
             workspace = Path(baseline.sandbox_path).resolve(strict=True)
             snapshot = session.get(SourceSnapshotModel, baseline.snapshot_id)
-            if baseline.sandbox_fingerprint != assessment.sandbox_fingerprint or snapshot is None:
+            if snapshot is None:
+                raise BaselineRepairApplicationError("BASELINE_REPAIR_WORKSPACE_STALE", "The baseline binding no longer matches G03.")
+            try:
+                WorkspaceIntegrityService().verify(workspace, expected_fingerprint=assessment.sandbox_fingerprint)
+            except WorkspaceIntegrityError:
                 raise BaselineRepairApplicationError("BASELINE_REPAIR_WORKSPACE_STALE", "The baseline binding no longer matches G03.")
             snapshot_root = Path(snapshot.snapshot_path).resolve(strict=True)
             if self._approved_source_fingerprint(workspace) != self._approved_source_fingerprint(snapshot_root):
