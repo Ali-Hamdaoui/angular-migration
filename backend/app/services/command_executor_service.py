@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import queue
-
-logger = logging.getLogger(__name__)
 import re
 import shutil
 import signal
@@ -152,23 +149,54 @@ def _profile_runtime_id(node_exact: str | None) -> str | None:
     return f"node{major}" if major.isdigit() else None
 
 
+def _profile_runtime_versions(profile: dict) -> dict[str, str | None]:
+    """Read the profile's declared runtime versions.
+
+    Persisted profiles are ``ExecutionProfile.model_dump()`` where npm is
+    ``package_manager_exact``; legacy aliases are tolerated.
+    """
+    return {
+        "node": profile.get("node_exact"),
+        "npm": profile.get("package_manager_exact") or profile.get("npm_exact"),
+        "npx": profile.get("npx_exact"),
+    }
+
+
 def _runtime_bindings_from_profile(profile: dict) -> dict[str, RuntimeExecutableDescriptor]:
     """Resolve PATH-independent, checksum-bound descriptors for the profile's runtimes.
 
-    Returns an empty mapping when the profile cannot be satisfied by the runtime
-    matrix; the command then keeps its existing resolution behavior.  When a
-    binding IS returned, execution is fail-closed on descriptor mismatch.
+    Raises ``CommandExecutorError`` when the profile declares explicit runtime
+    versions that the runtime matrix cannot satisfy (fail-closed).  When the
+    profile declares no node version, returns an empty mapping and the command
+    keeps its existing resolution behavior.
     """
-    runtime_id = _profile_runtime_id(profile.get("node_exact"))
+    versions = _profile_runtime_versions(profile)
+    node_exact = versions["node"]
+    if not node_exact:
+        return {}
+    runtime_id = _profile_runtime_id(node_exact)
     if runtime_id is None:
         return {}
-    requirements = [
-        RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id=runtime_id, version_exact=profile.get("node_exact")),
-        RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, version_exact=profile.get("npm_exact")),
-        RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, version_exact=profile.get("npx_exact")),
-    ]
+    requirements = [RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id=runtime_id, version_exact=node_exact)]
+    for kind, exact in (("npm", versions["npm"]), ("npx", versions["npx"])):
+        if exact:
+            requirements.append(RuntimeRequirement(kind=kind, runtime_id=runtime_id, version_exact=exact))
+        else:
+            requirements.append(RuntimeRequirement(kind=kind, runtime_id=runtime_id, minimum_version="0.0.0"))
     service = RuntimeResolutionApplicationService(get_settings())
-    bindings = {binding.descriptor.kind.value: binding.descriptor for binding in service.resolve(requirements) if binding.descriptor is not None}
+    bindings = {
+        binding.descriptor.kind.value: binding.descriptor
+        for binding in service.resolve(requirements)
+        if binding.descriptor is not None
+    }
+    expected_kinds = {RuntimeExecutableKind.NODE.value, RuntimeExecutableKind.NPM.value, RuntimeExecutableKind.NPX.value}
+    if expected_kinds - set(bindings):
+        missing = sorted(expected_kinds - set(bindings))
+        raise CommandExecutorError(
+            "EXECUTION_PROFILE_RUNTIME_UNBINDABLE",
+            "Declared runtime versions of the execution profile cannot be bound in the runtime matrix: "
+            + ", ".join(missing),
+        )
     return bindings
 
 
@@ -1721,29 +1749,29 @@ class CommandExecutorService:
     def _record_runtime_bindings_evidence(
         self, run_id: str, bindings: dict[str, RuntimeExecutableDescriptor], *, execution_id: str | None
     ) -> None:
-        """Persist the resolved runtime descriptors as durable execution evidence."""
-        try:
-            service = self._runtime_resolution or RuntimeResolutionApplicationService(get_settings())
-            self._runtime_resolution = service
-            from app.domain.runtime_execution import RuntimeRequirementBinding
+        """Persist the resolved runtime descriptors as durable execution evidence.
 
-            service.record_evidence(
-                run_id,
-                [
-                    RuntimeRequirementBinding(
-                        requirement=RuntimeRequirement(
-                            kind=descriptor.kind,
-                            runtime_id=descriptor.runtime_id or descriptor.kind.value,
-                            version_exact=descriptor.version_exact,
-                        ),
-                        descriptor=descriptor,
-                    )
-                    for descriptor in bindings.values()
-                ],
-                execution_id=execution_id,
-                actor="command-executor-service",
-            )
-        except Exception as exc:
-            # Evidence recording must never fail the command itself; the failure
-            # is still surfaced to operators through logs.
-            logger.warning("Failed to persist runtime execution evidence for run %s: %s", run_id, exc)
+        Evidence persistence is part of the runtime authority guarantee; a
+        failure to persist evidence fails the command closed instead of letting
+        a stage pass without runtime evidence.
+        """
+        service = self._runtime_resolution or RuntimeResolutionApplicationService(get_settings())
+        self._runtime_resolution = service
+        from app.domain.runtime_execution import RuntimeRequirementBinding
+
+        service.record_evidence(
+            run_id,
+            [
+                RuntimeRequirementBinding(
+                    requirement=RuntimeRequirement(
+                        kind=descriptor.kind,
+                        runtime_id=descriptor.runtime_id or descriptor.kind.value,
+                        version_exact=descriptor.version_exact,
+                    ),
+                    descriptor=descriptor,
+                )
+                for descriptor in bindings.values()
+            ],
+            execution_id=execution_id,
+            actor="command-executor-service",
+        )

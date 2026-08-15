@@ -265,3 +265,53 @@ def test_supervisor_fails_closed_on_path_swap():
 def test_sha256_helper_reads_resolved_target():
     digest = sha256_of(NVM_ROOT / "v18.20.8" / "bin" / "node")
     assert len(digest) == 64
+
+
+# --- F01-03/04 integration: profile -> binding -> policy seam -----------------
+
+def test_runtime_bindings_from_real_serialized_profile():
+    """A real ExecutionProfile.model_dump() payload must bind cleanly (npm uses package_manager_exact)."""
+    from app.services.command_executor_service import _runtime_bindings_from_profile
+
+    profile = {
+        "profile_id": "profile-1",
+        "checksum": "sha256:runtime",
+        "node_executable": "node",
+        "node_exact": "18.20.8",
+        "package_manager": "npm",
+        "package_manager_executable": "npm",
+        "package_manager_exact": "10.8.2",
+        "npx_executable": "npx",
+        "npx_exact": "10.8.2",
+        "environment_allowlist": ["PATH"],
+    }
+    bindings = _runtime_bindings_from_profile(profile)
+    assert set(bindings) == {"node", "npm", "npx"}
+    assert bindings["node"].runtime_id == "v18.20.8"
+    assert bindings["npm"].runtime_id == "v18.20.8"
+    assert bindings["npm"].version_exact == "10.8.2"
+    assert bindings["npx"].runtime_id == "v18.20.8"
+
+
+def test_runtime_bindings_legacy_profile_without_node_exact_returns_empty():
+    """A profile without an explicit node version keeps legacy resolution behavior."""
+    from app.services.command_executor_service import _runtime_bindings_from_profile
+
+    assert _runtime_bindings_from_profile({"node_executable": "node"}) == {}
+
+
+def test_runtime_bindings_fail_closed_on_unbindable_declared_runtime():
+    """A profile that declares a runtime absent from the matrix must fail closed."""
+    from app.services.command_executor_service import (
+        CommandExecutorError,
+        _runtime_bindings_from_profile,
+    )
+
+    profile = {
+        "node_exact": "99.99.99",
+        "package_manager_exact": "99.0.0",
+        "npx_exact": "99.0.0",
+    }
+    with pytest.raises(CommandExecutorError) as exc:
+        _runtime_bindings_from_profile(profile)
+    assert exc.value.code == "EXECUTION_PROFILE_RUNTIME_UNBINDABLE"

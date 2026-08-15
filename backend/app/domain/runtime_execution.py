@@ -133,8 +133,3 @@ class RuntimeRequirementBinding(_ImmutableModel):
     descriptor: RuntimeExecutableDescriptor | None = None
     blocked_reason: str | None = None
     resolved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-
-def binding_satisfied(binding: RuntimeRequirementBinding) -> bool:
-    """True only when the binding carries a descriptor satisfying its requirement."""
-    return binding.descriptor is not None and binding.requirement.satisfied_by(binding.descriptor)

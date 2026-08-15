@@ -18,7 +18,7 @@ from app.domain.runtime_execution import RuntimeRequirement
 from app.services.runtime_resolution_application_service import (
     RuntimeResolutionApplicationService,
     RuntimeResolutionError,
-    _descriptor_from_row,
+    descriptor_from_model,
 )
 
 router = APIRouter(tags=["runtime-execution-authority"])
@@ -112,7 +112,7 @@ def record_runtime_evidence(
     except RuntimeResolutionError as error:
         _raise(error)
     return RecordRuntimeEvidenceResponse(
-        recorded=len(records), evidence=[_descriptor_dto(_descriptor_from_row(item)) for item in records]
+        recorded=len(records), evidence=[_descriptor_dto(descriptor_from_model(item)) for item in records]
     )
 
 

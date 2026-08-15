@@ -9,7 +9,6 @@ from app.domain.runtime_execution import (
     RuntimeExecutableKind,
     RuntimeRequirement,
     RuntimeRequirementBinding,
-    binding_satisfied,
 )
 
 NOW = datetime(2026, 8, 15, tzinfo=UTC)
@@ -84,17 +83,17 @@ def test_requirement_checksum_bound():
     assert req.satisfied_by(descriptor(sha256="b" * 64)) is True
 
 
-def test_binding_satisfied_only_when_descriptor_matches():
+def test_binding_requires_descriptor_that_satisfies_requirement():
     good = RuntimeRequirementBinding(requirement=requirement(), descriptor=descriptor(), resolved_at=NOW)
-    assert binding_satisfied(good) is True
+    assert good.requirement.satisfied_by(good.descriptor) is True
     bad = RuntimeRequirementBinding(
         requirement=requirement(), descriptor=descriptor(version_exact="16.0.0"), resolved_at=NOW
     )
-    assert binding_satisfied(bad) is False
+    assert bad.requirement.satisfied_by(bad.descriptor) is False
     unresolved = RuntimeRequirementBinding(
         requirement=requirement(), blocked_reason="no compatible node", resolved_at=NOW
     )
-    assert binding_satisfied(unresolved) is False
+    assert unresolved.descriptor is None
 
 
 def test_descriptor_matches_identity_comparison():

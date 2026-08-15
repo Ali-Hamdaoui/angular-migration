@@ -120,7 +120,7 @@ class RuntimeResolutionApplicationService:
             rows = session.scalars(
                 select(RuntimeExecutionEvidenceModel).where(RuntimeExecutionEvidenceModel.run_id == run_id)
             ).all()
-            return [_descriptor_from_row(row) for row in rows]
+            return [descriptor_from_model(row) for row in rows]
 
 
 def _evidence_id(run_id: str, runtime_id: str, kind: str) -> str:
@@ -129,7 +129,8 @@ def _evidence_id(run_id: str, runtime_id: str, kind: str) -> str:
     return "rev-" + hashlib.sha256(f"{run_id}:{runtime_id}:{kind}".encode()).hexdigest()[:24]
 
 
-def _descriptor_from_row(row: RuntimeExecutionEvidenceModel) -> RuntimeExecutableDescriptor:
+def descriptor_from_model(row: RuntimeExecutionEvidenceModel) -> RuntimeExecutableDescriptor:
+    """Project a persisted evidence row back into its domain descriptor."""
     from app.domain.runtime_execution import RuntimeExecutableKind
 
     return RuntimeExecutableDescriptor(
@@ -180,6 +181,9 @@ def _build_worker_version_probe(settings: Settings, matrix: RuntimeMatrix) -> Ve
         if key in cache:
             return cache[key]
         run_id = f"runtime-resolve-{uuid4().hex[:12]}"
+        import os
+
+        bin_dir = str(resolved.parent)
         request = CommandRequestDto(
             command_id="runtime-executable-probe",
             run_id=run_id,
@@ -192,6 +196,7 @@ def _build_worker_version_probe(settings: Settings, matrix: RuntimeMatrix) -> Ve
             network_profile="none",
             idempotency_key=f"probe:{resolved}",
             requested_at=datetime.now(UTC),
+            environment_overrides={"PATH": os.pathsep.join([bin_dir, os.environ.get("PATH", "")])},
         )
         result = worker.run(request)
         version: str | None = None

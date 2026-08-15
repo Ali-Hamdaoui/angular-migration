@@ -325,7 +325,7 @@ class CommandPolicy:
             command=(executable, *request.arguments),
             working_directory=working_directory,
             environment_allowlist=self.environment_allowlist,
-            environment_overrides=dict(self.environment_overrides),
+            environment_overrides={**self.environment_overrides, **request.environment_overrides},
             runtime_bindings=dict(self.runtime_bindings),
         )
 
@@ -336,6 +336,8 @@ class CommandPolicy:
         binding = self._binding_for_executable(request.executable)
         if request.executable not in definition.allowed_executables and binding is None:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
+        if binding is not None and binding.kind.value not in definition.allowed_executables:
+            raise CommandPolicyViolation("Bound runtime kind does not match the registered command definition")
         if not definition.matches_arguments(tuple(request.arguments)):
             raise CommandPolicyViolation("Arguments do not match the registered command definition")
         if binding is None:

@@ -1,5 +1,7 @@
 """API tests for F01-04 runtime execution evidence persistence and resolution surface."""
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -7,6 +9,7 @@ from app.repositories.models import RuntimeExecutionEvidenceModel
 from app.repositories.session import session_scope
 
 client = TestClient(app)
+NVM_ROOT = Path.home() / ".nvm" / "versions" / "node"
 
 
 def _create_run() -> str:
@@ -47,7 +50,7 @@ def test_resolve_requirements_returns_bindings():
     assert node_binding["descriptor"] is not None
     assert node_binding["descriptor"]["version_exact"] == "18.20.8"
     assert len(node_binding["descriptor"]["sha256"]) == 64
-    assert node_binding["descriptor"]["resolved_path"].startswith("/home/ubuntu/.nvm/versions/node/")
+    assert node_binding["descriptor"]["resolved_path"].startswith(str(NVM_ROOT))
 
 
 def test_discover_runtime_executables():
@@ -55,7 +58,7 @@ def test_discover_runtime_executables():
     assert response.status_code == 200
     descriptors = response.json()["descriptors"]
     assert len(descriptors) >= 12
-    assert all(item["resolved_path"].startswith("/home/ubuntu/.nvm/versions/node/") for item in descriptors)
+    assert all(item["resolved_path"].startswith(str(NVM_ROOT)) for item in descriptors)
 
 
 def test_record_and_list_evidence_idempotent():
