@@ -37,7 +37,51 @@ The platform must support:
 | LLM | Azure OpenAI gateway (redaction, usage, cost) | `backend/app/llm_gateway/` |
 | Scripts | Linux dev/validation automation | `scripts/*.sh` |
 
-## 2. Architecture rules (strict)
+## 2. Issue-Driven Development
+
+**GitHub Project issues are the implementation contract.**
+
+Before implementing:
+
+- Read the complete GitHub issue (objective, scope, impacted files, runtime
+  criteria, definition of done).
+- Understand the parent feature and how this issue fits it.
+- Do not implement outside the issue scope.
+- If repository reality conflicts with the issue: analyze the conflict and update
+  the implementation plan before coding — never silently deviate.
+
+Why: the V2 project is structured as parent features with linked implementation
+and runtime-validation issues. This file connects every agent to that workflow:
+an issue is not complete until its runtime validation passes.
+
+## 3. Architecture decision priority
+
+When decisions conflict, follow this order:
+
+1. Existing repository architecture
+2. V2 specification
+3. GitHub issue requirements
+4. Implementation preference
+
+Do not invent a "better" architecture that ignores the existing design. Change the
+existing architecture only through a documented decision that survives this
+priority order.
+
+## 4. No silent architecture changes
+
+Do not introduce architecture changes silently.
+
+Any change affecting:
+
+- workflow ownership
+- database authority
+- API contracts
+- state transitions
+- LLM boundaries
+
+must be documented in the PR (and, where required, in an ADR under `docs/adr/`).
+
+## 5. Architecture rules (strict)
 
 These are non-negotiable. A change that violates them is rejected regardless of
 test results.
@@ -85,7 +129,7 @@ test results.
 | `preflight/`, `snapshots/`, `workspaces/`, `delivery/` | Readiness, immutable snapshots, run workspace, atomic delivery | Source mutation, premature publication |
 | `frontend/` | Control Tower presentation | Workflow state machine, execution logic |
 
-## 3. V2 migration context
+## 6. V2 migration context
 
 V2 evolves the platform from the fixed **Angular 18 → 21** reference path to a
 **flexible 11 → 21** migration factory. In practice this means:
@@ -104,7 +148,22 @@ When implementing V2 features, prefer generalizing existing 18→21 machinery ov
 introducing parallel paths. Remove hardcoded 18/21 assumptions only where the
 feature requires it; keep backward compatibility with existing runs.
 
-## 4. Coding rules
+## 7. Dependency and Angular rules
+
+Angular migration changes must consider the full compatibility envelope:
+
+- **Angular version compatibility**
+- **Node compatibility**
+- **npm compatibility**
+- **TypeScript compatibility**
+- **RxJS compatibility**
+- **third-party package compatibility**
+
+Never upgrade packages blindly. Verify every dependency change against the target
+Angular major before committing to it, and confirm the resolved runtime binding
+(node/npm/npx) is certified for the stage.
+
+## 8. Coding rules
 
 ### Before coding — mandatory analysis
 
@@ -127,7 +186,7 @@ feature requires it; keep backward compatibility with existing runs.
   ~60 logical lines. Existing oversized files are debt; do not refactor them
   unless your task requires it.
 
-## 5. Backend development rules
+## 9. Backend development rules
 
 - Domain/business logic belongs in services; routers stay thin.
 - APIs validate input and delegate; they never contain business logic.
@@ -140,7 +199,7 @@ feature requires it; keep backward compatibility with existing runs.
   - **recovery information** (what the operator can do)
 - LLM/gateway errors must not leak secrets or raw credentials.
 
-## 6. Failure debugging rules
+## 10. Failure debugging rules
 
 The system is migration infrastructure; failures must be understandable.
 
@@ -161,7 +220,27 @@ Rules:
   over raw stack traces only.
 - Reproduce with the real runtime before theorizing. Do not guess from code alone.
 
-## 7. LLM integration rules
+### Failure debugging protocol
+
+When a failure happens, follow this sequence:
+
+1. **Capture** the exact error (structured fault, error code, traceback, IDs).
+2. **Identify the owner:**
+   - environment
+   - backend
+   - workflow
+   - dependency
+   - migration transformation
+   - LLM proposal
+3. **Collect evidence** (command, environment, runtime, logs, DB state, workflow
+   state, artifacts).
+4. **Fix the root cause** — do not patch symptoms.
+5. **Re-run the runtime scenario** to confirm the fix.
+
+This aligns with the Failure Intelligence feature: failures are captured, grouped,
+and root-caused before repair is proposed.
+
+## 11. LLM integration rules
 
 LLM capabilities in this product are bounded.
 
@@ -185,7 +264,7 @@ LLM capabilities in this product are bounded.
 The backend remains the authority. Model output is data, never instructions.
 Prompt/schema registry, redaction, provenance, usage, and cost ledger apply.
 
-## 8. Testing strategy
+## 12. Testing strategy
 
 Priority:
 
@@ -212,7 +291,7 @@ Test rules:
 - Linux evidence proves only Linux behavior; do not claim it proves Windows
   behavior.
 
-## 9. Runtime validation rules
+## 13. Runtime validation rules
 
 Every important feature must define a runtime acceptance scenario:
 
@@ -224,7 +303,18 @@ Every important feature must define a runtime acceptance scenario:
 
 Runtime acceptance is the final authority; unit tests are supporting evidence.
 
-## 10. Git workflow
+A runtime validation must reproduce the **real user workflow**:
+
+- create a migration run
+- execute a stage
+- validate the artifact
+- inspect the database state
+- verify the workflow events
+
+Synthetic tests alone are not sufficient for migration behavior. The scenario
+must prove the actual migration path, not a mock of it.
+
+## 14. Git workflow
 
 Branch strategy:
 
@@ -233,10 +323,33 @@ main          stable, reviewed, integrated
 feature/<name>  one feature branch per feature
 ```
 
+### Branch lifecycle
+
+```
+Create branch from latest main
+↓
+Implement feature/subtasks
+↓
+Run runtime validation
+↓
+Create PR
+↓
+Review
+↓
+Merge
+↓
+Delete branch
+```
+
+Always branch from the latest `main`; keep `feature/<name>` short-lived and
+rebased on `main` as needed.
+
 Rules:
 
 - One feature branch per feature; no mixing unrelated changes.
 - Keep commits focused and logically separated.
+- Never create commits only to mark progress — a commit must represent a coherent
+  technical change.
 - Do not commit secrets, databases, artifacts, sandboxes, logs, or generated
   runtime output (these live outside the repository).
 
@@ -253,7 +366,7 @@ chore(scope): short description
 Each commit message must explain what changed, why, and what validation was
 performed. Reference the issue/feature when applicable.
 
-## 11. Pull request workflow
+## 15. Pull request workflow
 
 Every PR must include:
 
@@ -271,7 +384,7 @@ Before merge, verify:
 - no unrelated changes included
 - documentation updated where contracts/behavior changed
 
-## 12. Conflict resolution
+## 16. Conflict resolution
 
 When resolving conflicts:
 
@@ -281,7 +394,7 @@ When resolving conflicts:
 3. Re-run validation after resolution (at least the affected tests and, if
    feasible, the runtime scenario).
 
-## 13. Database change rules
+## 17. Database change rules
 
 Any database change (model + Alembic migration) must document:
 
@@ -297,7 +410,7 @@ Rules:
 - Never modify production database files directly; changes ship as migrations.
 - No transaction held across subprocesses/LLM/approval waits.
 
-## 14. File creation rules
+## 18. File creation rules
 
 Before creating new files:
 
@@ -307,7 +420,7 @@ Before creating new files:
 New files require a clear responsibility and a stated reason. Prefer extending
 existing cohesive modules over proliferation.
 
-## 15. Documentation rules
+## 19. Documentation rules
 
 Update documentation when you change:
 
@@ -319,7 +432,7 @@ Update documentation when you change:
 Documentation reflects final code, not intended design. A documentation defect is
 a defect. Keep `docs/`, `README.md`, and this file consistent with reality.
 
-## 16. Standard agent workflow
+## 20. Standard agent workflow
 
 For every task, follow this sequence:
 
@@ -339,7 +452,7 @@ Environment and validation notes:
   with `DEV_BACKEND_PORT`).
 - Validate the active SQLite database with `scripts/check-database.sh`.
 
-## 17. Quality principle
+## 21. Quality principle
 
 The main objective is a **reliable Angular migration platform**.
 
