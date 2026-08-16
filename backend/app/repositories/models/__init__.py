@@ -21,6 +21,7 @@ from app.repositories.diagnostics_models import FailureDiagnosticPackModel
 from app.repositories.stage_runtime_models import StageRuntimeBindingModel
 from app.repositories.workspace_generation_models import WorkspaceGenerationModel
 from app.repositories.lockfile_evidence_models import LockfileGenerationEvidenceModel
+from app.repositories.migration_route_models import MigrationRouteModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -125,6 +126,7 @@ __all__ = [
     "StageRuntimeBindingModel",
     "WorkspaceGenerationModel",
     "LockfileGenerationEvidenceModel",
+    "MigrationRouteModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
