@@ -9,7 +9,7 @@ reproducible.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -96,6 +96,14 @@ class QualityMetricsService:
                 if command.stage_id:
                     command_latency_by_stage[command.stage_id] += elapsed * 1000
 
+        llm_tokens_by_stage: defaultdict[str, int] = defaultdict(int)
+        llm_cost_by_stage: defaultdict[str, float] = defaultdict(float)
+        for cost in costs:
+            stage_key = cost.stage_id or ""
+            llm_cost_by_stage[stage_key] += getattr(cost, "total_cost_usd", 0.0) or 0.0
+            llm_tokens_by_stage[stage_key] += cost.total_tokens
+        llm_tokens_by_run = sum(record.total_tokens for record in usage)
+
         stage_metrics: list[StageQualityMetrics] = []
         sealed = 0
         for stage in stages:
@@ -108,6 +116,8 @@ class QualityMetricsService:
                     sealed=bool(stage.status == "sealed"),
                     repair_cycles=attempts_by_stage.get(stage.id, 0),
                     command_latency_ms=round(command_latency_by_stage.get(stage.id, 0.0), 3),
+                    llm_total_tokens=llm_tokens_by_stage.get(stage.id, 0),
+                    cost_usd=round(llm_cost_by_stage.get(stage.id, 0.0), 6),
                 )
             )
             if stage.status == "sealed":
@@ -143,6 +153,8 @@ class QualityMetricsService:
             usage = list(session.scalars(select(LlmUsageRecordModel)).all())
             costs = list(session.scalars(select(UsageCostRecordModel)).all())
             attempts = list(session.scalars(select(RepairAttemptModel)).all())
+            invocations = list(session.scalars(select(LlmInvocationModel)).all())
+            commands = list(session.scalars(select(CommandExecutionModel)).all())
         usage_by_run: defaultdict[str, int] = defaultdict(int)
         for record in usage:
             usage_by_run[record.run_id] += record.total_tokens
@@ -152,6 +164,15 @@ class QualityMetricsService:
         attempts_by_run: defaultdict[str, int] = defaultdict(int)
         for attempt in attempts:
             attempts_by_run[attempt.run_id] += 1
+        llm_latency_by_run: defaultdict[str, float] = defaultdict(float)
+        for invocation in invocations:
+            if invocation.latency_ms:
+                llm_latency_by_run[invocation.run_id] += invocation.latency_ms
+        command_latency_by_run: defaultdict[str, float] = defaultdict(float)
+        for command in commands:
+            elapsed = _seconds(command.started_at, command.finished_at)
+            if elapsed is not None:
+                command_latency_by_run[command.run_id] += elapsed * 1000
 
         pairs: dict[str, dict[str, Any]] = {}
         for run in runs:
@@ -171,6 +192,8 @@ class QualityMetricsService:
                     "total_tokens": 0,
                     "total_cost_usd": 0.0,
                     "repair_cycles": 0,
+                    "llm_latency_ms": 0.0,
+                    "command_latency_ms": 0.0,
                 },
             )
             bucket["run_count"] += 1
@@ -179,6 +202,8 @@ class QualityMetricsService:
             bucket["total_tokens"] += usage_by_run.get(run.id, 0)
             bucket["total_cost_usd"] += cost_by_run.get(run.id, 0.0)
             bucket["repair_cycles"] += attempts_by_run.get(run.id, 0)
+            bucket["llm_latency_ms"] += llm_latency_by_run.get(run.id, 0.0)
+            bucket["command_latency_ms"] += command_latency_by_run.get(run.id, 0.0)
 
         rollups = []
         for bucket in pairs.values():
@@ -193,6 +218,8 @@ class QualityMetricsService:
                     total_tokens=bucket["total_tokens"],
                     total_cost_usd=round(bucket["total_cost_usd"], 6),
                     mean_repair_cycles=round(bucket["repair_cycles"] / count, 4) if count else 0.0,
+                    mean_llm_latency_ms=round(bucket["llm_latency_ms"] / count, 3) if count else 0.0,
+                    mean_command_latency_ms=round(bucket["command_latency_ms"] / count, 3) if count else 0.0,
                 )
             )
         rollups.sort(key=lambda r: r.key)
@@ -200,8 +227,13 @@ class QualityMetricsService:
 
     def trend(self, *, bucket: str = "day", since_days: int = 90) -> list[MetricTrendPoint]:
         """Trend reporting across runs bucketed by day/week (F29-04)."""
+        window_start = datetime.now(UTC) - timedelta(days=since_days)
         with self._session_scope() as session:
-            runs = list(session.scalars(select(MigrationRunModel)).all())
+            runs = list(
+                session.scalars(
+                    select(MigrationRunModel).order_by(MigrationRunModel.created_at)
+                ).all()
+            )
             usage = list(session.scalars(select(LlmUsageRecordModel)).all())
             costs = list(session.scalars(select(UsageCostRecordModel)).all())
             attempts = list(session.scalars(select(RepairAttemptModel)).all())
@@ -223,6 +255,8 @@ class QualityMetricsService:
             if created.tzinfo is None:
                 created = created.replace(tzinfo=UTC)
             created = created.astimezone(UTC)
+            if created < window_start:
+                continue
             if bucket == "week":
                 iso = created.isocalendar()
                 key = f"{iso.year}-W{iso.week:02d}"
@@ -254,4 +288,4 @@ class QualityMetricsService:
                     measured_at=b["measured_at"],
                 )
             )
-        return points[-since_days:]
+        return points

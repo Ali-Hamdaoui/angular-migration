@@ -39,10 +39,11 @@ def _seed_run(run_id: str, *, status: str = "COMPLETED", source: str = "angular-
                                         input_price_per_million=1.0, output_price_per_million=2.0,
                                         cost_usd=0.0002, created_at=NOW))
         session.add(UsageCostRecordModel(id=f"cost-{run_id}", invocation_id=f"inv-{run_id}",
-                                         run_id=run_id, pricing_version="v1", input_tokens=100,
-                                         output_tokens=50, total_tokens=150, input_price_per_million=1.0,
-                                         output_price_per_million=2.0, input_cost_usd=0.0001,
-                                         output_cost_usd=0.0001, total_cost_usd=0.0002, created_at=NOW))
+                                         run_id=run_id, stage_id=f"stage-{run_id}-2", pricing_version="v1",
+                                         input_tokens=100, output_tokens=50, total_tokens=150,
+                                         input_price_per_million=1.0, output_price_per_million=2.0,
+                                         input_cost_usd=0.0001, output_cost_usd=0.0001,
+                                         total_cost_usd=0.0002, created_at=NOW))
         session.add(LlmInvocationModel(id=f"inv-{run_id}", run_id=run_id, idempotency_key=f"invkey-{run_id}",
                                        request_checksum="sha256:" + "1" * 64, correlation_id="corr",
                                        actor="operator", role="assistant", task_type="repair_proposal",
@@ -79,6 +80,8 @@ def test_collect_run_metrics():
     assert len(metrics.stages) == 3
     assert metrics.stages[1].repair_cycles == 1
     assert metrics.stages[1].command_latency_ms > 0
+    assert metrics.stages[1].cost_usd == 0.0002
+    assert metrics.total_tokens == 150
 
 
 def test_collect_failed_run():
@@ -148,6 +151,35 @@ def test_trend_buckets_by_day():
     assert point.run_count >= 1
     assert point.success_count >= 1
     assert point.total_tokens >= 150
+
+
+def test_trend_respects_since_days_window():
+    run_id = f"run-f29-{uuid4().hex[:8]}"
+    _seed_run(run_id)
+    service = QualityMetricsService()
+    points = service.trend(bucket="day", since_days=1)
+    today = datetime.now(UTC).date().isoformat()
+    assert any(p.bucket == today for p in points)
+    # an old run (created 200 days ago) is excluded
+    with session_scope() as session:
+        session.add(MigrationRunModel(id=f"run-old-{uuid4().hex[:8]}", status="COMPLETED", run_phase="initialized",
+                                      source_version_family="angular-11.x", target_version_family="angular-14.x",
+                                      created_at=NOW - timedelta(days=200), updated_at=NOW - timedelta(days=200)))
+        session.commit()
+    recent = service.trend(bucket="day", since_days=30)
+    assert not any(p.bucket == (NOW - timedelta(days=200)).date().isoformat() for p in recent)
+
+
+def test_rollup_includes_latency_means():
+    source = "angular-31.x"
+    target = "angular-34.x"
+    run_id = f"run-f29-{uuid4().hex[:8]}"
+    _seed_run(run_id, source=source, target=target)
+    service = QualityMetricsService()
+    rollups = service.rollup(source=source, target=target)
+    pair = next(r for r in rollups if r.key == f"{source} -> {target}")
+    assert pair.mean_llm_latency_ms == 250.0
+    assert pair.mean_command_latency_ms > 0
 
 
 def test_api_run_metrics():
