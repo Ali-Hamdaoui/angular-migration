@@ -2,11 +2,13 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.authentication import authenticated_actor, authorize_run
 from app.api.execution_audit_contracts import (
     ExecutionAuditEntryDto,
     ExecutionAuditListDto,
     ExecutionAuditVerificationDto,
 )
+from app.repositories.session import session_scope
 from app.services.execution_audit_service import ExecutionAuditError, ExecutionAuditTrailService
 
 router = APIRouter(tags=["execution-audit"])
@@ -37,7 +39,10 @@ def _raise(error: ExecutionAuditError) -> None:
 def list_audit_trail(
     run_id: str,
     service: ExecutionAuditTrailService = Depends(get_audit_service),
+    actor: str = Depends(authenticated_actor),
 ) -> ExecutionAuditListDto:
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
     try:
         entries = service.list_entries(run_id)
     except ExecutionAuditError as error:
@@ -49,7 +54,10 @@ def list_audit_trail(
 def verify_audit_trail(
     run_id: str,
     service: ExecutionAuditTrailService = Depends(get_audit_service),
+    actor: str = Depends(authenticated_actor),
 ) -> ExecutionAuditVerificationDto:
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
     try:
         verification = service.verify_trail(run_id)
     except ExecutionAuditError as error:

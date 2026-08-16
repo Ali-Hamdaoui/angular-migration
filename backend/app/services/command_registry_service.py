@@ -7,13 +7,13 @@ before process creation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from uuid import uuid4
-from typing import Any
-from pathlib import Path
 import hashlib
 import json
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +22,10 @@ from sqlalchemy.orm import Session
 from app.domain.command import (
     ANGULAR_UPDATE_V2_RENDERER,
     ANGULAR_UPDATE_V3_RENDERER,
+    DEFAULT_COMMAND_TEMPLATES,
+    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    NPM_DEPENDENCY_INSTALL_RENDERER,
+    NPM_DEPENDENCY_UNINSTALL_RENDERER,
     AuthorizationCheckResult,
     AuthorizationDecision,
     AuthorizationRequest,
@@ -30,22 +34,17 @@ from app.domain.command import (
     CommandClass,
     CommandTemplate,
     CommandTemplateStatus,
-    DEFAULT_COMMAND_TEMPLATES,
-    NPM_DEPENDENCY_INSTALL_RENDERER,
-    NPM_DEPENDENCY_UNINSTALL_RENDERER,
-    NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NetworkProfile,
     command_arguments_match,
     command_class_for,
 )
 from app.domain.contracts import (
-    CommandTemplateDto,
-    CommandTemplateListDto,
     CommandPolicyValidateRequestDto,
     CommandPolicyValidateResponseDto,
+    CommandTemplateDto,
+    CommandTemplateListDto,
     WorkflowEventType,
 )
-from app.services.path_validation_service import is_portable_absolute_path
 from app.services.dependency_closure_service import (
     compatible_reinstall_bundle,
     installed_dependency_version,
@@ -54,6 +53,7 @@ from app.services.dependency_closure_service import (
     verify_dependency_transition_evidence_for_source,
 )
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.path_validation_service import is_portable_absolute_path
 from app.services.repair_application_service import (
     BlockingDependencyCandidate,
     TargetStateCandidate,
@@ -506,8 +506,8 @@ class CommandPolicyEngineService:
         session.flush()
 
         if run is not None:
-            from app.services.execution_audit_service import ExecutionAuditTrailService
             from app.domain.execution_audit import ExecutionAuditEvent
+            from app.services.execution_audit_service import ExecutionAuditTrailService
 
             ExecutionAuditTrailService().append(
                 run_id=request.run_id,

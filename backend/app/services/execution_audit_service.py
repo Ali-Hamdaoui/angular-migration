@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
@@ -34,6 +35,18 @@ class ExecutionAuditTrailService:
     """Append-only execution audit trail (F27-03)."""
 
     GENESIS = "GENESIS"
+
+    _run_locks: dict[str, threading.Lock] = {}
+    _locks_guard = threading.Lock()
+
+    @classmethod
+    def _run_lock(cls, run_id: str) -> threading.Lock:
+        with cls._locks_guard:
+            lock = cls._run_locks.get(run_id)
+            if lock is None:
+                lock = threading.Lock()
+                cls._run_locks[run_id] = lock
+            return lock
 
     def __init__(
         self,
@@ -125,12 +138,15 @@ class ExecutionAuditTrailService:
             session.flush()
             return entry
 
-        if session is not None:
-            return _write(session)
-        with self._session_scope() as owned:
-            entry = _write(owned)
-            owned.commit()
-            return entry
+        # Serialize per-run appends so concurrent terminal callbacks never
+        # fork the chain (read-then-bind is not atomic across worker threads).
+        with self._run_lock(run_id):
+            if session is not None:
+                return _write(session)
+            with self._session_scope() as owned:
+                entry = _write(owned)
+                owned.commit()
+                return entry
 
     def verify_trail(self, run_id: str) -> dict:
         """Recompute the chain and confirm every entry is unbroken."""
@@ -197,13 +213,3 @@ class ExecutionAuditTrailService:
                     .order_by(CommandExecutionAuditModel.occurred_at.asc(), CommandExecutionAuditModel.id.asc())
                 ).all()
             )
-
-    def assert_command_governed(self, command_id: str) -> CommandClass:
-        """F27-01 fail-closed: ungoverned commands may never execute."""
-        command_class = command_class_for(command_id)
-        if command_class is CommandClass.UNGOVERNED:
-            raise ExecutionAuditError(
-                "COMMAND_CLASS_UNGOVERNED",
-                f"command_id '{command_id}' has no governed V2 command class",
-            )
-        return command_class

@@ -474,6 +474,23 @@ class CommandExecutorService:
                 model.failure_message or "expired command claim recovered",
                 {"execution_id": model.id, "worker_id": prior_worker, "status": model.status},
             )
+            from app.domain.execution_audit import ExecutionAuditEvent
+            from app.services.execution_audit_service import ExecutionAuditTrailService
+
+            ExecutionAuditTrailService().append(
+                run_id=model.run_id,
+                event=(ExecutionAuditEvent.EXECUTION_INTERRUPTED if model.status == CommandStatus.INTERRUPTED.value else ExecutionAuditEvent.EXECUTION_FAILED),
+                command_id=model.command_id or "",
+                stage_id=model.stage_id,
+                execution_id=model.id,
+                actor=model.requested_by,
+                executable=model.executable or "",
+                arguments=list(model.arguments or []),
+                state_version=model.authoritative_state_version,
+                network_profile=model.network_profile,
+                reason=model.failure_code or "expired claim reconciled",
+                session=session,
+            )
             recovered.append(model.id)
         session.flush()
         return recovered
@@ -1603,6 +1620,23 @@ class CommandExecutorService:
         model.blockers = model.blockers or [model.failure_code]
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:failed", WorkflowEventType.COMMAND_FAILED,
                            model.failure_message, {"execution_id": model.id, "error_code": model.failure_code})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        ExecutionAuditTrailService().append(
+            run_id=model.run_id,
+            event=ExecutionAuditEvent.EXECUTION_FAILED,
+            command_id=model.command_id or "",
+            stage_id=model.stage_id,
+            execution_id=model.id,
+            actor=model.requested_by,
+            executable=model.executable or "",
+            arguments=list(model.arguments or []),
+            state_version=model.authoritative_state_version,
+            network_profile=model.network_profile,
+            reason=code,
+            session=session,
+        )
 
     def _persist_internal_failure(
         self,

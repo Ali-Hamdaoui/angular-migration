@@ -57,6 +57,7 @@ _COMMAND_CLASSES: dict[str, CommandClass] = {
     "npm-version": CommandClass.VERSION_VERIFY,
     "npx-version": CommandClass.VERSION_VERIFY,
     "git-version": CommandClass.VERSION_VERIFY,
+    "runtime-executable-probe": CommandClass.RUNTIME_PROBE,
 }
 
 

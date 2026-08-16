@@ -194,6 +194,54 @@ def test_audit_api_unknown_run_404():
     assert response.json()["error_code"] == "RUN_NOT_FOUND"
 
 
+def test_audit_api_forbidden_for_foreign_actor():
+    run_id = f"run-f27-{uuid4().hex[:8]}"
+    with session_scope() as session:
+        session.add(MigrationRunModel(id=run_id, status="CREATED", run_phase="initialized", actor="owner",
+                                      source_version_family="angular-11.x", target_version_family="angular-14.x",
+                                      created_at=NOW, updated_at=NOW))
+        session.commit()
+    response = client.get(
+        f"/runs/{run_id}/execution-audit-trail",
+        headers={"X-Authenticated-Actor": "intruder"},
+    )
+    assert response.status_code == 403
+
+
+def test_concurrent_appends_do_not_fork_chain():
+    import threading
+
+    run_id = f"run-f27-{uuid4().hex[:8]}"
+    _seed_run(run_id)
+    service = ExecutionAuditTrailService()
+    errors: list[Exception] = []
+
+    def worker(index: int) -> None:
+        try:
+            service.append(
+                run_id=run_id,
+                event=ExecutionAuditEvent.EXECUTION_SUCCEEDED,
+                command_id="python-version",
+                execution_id=f"exec-{index}",
+                actor="tester",
+                executable="python",
+                arguments=["--version"],
+                reason=f"done-{index}",
+            )
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    verification = service.verify_trail(run_id)
+    assert verification["intact"] is True
+    assert verification["entries"] == 8
+
+
 def test_policy_rejection_writes_audit_entry():
     from app.services.command_registry_service import CommandPolicyEngineService
 
