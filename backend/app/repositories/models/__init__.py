@@ -25,6 +25,7 @@ from app.repositories.migration_route_models import MigrationRouteModel
 from app.repositories.runtime_certification_models import RuntimeCertificationModel
 from app.repositories.project_capability_models import ProjectCapabilityModel
 from app.repositories.third_party_compatibility_models import ThirdPartyCompatibilityReportModel
+from app.repositories.preflight_check_models import PreflightCheckResultModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -133,6 +134,7 @@ __all__ = [
     "RuntimeCertificationModel",
     "ProjectCapabilityModel",
     "ThirdPartyCompatibilityReportModel",
+    "PreflightCheckResultModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
