@@ -7,11 +7,9 @@ from uuid import uuid4
 import pytest
 
 from app.domain.repair_lifecycle import (
-    RepairLifecycleStatus,
     can_transition,
     evaluate_transition,
     is_sealed,
-    restart_recovery_target,
 )
 from app.repositories.models import (
     FailureDiagnosticPackModel,
@@ -58,15 +56,18 @@ def test_evaluate_transition_rejects_sealed_lifecycle():
     assert "sealed" in result.reason
 
 
-def test_restart_recovery_targets():
-    assert restart_recovery_target("executing") == "apply_recovery_required"
-    assert restart_recovery_target("applying") == "apply_recovery_required"
-    # resumable states are never demoted
-    assert restart_recovery_target("evidence_frozen") is None
-    assert restart_recovery_target("proposed") is None
-    assert restart_recovery_target("review_accepted") is None
-    assert restart_recovery_target("applied") is None
-    assert restart_recovery_target("superseded") is None
+def test_transition_map_matches_real_flow_edges():
+    # G11 completion and revalidation edges present
+    assert can_transition("waiting_g11", "validation_passed") is True
+    assert can_transition("waiting_g11", "validation_failed") is True
+    assert can_transition("migration_retried", "revalidating") is True
+    assert can_transition("migration_retried", "revalidating_affected") is True
+    assert can_transition("revalidating_affected", "revalidating") is True
+    assert can_transition("evidence_frozen", "cancelled") is True
+    assert can_transition("approved_pending_execution", "apply_failed") is True
+    assert can_transition("apply_recovery_required", "applied_verified") is True
+    # fabricated edge removed: approved_pending_execution does not directly validate
+    assert can_transition("approved_pending_execution", "validation_passed") is False
 
 
 def _seed(run_id: str, stage_id: str, attempt_id: str, status: str) -> None:

@@ -67,35 +67,26 @@ SEALED_TERMINAL_STATUSES = frozenset(
     }
 )
 
-#: Deterministic restart-recovery mapping for stranded in-flight states.
-#: ``executing``/``applying`` applies interrupted by a restart recover to the
-#: real ``apply_recovery_required`` state.  All other in-flight states are
-#: resumable by the existing continuation authority and are NOT demoted.
-_RESTART_RECOVERY_MAP = {
-    RepairLifecycleStatus.EXECUTING.value: RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value,
-    RepairLifecycleStatus.APPLYING.value: RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value,
-}
-
 #: Legal forward transitions, derived from actual assignment sites.
 _TRANSITIONS: dict[str, frozenset[str]] = {
-    RepairLifecycleStatus.EVIDENCE_FROZEN.value: frozenset({RepairLifecycleStatus.PROPOSED.value, RepairLifecycleStatus.SUPERSEDED.value}),
-    RepairLifecycleStatus.PROPOSED.value: frozenset({RepairLifecycleStatus.REVIEW_ACCEPTED.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value}),
+    RepairLifecycleStatus.EVIDENCE_FROZEN.value: frozenset({RepairLifecycleStatus.PROPOSED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.PROPOSED.value: frozenset({RepairLifecycleStatus.REVIEW_ACCEPTED.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.REVIEW_ACCEPTED.value: frozenset({RepairLifecycleStatus.WAITING_G10.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.REQUEST_CHANGES.value: frozenset({RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.WAITING_G10.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.WAITING_G10.value: frozenset({RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value: frozenset({RepairLifecycleStatus.VALIDATION_PASSED.value, RepairLifecycleStatus.VALIDATION_FAILED.value, RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value: frozenset({RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.EXECUTING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.APPLYING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.APPLIED.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.APPLIED_VERIFIED.value: frozenset({RepairLifecycleStatus.MIGRATION_RETRIED.value, RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.REVALIDATING_AFFECTED.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.VALIDATION_PASSED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.VALIDATION_FAILED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.MIGRATION_RETRIED.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.MIGRATION_RETRIED.value: frozenset({RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.REVALIDATING_AFFECTED.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.REVALIDATING.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.REVALIDATING_AFFECTED.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.WAITING_G11.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REVALIDATING_AFFECTED.value: frozenset({RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.WAITING_G11.value: frozenset({RepairLifecycleStatus.VALIDATION_PASSED.value, RepairLifecycleStatus.VALIDATION_FAILED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.APPLY_FAILED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value: frozenset({RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value: frozenset({RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.CANCELLED.value}),
 }
 
 
@@ -143,15 +134,3 @@ def evaluate_transition(attempt_id: str, from_status: str | None, to_status: str
         attempt_id=attempt_id, from_status=from_status or "", to_status=to_status,
         allowed=True, reason="legal lifecycle transition",
     )
-
-
-def restart_recovery_target(status: str | None) -> str | None:
-    """Deterministic restart-recovery mapping for a stranded in-flight attempt.
-
-    Returns the deterministic recovery target, or None when the status is not
-    recoverable by this authority (terminal/sealed or resumable by the existing
-    continuation authority).
-    """
-    if status is None or is_sealed(status):
-        return None
-    return _RESTART_RECOVERY_MAP.get(status)

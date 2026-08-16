@@ -81,7 +81,7 @@ class RepairLifecycleReliabilityService:
                     event_type="repair_lifecycle_recovered",
                     occurred_at=now,
                     idempotency_key=idempotency_key,
-                    reason=f"restart recovery: {attempt.status} is resumable by the continuation authority",
+                    reason=f"restart observed: {attempt.status} attempt marked resumable by the continuation authority",
                     payload={"attempt_id": attempt.id, "status": attempt.status, "resumes": True},
                 )
                 marked.append(attempt.id)
@@ -104,7 +104,7 @@ class RepairLifecycleReliabilityService:
                     correlation_id=None,
                     fault=PlatformFault(
                         fault_code="REPAIR_LIFECYCLE_RECOVERED",
-                        message=f"repair attempt recovered deterministically after restart to status {attempt.status}",
+                        message=f"repair attempt in status {attempt.status} marked resumable after restart",
                         occurred_at=self._now_provider(),
                     ),
                     stage_id=attempt.stage_id,
