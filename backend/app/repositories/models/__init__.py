@@ -18,6 +18,7 @@ from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.repositories.execution_profiles import ExecutionProfileModel
 from app.repositories.runtime_evidence import RuntimeExecutionEvidenceModel
 from app.repositories.diagnostics_models import FailureDiagnosticPackModel
+from app.repositories.stage_runtime_models import StageRuntimeBindingModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -119,6 +120,7 @@ __all__ = [
     "ExecutionProfileModel",
     "RuntimeExecutionEvidenceModel",
     "FailureDiagnosticPackModel",
+    "StageRuntimeBindingModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
