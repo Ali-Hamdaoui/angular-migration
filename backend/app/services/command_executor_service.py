@@ -478,6 +478,21 @@ class CommandExecutorService:
         session.flush()
         return recovered
 
+    def recover_command_orphans(self, scope=None) -> list[str]:
+        """Deterministic worker-restart orphan sweep for command executions.
+
+        Invoked at backend startup (and callable on demand): any command
+        execution left in a running/queued state with an expired durable claim
+        — its owning worker process died mid-command — is reconciled exactly
+        once, either requeued (read-only), sealed as reconstruction-required
+        (mutating), or failed after bounded claim loss.
+        """
+        from app.repositories.session import session_scope as default_scope
+
+        checked_at = datetime.now(UTC)
+        with (scope or default_scope)() as session:
+            return self.reconcile_expired_executions(session, checked_at)
+
     def queue_authorized_command(
         self,
         session: Session,
