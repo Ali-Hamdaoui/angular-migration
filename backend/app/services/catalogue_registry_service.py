@@ -67,6 +67,10 @@ class CompatibilityCatalogueRegistry:
                 ).all()
             )
 
+    def load_catalogue(self, version: str | None = None) -> CompatibilityCatalogue:
+        """Load a catalogue once; entries and checksum come from the same load."""
+        return self._provider.load(version or CompatibilityCatalogueProvider.CURRENT_VERSION)
+
     def entry(self, source_family: str, target_family: str, version: str | None = None) -> CompatibilityCatalogueEntry | None:
         catalogue = self._provider.load(version or CompatibilityCatalogueProvider.CURRENT_VERSION)
         return catalogue.entry_for(source_family, target_family)

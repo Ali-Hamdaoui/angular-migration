@@ -47,9 +47,8 @@ def get_catalogue(
     version: str | None = None,
     registry: CompatibilityCatalogueRegistry = Depends(get_catalogue_registry),
 ) -> CatalogueEntryListDto:
-    entries = registry.entries(version)
-    catalogue = _catalogue(registry, version)
-    return CatalogueEntryListDto(version=catalogue.version, checksum=catalogue.checksum, entries=[_entry_dto(e) for e in entries])
+    catalogue = registry.load_catalogue(version)
+    return CatalogueEntryListDto(version=catalogue.version, checksum=catalogue.checksum, entries=[_entry_dto(e) for e in catalogue.entries])
 
 
 @router.get("/entries/{source_family}/{target_family}", response_model=CatalogueEntryDto)
