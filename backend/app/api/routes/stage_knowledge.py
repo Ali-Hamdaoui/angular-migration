@@ -38,7 +38,7 @@ def _record_dto(row) -> StageKnowledgeEntryRecordDto:
         expected_transforms=row.expected_transforms, validation_expectations=row.validation_expectations,
         expected_dependency_changes=row.expected_dependency_changes, known_risks=row.known_risks,
         version=row.version, created_by=row.created_by, change_reason=row.change_reason,
-        created_at=row.created_at,
+        notes=row.notes, created_at=row.created_at,
     )
 
 

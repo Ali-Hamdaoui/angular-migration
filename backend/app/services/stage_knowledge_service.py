@@ -69,6 +69,7 @@ class StageKnowledgeRegistry:
                 version=entry.version,
                 created_by=actor,
                 change_reason=reason,
+                notes=entry.notes,
                 created_at=self._now_provider(),
             )
             session.add(row)

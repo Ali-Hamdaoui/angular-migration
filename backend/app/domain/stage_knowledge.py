@@ -7,9 +7,6 @@ transition.  Entries are versioned and auditable.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -64,7 +61,7 @@ def _transforms(source_major: int) -> tuple[str, ...]:
             (
                 "@angular/core:standalone" if source_major >= 19 else None,
                 "@angular/core:control-flow" if source_major >= 17 else None,
-                "@angular/core:inject" if source_major >= 15 else None,
+                "@angular/core:inject" if source_major >= 16 else None,
                 "@angular/cli:update-tsconfig-target",
             ),
         )
@@ -73,7 +70,8 @@ def _transforms(source_major: int) -> tuple[str, ...]:
 
 def _dependency_changes(source_major: int) -> tuple[dict[str, str], ...]:
     changes = [{"package": "@angular/core", "action": "major-bump"}]
-    if source_major <= 12:
+    if source_major == 12:
+        # rxjs 6 -> 7 major bump happened at the Angular 13 transition.
         changes.append({"package": "rxjs", "action": "major-bump"})
     if source_major >= 19:
         changes.append({"package": "typescript", "action": "minor-bump"})
@@ -87,7 +85,3 @@ def _risks(source_major: int) -> tuple[str, ...]:
     if source_major <= 15:
         risks.append("older ViewEngine-era decorators may require manual fixes")
     return tuple(risks)
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)

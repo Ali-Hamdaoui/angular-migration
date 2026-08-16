@@ -28,6 +28,7 @@ class StageKnowledgeEntryRecordDto(ContractModel):
     version: int
     created_by: str | None = None
     change_reason: str | None = None
+    notes: str | None = None
     created_at: datetime
 
 
