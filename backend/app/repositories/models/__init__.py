@@ -26,6 +26,7 @@ from app.repositories.runtime_certification_models import RuntimeCertificationMo
 from app.repositories.project_capability_models import ProjectCapabilityModel
 from app.repositories.third_party_compatibility_models import ThirdPartyCompatibilityReportModel
 from app.repositories.preflight_check_models import PreflightCheckResultModel
+from app.repositories.stage_knowledge_models import StageKnowledgeEntryModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -135,6 +136,7 @@ __all__ = [
     "ProjectCapabilityModel",
     "ThirdPartyCompatibilityReportModel",
     "PreflightCheckResultModel",
+    "StageKnowledgeEntryModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
