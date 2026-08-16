@@ -67,7 +67,7 @@ class V2PlannerService:
             return findings
         if source_root is not None:
             capabilities = self._capabilities.derive(source_root)
-            status, blockers = self._capabilities.readiness(capabilities)
+            _status, blockers = self._capabilities.readiness(capabilities)
             if blockers:
                 findings.append(V2AnalysisFinding(finding_id="capability_blockers", severity="blocker", message="; ".join(blockers)))
             else:
