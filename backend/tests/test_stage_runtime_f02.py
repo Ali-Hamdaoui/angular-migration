@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.domain.runtime_execution import RuntimeExecutableKind, RuntimeRequirement, RuntimeRequirementBinding
+from app.domain.runtime_execution import RuntimeExecutableDescriptor, RuntimeExecutableKind, RuntimeRequirement, RuntimeRequirementBinding
 from app.domain.stage_runtime import StageRuntimeBinding, StageRuntimeRequirement
-from app.repositories.models import MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
+from app.repositories.models import ExecutionProfileModel, MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
 from app.repositories.session import session_scope
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.stage_runtime_service import StageRuntimeApplicationService, StageRuntimeError
@@ -80,6 +80,55 @@ def test_resolve_stage_binds_machine_runtime(tmp_path: Path):
     assert node.runtime_id.startswith("v18") or node.version_exact >= "18.19.1"
     npm = binding.descriptor_for(RuntimeExecutableKind.NPM)
     assert npm is not None and npm.runtime_id == node.runtime_id
+
+
+def test_resolve_stage_honors_selected_run_profile(tmp_path: Path):
+    run_id, stage_id = _seed_run_and_stage()
+    profile = {
+        "profile_id": "profile-node22",
+        "checksum": "sha256:" + "b" * 64,
+        "node_exact": "v22.23.1",
+        "package_manager_exact": "10.9.8",
+        "npx_exact": "10.9.8",
+    }
+    with session_scope() as session:
+        session.add(ExecutionProfileModel(
+            id=f"profile-resolution-{uuid4().hex[:8]}", run_id=run_id,
+            idempotency_key=f"profile-{uuid4().hex[:8]}", request_checksum="request",
+            policy_version="angular-source-runtime-v1", status="resolved",
+            source_angular_exact="^18.0.0", selected_profile_id=profile["profile_id"],
+            selected_checksum=profile["checksum"], profiles=[profile], blockers=[], guidance=[],
+            artifact_ids=[], state_version=1, event_sequence=1, created_at=NOW, updated_at=NOW,
+        ))
+        session.commit()
+
+    class RecordingAuthority:
+        def __init__(self):
+            self.requirements = []
+
+        def resolve(self, requirements):
+            self.requirements = list(requirements)
+            versions = {"node": "22.23.1", "npm": "10.9.8", "npx": "10.9.8"}
+            return tuple(
+                RuntimeRequirementBinding(
+                    requirement=requirement,
+                    descriptor=RuntimeExecutableDescriptor(
+                        kind=requirement.kind, executable_name=requirement.kind.value,
+                        resolved_path=f"C:/nvm/v22.23.1/{requirement.kind.value}",
+                        version_exact=versions[requirement.kind.value], sha256="c" * 64,
+                        operating_system="windows", architecture="amd64", runtime_id="v22.23.1",
+                        source="nvm", probed_at=NOW,
+                    ),
+                )
+                for requirement in requirements
+            )
+
+    authority = RecordingAuthority()
+    service = StageRuntimeApplicationService(authority=authority)
+    binding = service.resolve_stage(stage_id, "angular-18.x", "angular-19.x")
+
+    assert binding.status == "bound"
+    assert {item.version_exact for item in authority.requirements} == {"22.23.1", "10.9.8"}
 
 
 def test_stage_runtime_binding_checksum_immutable():

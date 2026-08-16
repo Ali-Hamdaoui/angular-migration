@@ -15,7 +15,7 @@ from app.domain.runtime_execution import (
     RuntimeRequirementBinding,
 )
 from app.domain.stage_runtime import StageRuntimeBinding, StageRuntimeRequirement
-from app.repositories.models import MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
+from app.repositories.models import ExecutionProfileModel, MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
 from app.repositories.session import session_scope
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.runtime_resolution_application_service import _build_worker_version_probe
@@ -126,6 +126,9 @@ class StageRuntimeApplicationService:
             if session.get(MigrationStageModel, stage_id) is None:
                 raise StageRuntimeError("STAGE_NOT_FOUND", f"Migration stage {stage_id} not found")
         requirement = self.derive_requirement(stage_id, source_family, target_family, catalogue_version)
+        selected_profile = self._selected_profile(stage_id)
+        if selected_profile is not None:
+            requirement = self._requirement_from_profile(requirement, selected_profile)
         resolved = self._authority.resolve(list(requirement.requirements))
         bound = all(item.descriptor is not None for item in resolved)
         if not bound:
@@ -147,6 +150,58 @@ class StageRuntimeApplicationService:
             resolved_at=self._now_provider(),
         )
         return binding.bind_checksum()
+
+    def _selected_profile(self, stage_id: str) -> dict | None:
+        with self._session_scope() as session:
+            stage = session.get(MigrationStageModel, stage_id)
+            if stage is None:
+                return None
+            profile = session.scalar(
+                select(ExecutionProfileModel)
+                .where(ExecutionProfileModel.run_id == stage.run_id)
+                .order_by(ExecutionProfileModel.updated_at.desc())
+            )
+            if profile is None or profile.status not in {"resolved", "selected"}:
+                return None
+            return next(
+                (
+                    item for item in (profile.profiles or [])
+                    if item.get("profile_id") == profile.selected_profile_id
+                    and item.get("checksum") == profile.selected_checksum
+                ),
+                None,
+            )
+
+    @staticmethod
+    def _requirement_from_profile(requirement: StageRuntimeRequirement, profile: dict) -> StageRuntimeRequirement:
+        versions = {
+            "node": profile.get("node_exact"),
+            "npm": profile.get("package_manager_exact") or profile.get("npm_exact"),
+            "npx": profile.get("npx_exact"),
+        }
+        if any(not value for value in versions.values()):
+            raise StageRuntimeError(
+                "EXECUTION_PROFILE_INCOMPLETE",
+                "Selected execution profile does not declare node, npm, and npx versions",
+            )
+        node_version = versions["node"].lstrip("vV")
+        node_major = node_version.split(".", 1)[0]
+        if not node_major.isdigit():
+            raise StageRuntimeError("EXECUTION_PROFILE_INVALID", "Selected execution profile has an invalid Node version")
+        runtime_id = f"node{node_major}"
+        exact_requirements = tuple(
+            RuntimeRequirement(
+                kind=kind,
+                runtime_id=runtime_id,
+                version_exact=value.lstrip("vV"),
+            )
+            for kind, value in (
+                (RuntimeExecutableKind.NODE, versions["node"]),
+                (RuntimeExecutableKind.NPM, versions["npm"]),
+                (RuntimeExecutableKind.NPX, versions["npx"]),
+            )
+        )
+        return requirement.model_copy(update={"requirements": exact_requirements})
 
     def record_binding(self, run_id: str, binding: StageRuntimeBinding, *, actor: str | None = None) -> list[StageRuntimeBindingModel]:
         """Persist the resolved stage binding rows idempotently.
