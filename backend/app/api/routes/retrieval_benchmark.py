@@ -16,7 +16,13 @@ router = APIRouter(tags=["retrieval-benchmark"])
 
 
 def get_benchmark_service() -> RetrievalBenchmarkService:
-    return RetrievalBenchmarkService()
+    from app.core.config import get_settings
+    from app.services.code_context_service import CodeContextService
+
+    roots = get_settings().allowed_source_roots
+    if not roots:
+        raise RuntimeError("ALLOWED_SOURCE_ROOTS must be configured for the retrieval benchmark endpoint")
+    return RetrievalBenchmarkService(context_service=CodeContextService(allowed_roots=roots))
 
 
 def _case_dto(result) -> RetrievalBenchmarkCaseResultDto:

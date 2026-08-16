@@ -122,9 +122,14 @@ def test_persist_is_idempotent_by_id():
 
 
 def test_api_run_and_list():
-    root = _root()
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    allowed = get_settings().allowed_source_roots[0] if get_settings().allowed_source_roots else Path("/tmp")
+    root = allowed / "overnight-v2" / f"F28-api-{uuid4().hex[:6]}"
+    root.mkdir(parents=True, exist_ok=True)
     response = client.post("/retrieval-benchmark/run", json={"workspace_root": str(root)})
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     body = response.json()
     assert body["fixture_set"] == "11-to-21"
     assert body["checksum"].startswith("sha256:")
