@@ -98,6 +98,7 @@ class StageValidationSealService:
                     StageValidationSealModel(
                         id="svs-" + hashlib.sha256(stage_id.encode()).hexdigest()[:24],
                         stage_id=stage_id,
+                        stage_order=stage.stage_order,
                         run_id=stage.run_id,
                         source_major=seal.source_major,
                         target_major=seal.target_major,
