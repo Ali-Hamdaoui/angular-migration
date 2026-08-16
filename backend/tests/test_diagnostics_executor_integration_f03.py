@@ -23,6 +23,8 @@ NOW = datetime.now(UTC)
 def _seed_failing_execution(tmp_path: Path, *, run_id: str, execution_id: str) -> None:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(exist_ok=True)
+    authz_id = f"authz-{run_id}"
+    profile_id = f"profile-{run_id}"
     with session_scope() as session:
         session.add(
             MigrationRunModel(
@@ -35,18 +37,18 @@ def _seed_failing_execution(tmp_path: Path, *, run_id: str, execution_id: str) -
         )
         session.add(
             CommandAuthorizationAuditModel(
-                id="authz-f03", run_id=run_id, stage_id=None, command_id="node-version",
+                id=authz_id, run_id=run_id, stage_id=None, command_id="node-version",
                 executable="node", arguments=["--version"], decision="accepted", reasons=[],
-                policy_version="policy-v1", idempotency_key="authz:f03",
+                policy_version="policy-v1", idempotency_key="authz:" + run_id,
                 request_payload_hash="sha256:req", expected_state_version=7,
                 execution_profile_id="profile-1", workspace_alias="run_workspace",
-                network_profile="none", correlation_id="corr-f03-exec", actor="operator",
+                network_profile="none", correlation_id="corr-" + run_id, actor="operator",
                 artifact_ids=[], state_version=7, created_at=NOW,
             )
         )
         session.add(
             ExecutionProfileModel(
-                id="profile-f03", run_id=run_id, idempotency_key="profile:f03",
+                id=profile_id, run_id=run_id, idempotency_key="profile:" + run_id,
                 request_checksum="sha256:profile", policy_version="profile-v1",
                 status="selected", source_angular_exact="18.2.0",
                 selected_profile_id="profile-1", selected_checksum="sha256:runtime",
@@ -70,9 +72,9 @@ def _seed_failing_execution(tmp_path: Path, *, run_id: str, execution_id: str) -
         )
         session.add(
             CommandExecutionModel(
-                id=execution_id, run_id=run_id, authorization_id="authz-f03",
-                idempotency_key="exec:f03", request_payload_hash="sha256:exec",
-                correlation_id="corr-f03-exec", requested_by="operator",
+                id=execution_id, run_id=run_id, authorization_id=authz_id,
+                idempotency_key="exec:" + run_id, request_payload_hash="sha256:exec",
+                correlation_id="corr-" + run_id, requested_by="operator",
                 executable="node", arguments=["--version"],
                 working_directory_alias="run_workspace",
                 runtime_profile_id="profile-1", status="queued",
@@ -126,10 +128,40 @@ def test_failed_command_produces_diagnostic_pack(tmp_path: Path):
         )
         assert len(packs) >= 1
         pack = packs[0]
-        assert pack.fault_code is not None
-        assert pack.correlation_id == "corr-f03-exec"
+        assert pack.fault_code == "COMMAND_EXIT_NONZERO"
+        assert pack.correlation_id == "corr-" + run_id
         assert pack.workflow_context["run_id"] == run_id
         assert pack.workflow_context["execution_id"] == execution_id
         assert pack.command_evidence["exit_code"] == 1
         assert "ERESOLVE" in pack.command_evidence["stderr"]
         assert pack.sanitized_traceback == ""
+
+
+def test_internal_executor_exception_produces_diagnostic_pack_with_sanitized_traceback(tmp_path: Path):
+    supervisor = MagicMock()
+    supervisor.run.side_effect = RuntimeError("internal boom AZURE_OPENAI_API_KEY = 4f3a9c1d7e2b8a6f0c5d4e3b2a1908f7e6d5c4b3a291807f6e5d4c3b2a1908f7e6d5c4b3a2918")
+    service = CommandExecutorService(supervisor=supervisor)
+    run_id = "run-f03-int"
+    execution_id = "exec-f03-int"
+    _seed_failing_execution(tmp_path, run_id=run_id, execution_id=execution_id)
+
+    # Add a Node install root so the probe env is benign; the supervisor raising
+    # is what drives this test.
+    service.dispatch_execution(execution_id)
+    status = _wait_terminal(session_scope, run_id, execution_id)
+    assert status == CommandStatus.FAILED.value
+
+    with session_scope() as session:
+        model = session.get(CommandExecutionModel, execution_id)
+        assert model.failure_code in {"EXECUTION_FAILED", "RuntimeError"}
+        packs = (
+            session.query(FailureDiagnosticPackModel)
+            .filter_by(run_id=run_id, execution_id=execution_id)
+            .all()
+        )
+        assert len(packs) >= 1
+        pack = packs[0]
+        # The internal failure carries a sanitized traceback: the secret value
+        # is gone and replaced with a redaction marker.
+        assert "4f3a9c1d7e2b8a6f0c5d4e3b2a1908f7e6d5c4b3a291807f6e5d4c3b2a1908f7e6d5c4b3a2918" not in pack.sanitized_traceback
+        assert "[REDACTED]" in pack.sanitized_traceback

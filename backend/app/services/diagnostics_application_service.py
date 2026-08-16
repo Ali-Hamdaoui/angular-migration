@@ -23,6 +23,7 @@ from app.services.diagnostics_service import (
     classify_failure,
     context_from_dict,
     evidence_from_dict,
+    sanitize_traceback,
 )
 
 
@@ -79,6 +80,9 @@ class DiagnosticsApplicationService:
                     message=(stderr or stdout or "Backend failure")[:4096],
                     occurred_at=self._now_provider(),
                 )
+        # The fault message is same-tier evidence: redact it like a traceback so
+        # a secret echoed in stderr or an exception message never surfaces.
+        fault = fault.model_copy(update={"message": sanitize_traceback(fault.message)})
         if correlation_id:
             fault = fault.model_copy(update={"correlation_id": correlation_id})
         workflow_context = WorkflowFailureContext(

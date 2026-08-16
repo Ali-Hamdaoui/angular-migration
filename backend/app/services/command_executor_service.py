@@ -1494,6 +1494,7 @@ class CommandExecutorService:
                 model,
                 stdout=result.stdout_artifact.content if result.stdout_artifact else "",
                 stderr=result.stderr_artifact.content if result.stderr_artifact else "",
+                fault_code_override=model.failure_code,
             )
 
     @staticmethod
@@ -1585,7 +1586,6 @@ class CommandExecutorService:
                 command_id=model.command_id,
                 state_version=model.state_version,
                 event_sequence=model.event_sequence,
-                phase=model.status,
                 remediation=remediation,
                 fault_code_override=fault_code_override,
             )

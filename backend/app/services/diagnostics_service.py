@@ -14,7 +14,7 @@ from app.domain.diagnostics import (
     PlatformFaultSeverity,
     WorkflowFailureContext,
 )
-from app.llm_gateway.redaction import redact_prompt_text
+from app.services.text_redaction import redact_text
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _TRACEBACK_MAX_CHARS = 16_000
@@ -39,13 +39,17 @@ def sanitize_traceback(traceback_text: str | None) -> str:
     if not traceback_text:
         return ""
     text = _ANSI_ESCAPE.sub("", traceback_text)
+    # Note: a bare, unassigned secret-shaped value (e.g. a standalone 64-hex
+    # key) is intentionally not redacted here — distinguishing it from hashes
+    # and memory addresses without unacceptable false positives is out of
+    # scope. Assigned secrets and known sentinel prefixes are always caught.
     lines = text.splitlines()
     cleaned_lines: list[str] = []
     for line in lines:
         match = _SECRET_ASSIGNMENT.match(line)
         if match:
             line = f"{match.group(1)}{match.group(2)}=[REDACTED]"
-        redacted = redact_prompt_text(line).redacted_text
+        redacted = redact_text(line).redacted_text
         for sentinel in _SENTINEL_PATTERNS:
             redacted = re.sub(
                 re.escape(sentinel) + r"[A-Za-z0-9._~+/=\-]{8,}",
