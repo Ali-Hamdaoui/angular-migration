@@ -112,6 +112,8 @@ class ProposalCycleService:
             row = session.get(ProposalCycleModel, child_cycle_id)
             if row is None:
                 raise ProposalCycleError("CYCLE_NOT_FOUND", f"proposal cycle {child_cycle_id} not found")
+            if row.decision != "pending":
+                raise ProposalCycleError("CYCLE_ALREADY_DECIDED", f"proposal cycle {child_cycle_id} was already decided")
             row.hints = list(hints or [])
             row.updated_at = self._now_provider()
             session.commit()

@@ -30,13 +30,6 @@ def _cycle_dto(cycle) -> ProposalCycleDto:
                             parent_cycle_id=cycle.parent_cycle_id, checksum=cycle.checksum)
 
 
-def _record_dto(row) -> ProposalCycleRecordDto:
-    return ProposalCycleRecordDto(id=row.id, run_id=row.run_id, attempt_id=row.attempt_id,
-                                  cycle_number=row.cycle_number, proposal_checksum=row.proposal_checksum,
-                                  decision=row.decision, reviewer=row.reviewer, hints=row.hints,
-                                  parent_cycle_id=row.parent_cycle_id, checksum=row.checksum,
-                                  created_at=row.created_at)
-
 
 @router.post("/runs/{run_id}/attempts/{attempt_id}/cycles", response_model=ProposalCycleDto)
 def create_proposal_cycle(

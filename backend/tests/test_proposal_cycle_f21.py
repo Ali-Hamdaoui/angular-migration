@@ -88,6 +88,21 @@ def test_lineage_ordering():
     assert [c.cycle_number for c in lineage] == [1, 2]
 
 
+def test_checksum_stable_across_decision_and_matches_persisted():
+    run_id = f"run-f21-{uuid4().hex[:8]}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, attempt_id)
+    service = ProposalCycleService()
+    checksum = "sha256:" + "h" * 64
+    cycle = service.create_cycle(run_id, attempt_id, checksum)
+    decided = service.decide(cycle.cycle_id, "accepted", reviewer="operator")
+    # the cycle identity checksum is stable across the decision and matches the DB
+    assert decided.checksum == cycle.checksum
+    with session_scope() as session:
+        row = session.get(ProposalCycleModel, cycle.cycle_id)
+        assert row.checksum == cycle.checksum
+
+
 def test_api_create_and_decide():
     run_id = f"run-f21-{uuid4().hex[:8]}"
     attempt_id = f"attempt-{uuid4().hex[:8]}"

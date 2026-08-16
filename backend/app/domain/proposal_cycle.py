@@ -36,15 +36,18 @@ class ProposalCycle(_ImmutableModel):
     parent_cycle_id: str | None = None
     checksum: str = ""
 
-    def bind_checksum(self) -> ProposalCycle:
-        canonical = self.model_dump(mode="json")
-        canonical.pop("checksum", None)
-        digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    def bind_checksum(self) -> "ProposalCycle":
+        # The checksum binds the immutable cycle IDENTITY (proposal, lineage),
+        # not the mutable decision state, so it is stable across decisions and
+        # always matches the persisted ledger.
+        identity = {
+            "cycle_id": self.cycle_id,
+            "cycle_number": self.cycle_number,
+            "proposal_checksum": self.proposal_checksum,
+            "parent_cycle_id": self.parent_cycle_id,
+        }
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return self.model_copy(update={"checksum": f"sha256:{digest}"})
-
-
-def cycle_checksum(cycle: ProposalCycle) -> str:
-    return cycle.checksum or cycle.bind_checksum().checksum
 
 
 def now_utc() -> datetime:
