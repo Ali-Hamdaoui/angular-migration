@@ -36,6 +36,7 @@ from app.repositories.stage_validation_seal_models import StageValidationSealMod
 from app.repositories.stage_rollback_models import StageRollbackModel
 from app.repositories.partial_delivery_models import PartialDeliveryModel
 from app.repositories.execution_audit_models import CommandExecutionAuditModel
+from app.repositories.retrieval_benchmark_models import RetrievalBenchmarkModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -155,6 +156,7 @@ __all__ = [
     "StageRollbackModel",
     "PartialDeliveryModel",
     "CommandExecutionAuditModel",
+    "RetrievalBenchmarkModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
