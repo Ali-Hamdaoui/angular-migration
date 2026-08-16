@@ -1,9 +1,9 @@
 """FastAPI application entry point."""
 
+import asyncio
+import subprocess
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-import subprocess
-import asyncio
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -50,6 +50,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     }, flush=True)
     from app.api.routes.baseline import get_baseline_install_service
     get_baseline_install_service().reconcile_orphans()
+    from app.services.command_executor_service import CommandExecutorService
+    CommandExecutorService().recover_command_orphans()
     from app.orchestration.source_intake import default_source_intake_graph, recover_source_intake_jobs
     default_source_intake_graph(get_settings())
     recover_source_intake_jobs()
