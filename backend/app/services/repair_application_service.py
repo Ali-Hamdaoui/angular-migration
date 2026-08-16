@@ -1602,10 +1602,18 @@ class RepairApplicationService:
             or retry_invocation is None
             or base_invocation.status != "failed"
             or retry_invocation.status != "failed"
-            or retry_invocation.retries != 1
-            or retry_invocation.failure_stage != "repair_semantics"
-            or retry_invocation.failure_code
-            not in _RECOVERABLE_PROPOSER_RETRY_CODES
+            or retry_invocation.failure_code not in _RECOVERABLE_PROPOSER_RETRY_CODES
+            or not (
+                (
+                    retry_invocation.retries == 1
+                    and retry_invocation.failure_stage == "repair_semantics"
+                )
+                or (
+                    retry_invocation.failure_code == "LLM_PROTOCOL_FAILED"
+                    and retry_invocation.retries >= 1
+                    and retry_invocation.failure_stage == "response_state_validation"
+                )
+            )
         ):
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",

@@ -1769,6 +1769,15 @@ def test_recovery_accepts_exhausted_protocol_retry_failure(tmp_path: Path):
         tmp_path,
         retry_failure_code="LLM_PROTOCOL_FAILED",
     )
+    session = factory()
+    retry = session.get(
+        LlmInvocationModel,
+        f"{attempt_id}:proposer:semantic-retry-1",
+    )
+    retry.retries = 3
+    retry.failure_stage = "response_state_validation"
+    session.commit()
+    session.close()
 
     result = _recovery_service(factory).recover_exhausted_semantic_retry(
         run_id="run-1",
