@@ -27,6 +27,7 @@ from app.domain.command import (
     AuthorizationRequest,
     AuthorizationResult,
     CancellationPolicy,
+    CommandClass,
     CommandTemplate,
     CommandTemplateStatus,
     DEFAULT_COMMAND_TEMPLATES,
@@ -35,6 +36,7 @@ from app.domain.command import (
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     NetworkProfile,
     command_arguments_match,
+    command_class_for,
 )
 from app.domain.contracts import (
     CommandTemplateDto,
@@ -326,19 +328,26 @@ class CommandPolicyEngineService:
         if not net_check.passed:
             reasons.append(net_check.reason or "network profile rejected")
 
-        # 6. Cancellation policy
+        # 6. V2 command class governance (F27-01): every V2 command must be
+        # under a governed command class; ungoverned commands fail closed.
+        class_check = self._check_command_class_governance(request.command_id)
+        checks.append(class_check)
+        if not class_check.passed:
+            reasons.append(class_check.reason or "command class ungoverned")
+
+        # 7. Cancellation policy
         cancel_check = self._check_cancellation_policy(request.cancellation_policy)
         checks.append(cancel_check)
         if not cancel_check.passed:
             reasons.append(cancel_check.reason or "cancellation policy rejected")
 
-        # 7. Timeout within range
+        # 8. Timeout within range
         timeout_check = self._check_timeout(request.timeout_seconds)
         checks.append(timeout_check)
         if not timeout_check.passed:
             reasons.append(timeout_check.reason or "timeout rejected")
 
-        # 8. Plan membership if required
+        # 9. Plan membership if required
         plan_check = self._check_plan_membership(
             session,
             request,
@@ -349,7 +358,7 @@ class CommandPolicyEngineService:
         if not plan_check.passed:
             reasons.append(plan_check.reason or "plan membership rejected")
 
-        # 9. Angular update governance (F14): an ng update command must be
+        # 10. Angular update governance (F14): an ng update command must be
         # authorized by the per-major governance authority, which requires a
         # certified runtime for the stage transition.
         if request.command_id == "angular-update-exact" and request.stage_id:
@@ -496,6 +505,27 @@ class CommandPolicyEngineService:
         )
         session.flush()
 
+        if run is not None:
+            from app.services.execution_audit_service import ExecutionAuditTrailService
+            from app.domain.execution_audit import ExecutionAuditEvent
+
+            ExecutionAuditTrailService().append(
+                run_id=request.run_id,
+                event=(ExecutionAuditEvent.AUTHORIZATION_ACCEPTED if decision.value == "accepted" else ExecutionAuditEvent.AUTHORIZATION_REJECTED),
+                command_id=request.command_id,
+                stage_id=request.stage_id,
+                execution_id=None,
+                actor=request.requested_by,
+                executable=request.executable,
+                arguments=list(request.arguments),
+                policy_version=self.policy_version,
+                state_version=audit.state_version,
+                network_profile=request.network_profile,
+                reason=("; ".join(reasons) if reasons else "authorization accepted"),
+                occurred_at=now,
+                session=session,
+            )
+
         return self._response_from_audit(audit, replay=False)
 
     def _check_ng_update_governance(self, session, request) -> AuthorizationCheckResult:
@@ -555,6 +585,18 @@ class CommandPolicyEngineService:
                 reason=f"network profile '{profile}' is not allowed",
             )
         return AuthorizationCheckResult(passed=True, rule_name="network_profile")
+
+    @staticmethod
+    def _check_command_class_governance(command_id: str) -> AuthorizationCheckResult:
+        """F27-01: an ungoverned V2 command class fails closed."""
+        command_class = command_class_for(command_id)
+        if command_class is CommandClass.UNGOVERNED:
+            return AuthorizationCheckResult(
+                passed=False,
+                rule_name="command_class_governance",
+                reason=f"COMMAND_CLASS_UNGOVERNED: command_id '{command_id}' has no governed V2 command class",
+            )
+        return AuthorizationCheckResult(passed=True, rule_name="command_class_governance")
 
     def _check_cancellation_policy(self, policy: str) -> AuthorizationCheckResult:
         allowed = {p.value for p in CancellationPolicy}

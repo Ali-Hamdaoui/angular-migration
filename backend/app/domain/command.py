@@ -7,11 +7,11 @@ domain rules before a process is started.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-import re
-from collections.abc import Mapping
 from typing import Any, Final
 
 
@@ -20,6 +20,56 @@ class CommandTemplateStatus(str, Enum):
     ACTIVE = "active"
     DEPRECATED = "deprecated"
     RETIRED = "retired"
+
+
+class CommandClass(str, Enum):
+    """V2 command classes under uniform governance (F27-01).
+
+    Every V2 command class maps to a governance class with its own policy
+    posture (network, isolation, mutability).  The policy engine fails closed
+    on any command whose class is not governed.
+    """
+
+    ANGULAR_UPDATE = "angular_update"
+    NPM_OPERATION = "npm_operation"
+    VERSION_VERIFY = "version_verify"
+    BUILD_TEST_LINT = "build_test_lint"
+    LOCKFILE = "lockfile"
+    RUNTIME_PROBE = "runtime_probe"
+    DEPENDENCY_TRANSITION = "dependency_transition"
+    UNGOVERNED = "ungoverned"
+
+
+_COMMAND_CLASSES: dict[str, CommandClass] = {
+    "angular-update-exact": CommandClass.ANGULAR_UPDATE,
+    "npm-ci-bootstrap": CommandClass.NPM_OPERATION,
+    "npm-ci-final": CommandClass.NPM_OPERATION,
+    "npm-lockfile-generate": CommandClass.LOCKFILE,
+    "npm-script-build-production": CommandClass.BUILD_TEST_LINT,
+    "npm-script-test-ci": CommandClass.BUILD_TEST_LINT,
+    "npm-script-lint": CommandClass.BUILD_TEST_LINT,
+    "npm-angular-lockfile-normalize": CommandClass.LOCKFILE,
+    "npm-dependency-uninstall": CommandClass.DEPENDENCY_TRANSITION,
+    "npm-dependency-install": CommandClass.DEPENDENCY_TRANSITION,
+    "angular-version-verify": CommandClass.VERSION_VERIFY,
+    "python-version": CommandClass.VERSION_VERIFY,
+    "node-version": CommandClass.VERSION_VERIFY,
+    "npm-version": CommandClass.VERSION_VERIFY,
+    "npx-version": CommandClass.VERSION_VERIFY,
+    "git-version": CommandClass.VERSION_VERIFY,
+}
+
+
+def command_class_for(command_id: str | None) -> CommandClass:
+    """Return the governed V2 command class for a command id (F27-01)."""
+    if not command_id:
+        return CommandClass.UNGOVERNED
+    return _COMMAND_CLASSES.get(command_id, CommandClass.UNGOVERNED)
+
+
+def governed_command_classes() -> frozenset[CommandClass]:
+    """All classes that are under uniform governance (fail-open never)."""
+    return frozenset(_COMMAND_CLASSES.values())
 
 
 class AuthorizationDecision(str, Enum):
