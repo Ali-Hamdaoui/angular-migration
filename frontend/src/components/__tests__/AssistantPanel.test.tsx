@@ -28,7 +28,7 @@ describe("AssistantPanel authoritative rendering", () => {
   it("renders current progress, separated evidence, and authoritative zero usage", async () => {
     render(<AssistantPanel runId="run-1" phase="PREFLIGHT_SNAPSHOT" stateVersion={8} workflowStatus="SOURCE_VALIDATED" />);
 
-    expect(await screen.findByText(/Preflight Snapshot · G02 Source Integrity Approval · G02 pending/)).toBeInTheDocument();
+    expect(await screen.findByText(/Preflight Snapshot · Source Integrity Approval · Human review pending/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "03_g02/g02_evidence_index.json" })).toHaveAttribute("href", expect.stringContaining("artifact-g02"));
     expect(screen.getByRole("link", { name: "03_g02/source_integrity_verification.json" })).toHaveAttribute("href", expect.stringContaining("artifact-integrity"));
     expect(screen.getAllByText(/gpt-5-mini/).every((element) => !element.getClientRects().length)).toBe(true);
@@ -39,6 +39,25 @@ describe("AssistantPanel authoritative rendering", () => {
     render(<AssistantPanel runId="run-1" phase="PREFLIGHT_SNAPSHOT" stateVersion={8} workflowStatus="SOURCE_VALIDATED" />);
 
     expect(await screen.findByText(/The migration is in the Preflight Snapshot phase/)).toBeInTheDocument();
+  });
+
+  it("renders provider markdown as readable UI and shows state provenance", async () => {
+    vi.mocked(getAssistantMessages).mockResolvedValueOnce({
+      run_id: "run-1", conversation_id: "conversation-1", messages: [{
+        message_id: "markdown-1", model: "gpt-5-mini", message_order: 1, conversation_id: "conversation-1", run_id: "run-1", role: "assistant",
+        answer: "## Current state\n\n- **Waiting** for review\n- Next: `G10`", current_phase: "Transformation", current_stage: "repair-review", workflow_status: "WAITING",
+        current_gate: "G10 pending", current_blocker: "none", next_permitted_action: "Review the proposal", workflow_state_version: 12, semantic_state_version: 12, stale: false,
+        evidence_references: [], proof_label: "authoritative persisted fact", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, estimated_input_cost: 0, estimated_output_cost: 0, estimated_total_cost: 0 },
+        response_status: "completed", failure_reason: null,
+      }] as never,
+    });
+    render(<AssistantPanel runId="run-1" />);
+
+    expect((await screen.findAllByRole("heading", { name: "Current state" })).length).toBe(2);
+    expect(screen.getAllByRole("listitem").find((item) => item.textContent?.includes("Waiting for review"))).toBeTruthy();
+    expect(screen.getByText("G10")).toBeInTheDocument();
+    expect(screen.getByText(/Based on state 12 · repair-review/)).toBeInTheDocument();
+    expect(screen.queryByText("## Current state")).not.toBeInTheDocument();
   });
 
   it("restores the floating dock state without putting the Assistant in navigation", async () => {
@@ -94,11 +113,11 @@ describe("AssistantPanel authoritative rendering", () => {
   });
 
   it("keeps a 503 visible and exposes the existing retry action", async () => {
-    vi.mocked(sendAssistantMessage).mockRejectedValueOnce(new ApiClientError("failed", 503, "POST", "/api/v1/runs/run-1/assistant/messages"));
+    vi.mocked(sendAssistantMessage).mockRejectedValueOnce(new ApiClientError("failed", 503, "POST", "/api/v1/runs/run-1/assistant/messages", JSON.stringify({ detail: { error_code: "assistant_provider_failed", message: "The provider returned no completed answer.", errors: [{ loc: ["response", "citations"], msg: "citation validation failed" }] } })));
     render(<AssistantPanel runId="run-1" />);
     fireEvent.change(await screen.findByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Assistant request failed POST /api/v1/runs/run-1/assistant/messages returned 503");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Assistant request failed POST /api/v1/runs/run-1/assistant/messages returned 503: assistant_provider_failed — The provider returned no completed answer. — response.citations: citation validation failed");
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
@@ -180,9 +199,9 @@ describe("AssistantPanel authoritative rendering", () => {
     await waitFor(() => expect(screen.queryByText(/Assistant is thinking/)).not.toBeInTheDocument());
   });
 
-  it("keeps suggestions compact and avoids repeated user metadata", async () => {
+  it("keeps the composer focused and avoids repeated user metadata", async () => {
     render(<AssistantPanel runId="run-1" />);
-    expect((await screen.findByLabelText("Suggested assistant questions")).querySelectorAll("button")).toHaveLength(3);
+    expect((await screen.findByLabelText("Suggested assistant questions")).querySelectorAll("button")).toHaveLength(0);
     fireEvent.change(screen.getByRole("textbox", { name: "Ask about this migration" }), { target: { value: "Why?" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("article", { name: "user message" })).not.toHaveTextContent("Blocker:");

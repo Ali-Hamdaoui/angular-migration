@@ -479,6 +479,7 @@ export function AuthoritativeRunDashboard({
             phase={state.run_phase}
             stateVersion={state.state_version}
             workflowStatus={state.status}
+            artifacts={state.artifacts}
           />
         )}
       />

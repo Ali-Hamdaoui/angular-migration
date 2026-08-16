@@ -16,6 +16,10 @@ MAX_INPUT_TOKENS = 40_000
 SAFETY_RESERVE_TOKENS = 2_000
 HARD_OUTPUT_CAP = 20_000
 ANSWER_TARGETS = {"concise": 2_000, "detailed": 6_000, "deep": 20_000}
+# Ceiling actually sent to the provider as max_output_tokens. The adaptive
+# target guides length; this ceiling bounds worst-case latency/cost without
+# constraining the deep mode. Headroom absorbs the structured JSON envelope.
+EFFECTIVE_OUTPUT_CAPS = {mode: min(HARD_OUTPUT_CAP, target * 2) for mode, target in ANSWER_TARGETS.items()}
 
 
 class TokenizerStrategy(Protocol):
@@ -60,6 +64,7 @@ class PreparedAssistantProviderRequest:
     safety_reserve_tokens: int
     hard_input_limit: int
     hard_output_cap: int
+    effective_output_cap: int
     adaptive_answer_target: int
     answer_mode: str
     manifest: dict[str, object]
@@ -200,6 +205,7 @@ def prepare_assistant_request(
             "question_tokens": strategy.count_text(question),
             "policy_schema_tokens": section_counts["policy_schema"],
             "hard_output_cap": HARD_OUTPUT_CAP,
+            "effective_output_cap": EFFECTIVE_OUTPUT_CAPS[answer_mode],
             "adaptive_answer_target": ANSWER_TARGETS[answer_mode],
             "answer_mode": answer_mode,
         },
@@ -208,7 +214,7 @@ def prepare_assistant_request(
         "truncated_item_ids": [],
         "omission_reasons": reasons,
     }
-    return PreparedAssistantProviderRequest(tuple(working), question, policy, schema, serialized, total, SAFETY_RESERVE_TOKENS, MAX_INPUT_TOKENS, HARD_OUTPUT_CAP, ANSWER_TARGETS[answer_mode], answer_mode, manifest, strategy)
+    return PreparedAssistantProviderRequest(tuple(working), question, policy, schema, serialized, total, SAFETY_RESERVE_TOKENS, MAX_INPUT_TOKENS, HARD_OUTPUT_CAP, EFFECTIVE_OUTPUT_CAPS[answer_mode], ANSWER_TARGETS[answer_mode], answer_mode, manifest, strategy)
 
 
 def build_bounded_context(segments: list[object], limit: int = MAX_INPUT_TOKENS) -> BoundedContext:

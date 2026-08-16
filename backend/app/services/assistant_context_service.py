@@ -13,7 +13,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from app.api.authentication import authorize_run, require_authenticated_actor
-from app.artifact_store.local_store import LocalFilesystemArtifactStore
+from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.core.config import get_settings
 from app.domain.contracts import (
     AgentKind,
@@ -32,16 +32,15 @@ from app.repositories.models import (
     AssistantMessageModel,
     ExecutionProfileModel,
     G02ApprovalModel,
-    LlmInvocationModel,
     MigrationRunModel,
     MigrationStageModel,
+    RepairAttemptModel,
     SourceSnapshotModel,
-    UsageCostRecordModel,
     WorkflowEventModel,
 )
 from app.repositories.session import session_scope
 from app.services.assistant_capabilities import classify_semantic_intent, default_capability_registry, is_mutation_request
-from app.services.assistant_context_budget import ContextBudgetExceeded, build_bounded_context, prepare_assistant_request
+from app.services.assistant_context_budget import MAX_INPUT_TOKENS, ContextBudgetExceeded, build_bounded_context, prepare_assistant_request
 from app.services.assistant_evidence_retrieval_service import AssistantEvidenceRetrievalService
 from app.services.llm_evidence_application_service import AssistantInvocationRequest, LlmEvidenceApplicationService, build_assistant_response_contract
 from app.llm_gateway.azure_gateway import _azure_strict_schema
@@ -52,6 +51,13 @@ from app.services.workflow_projection_service import WorkflowProjectionService
 _SECRET = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[:=]\s*|password\s*[:=]\s*)[^\s,;]+")
 _PATH = re.compile(r"(?i)([a-z]:\\|/home/|/Users/|/workspace/)[^\s,;]+")
 _MAX_HISTORY = 12
+_MAX_RECENT_EVENTS = 12
+_MAX_REPAIR_ITEMS = 8
+_GREETING = "Hi! I can help you understand this migration. Ask me what's happening, what failed, what needs approval, or what changed."
+_TERMINAL_STATUSES = {"COMPLETED"}
+_STAGE_ROUTE = re.compile(r"angular-(\d+)(?:\.x)?-to-(\d+)(?:\.x)?(?:--[a-z0-9-]+)?", re.IGNORECASE)
+_RAW_PROJECTION = re.compile(r"\b(?:phase|stage|status|gate|blocker)\s*=", re.IGNORECASE)
+_TECHNICAL_QUESTION = re.compile(r"\b(?:technical|details?|id|identifier|checksum|state[_ ]version|raw|json|payload|event)\b", re.IGNORECASE)
 
 
 class AssistantRequestError(ValueError):
@@ -76,6 +82,86 @@ def _safe_question(value: object) -> str:
     return _PATH.sub("[REDACTED_PATH]", text)
 
 
+def _bounded_strings(value: object, *, limit: int = _MAX_REPAIR_ITEMS, item_limit: int = 240) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [_safe(item, item_limit) for item in value[:limit] if str(item or "").strip()]
+
+
+def _is_greeting(question: str) -> bool:
+    normalized = re.sub(r"[^a-z]+", " ", question.casefold()).strip()
+    return normalized in {"hi", "hey", "hello", "hi there", "hey there", "hello there", "good morning", "good afternoon", "good evening"}
+
+
+def _display_stage(value: object) -> str:
+    text = str(value or "").strip()
+    match = _STAGE_ROUTE.search(text)
+    if match:
+        return f"Angular {match.group(1)} → {match.group(2)}"
+    if not text or text.casefold() in {"unknown", "none", "unavailable"}:
+        return "the current migration stage"
+    return "the current migration stage" if "--" in text else text
+
+
+def _display_gate(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.casefold() in {"unknown", "none", "unavailable"}:
+        return "human review status is unavailable"
+    match = re.search(r"\bG\d+\b\s*(pending|approved|rejected)?", text, re.IGNORECASE)
+    status = (match.group(1) if match else "").casefold()
+    return {
+        "pending": "human review is pending",
+        "approved": "human review is approved",
+        "rejected": "human review was rejected",
+    }.get(status, "human review is required")
+
+
+def _current_status(projection: dict[str, object]) -> str:
+    return str(projection.get("status") or "unknown").upper()
+
+
+def _display_phase(value: object) -> str:
+    text = str(value or "").strip().replace("_", " ").lower()
+    return text.title() if text and text not in {"unknown", "unavailable", "none"} else "the current phase"
+
+
+def _human_workflow_answer(projection: dict[str, object]) -> str:
+    stage = _display_stage(projection.get("stage"))
+    status = _current_status(projection)
+    if status == "COMPLETED":
+        return f"{stage} has completed. The migration is now complete."
+    if str(projection.get("blocker", "none")).casefold() not in {"", "none", "unknown", "unavailable"}:
+        return "The migration is currently blocked. Ask what failed for the current evidence and next permitted action."
+    if str(projection.get("gate_status", "")).casefold() == "pending":
+        return f"The migration is in {_display_phase(projection.get('phase'))} at {stage} and is waiting for human review."
+    return f"The migration is in {_display_phase(projection.get('phase'))} at {stage}. No current blocker is recorded."
+
+
+def _humanize_primary_answer(answer: object, projection: dict[str, object], question: str = "") -> str:
+    text = str(answer or "").strip()
+    if not text or _TECHNICAL_QUESTION.search(question):
+        return text
+    if _RAW_PROJECTION.search(text) or text.casefold().startswith("current migration context:"):
+        return _human_workflow_answer(projection)
+    text = _STAGE_ROUTE.sub(lambda match: f"Angular {match.group(1)} → {match.group(2)}", text)
+    text = re.sub(r"\bG\d+\b\s*(pending|approved|rejected)?", lambda match: {
+        "pending": "pending human review",
+        "approved": "approved human review",
+        "rejected": "rejected human review",
+    }.get((match.group(1) or "").casefold(), "the relevant human review") + " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\ba\s+the relevant human review\b", "a human review", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bthe relevant human review\s+recovery\b", "the earlier recovery", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bthe relevant human review\s+is\s+approved\b", "human review is approved", text, flags=re.IGNORECASE)
+    text = re.sub(r"\blatest:\s+approved human review\s*", "latest review approved", text, flags=re.IGNORECASE)
+    text = re.sub(r"\ball human gates\s*\([^)]*approved human review\s*\)", "all human gates are approved", text, flags=re.IGNORECASE)
+    text = re.sub(r"\brepair_state\s+is\s+not_required\b", "no repair is currently required", text, flags=re.IGNORECASE)
+    text = re.sub(r"\battempt_number=\d+,\s*parent attempt exists\b", "the latest repair builds on an earlier attempt", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bfailure_classification\s+is\s+[\"']?unavailable[\"']?\s+and\s+failure_reason\s+is\s+[\"']?unknown[\"']?", "no current failure classification or reason is recorded", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bstatus:\s*COMPLETED\b", "the migration is complete", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:workflow\s+)?state[_ ]version\s*[:=]\s*\d+\b[.;]?", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 class AssistantContextService:
     """Rebuilds current state before every answer and persists only sanitized output."""
 
@@ -95,18 +181,19 @@ class AssistantContextService:
         with self._scope() as session:
             authorize_run(session, run_id, actor, forbidden_code="assistant_run_forbidden")
 
-    def _run(self, run_id: str):
+    def _run(self, run_id: str, *, with_projection: bool = True):
         if run_id.startswith("mock-"):
             return get_mock_migration_api_service().get_state(run_id).model_copy(update={"run_id": run_id, "llm_usage": []})
         with self._scope() as session:
             persisted = session.get(MigrationRunModel, run_id)
             if persisted is not None:
-                events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).order_by(WorkflowEventModel.sequence)))
-                artifacts = list(session.scalars(select(ArtifactMetadataModel).where(ArtifactMetadataModel.run_id == run_id)))
-                invocations = list(session.scalars(select(LlmInvocationModel).where(LlmInvocationModel.run_id == run_id)))
-                usage_by_invocation = {item.invocation_id: item for item in session.scalars(select(UsageCostRecordModel).where(UsageCostRecordModel.run_id == run_id))}
-                usage = [usage_by_invocation[item.id] for item in invocations if item.status == "completed" and item.id in usage_by_invocation]
-                return SimpleNamespace(run_id=run_id, status=persisted.status, run_phase=persisted.run_phase, state_version=persisted.state_version, source_angular_version=persisted.source_angular_version, target_angular_version=persisted.target_angular_version, created_at=persisted.created_at, updated_at=persisted.updated_at, stages=[], workflow_events=events, artifacts=[SimpleNamespace(artifact_id=item.id, checksum=item.checksum, relative_path=item.relative_path) for item in artifacts], llm_usage=usage, assistant_projection=WorkflowProjectionService().build(session, run_id))
+                # The shared projection is the only consumer of persisted run
+                # data in the modern path; the legacy fields below exist only
+                # for the pre-projection fallback and are never populated here.
+                projection = WorkflowProjectionService().build(session, run_id) if with_projection else None
+                recent_events = list(session.scalars(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id).order_by(WorkflowEventModel.sequence.desc()).limit(_MAX_RECENT_EVENTS)).all())
+                repair = session.scalar(select(RepairAttemptModel).where(RepairAttemptModel.run_id == run_id).order_by(RepairAttemptModel.attempt_number.desc(), RepairAttemptModel.updated_at.desc()).limit(1))
+                return SimpleNamespace(run_id=run_id, status=persisted.status, run_phase=persisted.run_phase, state_version=persisted.state_version, source_angular_version=persisted.source_angular_version, target_angular_version=persisted.target_angular_version, created_at=persisted.created_at, updated_at=persisted.updated_at, stages=[], workflow_events=list(reversed(recent_events)), artifacts=[], llm_usage=[], assistant_projection=projection, assistant_repair=self._repair_context(session, persisted, repair))
         try:
             return MigrationRunService(get_settings()).get_state(run_id)
         except Exception as error:
@@ -138,19 +225,37 @@ class AssistantContextService:
                 item = data.get(name) or {}
                 return str(item.get("value") if item.get("availability") == "known" else fallback)
             stats = data.get("operational_statistics") or {}
-            evidence = data.get("evidence_references") or []
+            evidence = (data.get("evidence_references") or [])[:_MAX_REPAIR_ITEMS]
+            recent_events = [
+                {
+                    "type": str(event.event_type),
+                    "sequence": int(event.sequence),
+                    "occurred_at": event.occurred_at.isoformat() if isinstance(event.occurred_at, datetime) else None,
+                    "stage_id": event.stage_id,
+                    "summary": _safe(event.payload.get("failure_reason") or event.payload.get("error_code") or event.reason or event.event_type, 240),
+                }
+                for event in list(getattr(run, "workflow_events", []))[-_MAX_RECENT_EVENTS:]
+            ]
+            latest_command_value = data.get("latest_command_result") or {}
+            latest_command = latest_command_value.get("value") if latest_command_value.get("availability") == "known" else None
             gate_value = value("gate")
             gate_status = next((status for status in ("pending", "approved", "rejected") if gate_value.lower().endswith(status)), gate_value)
+            status_value = value("status")
+            raw_blocker = value("blocker")
+            historical_failures = [raw_blocker] if _current_status({"status": status_value}) in _TERMINAL_STATUSES and raw_blocker.casefold() not in {"", "none", "unknown", "unavailable"} else []
             return {
                 "application": value("application_name"), "run_id": data.get("run_id", getattr(run, "run_id", "unknown")),
                 "current_angular_version": value("current_angular_version"), "target_angular_version": value("target_angular_version"),
-                "phase": value("phase"), "stage": value("stage"), "step": value("step"), "status": value("status"),
-                "gate": gate_value, "gate_status": gate_status, "blocker": value("blocker"), "waiting_reason": value("waiting_reason"),
-                "failure_reason": value("failure_reason"), "next_action": value("next_permitted_action"),
+                "phase": value("phase"), "stage": value("stage"), "step": value("step"), "status": status_value,
+                "gate": gate_value, "gate_status": gate_status, "blocker": "none" if historical_failures else raw_blocker, "historical_failures": historical_failures, "waiting_reason": value("waiting_reason"),
+                "failure_reason": "unknown" if historical_failures else value("failure_reason"), "next_action": value("next_permitted_action"),
                 "completed_phases": data.get("completed_work", []), "remaining_phases": data.get("remaining_work", []),
-                "state_version": int(data.get("semantic_state_version", data.get("workflow_state_version", 1))), "events": [],
+                "state_version": int(data.get("semantic_state_version", data.get("workflow_state_version", 1))), "events": recent_events,
                 "next_step_proposals": data.get("next_step_proposals", []),
-                "failure_classification": value("failure_classification"),
+                "failure_classification": "unavailable" if historical_failures else value("failure_classification"),
+                "repair_state": value("repair_state"),
+                "repair_context": getattr(run, "assistant_repair", {"availability": "unavailable"}),
+                "latest_command_result": latest_command,
                 "evidence": [{"artifact_id": item["artifact_id"], "checksum": item["checksum"], "label": item["label"]} for item in evidence],
                 "usage": [{"input_tokens": stats["input_tokens"], "output_tokens": stats["output_tokens"], "total_tokens": stats["total_tokens"], "input_cost_usd": stats["input_cost_usd"], "output_cost_usd": stats["output_cost_usd"], "cost_usd": stats["total_cost_usd"]}] if stats.get("input_tokens") is not None else [],
                 "duration_seconds": stats.get("recorded_workflow_duration_seconds"),
@@ -195,6 +300,7 @@ class AssistantContextService:
                 relevant_ids.extend(ids if isinstance(ids, list) else [ids])
         relevant_artifacts = [item for item in artifacts if item.artifact_id in relevant_ids or any(marker in str(item.relative_path).lower() for marker in ("g02", "integrity", "snapshot", "workflow_state"))]
         evidence = [{"artifact_id": item.artifact_id, "checksum": item.checksum, "label": item.relative_path} for item in relevant_artifacts[:8]]
+        historical_failures = [blocker] if _current_status({"status": str(status_value)}) in _TERMINAL_STATUSES and blocker.casefold() not in {"", "none", "unknown", "unavailable"} else []
         return {
             "application": "Angular migration",
             "run_id": run.run_id,
@@ -205,10 +311,11 @@ class AssistantContextService:
             "step": latest.event_type if latest else "unknown",
             "status": str(status_value),
             "gate": _safe(gate),
-            "blocker": blocker,
+            "blocker": "none" if historical_failures else blocker,
+            "historical_failures": historical_failures,
             "gate_status": "pending" if g02_pending else "unknown",
             "waiting_reason": waiting_reason,
-            "failure_reason": failure_reason,
+            "failure_reason": "unknown" if historical_failures else failure_reason,
             "next_action": "Record a G02 reviewer decision through the governed cockpit control." if g02_pending else "unknown",
             "completed_phases": completed or ["unknown"],
             "remaining_phases": remaining,
@@ -221,6 +328,56 @@ class AssistantContextService:
             "duration_seconds": AssistantContextService._recorded_workflow_duration_seconds(run),
             "operational_statistics": {},
             "operational_event_sequence": latest.sequence if latest is not None else 0,
+        }
+
+    @staticmethod
+    def _artifact_json(session, run, artifact_id: str | None, checksum: str | None) -> dict[str, object] | None:
+        if not artifact_id or not checksum:
+            return None
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + artifact_id) or session.get(ArtifactMetadataModel, artifact_id)
+        if metadata is None or metadata.run_id != run.id or not metadata.immutable or metadata.checksum != checksum:
+            return None
+        root = Path(run.artifact_root or get_settings().artifact_root)
+        try:
+            stored = LocalFilesystemArtifactStore(root, fixed_run_root=root).read_artifact(run.id, metadata.relative_path)
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError):
+            return None
+        if stored.ref.run_id != run.id or stored.ref.artifact_id != artifact_id or stored.ref.checksum != checksum:
+            return None
+        try:
+            payload = json.loads(stored.content)
+        except (TypeError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @classmethod
+    def _repair_context(cls, session, run, attempt) -> dict[str, object]:
+        if attempt is None:
+            return {"availability": "unavailable"}
+        proposal = cls._artifact_json(session, run, attempt.proposal_artifact_id, attempt.proposal_checksum)
+        review = cls._artifact_json(session, run, attempt.review_artifact_id, attempt.review_checksum)
+        return {
+            "availability": "known",
+            "state": _safe(run.repair_status),
+            "attempt_number": attempt.attempt_number,
+            "status": _safe(attempt.status),
+            "risk_level": _safe(attempt.risk_level),
+            "parent_attempt_exists": attempt.parent_attempt_id is not None,
+            "diagnosis": _safe(attempt.diagnosis, 600),
+            "proposal": {
+                "available": proposal is not None,
+                "risk_level": _safe((proposal or {}).get("risk_level")),
+                "rationale": _bounded_strings((proposal or {}).get("rationale")),
+                "touched_files": _bounded_strings((proposal or {}).get("touched_files"), item_limit=160),
+                "validation_targets": _bounded_strings((proposal or {}).get("validation_targets"), item_limit=80),
+            },
+            "review": {
+                "available": review is not None,
+                "decision": _safe((review or {}).get("decision")),
+                "findings": _bounded_strings((review or {}).get("findings")),
+                "risk_assessment": _safe((review or {}).get("risk_assessment"), 600),
+                "required_validation_targets": _bounded_strings((review or {}).get("required_validation_targets"), item_limit=80),
+            },
         }
 
     @staticmethod
@@ -249,7 +406,7 @@ class AssistantContextService:
             return "operations"
         return "general"
 
-    def _compose(self, intent: str, projection: dict[str, object]) -> tuple[str, str]:
+    def _compose(self, intent: str, projection: dict[str, object], question: str = "") -> tuple[str, str]:
         intent = {
             "workflow_status": "workflow", "blocker_or_failure": "validation",
             "completed_work": "completed", "usage_and_cost": "operations",
@@ -261,17 +418,11 @@ class AssistantContextService:
         if intent == "mutation":
             return "This Assistant is read-only and cannot approve gates, execute commands, apply patches, or change workflow state. Use the governed cockpit control for that action.", "model interpretation"
         if intent == "workflow":
-            waiting = projection["waiting_reason"]
-            waiting_text = f" It is waiting because {waiting}." if waiting != "unknown" else ""
-            blocker_text = "There is no technical blocker." if projection["blocker"] == "none" else f"Blocker: {projection['blocker']}."
-            action = projection["next_action"]
-            gate = str(projection["gate"])
-            gate_status = str(projection["gate_status"])
-            gate_text = gate if gate_status in {"pending", "approved", "rejected"} and gate.lower().endswith(f" {gate_status}") else f"{gate} ({gate_status})"
-            action_text = str(action).rstrip(".")
-            return f"The migration is in the {projection['phase']} phase at {projection['stage']}. Current gate: {gate_text}. {blocker_text}{waiting_text} The next permitted action is: {action_text}. Workflow state version: {projection['state_version']}.", "authoritative persisted fact"
+            return _human_workflow_answer(projection), "authoritative persisted fact"
         if intent == "completed":
-            return f"Completed stages recorded by the current workflow projection: {', '.join(projection['completed_phases'])}. Remaining stages are: {', '.join(projection['remaining_phases'])}.", "authoritative persisted fact"
+            completed = [_display_stage(item) if "angular-" in str(item).casefold() else str(item) for item in projection.get("completed_phases", [])]
+            remaining = [_display_stage(item) if "angular-" in str(item).casefold() else str(item) for item in projection.get("remaining_phases", [])]
+            return f"Completed work includes: {', '.join(completed) or 'no completed stages are recorded'}. Remaining work includes: {', '.join(remaining) or 'none recorded'}.", "authoritative persisted fact"
         if intent in {"analysis", "planning", "transformation", "validation"}:
             matching = [event["type"] for event in projection["events"] if intent.upper() in str(event["type"]).upper() or (intent == "validation" and "BASELINE" in str(event["type"]).upper())]
             evidence = ", ".join(item["artifact_id"] for item in projection["evidence"]) or "unavailable"
@@ -288,15 +439,9 @@ class AssistantContextService:
             duration = projection["duration_seconds"]
             duration_text = f"Recorded workflow duration: {float(duration):.2f} seconds." if duration is not None else "Recorded workflow duration: unavailable."
             return f"Persisted operational usage: {len(usage)} governed LLM call(s), {input_tokens} input tokens, {output_tokens} output tokens, {input_tokens + output_tokens} total tokens, estimated total cost ${cost:.6f}. {duration_text}", "authoritative persisted fact"
-        completed = ", ".join(str(item) for item in projection.get("completed_phases", [])) or "none recorded"
-        remaining = ", ".join(str(item) for item in projection.get("remaining_phases", [])) or "none recorded"
-        return (
-            f"Current migration context: phase={projection['phase']}; stage={projection['stage']}; "
-            f"status={projection['status']}; gate={projection['gate']}; blocker={projection['blocker']}; "
-            f"next permitted action={projection['next_action']}. Completed work: {completed}. Remaining work: {remaining}. "
-            "I can explain or compare any of these persisted facts; unavailable facts will be identified explicitly.",
-            "authoritative persisted fact",
-        )
+        if _is_greeting(question):
+            return _GREETING, "model interpretation"
+        return "I can help you understand this migration. Ask me what's happening, what failed, what needs approval, or what changed.", "model interpretation"
 
     @staticmethod
     def _authoritative_workflow_answer(projection: dict[str, object]) -> str:
@@ -348,7 +493,7 @@ class AssistantContextService:
 
     @staticmethod
     def _message_projection(projection: dict[str, object]) -> dict[str, object]:
-        return {"phase": projection["phase"], "stage": projection["stage"], "status": projection["status"], "gate": projection["gate"], "blocker": projection["blocker"], "next_action": projection["next_action"], "next_step_proposals": projection.get("next_step_proposals", []), "failure_classification": projection.get("failure_classification", "unavailable"), "operational_statistics": projection.get("operational_statistics", {})}
+        return {"phase": projection["phase"], "stage": projection["stage"], "status": projection["status"], "gate": projection["gate"], "blocker": projection["blocker"], "historical_failures": projection.get("historical_failures", []), "next_action": projection["next_action"], "next_step_proposals": projection.get("next_step_proposals", []), "failure_classification": projection.get("failure_classification", "unavailable"), "repair_state": projection.get("repair_state", "unknown"), "repair_context": projection.get("repair_context", {"availability": "unavailable"}), "latest_command_result": projection.get("latest_command_result"), "events": projection.get("events", []), "operational_statistics": projection.get("operational_statistics", {})}
 
     def _persist_user_message(self, session, request, *, conversation_id, correlation_id, projection, manifest, checksum, message_order, now, status="pending"):
         session.add(AssistantMessageModel(
@@ -495,7 +640,7 @@ class AssistantContextService:
             }
             if any(citation.get(key) != value for key, value in exact.items()):
                 return None
-            if exact["proof_label"] != "approved_evidence_supported" or proof_label not in {"approved_evidence_supported", "model_interpretation"}:
+            if exact["proof_label"] != "approved_evidence_supported" or proof_label not in {"approved_evidence_supported", "authoritative_persisted_fact", "model_interpretation"}:
                 return None
             if excerpt_id not in seen:
                 validated.append(exact)
@@ -555,7 +700,7 @@ class AssistantContextService:
             "history": history_context,
             "intent": intent,
             "capability_key": capability.capability_key if capability else "",
-            "configured_input_limit": 40000,
+            "configured_input_limit": MAX_INPUT_TOKENS,
         }
         mutation_request = is_mutation_request(request.message) or self._intent(request.message) == "mutation"
         if mutation_request:
@@ -573,7 +718,8 @@ class AssistantContextService:
             self._persist_user_message(session, request, conversation_id=conversation_id, correlation_id=correlation_id, projection=projection, manifest=manifest, checksum=checksum, message_order=int(count) + 1, now=now)
         with self._scope() as session:
             self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_RESPONSE_STARTED", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="started", idempotency_key=request.idempotency_key, payload={"request_id": request.request_id})
-        answer, proof = self._compose(intent, projection)
+        answer, proof = self._compose(intent, projection, sanitized_question)
+        answer = _humanize_primary_answer(answer, projection, sanitized_question)
         if mutation_request:
             answer = "This Assistant is read-only and cannot approve gates, execute commands, apply patches, or change workflow state. Use the governed cockpit control for that action."
             proof = "model interpretation"
@@ -593,7 +739,7 @@ class AssistantContextService:
                     policy=policy,
                     schema=_azure_strict_schema(provider_contract.model_json_schema()),
                     question=sanitized_question,
-                    segments=[LlmContextSegment(segment_id="projection", label="authoritative workflow projection", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="recent conversation", content=json.dumps(history_context, sort_keys=True))],
+                    segments=[LlmContextSegment(segment_id="projection", label="current authoritative workflow projection; highest priority", content=json.dumps(projection, sort_keys=True)), *evidence_segments, LlmContextSegment(segment_id="history", label="historical conversation; lower priority than current state and evidence", content=json.dumps(history_context, sort_keys=True))],
                     answer_mode=request.answer_mode,
                 )
                 manifest["context_budget"] = prepared.manifest.get("context_budget", {})
@@ -603,7 +749,7 @@ class AssistantContextService:
                 manifest["evidence_selection"] = self._evidence_retrieval.last_manifest
                 with self._scope() as session:
                     self._append_event(session, run_id=request.run_id, conversation_id=conversation_id, message_id=message_id, event_type="ASSISTANT_CONTEXT_BUILT", correlation_id=correlation_id, state_version=int(projection["state_version"]), status="context_built", idempotency_key=request.idempotency_key, payload={"capability_key": capability.capability_key, "answer_mode": prepared.answer_mode, "final_token_count": prepared.final_input_tokens, "selected_count": len(selected_refs), "omitted_count": len(prepared.manifest.get("omitted_item_ids", [])), "truncated": bool(prepared.manifest.get("truncated_item_ids")), "semantic_state_version": int(projection["state_version"]), "request_manifest_reference": checksum})
-                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.hard_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode, response_contract=response_contract), actor=actor)
+                governed_response = self._invocations.assistant(AssistantInvocationRequest(run_id=request.run_id, expected_state_version=int(projection["state_version"]), idempotency_key=f"assistant:{request.request_id}", correlation_id=correlation_id, question=prepared.question, context=list(prepared.context), max_output_tokens=prepared.effective_output_cap, prepared_request=prepared, adaptive_answer_target=prepared.adaptive_answer_target, answer_mode=prepared.answer_mode, response_contract=response_contract), actor=actor)
                 if governed_response.status != "completed":
                     raise self._provider_failure(governed_response)
                 output = governed_response.structured_output or {}
@@ -615,7 +761,7 @@ class AssistantContextService:
                 if validated_citations is None:
                     raise AssistantRequestError("assistant_invalid_citation", "The governed Assistant returned an invalid evidence citation.", 502)
                 if isinstance(output.get("answer"), str):
-                    answer = output["answer"]
+                    answer = _humanize_primary_answer(output["answer"], projection, sanitized_question)
                     proof = provider_proof
                     answer_lower = answer.lower()
                     if intent in {"workflow_status", "blocker_or_failure"} and projection.get("blocker") == "NO_COMPATIBLE_RUNTIME_PROFILE" and ("unknown" in answer_lower or "stale answer" in answer_lower or "execution-profile resolution blocked" not in answer_lower):
@@ -699,7 +845,11 @@ class AssistantContextService:
 
     def history(self, run_id: str, conversation_id: str | None = None, *, actor: str | None = None) -> AssistantHistoryDto:
         self.authorize(run_id, actor or "")
-        current_version = int(self._projection(self._run(run_id))["state_version"])
+        run = self._run(run_id, with_projection=False)
+        if getattr(run, "assistant_projection", None) is not None:
+            current_version = int(getattr(run, "state_version", 1) or 1)
+        else:
+            current_version = int(self._projection(run)["state_version"])
         with self._scope() as session:
             query = select(AssistantMessageModel).where(AssistantMessageModel.run_id == run_id).order_by(AssistantMessageModel.message_order, AssistantMessageModel.id)
             if conversation_id:
@@ -745,4 +895,11 @@ class AssistantContextService:
         intent = structured.get("intent", row.intent)
         if intent not in {"workflow_status", "blocker_or_failure", "completed_work", "remaining_work", "analysis_explanation", "planning_explanation", "transformation_explanation", "validation_explanation", "evidence_question", "usage_and_cost", "next_steps", "comparison", "general_migration_question", "unsupported"}:
             intent = "unsupported"
-        return AssistantMessageResultDto(message_id=row.message_id, model=model, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=structured.get("answer", row.answer), current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=proof, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, error_code=provenance.get("failure_code"), operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None, request_id=row.request_id, retry_of_message_id=row.retry_of_message_id, intent=intent, capability_key=structured.get("capability_key", row.capability_key if not legacy else ""), summary=structured.get("summary", "unavailable" if legacy else row.answer[:240]), citations=structured.get("citations", []), missing_information=structured.get("missing_information", ["V1.1 metadata unavailable for this legacy message"] if legacy else []), suggested_follow_ups=structured.get("suggested_follow_ups", []), next_step_proposals=projection.get("next_step_proposals", structured.get("next_step_proposals", [])), confidence=structured.get("confidence", "unknown_or_unavailable"), correlation_id=row.correlation_id, semantic_state_version=row.semantic_state_version, operational_event_sequence=row.operational_event_sequence, answer_mode=row.answer_mode)
+        answer = structured.get("answer", row.answer)
+        if row.role == "assistant":
+            if (_RAW_PROJECTION.search(str(answer)) or str(answer).casefold().startswith("current migration context:")) and row.intent == "unsupported":
+                paired = session.scalar(select(AssistantMessageModel).where(AssistantMessageModel.run_id == row.run_id, AssistantMessageModel.conversation_id == row.conversation_id, AssistantMessageModel.role == "user", AssistantMessageModel.message_order < row.message_order).order_by(AssistantMessageModel.message_order.desc()).limit(1)) if session is not None else None
+                answer = _GREETING if paired is not None and _is_greeting(paired.answer) else "I can help you understand this migration. Ask me what's happening, what failed, what needs approval, or what changed."
+            else:
+                answer = _humanize_primary_answer(answer, projection)
+        return AssistantMessageResultDto(message_id=row.message_id, model=model, message_order=row.message_order, conversation_id=row.conversation_id, run_id=row.run_id, role=row.role, answer=answer, current_phase=str(projection.get("phase", "unknown")), current_stage=str(projection.get("stage", "unknown")), workflow_status=str(projection.get("status", "unknown")), current_gate=str(projection.get("gate", "unknown")), current_blocker=str(projection.get("blocker", "unknown")), next_permitted_action=str(projection.get("next_action", "unknown")), workflow_state_version=row.state_version, stale=stale if stale is not None else row.status == "stale", evidence_references=[AssistantEvidenceDto.model_validate(item) for item in row.evidence], proof_label=proof, usage=AssistantUsageDto.model_validate(row.usage), response_status=row.status, failure_reason=row.failure_reason, error_code=provenance.get("failure_code"), operational_statistics=AssistantOperationalStatisticsDto.model_validate(stats) if stats else None, request_id=row.request_id, retry_of_message_id=row.retry_of_message_id, intent=intent, capability_key=structured.get("capability_key", row.capability_key if not legacy else ""), summary=structured.get("summary", "unavailable" if legacy else str(answer)[:240]), citations=structured.get("citations", []), missing_information=structured.get("missing_information", ["V1.1 metadata unavailable for this legacy message"] if legacy else []), suggested_follow_ups=structured.get("suggested_follow_ups", []), next_step_proposals=projection.get("next_step_proposals", structured.get("next_step_proposals", [])), confidence=structured.get("confidence", "unknown_or_unavailable"), correlation_id=row.correlation_id, semantic_state_version=row.semantic_state_version, operational_event_sequence=row.operational_event_sequence, answer_mode=row.answer_mode)

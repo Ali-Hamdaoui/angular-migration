@@ -85,7 +85,17 @@ class AssistantCapability:
                 "authoritative_persisted_fact", "model_interpretation", "unknown_or_unavailable",
             ],
             "allowed_next_step_proposals": "read_only_navigation_only",
+            "next_step_proposals": "Return an empty list unless the current authoritative projection contains an already-typed navigation-only proposal; never author a new command, retry, approval, repair, or workflow action.",
             "unknown_information_behavior": "state_unknown_or_unavailable",
+            "answer_order": ["direct_answer", "short_explanation", "current_status_or_next_action_when_relevant", "evidence_used_when_useful"],
+            "authority_order": ["current_authoritative_projection", "current_validated_evidence", "historical_evidence", "conversation_history"],
+            "language": "Use human-facing workflow language; keep internal IDs, gate codes, stage suffixes, phase/status key-value dumps, and state numbers for details or when explicitly requested.",
+            "primary_answer_rules": [
+                "Answer simple questions simply; do not dump the projection or completed-work list unless asked.",
+                "Current authoritative status outranks historical events and conversation history.",
+                "If a failure is historical or resolved, label it historical and never present it as the current blocker.",
+                "Describe stages as readable routes such as Angular 20 → 21 when the route is available.",
+            ],
         }, sort_keys=True)
 
 
@@ -133,12 +143,12 @@ def build_next_step_proposals(*, run_id: str, gate_id: str | None, gate_state: s
 def default_capability_registry() -> AssistantCapabilityRegistry:
     registry = AssistantCapabilityRegistry()
     for key, intents, fields, evidence in (
-        ("workflow_status", {"workflow_status", "completed_work", "remaining_work", "comparison"}, {"status", "phase", "stage", "gate", "blocker", "next_action"}, set()),
-        ("failure_explanation", {"blocker_or_failure"}, {"status", "phase", "stage", "blocker", "failure_reason", "next_action"}, set()),
+        ("workflow_status", {"workflow_status", "completed_work", "remaining_work", "comparison"}, {"status", "phase", "stage", "gate", "blocker", "historical_failures", "next_action", "repair_state", "repair_context", "latest_command_result", "events"}, set()),
+        ("failure_explanation", {"blocker_or_failure"}, {"status", "phase", "stage", "blocker", "historical_failures", "failure_reason", "next_action", "repair_state", "repair_context", "latest_command_result", "events"}, set()),
         ("analysis", {"analysis_explanation", "evidence_question"}, {"events", "evidence", "status", "phase", "stage", "blocker", "next_action"}, {"report", "analysis", "snapshot", "source"}),
         ("planning", {"planning_explanation"}, {"events", "phase", "stage", "gate"}, {"plan", "report"}),
-        ("transformation", {"transformation_explanation"}, {"events", "phase", "stage"}, {"report", "snapshot"}),
-        ("validation", {"validation_explanation"}, {"events", "phase", "stage", "failure_reason"}, {"report", "validation"}),
+        ("transformation", {"transformation_explanation"}, {"events", "phase", "stage", "repair_state", "repair_context", "latest_command_result"}, {"report", "snapshot"}),
+        ("validation", {"validation_explanation"}, {"events", "phase", "stage", "failure_reason", "latest_command_result"}, {"report", "validation"}),
         ("usage", {"usage_and_cost"}, {"usage", "duration_seconds"}, set()),
         ("next_steps", {"next_steps"}, {"blocker", "gate", "next_action", "waiting_reason"}, set()),
         ("general_migration_question", {"general_migration_question"}, set(), set()),
@@ -152,7 +162,19 @@ def classify_semantic_intent(question: str) -> SemanticIntentResult:
     if not isinstance(question, str) or not question.strip() or is_mutation_request(question):
         return SemanticIntentResult(intent="unsupported", rationale="mutation_or_invalid_request")
     normalized = " ".join(question.casefold().split())
-    if re.search(r"\b(why|what)\b.*\b(stopped?|blocked?|preventing|blocker)\b", normalized) or "what is preventing progress" in normalized:
+    if re.search(r"\bwhy\b.*\b(reviewer|review|request changes|repair)\b", normalized):
+        return SemanticIntentResult(intent="blocker_or_failure", rationale="repair_review_question")
+    if re.search(r"\b(what|which|show|explain)\b.*\b(repair|proposal|diff|changed)\b", normalized):
+        return SemanticIntentResult(intent="transformation_explanation", rationale="repair_change_question")
+    if re.search(r"\b(previous|prior|last)\b.*\brepair\b.*\b(work|succeed|pass|fail)", normalized):
+        return SemanticIntentResult(intent="blocker_or_failure", rationale="repair_history_question")
+    if "failure" in normalized and ("still current" in normalized or "current" in normalized):
+        return SemanticIntentResult(intent="blocker_or_failure", rationale="current_vs_historical_failure_question")
+    if re.search(r"\b(what|where|how)\b.*\b(happened|happening|progress|status|waiting|next)\b", normalized) or re.search(r"\b(where are we|what happened so far|current status)\b", normalized):
+        return SemanticIntentResult(intent="workflow_status", rationale="current_workflow_question")
+    if re.search(r"\b(what|who)\b.*\b(needs?|awaiting|waiting)\b.*\bapproval|\bapproval\b", normalized):
+        return SemanticIntentResult(intent="workflow_status", rationale="approval_status_question")
+    if re.search(r"\b(why|what|explain)\b.*\b(stopped?|blocked?|preventing|blocker|fail(ed|ure)?|error)\b", normalized) or "what is preventing progress" in normalized:
         return SemanticIntentResult(intent="blocker_or_failure", rationale="blocker_question")
     composite = (
         (re.search(r"\bwhy\b.*\b(stop|stopped|blocked|blocker|prevent|failure|failed)\b", normalized) and re.search(r"\b(next|happen|action|step)\b", normalized))

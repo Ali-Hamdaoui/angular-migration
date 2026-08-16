@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -112,15 +113,15 @@ class AssistantEvidenceRetrievalService:
             if store is not None:
                 try:
                     stored = store.read_artifact_by_id(artifact_id)
-                    if stored.ref.run_id == run_id and stored.ref.checksum == row.checksum:
-                        content = stored.content
-                        checksum_verified = True
+                    content = stored.content
+                    checksum_verified = stored.ref.run_id == run_id and stored.ref.checksum == row.checksum
                 except (ArtifactStoreError, FileNotFoundError, OSError, ValueError):
                     content = None
-            if content is None:
-                # Preserve DEV's safe metadata fallback, but never label it as
-                # immutable proof when the artifact bytes were not verified.
-                content = str(metadata.get("excerpt") or metadata.get("content") or row.relative_path)
+            if content is None or not checksum_verified:
+                # Fail closed: unverified bytes or untrusted metadata content
+                # must never reach the provider as evidence.
+                omitted.append({"artifact_id": row.id, "reason": "checksum_mismatch"})
+                continue
             content = self._redact(content)
             if not content.strip():
                 omitted.append({"artifact_id": row.id, "reason": "empty_after_redaction"})
@@ -136,14 +137,15 @@ class AssistantEvidenceRetrievalService:
             stage_key = row.stage_id or (stored.ref.stage_id if checksum_verified else None) or "run"
             selected_id = self.excerpt_id(artifact_id=artifact_id, checksum=row.checksum, stage_key=stage_key, locator=locator)
             safe_label = _PATH.sub("[REDACTED_PATH]", row.relative_path)
-            proof_label = "approved_evidence_supported" if checksum_verified else "unknown_or_unavailable"
+            created_at = row.created_at.isoformat() if isinstance(getattr(row, "created_at", None), datetime) else None
             ref = {
                 "excerpt_id": selected_id, "artifact_id": artifact_id, "checksum_sha256": row.checksum,
                 "checksum": row.checksum, "stage_key": stage_key, "stage_id": row.stage_id,
-                "locator": locator, "excerpt_locator": locator, "proof_label": proof_label,
+                "locator": locator, "excerpt_locator": locator, "proof_label": "approved_evidence_supported",
                 "checksum_verified": checksum_verified, "text": bounded, "label": safe_label, "evidence_type": row.artifact_type,
+                "created_at": created_at,
             }
-            selected.append(LlmContextSegment(segment_id=selected_id, label=f"approved artifact excerpt {safe_label}", content=bounded, artifact_ref=selected_id, untrusted=True))
+            selected.append(LlmContextSegment(segment_id=selected_id, label=f"approved artifact excerpt {safe_label} [stage {stage_key}] [created {created_at or 'unavailable'}]", content=bounded, artifact_ref=selected_id, untrusted=True))
             refs.append(ref)
             if len(selected) >= limit:
                 selected_ids = {item["artifact_id"] for item in refs}
