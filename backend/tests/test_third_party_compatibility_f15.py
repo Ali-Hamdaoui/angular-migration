@@ -123,6 +123,33 @@ def test_classify_peer_range_excluding_target_is_peer_conflict(tmp_path: Path):
     assert report.status == "blocked"
 
 
+def test_classify_or_peer_range_allows_either_major(tmp_path: Path):
+    from app.services.third_party_compatibility_service import _range_satisfies_major
+
+    # ^17.0.0 || ^18.0.0 must allow target 18 (OR semantics)
+    assert _range_satisfies_major("^17.0.0 || ^18.0.0", 18) is True
+    assert _range_satisfies_major("^17.0.0 || ^18.0.0", 17) is True
+    assert _range_satisfies_major("^17.0.0 || ^18.0.0", 19) is False
+    # unparseable ranges are unknown, never compatible
+    assert _range_satisfies_major(">=17 <19", 19) is None
+
+
+def test_classify_unparseable_peer_range_is_unknown(tmp_path: Path):
+    root = tmp_path / "ws5"
+    root.mkdir(parents=True)
+    (root / "package.json").write_text(json.dumps({"dependencies": {"some-lib": "^1.0.0"}}))
+    (root / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {"node_modules/some-lib": {"version": "1.0.0", "peerDependencies": {"@angular/core": ">=17 <19"}}},
+    }))
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    run_id = _seed(stage_id)
+    report = ThirdPartyCompatibilityScanner().scan_stage(root, run_id=run_id, stage_id=stage_id)
+    finding = report.findings[0]
+    assert finding.status == "unknown"
+    assert report.status == "warnings"
+
+
 def test_classify_unresolved_is_unknown_not_fabricated(tmp_path: Path):
     root = tmp_path / "ws3"
     root.mkdir(parents=True)

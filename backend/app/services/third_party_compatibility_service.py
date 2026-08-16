@@ -128,21 +128,30 @@ class ThirdPartyCompatibilityScanner:
         """Classify one dependency against the target Angular major.
 
         Uses the lockfile entry's ``@angular/core`` peer range when present: a
-        range that excludes the target major is a peer conflict.  Without peer
-        evidence, a resolved version is compatible; an unresolved one is unknown.
+        range that excludes the target major is a peer conflict; a range that
+        includes it is compatible; an unparseable range is unknown.  Without
+        peer evidence, a resolved version is compatible; an unresolved one is
+        unknown.
         """
         peer_range = peers.get(item.name)
         if peer_range:
-            if not _range_satisfies_major(peer_range, target_major):
+            allows = _range_satisfies_major(peer_range, target_major)
+            if allows is False:
                 return DependencyCompatibilityFinding(
                     name=item.name, declared=item.declared, resolved=item.resolved,
                     target_major=target_major, status="peer_conflict",
                     detail=f"peer range {peer_range} does not allow Angular {target_major}",
                 )
+            if allows is True:
+                return DependencyCompatibilityFinding(
+                    name=item.name, declared=item.declared, resolved=item.resolved,
+                    target_major=target_major, status="compatible",
+                    detail=f"peer range {peer_range} allows Angular {target_major}",
+                )
             return DependencyCompatibilityFinding(
                 name=item.name, declared=item.declared, resolved=item.resolved,
-                target_major=target_major, status="compatible",
-                detail=f"peer range {peer_range} allows Angular {target_major}",
+                target_major=target_major, status="unknown",
+                detail=f"peer range {peer_range} cannot be evaluated for Angular {target_major}",
             )
         if item.resolved is None:
             return DependencyCompatibilityFinding(
@@ -203,23 +212,42 @@ def _scope_name(scope: str) -> str:
     return "dependency"
 
 
-def _range_satisfies_major(peer_range: str, target_major: int) -> bool:
-    """Does a peer range (e.g. '^17.0.0', '>=16 <19', '16 - 18') allow a major?"""
+def _range_satisfies_major(peer_range: str, target_major: int) -> bool | None:
+    """Does a peer range (e.g. '^17.0.0', '>=16 <19', '^17.0.0 || ^18.0.0') allow a major?
+
+    Returns True/False when determinable, None when the range syntax cannot be
+    evaluated (callers treat None as unknown, never as compatible).
+    """
     range_text = peer_range.strip()
-    if range_text.startswith("^"):
+    if not range_text:
+        return None
+    # OR ranges: any alternative satisfying the major makes the range satisfy it.
+    if "||" in range_text:
+        alternatives = [part.strip() for part in range_text.split("||")]
+        if not alternatives:
+            return None
+        results = [_single_range_satisfies(part, target_major) for part in alternatives]
+        if any(result is True for result in results):
+            return True
+        if all(result is False for result in results):
+            return False
+        return None
+    return _single_range_satisfies(range_text, target_major)
+
+
+def _single_range_satisfies(range_text: str, target_major: int) -> bool | None:
+    if range_text.startswith("^") or range_text.startswith("~"):
         match = _SEMVER.search(range_text)
-        if match:
-            return int(match.group(1)) == target_major
-    if range_text.startswith("~"):
-        match = _SEMVER.search(range_text)
-        if match:
-            return int(match.group(1)) == target_major
+        if not match:
+            return None
+        return int(match.group(1)) == target_major
     if " - " in range_text:
         low, high = range_text.split(" - ", 1)
         low_match = _SEMVER.search(low)
         high_match = _SEMVER.search(high)
-        if low_match and high_match:
-            return int(low_match.group(1)) <= target_major <= int(high_match.group(1))
+        if not low_match or not high_match:
+            return None
+        return int(low_match.group(1)) <= target_major <= int(high_match.group(1))
     comparisons = re.findall(r"(>=|<=|>|<|=)\s*(\d+)\.\d+\.\d+", range_text)
     if comparisons:
         allowed = True
@@ -230,12 +258,10 @@ def _range_satisfies_major(peer_range: str, target_major: int) -> bool:
             if operator in {"<=", "<"} and target_major > major:
                 allowed = False
         return allowed
-    # bare exact version
     match = _SEMVER.search(range_text)
-    if match and "," not in range_text and not any(c in range_text for c in "><^~|-"):
+    if match and not any(c in range_text for c in "><^~|-,"):
         return int(match.group(1)) == target_major
-    # unknown range syntax: conservative "unknown" -> allow scan to proceed as compatible
-    return True
+    return None
 
 
 def _major(family: str | None) -> int:
