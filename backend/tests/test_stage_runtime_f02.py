@@ -44,8 +44,8 @@ def test_derive_requirement_from_catalogue():
     assert requirement.target_family == "angular-19.x"
     node = requirement.requirement_for(RuntimeExecutableKind.NODE)
     assert node is not None
-    assert node.minimum_version == "20.11.1"
-    assert node.runtime_id == "node20"
+    assert node.minimum_version == "18.19.1"
+    assert node.runtime_id == "node18"
 
 
 def test_derive_requirement_missing_entry_raises():
@@ -77,7 +77,7 @@ def test_resolve_stage_binds_machine_runtime(tmp_path: Path):
     assert binding.checksum.startswith("sha256:")
     node = binding.descriptor_for(RuntimeExecutableKind.NODE)
     assert node is not None
-    assert node.runtime_id.startswith("v20") or node.version_exact >= "20.11.1"
+    assert node.runtime_id.startswith("v18") or node.version_exact >= "18.19.1"
     npm = binding.descriptor_for(RuntimeExecutableKind.NPM)
     assert npm is not None and npm.runtime_id == node.runtime_id
 

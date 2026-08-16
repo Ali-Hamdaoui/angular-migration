@@ -129,9 +129,9 @@ class LockfileCompatibilityService:
             expected["zone.js"] = entry.zone_js_exact
         minimums: dict[str, str] = {}
         if not entry.typescript_exact:
-            minimums["typescript"] = _DEFAULT_TYPESCRIPT_MINIMUMS.get(target_major, "5.0.0")
+            minimums["typescript"] = entry.typescript_minimum or _DEFAULT_TYPESCRIPT_MINIMUMS.get(target_major, "5.0.0")
         if not entry.rxjs_exact:
-            minimums["rxjs"] = "6.5.3"
+            minimums["rxjs"] = entry.rxjs_minimum or "6.5.3"
         if not entry.zone_js_exact:
             minimums["zone.js"] = "0.14.0"
         return evaluate_lockfile_compatibility(
