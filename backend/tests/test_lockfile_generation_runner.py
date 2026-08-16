@@ -14,6 +14,7 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
     MigrationRunModel,
+    MigrationStageModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
     StageStepModel,
@@ -160,6 +161,17 @@ def _seed(tmp_path: Path):
                 actor="operator",
                 created_at=NOW,
                 updated_at=NOW,
+            ),
+            MigrationStageModel(
+                id="stage-1",
+                run_id="run-1",
+                stage_order=1,
+                source_version_family="angular-18.x",
+                target_version_family="angular-19.x",
+                source_angular_version="18.2.0",
+                target_angular_version="19.0.0",
+                status="planned",
+                created_at=NOW,
             ),
             StageWorkspaceBindingModel(
                 id="binding-1",
@@ -501,6 +513,29 @@ def test_success_verifies_cas_links_artifact_and_replays_idempotently(tmp_path: 
     continuation.current_node = "lockfile_generation"
     assert _runner().advance(session, continuation, next_node="repair_revalidate") == "passed"
     assert session.query(ArtifactMetadataModel).count() == artifact_count
+    session.close()
+    engine.dispose()
+
+
+def test_pass_path_records_catalogue_evidence(tmp_path: Path):
+    """The runner records F08 catalogue-compatibility evidence on the pass path."""
+    engine, factory, workspace = _seed(tmp_path)
+    session = factory()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "queued"
+    session.commit()
+    _complete_execution(session, workspace)
+    assert _runner().advance(session, continuation, next_node="repair_revalidate") == "passed"
+    session.commit()
+
+    from app.repositories.models import LockfileGenerationEvidenceModel
+
+    evidence = session.query(LockfileGenerationEvidenceModel).filter_by(run_id="run-1", stage_id="stage-1").all()
+    assert len(evidence) >= 1
+    assert evidence[0].source_family == "angular-18.x"
+    assert evidence[0].target_family == "angular-19.x"
+    assert evidence[0].lockfile_checksum.startswith("sha256:")
+    assert evidence[0].execution_id == "exec-lock"
     session.close()
     engine.dispose()
 

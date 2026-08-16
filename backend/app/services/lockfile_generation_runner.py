@@ -194,16 +194,25 @@ class LockfileGenerationRunner:
         binding.  Never fails the step — the evidence is a durable record.
         """
         try:
-            from app.repositories.models import LockfileGenerationEvidenceModel, MigrationStageModel
+            from app.repositories.models import LockfileGenerationEvidenceModel, MigrationStageModel, StageWorkspaceBindingModel
             from app.services.lockfile_compatibility_service import LockfileCompatibilityService
 
             stage = session.get(MigrationStageModel, continuation.current_stage_id)
             if stage is None or not stage.source_version_family or not stage.target_version_family:
                 return
-            service = LockfileCompatibilityService()
-            workspace = Path(continuation.workspace_path) if getattr(continuation, "workspace_path", None) else None
-            if workspace is None or not workspace.is_dir():
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == continuation.run_id,
+                    StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if binding is None:
                 return
+            workspace = Path(binding.workspace_path)
+            if not workspace.is_dir():
+                return
+            service = LockfileCompatibilityService()
             verdict = service.validate_stage_lockfile(workspace, stage.source_version_family, stage.target_version_family)
             dependency_set = service.inspect_lockfile(workspace)
             evidence_id = "lke-" + hashlib.sha256(
