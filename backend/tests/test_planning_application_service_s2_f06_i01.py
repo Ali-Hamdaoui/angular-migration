@@ -43,6 +43,11 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     } == {"sha256:" + "4" * 64}
 
 
+def test_accepts_current_catalogue_version():
+    result = PlanningApplicationService().generate(request(catalogue_version="catalog-v3"))
+    assert result.status == "generated"
+
+
 def test_generates_checksum_bound_lockfile_generation_authority():
     result = PlanningApplicationService().generate(request())
 
