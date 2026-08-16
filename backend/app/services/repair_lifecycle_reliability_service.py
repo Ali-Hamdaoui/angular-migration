@@ -7,7 +7,10 @@ all routed through the ``domain.repair_lifecycle`` state machine.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 
@@ -48,10 +51,14 @@ class RepairLifecycleReliabilityService:
     def recover_in_flight_repairs(self, run_id: str | None = None) -> list[str]:
         """Restart recovery sweep for stranded in-flight repair attempts.
 
-        Any attempt still in a worker-bound in-flight state after a restart is
-        transitioned deterministically (via ``restart_recovery_target``) with an
-        optimistic CAS on ``state_version``, a lifecycle-recovery event, and a
-        diagnostic pack.  Sealed/terminal attempts are never touched.
+        - ``executing``/``applying`` applies interrupted by a restart recover
+          deterministically to the real ``apply_recovery_required`` state, with
+          an optimistic CAS on ``state_version``.
+        - Other in-flight attempts (evidence_frozen/proposed/review_accepted/
+          waiting_g10/approved_pending_execution) resume through the existing
+          continuation authority: their status is NEVER demoted; a recovery
+          marker event and diagnostic pack make the resumability durable.
+        - Sealed/terminal attempts are never touched.
         """
         now = self._now_provider()
         recovered: list[str] = []
@@ -61,38 +68,48 @@ class RepairLifecycleReliabilityService:
                 query = query.where(RepairAttemptModel.run_id == run_id)
             for attempt in session.scalars(query).all():
                 target = restart_recovery_target(attempt.status)
-                if target is None or attempt.status == target:
-                    continue
-                # The recovery mapping is the deterministic restart authority
-                # (a recovery is not a forward workflow transition). Sealing is
-                # already enforced by restart_recovery_target.
-                expected = attempt.state_version
-                updated = session.execute(
-                    update(RepairAttemptModel)
-                    .where(
-                        RepairAttemptModel.id == attempt.id,
-                        RepairAttemptModel.status == attempt.status,
-                        RepairAttemptModel.state_version == expected,
+                if target is not None and target != attempt.status:
+                    expected = attempt.state_version
+                    updated = session.execute(
+                        update(RepairAttemptModel)
+                        .where(
+                            RepairAttemptModel.id == attempt.id,
+                            RepairAttemptModel.status == attempt.status,
+                            RepairAttemptModel.state_version == expected,
+                        )
+                        .values(
+                            status=target,
+                            state_version=expected + 1,
+                            updated_at=now,
+                        )
                     )
-                    .values(
-                        status=target,
-                        state_version=expected + 1,
-                        updated_at=now,
+                    if updated.rowcount != 1:
+                        continue
+                    recovered.append(attempt.id)
+                    append_workflow_event(
+                        session,
+                        run_id=attempt.run_id,
+                        stage_id=attempt.stage_id,
+                        event_type="repair_lifecycle_recovered",
+                        occurred_at=now,
+                        idempotency_key=f"repair-lifecycle-recover:{attempt.id}:{target}",
+                        reason=f"restart recovery: {attempt.status} -> {target}",
+                        payload={"attempt_id": attempt.id, "from_status": attempt.status, "to_status": target},
                     )
-                )
-                if updated.rowcount != 1:
-                    continue
-                append_workflow_event(
-                    session,
-                    run_id=attempt.run_id,
-                    stage_id=attempt.stage_id,
-                    event_type="repair_lifecycle_recovered",
-                    occurred_at=now,
-                    idempotency_key=f"repair-lifecycle-recover:{attempt.id}:{target}",
-                    reason=f"restart recovery: {attempt.status} -> {target}",
-                    payload={"attempt_id": attempt.id, "from_status": attempt.status, "to_status": target},
-                )
-                recovered.append(attempt.id)
+                else:
+                    # Resumable in-flight attempt: keep status, record the
+                    # deterministic recovery marker (idempotent).
+                    append_workflow_event(
+                        session,
+                        run_id=attempt.run_id,
+                        stage_id=attempt.stage_id,
+                        event_type="repair_lifecycle_recovered",
+                        occurred_at=now,
+                        idempotency_key=f"repair-lifecycle-resumable:{attempt.id}:{attempt.status}",
+                        reason=f"restart recovery: {attempt.status} is resumable by the continuation authority",
+                        payload={"attempt_id": attempt.id, "status": attempt.status, "resumes": True},
+                    )
+                    recovered.append(attempt.id)
             session.commit()
         for attempt_id in recovered:
             self._record_recovery_pack(attempt_id)
@@ -118,8 +135,10 @@ class RepairLifecycleReliabilityService:
                     stage_id=attempt.stage_id,
                     state_version=attempt.state_version,
                 )
-        except Exception:
-            return
+        except Exception as exc:
+            # The primary recovery already committed; a diagnostic-pack
+            # persistence failure must not fail the sweep.
+            logger.warning("Failed to persist recovery diagnostic pack for attempt %s: %s", attempt_id, exc)
 
     def reconcile_attempt_status(self, attempt: RepairAttemptModel, observed_status: str) -> RepairAttemptModel:
         """Converge observed status to the persisted intended status (F04-03).
@@ -138,7 +157,7 @@ class RepairLifecycleReliabilityService:
                     stage_id=current.stage_id,
                     event_type="repair_lifecycle_reconciled",
                     occurred_at=self._now_provider(),
-                    idempotency_key=f"repair-lifecycle-reconcile:{attempt.id}:{self._now_provider().timestamp():.0f}",
+                    idempotency_key=f"repair-lifecycle-reconcile:{attempt.id}:{observed_status}:{current.status}",
                     reason=f"observed {observed_status} reconciled to persisted {current.status}",
                     payload={"attempt_id": attempt.id, "observed": observed_status, "intended": current.status},
                 )

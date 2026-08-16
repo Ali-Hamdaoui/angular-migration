@@ -1,9 +1,10 @@
 """Deterministic repair lifecycle state machine (V2 F04).
 
-Codifies the repair attempt status vocabulary, legal transitions, terminal
-sealing, and restart-recovery mapping so repair state handling is deterministic
-and verifiable.  Pure domain: no process, filesystem, database, or network side
-effects.
+Codifies the repair attempt status vocabulary as actually used by the
+repository (``repair_application_service.py``, ``transformer_graph.py``,
+``stage_gate_service.py``), the legal forward transitions, the conservative
+sealed set, and restart-recovery mapping.  Pure domain: no process, filesystem,
+database, or network side effects.
 """
 
 from __future__ import annotations
@@ -14,69 +15,87 @@ from pydantic import BaseModel, ConfigDict
 
 
 class RepairLifecycleStatus(str, Enum):
-    """Authoritative repair attempt lifecycle vocabulary."""
+    """Authoritative repair attempt lifecycle vocabulary (repository truth)."""
 
-    PENDING = "pending"
-    PROPOSING = "proposing"
-    PROPOSED = "proposed"
     EVIDENCE_FROZEN = "evidence_frozen"
-    WAITING_G10 = "waiting_g10"
+    PROPOSED = "proposed"
+    REVIEW_ACCEPTED = "review_accepted"
     REQUEST_CHANGES = "request_changes"
-    WAITING_REPAIR_REVISION = "waiting_repair_revision"
+    WAITING_G10 = "waiting_g10"
+    APPROVED_PENDING_EXECUTION = "approved_pending_execution"
+    EXECUTING = "executing"
+    APPLYING = "applying"
     APPLIED = "applied"
     APPLIED_VERIFIED = "applied_verified"
-    SUPERSEDED = "superseded"
+    VALIDATION_PASSED = "validation_passed"
+    VALIDATION_FAILED = "validation_failed"
+    MIGRATION_RETRIED = "migration_retried"
+    REVALIDATING = "revalidating"
+    REVALIDATING_AFFECTED = "revalidating_affected"
+    WAITING_G11 = "waiting_g11"
+    APPLY_FAILED = "apply_failed"
+    APPLY_RECOVERY_REQUIRED = "apply_recovery_required"
     REJECTED = "rejected"
-    FAILED = "failed"
-    COMPLETED = "completed"
+    SUPERSEDED = "superseded"
+    CANCELLED = "cancelled"
 
 
-#: States a repair may legitimately occupy (superset of transitions observed).
 ALL_LIFECYCLE_STATUSES = frozenset(status.value for status in RepairLifecycleStatus)
 
-#: In-flight states bound to a live worker/LLM step; a restart mid-step strands them.
+#: Worker-bound in-flight states strandable by a restart.  These are the states
+#: the startup sweep considers for deterministic recovery.
 IN_FLIGHT_STATUSES = frozenset(
     {
-        RepairLifecycleStatus.PENDING.value,
-        RepairLifecycleStatus.PROPOSING.value,
-        RepairLifecycleStatus.PROPOSED.value,
         RepairLifecycleStatus.EVIDENCE_FROZEN.value,
+        RepairLifecycleStatus.PROPOSED.value,
+        RepairLifecycleStatus.REVIEW_ACCEPTED.value,
+        RepairLifecycleStatus.WAITING_G10.value,
+        RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value,
+        RepairLifecycleStatus.EXECUTING.value,
+        RepairLifecycleStatus.APPLYING.value,
     }
 )
 
-#: Terminal, sealed states.  Once a lifecycle reaches a sealed state, no further
-#: mutation is allowed (F04-04).
+#: Conservative sealed set: states with no observed outgoing transition in the
+#: repository flow.  Deliberately minimal so the sealing guard can never block a
+#: transition the real workflow legitimately makes.
 SEALED_TERMINAL_STATUSES = frozenset(
     {
-        RepairLifecycleStatus.APPLIED.value,
-        RepairLifecycleStatus.APPLIED_VERIFIED.value,
         RepairLifecycleStatus.SUPERSEDED.value,
         RepairLifecycleStatus.REJECTED.value,
-        RepairLifecycleStatus.FAILED.value,
-        RepairLifecycleStatus.COMPLETED.value,
+        RepairLifecycleStatus.CANCELLED.value,
     }
 )
 
-#: Deterministic restart-recovery target for each stranded in-flight state.
-#: Repairs that can be re-driven from persisted evidence resume at their evidence
-#: checkpoint; a stranded pre-evidence proposal resumes as pending.
+#: Deterministic restart-recovery mapping for stranded in-flight states.
+#: ``executing``/``applying`` applies interrupted by a restart recover to the
+#: real ``apply_recovery_required`` state.  All other in-flight states are
+#: resumable by the existing continuation authority and are NOT demoted.
 _RESTART_RECOVERY_MAP = {
-    RepairLifecycleStatus.PENDING.value: RepairLifecycleStatus.PENDING.value,
-    RepairLifecycleStatus.PROPOSING.value: RepairLifecycleStatus.PENDING.value,
-    RepairLifecycleStatus.PROPOSED.value: RepairLifecycleStatus.EVIDENCE_FROZEN.value,
-    RepairLifecycleStatus.EVIDENCE_FROZEN.value: RepairLifecycleStatus.EVIDENCE_FROZEN.value,
+    RepairLifecycleStatus.EXECUTING.value: RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value,
+    RepairLifecycleStatus.APPLYING.value: RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value,
 }
 
-#: Legal forward transitions between lifecycle states.
+#: Legal forward transitions, derived from actual assignment sites.
 _TRANSITIONS: dict[str, frozenset[str]] = {
-    RepairLifecycleStatus.PENDING.value: frozenset({RepairLifecycleStatus.PROPOSING.value, RepairLifecycleStatus.FAILED.value, RepairLifecycleStatus.SUPERSEDED.value}),
-    RepairLifecycleStatus.PROPOSING.value: frozenset({RepairLifecycleStatus.PROPOSED.value, RepairLifecycleStatus.FAILED.value, RepairLifecycleStatus.SUPERSEDED.value}),
-    RepairLifecycleStatus.PROPOSED.value: frozenset({RepairLifecycleStatus.EVIDENCE_FROZEN.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.FAILED.value}),
-    RepairLifecycleStatus.EVIDENCE_FROZEN.value: frozenset({RepairLifecycleStatus.WAITING_G10.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.FAILED.value}),
-    RepairLifecycleStatus.WAITING_G10.value: frozenset({RepairLifecycleStatus.APPLIED.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.FAILED.value}),
-    RepairLifecycleStatus.REQUEST_CHANGES.value: frozenset({RepairLifecycleStatus.WAITING_REPAIR_REVISION.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.FAILED.value}),
-    RepairLifecycleStatus.WAITING_REPAIR_REVISION.value: frozenset({RepairLifecycleStatus.PROPOSING.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.FAILED.value}),
-    RepairLifecycleStatus.APPLIED.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.FAILED.value}),
+    RepairLifecycleStatus.EVIDENCE_FROZEN.value: frozenset({RepairLifecycleStatus.PROPOSED.value}),
+    RepairLifecycleStatus.PROPOSED.value: frozenset({RepairLifecycleStatus.REVIEW_ACCEPTED.value, RepairLifecycleStatus.REQUEST_CHANGES.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value}),
+    RepairLifecycleStatus.REVIEW_ACCEPTED.value: frozenset({RepairLifecycleStatus.WAITING_G10.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REQUEST_CHANGES.value: frozenset({RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.PROPOSED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.WAITING_G10.value: frozenset({RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value, RepairLifecycleStatus.REJECTED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value: frozenset({RepairLifecycleStatus.VALIDATION_PASSED.value, RepairLifecycleStatus.VALIDATION_FAILED.value, RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.EXECUTING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLYING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLIED.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLIED_VERIFIED.value: frozenset({RepairLifecycleStatus.MIGRATION_RETRIED.value, RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.REVALIDATING_AFFECTED.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.VALIDATION_PASSED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.VALIDATION_FAILED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.MIGRATION_RETRIED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REVALIDATING.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REVALIDATING_AFFECTED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.WAITING_G11.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLY_FAILED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value: frozenset({RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.CANCELLED.value}),
 }
 
 
@@ -129,8 +148,9 @@ def evaluate_transition(attempt_id: str, from_status: str | None, to_status: str
 def restart_recovery_target(status: str | None) -> str | None:
     """Deterministic restart-recovery mapping for a stranded in-flight attempt.
 
-    Returns the resumable status to transition to, or None when the status is
-    not an in-flight state (terminal/sealed states are untouched).
+    Returns the deterministic recovery target, or None when the status is not
+    recoverable by this authority (terminal/sealed or resumable by the existing
+    continuation authority).
     """
     if status is None or is_sealed(status):
         return None
