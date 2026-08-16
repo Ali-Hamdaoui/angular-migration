@@ -60,6 +60,7 @@ class ProposalCycleService:
                 cycle_number=cycle_number,
                 proposal_checksum=proposal_checksum,
                 parent_cycle_id=parent_cycle_id,
+                created_at=self._now_provider(),
             ).bind_checksum()
             session.add(
                 ProposalCycleModel(
@@ -142,6 +143,7 @@ class ProposalCycleService:
             reviewer=row.reviewer,
             hints=tuple(row.hints or []),
             parent_cycle_id=row.parent_cycle_id,
+            created_at=row.created_at,
         )
         return cycle.bind_checksum()
 

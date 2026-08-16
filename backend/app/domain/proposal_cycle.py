@@ -2,7 +2,13 @@
 
 An immutable proposal cycle records one LLM proposal and its human reviewer
 decision (accept/reject/request-change).  A request-change decision creates a
-child cycle carrying hints and diffs, forming the cycle lineage.
+child cycle carrying hints, forming the cycle lineage.
+
+SCOPE: the proposal-cycle ledger is a forward-recorded AUDIT/OBSERVABILITY layer
+over the existing governed repair flow (repair_application_service + patch
+binding).  It records decisions and lineage; it does NOT itself gate or apply
+repairs -- patch application remains bound to the approved proposal checksum by
+the existing patch-apply authority.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ class ProposalCycle(_ImmutableModel):
     reviewer: str | None = None
     hints: tuple[str, ...] = Field(default_factory=tuple)
     parent_cycle_id: str | None = None
+    created_at: datetime | None = None
     checksum: str = ""
 
     def bind_checksum(self) -> "ProposalCycle":

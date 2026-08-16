@@ -72,4 +72,4 @@ def _record_dto_from_cycle(cycle) -> ProposalCycleRecordDto:
                                   cycle_number=cycle.cycle_number, proposal_checksum=cycle.proposal_checksum,
                                   decision=cycle.decision, reviewer=cycle.reviewer, hints=list(cycle.hints),
                                   parent_cycle_id=cycle.parent_cycle_id, checksum=cycle.checksum,
-                                  created_at=cycle.created_at if hasattr(cycle, "created_at") else None)
+                                  created_at=cycle.created_at)
