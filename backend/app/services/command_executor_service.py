@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import queue
+
+logger = logging.getLogger(__name__)
 import re
 import shutil
 import signal
@@ -74,6 +77,7 @@ from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
+from app.services.diagnostics_application_service import DiagnosticsApplicationService
 from app.services.job_supervisor_service import JobSupervisorService
 from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
 from app.services.transformer_prompt_service import (
@@ -1283,6 +1287,15 @@ class CommandExecutorService:
                         exc,
                         causal_traceback,
                     )
+                    failure_model = model
+                else:
+                    failure_model = model
+            if failure_model is not None:
+                self._record_diagnostic_pack(
+                    failure_model,
+                    error=exc,
+                    traceback_text=causal_traceback,
+                )
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
                 if model is not None and model.status not in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
@@ -1474,6 +1487,14 @@ class CommandExecutorService:
                     session.commit()
                 except StaleStateVersionError:
                     session.rollback()
+        if final_status != CommandStatus.SUCCEEDED.value:
+            # Typed failure diagnostics are persisted after the terminal event
+            # commits, in their own transaction (no transaction across I/O).
+            self._record_diagnostic_pack(
+                model,
+                stdout=result.stdout_artifact.content if result.stdout_artifact else "",
+                stderr=result.stderr_artifact.content if result.stderr_artifact else "",
+            )
 
     @staticmethod
     def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
@@ -1531,6 +1552,45 @@ class CommandExecutorService:
         model.failure_message = model.failure_message or str(error)[:1000]
         model.blockers = model.blockers or [model.failure_code]
         model.duration_ms = self._elapsed_ms(model.started_at)
+
+    def _record_diagnostic_pack(
+        self,
+        model: CommandExecutionModel,
+        *,
+        error: Exception | None = None,
+        traceback_text: str | None = None,
+        stdout: str = "",
+        stderr: str = "",
+        fault_code_override: str | None = None,
+        remediation: str | None = None,
+    ) -> None:
+        """Persist a typed diagnostic pack for a failed command execution."""
+        try:
+            DiagnosticsApplicationService().record_command_failure(
+                run_id=model.run_id,
+                execution_id=model.id,
+                correlation_id=model.correlation_id,
+                error=error,
+                command=(model.executable, *(model.arguments or [])),
+                exit_code=model.exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                working_directory_alias=model.working_directory_alias,
+                runtime_profile_id=model.runtime_profile_id,
+                timeout_seconds=model.timeout_seconds,
+                cancelled=bool(model.cancelled),
+                timed_out=bool(model.timed_out),
+                traceback_text=traceback_text,
+                stage_id=model.stage_id,
+                command_id=model.command_id,
+                state_version=model.state_version,
+                event_sequence=model.event_sequence,
+                phase=model.status,
+                remediation=remediation,
+                fault_code_override=fault_code_override,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist diagnostic pack for execution %s: %s", model.id, exc)
 
     @staticmethod
     def _result_failure_message(result, fallback: str) -> str:
