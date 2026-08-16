@@ -66,6 +66,8 @@ class PreflightCheckService:
             dependency_set = self._lockfile.inspect_lockfile(source_root)
             if dependency_set.checksum == "missing":
                 lockfile_checks.append("LOCKFILE_MISSING")
+            elif dependency_set.lockfile_version is None and not dependency_set.resolved_packages:
+                lockfile_checks.append("LOCKFILE_INVALID")
         except Exception as exc:
             lockfile_checks = [f"LOCKFILE_VALIDATION_ERROR:{type(exc).__name__}"]
         checks.append(
@@ -141,13 +143,6 @@ class PreflightCheckService:
         if verdict.status == "blocked":
             raise PreflightCheckError("PREFLIGHT_BLOCKED", f"run {run_id} preflight is blocked; blockers: {', '.join(verdict.blockers)}")
         return verdict
-
-    def _families(self, run_id: str) -> tuple[str, str] | None:
-        with self._session_scope() as session:
-            run = session.get(MigrationRunModel, run_id)
-            if run is None or not run.source_version_family or not run.target_version_family:
-                return None
-            return (run.source_version_family, run.target_version_family)
 
     def _stage(self, run_id: str):
         from app.repositories.models import MigrationStageModel

@@ -46,7 +46,7 @@ class PreflightVerdict(_ImmutableModel):
 
 
 def aggregate_verdict(run_id: str, checks: list[PreflightCheckResult]) -> PreflightVerdict:
-    """Deterministic verdict: any failed check blocks; unknown/warnings raise warnings."""
+    """Deterministic verdict: any failed check blocks; otherwise passed."""
     blockers = tuple(sorted(dict.fromkeys(blocker for check in checks for blocker in check.blockers)))
     failed = any(not check.passed for check in checks)
     status = "blocked" if failed else "passed"
@@ -56,7 +56,3 @@ def aggregate_verdict(run_id: str, checks: list[PreflightCheckResult]) -> Prefli
         checks=tuple(checks),
         blockers=blockers,
     ).bind_checksum()
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)
