@@ -19,7 +19,6 @@ from app.services.lockfile_compatibility_service import (
     LockfileCompatibilityService,
 )
 
-
 NOW = datetime.now(UTC)
 
 
