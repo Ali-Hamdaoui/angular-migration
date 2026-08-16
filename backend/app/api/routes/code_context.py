@@ -15,7 +15,9 @@ router = APIRouter(tags=["code-context"])
 
 
 def get_context_service() -> CodeContextService:
-    return CodeContextService()
+    from app.core.config import get_settings
+
+    return CodeContextService(allowed_roots=get_settings().allowed_source_roots)
 
 
 def _raise(error: CodeContextError) -> None:
@@ -23,13 +25,8 @@ def _raise(error: CodeContextError) -> None:
 
 
 def _unit_dto(u) -> CodeContextUnitDto:
-    return CodeContextUnitDto(path=u["path"] if isinstance(u, dict) else u.path,
-                              kind=u["kind"] if isinstance(u, dict) else u.kind,
-                              symbol=u.get("symbol", "") if isinstance(u, dict) else u.symbol,
-                              excerpt=u["excerpt"] if isinstance(u, dict) else u.excerpt,
-                              start_line=u["start_line"] if isinstance(u, dict) else u.start_line,
-                              end_line=u["end_line"] if isinstance(u, dict) else u.end_line,
-                              token_count=u["token_count"] if isinstance(u, dict) else u.token_count)
+    return CodeContextUnitDto(path=u.path, kind=u.kind, symbol=u.symbol, excerpt=u.excerpt,
+                              start_line=u.start_line, end_line=u.end_line, token_count=u.token_count)
 
 
 def _bundle_dto(bundle) -> CodeContextBundleDto:

@@ -6,7 +6,9 @@ import re
 from pathlib import Path
 
 from app.domain.code_context import CodeContextBundle, CodeContextUnit
-from app.services.assistant_context_budget import count_tokens
+from app.services.assistant_context_budget import ConservativeUtf8Tokenizer
+
+_TOKENIZER = ConservativeUtf8Tokenizer()
 
 
 class CodeContextError(ValueError):
@@ -25,8 +27,9 @@ MAX_FILES = 12
 class CodeContextService:
     """Extract bounded, relevant code context for affected symbols (F20)."""
 
-    def __init__(self, *, budget: int = DEFAULT_BUDGET) -> None:
+    def __init__(self, *, budget: int = DEFAULT_BUDGET, allowed_roots: list[Path] | None = None) -> None:
         self._budget = budget
+        self._allowed_roots = [Path(path).resolve() for path in (allowed_roots or [])]
 
     def retrieve_context(
         self,
@@ -97,21 +100,32 @@ class CodeContextService:
         return bundle.bind_checksum()
 
     def _discover_source_files(self, workspace: Path) -> list[Path]:
-        if not workspace.is_dir():
+        resolved = workspace.resolve(strict=False)
+        if not resolved.is_dir():
             raise CodeContextError("WORKSPACE_MISSING", f"workspace {workspace} is not a directory")
+        if self._allowed_roots and not any(self._within_root(resolved, root) for root in self._allowed_roots):
+            raise CodeContextError("WORKSPACE_NOT_ALLOWED", f"workspace {workspace} is outside the allowed source roots")
         files: list[Path] = []
         for pattern in ("**/*.ts", "**/*.html"):
-            files.extend(sorted(workspace.glob(pattern)))
+            files.extend(sorted(resolved.glob(pattern)))
         # Exclude build artifacts and node_modules.
         files = [f for f in files if "node_modules" not in f.parts and "dist" not in f.parts and "build" not in f.parts]
         return files[:MAX_FILES]
+
+    @staticmethod
+    def _within_root(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
 
 
 def _make_unit(path: str, kind: str, symbol: str, text: str, start: int, end: int) -> CodeContextUnit:
     excerpt = "\n".join(text.splitlines()[start - 1 : end])
     return CodeContextUnit(
         path=path, kind=kind, symbol=symbol, excerpt=excerpt,
-        start_line=start, end_line=end, token_count=count_tokens(excerpt),
+        start_line=start, end_line=end, token_count=_TOKENIZER.count_text(excerpt),
     )
 
 
@@ -135,8 +149,9 @@ def _extract_template_blocks(text: str, selector: str) -> list[tuple[int, int]]:
     """Lexical extraction: the element (and its attributes) for a template selector."""
     lines = text.splitlines()
     results: list[tuple[int, int]] = []
+    seen: set[int] = set()
     for index, line in enumerate(lines, start=1):
-        if selector not in line:
+        if selector not in line or index in seen:
             continue
         start = index
         end = index
@@ -146,22 +161,22 @@ def _extract_template_blocks(text: str, selector: str) -> list[tuple[int, int]]:
                 if f"</{selector}>" in lines[cursor - 1]:
                     end = cursor
                     break
+        seen.update(range(start, end + 1))
         results.append((start, end))
     return results
 
 
 def _enclosing_block(lines: list[str], index: int, symbol: str) -> tuple[int, int]:
     start = max(1, index - 8)
-    end = min(len(lines), index + 12)
-    depth = 0
+    # Backward scan: find the nearest declaration line (import/export/function/class/const).
     for cursor in range(index, start - 1, -1):
-        depth += lines[cursor - 1].count("}")
-        depth -= lines[cursor - 1].count("{")
-        if depth >= 1 and cursor > start:
-            start = cursor
-            break
         if lines[cursor - 1].strip().startswith(("export ", "function ", "class ", "const ", "import ")):
             start = cursor
+            break
+        start = cursor
+    # Forward scan from the symbol line: balance braces to the block close.
+    depth = 0
+    end = min(len(lines), index + 12)
     for cursor in range(index, end + 1):
         depth += lines[cursor - 1].count("{")
         depth -= lines[cursor - 1].count("}")

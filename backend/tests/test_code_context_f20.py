@@ -75,8 +75,34 @@ def test_retrieve_missing_workspace_raises(tmp_path: Path):
         assert exc.code == "WORKSPACE_MISSING"
 
 
-def test_api_retrieve(tmp_path: Path):
+def test_retrieve_outside_allowed_root_raises(tmp_path: Path):
     ws = _workspace(tmp_path)
+    service = CodeContextService(allowed_roots=[tmp_path / "allowed"])
+    try:
+        service.retrieve_context(ws, ["broken"])
+        assert False, "expected WORKSPACE_NOT_ALLOWED"
+    except CodeContextError as exc:
+        assert exc.code == "WORKSPACE_NOT_ALLOWED"
+    # a workspace inside the allowed root works
+    allowed = tmp_path / "allowed"
+    allowed.mkdir(exist_ok=True)
+    allowed_ws = _workspace(allowed)
+    service_ok = CodeContextService(allowed_roots=[allowed])
+    bundle = service_ok.retrieve_context(allowed_ws, ["broken"])
+    assert bundle.units
+
+
+def test_api_retrieve(tmp_path: Path):
+    from app.core.config import get_settings
+    from app.repositories.session import session_scope
+    from app.repositories.models import MigrationRunModel
+    from datetime import UTC, datetime
+
+    get_settings.cache_clear()
+    allowed = get_settings().allowed_source_roots[0] if get_settings().allowed_source_roots else Path("/tmp")
+    base = allowed / "overnight-v2" / f"F20-api-{uuid4().hex[:6]}"
+    base.mkdir(parents=True, exist_ok=True)
+    ws = _workspace(base)
     response = client.post("/context/retrieve", json={"workspace_path": str(ws), "symbols": ["broken"], "template_selectors": ["app-child"], "budget": 2000})
     assert response.status_code == 200
     body = response.json()
