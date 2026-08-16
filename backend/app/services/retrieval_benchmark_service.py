@@ -138,7 +138,27 @@ class RetrievalBenchmarkService:
         with self._session_scope() as session:
             return session.get(RetrievalBenchmarkModel, benchmark_id)
 
+    def _assert_root_allowed(self, workspace_root: Path) -> None:
+        """Fail closed before any fixture is written (review hardening).
+
+        The default service (no injected roots) is only reachable from
+        non-API callers; the API route always binds ALLOWED_SOURCE_ROOTS.
+        """
+        context = self._context
+        if getattr(context, "_allow_all", False):
+            return
+        allowed_roots = getattr(context, "_allowed_roots", [])
+        resolved = workspace_root.resolve(strict=False)
+        if allowed_roots and not any(
+            _within_root(resolved, root) for root in allowed_roots
+        ):
+            raise RetrievalBenchmarkError(
+                "WORKSPACE_ROOT_NOT_ALLOWED",
+                f"benchmark workspace_root {workspace_root} is outside the allowed source roots",
+            )
+
     def _run_case(self, workspace_root: Path, case: RetrievalBenchmarkCase) -> RetrievalBenchmarkCaseResult:
+        self._assert_root_allowed(workspace_root)
         workspace = build_fixture_workspace(workspace_root, case)
         started = monotonic()
         try:
@@ -180,3 +200,11 @@ def _percentile(sorted_values: list[float], p: float) -> float:
         return 0.0
     index = max(0, min(len(sorted_values) - 1, int(p * len(sorted_values))))
     return sorted_values[index]
+
+
+def _within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False

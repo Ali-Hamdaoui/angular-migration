@@ -92,6 +92,28 @@ def test_benchmark_missing_root_raises():
         assert exc.code == "WORKSPACE_ROOT_MISSING"
 
 
+def test_benchmark_root_outside_allowed_roots_fails_closed(tmp_path: Path):
+    from app.domain.retrieval_benchmark import RetrievalBenchmarkCase
+    from app.services.code_context_service import CodeContextService
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    service = RetrievalBenchmarkService(
+        context_service=CodeContextService(allowed_roots=[allowed])
+    )
+    case = benchmark_fixture_set()[0]
+    try:
+        service._run_case(outside, case)
+        assert False, "expected WORKSPACE_ROOT_NOT_ALLOWED"
+    except RetrievalBenchmarkError as exc:
+        assert exc.code == "WORKSPACE_ROOT_NOT_ALLOWED"
+    # inside the allowed root succeeds
+    result = service._run_case(allowed, case)
+    assert result.retrieved_files
+
+
 def test_persist_and_get_report():
     root = _root()
     service = RetrievalBenchmarkService()
