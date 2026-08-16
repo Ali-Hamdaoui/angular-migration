@@ -30,6 +30,7 @@ from app.repositories.stage_knowledge_models import StageKnowledgeEntryModel
 from app.repositories.v2_planning_models import V2PlanningModel
 from app.repositories.failure_intelligence_models import FailureIntelligenceModel
 from app.repositories.proposal_cycle_models import ProposalCycleModel
+from app.repositories.candidate_promotion_models import CandidatePromotionModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -143,6 +144,7 @@ __all__ = [
     "V2PlanningModel",
     "FailureIntelligenceModel",
     "ProposalCycleModel",
+    "CandidatePromotionModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
