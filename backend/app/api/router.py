@@ -43,6 +43,7 @@ from app.api.routes.ng_update_governance import router as ng_update_governance_r
 from app.api.routes.third_party_compatibility import router as third_party_compatibility_router
 from app.api.routes.preflight_checks import router as preflight_checks_router
 from app.api.routes.stage_knowledge import router as stage_knowledge_router
+from app.api.routes.v2_planner import router as v2_planner_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -71,6 +72,7 @@ api_router.include_router(ng_update_governance_router)
 api_router.include_router(third_party_compatibility_router)
 api_router.include_router(preflight_checks_router)
 api_router.include_router(stage_knowledge_router)
+api_router.include_router(v2_planner_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -119,6 +121,7 @@ api_v1_router.include_router(ng_update_governance_router)
 api_v1_router.include_router(third_party_compatibility_router)
 api_v1_router.include_router(preflight_checks_router)
 api_v1_router.include_router(stage_knowledge_router)
+api_v1_router.include_router(v2_planner_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)
