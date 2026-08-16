@@ -23,6 +23,7 @@ from app.repositories.workspace_generation_models import WorkspaceGenerationMode
 from app.repositories.lockfile_evidence_models import LockfileGenerationEvidenceModel
 from app.repositories.migration_route_models import MigrationRouteModel
 from app.repositories.runtime_certification_models import RuntimeCertificationModel
+from app.repositories.project_capability_models import ProjectCapabilityModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -129,6 +130,7 @@ __all__ = [
     "LockfileGenerationEvidenceModel",
     "MigrationRouteModel",
     "RuntimeCertificationModel",
+    "ProjectCapabilityModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
