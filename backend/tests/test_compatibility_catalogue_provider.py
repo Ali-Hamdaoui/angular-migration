@@ -53,6 +53,13 @@ def test_seeded_official_entries_are_experimental_until_certification():
     assert entry.certification_source == "angular.dev/reference/versions"
 
 
+def test_catalogue_checksums_are_deterministic_across_loads():
+    for version in ("catalog-v1", "catalog-v2", "catalog-v3"):
+        first = CompatibilityCatalogueProvider().load(version)
+        second = CompatibilityCatalogueProvider().load(version)
+        assert first.checksum == second.checksum, version
+
+
 def test_catalog_v1_contract_remains_three_entries_without_runtime_profiles():
     catalogue = CompatibilityCatalogueProvider().load("catalog-v1")
     assert len(catalogue.entries) == 3

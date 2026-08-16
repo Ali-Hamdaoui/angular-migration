@@ -55,6 +55,10 @@ CERTIFIED_RUNTIME_PROFILES: dict[tuple[int, int], tuple[tuple[str, str], ...]] =
     (20, 21): (("22.23.2", "10.9.8"),),
 }
 
+#: Fixed certification timestamp so the catalogue is byte-identical across loads
+#: (immutable authority; a per-load datetime would break checksum equality).
+CERTIFIED_AT = datetime(2026, 8, 16, tzinfo=UTC)
+
 
 class CompatibilityCatalogueProvider:
     """Load the active versioned catalogue independently of HTTP mutations."""
@@ -137,7 +141,7 @@ class CompatibilityCatalogueProvider:
             validated_runtime_profiles=validated,
             certification_status="certified" if certified else "seeded_official",
             certification_source="angular.dev/reference/versions" if not certified else "bridge-certification",
-            certified_at=datetime.now(UTC) if certified else None,
+            certified_at=CERTIFIED_AT if certified else None,
         )
 
 

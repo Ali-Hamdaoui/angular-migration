@@ -86,12 +86,16 @@ class CompatibilityCatalogue(CompatibilityModel):
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
     @classmethod
-    def build(cls, version: str, entries: tuple[CompatibilityCatalogueEntry, ...]) -> CompatibilityCatalogue:
+    def build(cls, version: str, entries: tuple[CompatibilityCatalogueEntry, ...]) -> "CompatibilityCatalogue":
         serialized_entries = []
         for entry in entries:
             serialized = entry.model_dump(mode="json")
             if not entry.validated_runtime_profiles:
                 serialized.pop("validated_runtime_profiles", None)
+            # Drop None-valued fields so the checksum is stable across schema
+            # evolution and legacy versions checksum identically to their
+            # original contracts.
+            serialized = {key: value for key, value in serialized.items() if value is not None}
             serialized_entries.append(serialized)
         payload = {"version": version, "entries": serialized_entries}
         checksum = "sha256:" + hashlib.sha256(
