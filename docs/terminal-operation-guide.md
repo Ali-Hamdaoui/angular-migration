@@ -44,14 +44,16 @@ curl -s -X POST http://localhost:8000/terminal/runs/run-1/resume -H 'Content-Typ
 
 ## 4. Approve a gate (governed approval actions)
 
-The governed approval decisions live under `/runs/{run_id}/approvals/G0X/decisions`
-(e.g. `G01` preflight, `G02` source intake, `G03` baseline, `G05` feasibility).
-Submit the decision through the governing gate endpoint.
+Governed gate decisions live at the gate-specific paths: G02 at
+`POST /runs/{run_id}/approvals/G02/decisions`, G03 at
+`POST /runs/{run_id}/approvals/G03/decisions`, and G01 at
+`POST /preflights/{preflight_id}/g01/decisions`.  Each gate validates its own
+decision enum (lowercase `approved`).
 
 ```
-curl -s -X POST http://localhost:8000/runs/run-1/approvals/G01/decisions \
+curl -s -X POST http://localhost:8000/runs/run-1/approvals/G02/decisions \
   -H 'Content-Type: application/json' \
-  -d '{"decision":"APPROVED","actor":"operator","idempotency_key":"term-approve-1","expected_state_version":1}'
+  -d '{"decision":"approved","actor":"operator","idempotency_key":"term-approve-1","expected_state_version":1}'
 ```
 
 ## 5. Full terminal lifecycle (setup → seal)
@@ -61,8 +63,11 @@ curl -s -X POST http://localhost:8000/runs/run-1/approvals/G01/decisions \
 3. Start the chain: `POST /runs/{run}/chain/start`.
 4. Advance/validate/seal stages: `POST /runs/{run}/chain/advance`,
    `POST /runs/{run}/stages/{stage}/validate`, `POST /runs/{run}/stages/{stage}/seal`.
-5. On gate wait, approve: `POST /runs/{run}/approvals`.
+5. On gate wait, approve: `POST /runs/{run}/approvals/G02/decisions` (or the
+   applicable gate path).
 6. On failure, diagnose and repair: `GET /terminal/runs/{run}/diagnostics`,
    `POST /runs/{run}/attempts/{attempt}/cycles` + `POST /cycles/{cycle}/decide`.
-7. Deliver: after all stages seal, use the workspace delivery endpoint
-   (the atomic delivery surface under the delivery router).
+7. Deliver: after all stages seal, workspace delivery is performed through
+   the delivery service layer (atomic, checksum-bound); the current V2 surface
+   exposes it via the backend services, with an HTTP delivery endpoint planned
+   in the delivery feature.

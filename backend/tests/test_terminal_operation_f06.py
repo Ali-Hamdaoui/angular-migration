@@ -79,3 +79,12 @@ def test_api_diagnostics_and_resume():
 def test_api_next_action_unknown_run_404():
     response = client.get("/terminal/runs/run-missing/next-action")
     assert response.status_code == 404
+
+
+def test_api_unknown_run_404_uniform():
+    diag = client.get("/terminal/runs/run-missing/diagnostics")
+    assert diag.status_code == 404
+    assert diag.json()["error_code"] == "RUN_NOT_FOUND"
+    resume = client.post("/terminal/runs/run-missing/resume", json={"actor": "operator"})
+    assert resume.status_code == 404
+    assert resume.json()["error_code"] == "RUN_NOT_FOUND"
