@@ -52,6 +52,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     get_baseline_install_service().reconcile_orphans()
     from app.services.command_executor_service import CommandExecutorService
     CommandExecutorService().recover_command_orphans()
+    from app.services.repair_lifecycle_reliability_service import RepairLifecycleReliabilityService
+    RepairLifecycleReliabilityService().recover_in_flight_repairs()
     from app.orchestration.source_intake import default_source_intake_graph, recover_source_intake_jobs
     default_source_intake_graph(get_settings())
     recover_source_intake_jobs()

@@ -1,0 +1,197 @@
+"""Tests for F04 repair lifecycle reliability."""
+
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+from app.domain.repair_lifecycle import (
+    can_transition,
+    evaluate_transition,
+    is_sealed,
+)
+from app.repositories.models import (
+    FailureDiagnosticPackModel,
+    MigrationRunModel,
+    MigrationStageModel,
+    RepairAttemptModel,
+    WorkflowEventModel,
+)
+from app.repositories.session import session_scope
+from app.services.repair_lifecycle_reliability_service import (
+    RepairLifecycleError,
+    RepairLifecycleReliabilityService,
+)
+
+NOW = datetime.now(UTC)
+
+
+def test_lifecycle_status_vocabulary_and_legal_transitions():
+    assert can_transition("evidence_frozen", "proposed") is True
+    assert can_transition("proposed", "review_accepted") is True
+    assert can_transition("review_accepted", "waiting_g10") is True
+    assert can_transition("waiting_g10", "approved_pending_execution") is True
+    assert can_transition("approved_pending_execution", "applied_verified") is True
+    assert can_transition("applied_verified", "migration_retried") is True
+    assert can_transition("proposed", "evidence_frozen") is False
+    assert can_transition("superseded", "proposed") is False
+
+
+def test_terminal_states_are_sealed():
+    for status in ("superseded", "rejected", "cancelled"):
+        assert is_sealed(status) is True
+    # conservative sealed set: workflow-resumable states are never sealed
+    for status in ("evidence_frozen", "proposed", "review_accepted", "waiting_g10",
+                   "approved_pending_execution", "executing", "applied", "applied_verified",
+                   "migration_retried", "revalidating", "apply_recovery_required"):
+        assert is_sealed(status) is False
+    assert is_sealed(None) is False
+
+
+def test_evaluate_transition_rejects_sealed_lifecycle():
+    result = evaluate_transition("attempt-1", "superseded", "proposed")
+    assert result.allowed is False
+    assert result.sealed is True
+    assert "sealed" in result.reason
+
+
+def test_transition_map_matches_real_flow_edges():
+    # G11 completion and revalidation edges present
+    assert can_transition("waiting_g11", "validation_passed") is True
+    assert can_transition("waiting_g11", "validation_failed") is True
+    assert can_transition("migration_retried", "revalidating") is True
+    assert can_transition("migration_retried", "revalidating_affected") is True
+    assert can_transition("revalidating_affected", "revalidating") is True
+    assert can_transition("evidence_frozen", "cancelled") is True
+    assert can_transition("approved_pending_execution", "apply_failed") is True
+    assert can_transition("apply_recovery_required", "applied_verified") is True
+    # fabricated edge removed: approved_pending_execution does not directly validate
+    assert can_transition("approved_pending_execution", "validation_passed") is False
+
+
+def _seed(run_id: str, stage_id: str, attempt_id: str, status: str) -> None:
+    with session_scope() as session:
+        session.add(MigrationRunModel(id=run_id, status="CREATED", run_phase="initialized",
+                                      created_at=NOW, updated_at=NOW))
+        session.add(MigrationStageModel(id=stage_id, run_id=run_id, stage_order=1,
+                                        source_version_family="angular-18.x", target_version_family="angular-19.x",
+                                        status="planned", created_at=NOW))
+        session.add(RepairAttemptModel(
+            id=attempt_id, run_id=run_id, stage_id=stage_id, attempt_number=1,
+            state_version=1, status=status, risk_level="low",
+            created_at=NOW, updated_at=NOW,
+        ))
+        session.commit()
+
+
+def test_restart_sweep_marks_in_flight_attempts_idempotently(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "executing")
+
+    service = RepairLifecycleReliabilityService()
+    first = service.recover_in_flight_repairs(run_id=run_id)
+    assert attempt_id in first
+
+    with session_scope() as session:
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        # the sweep never demotes status; the continuation authority owns recovery
+        assert attempt.status == "executing"
+        assert attempt.state_version == 1
+        events = session.query(WorkflowEventModel).filter_by(run_id=run_id).all()
+        assert any("resumable" in (e.idempotency_key or "") for e in events)
+        packs = session.query(FailureDiagnosticPackModel).filter_by(run_id=run_id).all()
+        assert any(p.fault_code == "REPAIR_LIFECYCLE_RECOVERED" for p in packs)
+
+    # second boot is idempotent (no new events, no crash)
+    second = service.recover_in_flight_repairs(run_id=run_id)
+    with session_scope() as session:
+        events = session.query(WorkflowEventModel).filter_by(run_id=run_id).all()
+        assert sum("resumable" in (e.idempotency_key or "") for e in events) == 1
+
+
+def test_restart_sweep_skips_sealed(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "superseded")
+
+    service = RepairLifecycleReliabilityService()
+    assert service.recover_in_flight_repairs(run_id=run_id) == []
+    with session_scope() as session:
+        assert session.get(RepairAttemptModel, attempt_id).status == "superseded"
+
+
+def test_restart_sweep_is_idempotent_and_skips_sealed(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "applied")
+
+    service = RepairLifecycleReliabilityService()
+    assert service.recover_in_flight_repairs(run_id=run_id) == []
+    with session_scope() as session:
+        assert session.get(RepairAttemptModel, attempt_id).status == "applied"
+
+
+def test_optimistic_version_transition_cas(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "evidence_frozen")
+
+    service = RepairLifecycleReliabilityService()
+    # stale expected version rejected
+    with pytest.raises(RepairLifecycleError) as exc:
+        service.transition(attempt_id, "proposed", expected_state_version=99)
+    assert exc.value.code == "REPAIR_STATE_VERSION_CONFLICT"
+    # correct CAS succeeds
+    attempt = service.transition(attempt_id, "proposed", expected_state_version=1)
+    assert attempt.status == "proposed"
+    assert attempt.state_version == 2
+
+
+def test_illegal_transition_rejected(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "evidence_frozen")
+
+    service = RepairLifecycleReliabilityService()
+    with pytest.raises(RepairLifecycleError) as exc:
+        service.transition(attempt_id, "applied_verified", expected_state_version=1)
+    assert exc.value.code == "REPAIR_TRANSITION_ILLEGAL"
+
+
+def test_assert_mutable_blocks_sealed_lifecycle(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "superseded")
+
+    service = RepairLifecycleReliabilityService()
+    with pytest.raises(RepairLifecycleError) as exc:
+        service.assert_mutable(attempt_id)
+    assert exc.value.code == "REPAIR_LIFECYCLE_SEALED"
+    # resumable attempts are mutable
+    with session_scope() as session:
+        session.add(RepairAttemptModel(id="attempt-mut", run_id=run_id, stage_id=stage_id,
+            attempt_number=2, state_version=1, status="proposed", risk_level="low",
+            created_at=NOW, updated_at=NOW))
+        session.commit()
+    assert service.assert_mutable("attempt-mut").status == "proposed"
+
+
+def test_reconcile_converges_observed_to_intended(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "proposed")
+
+    service = RepairLifecycleReliabilityService()
+    with session_scope() as session:
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        reconciled = service.reconcile_attempt_status(attempt, observed_status="evidence_frozen")
+    assert reconciled.status == "proposed"
