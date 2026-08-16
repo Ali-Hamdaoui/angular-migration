@@ -474,6 +474,27 @@ class CommandExecutorService:
                 model.failure_message or "expired command claim recovered",
                 {"execution_id": model.id, "worker_id": prior_worker, "status": model.status},
             )
+            from app.domain.execution_audit import ExecutionAuditEvent
+            from app.services.execution_audit_service import ExecutionAuditTrailService
+
+            if model.status in {
+                CommandStatus.FAILED.value,
+                CommandStatus.INTERRUPTED.value,
+            }:
+                ExecutionAuditTrailService().append(
+                    run_id=model.run_id,
+                    event=(ExecutionAuditEvent.EXECUTION_INTERRUPTED if model.status == CommandStatus.INTERRUPTED.value else ExecutionAuditEvent.EXECUTION_FAILED),
+                    command_id=model.command_id or "",
+                    stage_id=model.stage_id,
+                    execution_id=model.id,
+                    actor=model.requested_by,
+                    executable=model.executable or "",
+                    arguments=list(model.arguments or []),
+                    state_version=model.authoritative_state_version,
+                    network_profile=model.network_profile,
+                    reason=model.failure_code or "expired claim reconciled",
+                    session=session,
+                )
             recovered.append(model.id)
         session.flush()
         return recovered
@@ -640,6 +661,23 @@ class CommandExecutorService:
                            WorkflowEventType.COMMAND_QUEUED, "authorized command queued",
                            {"execution_id": execution_id, "authorization_id": authorization.id,
                             "command_id": authorization.command_id, "state_version": run.state_version})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        ExecutionAuditTrailService().append(
+            run_id=run_id,
+            event=ExecutionAuditEvent.EXECUTION_QUEUED,
+            command_id=authorization.command_id,
+            stage_id=authorization.stage_id,
+            execution_id=execution_id,
+            actor=requested_by or authorization.actor,
+            executable=authorization.executable,
+            arguments=list(authorization.arguments or []),
+            state_version=run.state_version,
+            network_profile=authorization.network_profile or "none",
+            reason="authorized command queued",
+            session=session,
+        )
         return self._response_from_model(model)
 
     def resolve_authorized_timeout(
@@ -1099,6 +1137,23 @@ class CommandExecutorService:
             self._append_event(session, model.run_id, model.stage_id, f"{model.id}:started",
                                WorkflowEventType.COMMAND_STARTED, "authorized command started",
                                {"execution_id": model.id, "worker_id": worker_id})
+            from app.domain.execution_audit import ExecutionAuditEvent
+            from app.services.execution_audit_service import ExecutionAuditTrailService
+
+            ExecutionAuditTrailService().append(
+                run_id=model.run_id,
+                event=ExecutionAuditEvent.EXECUTION_STARTED,
+                command_id=authorization.command_id,
+                stage_id=model.stage_id,
+                execution_id=model.id,
+                actor=authorization.actor,
+                executable=authorization.executable,
+                arguments=list(authorization.arguments or []),
+                state_version=model.authoritative_state_version,
+                network_profile=authorization.network_profile or "none",
+                reason="authorized command started",
+                session=session,
+            )
 
         cancel_event = threading.Event()
         lease_id: str | None = None
@@ -1475,6 +1530,32 @@ class CommandExecutorService:
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        terminal_event = {
+            CommandStatus.SUCCEEDED.value: ExecutionAuditEvent.EXECUTION_SUCCEEDED,
+            CommandStatus.FAILED.value: ExecutionAuditEvent.EXECUTION_FAILED,
+            CommandStatus.TIMED_OUT.value: ExecutionAuditEvent.EXECUTION_TIMED_OUT,
+            CommandStatus.CANCELLED.value: ExecutionAuditEvent.EXECUTION_CANCELLED,
+            CommandStatus.INTERRUPTED.value: ExecutionAuditEvent.EXECUTION_INTERRUPTED,
+        }.get(model.status)
+        if terminal_event is not None:
+            ExecutionAuditTrailService().append(
+                run_id=model.run_id,
+                event=terminal_event,
+                command_id=model.command_id or authorization.command_id,
+                stage_id=model.stage_id,
+                execution_id=model.id,
+                actor=authorization.actor,
+                executable=model.executable,
+                arguments=list(model.arguments or []),
+                state_version=model.authoritative_state_version,
+                network_profile=model.network_profile,
+                reason=(model.failure_code or f"command {model.status}"),
+                occurred_at=finished,
+                session=session,
+            )
         session.commit()
         # The optional RUN_CANCELLED run-level CAS runs in its own
         # transaction AFTER the terminal event is committed: a stale run
@@ -1543,6 +1624,23 @@ class CommandExecutorService:
         model.blockers = model.blockers or [model.failure_code]
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:failed", WorkflowEventType.COMMAND_FAILED,
                            model.failure_message, {"execution_id": model.id, "error_code": model.failure_code})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        ExecutionAuditTrailService().append(
+            run_id=model.run_id,
+            event=ExecutionAuditEvent.EXECUTION_FAILED,
+            command_id=model.command_id or "",
+            stage_id=model.stage_id,
+            execution_id=model.id,
+            actor=model.requested_by,
+            executable=model.executable or "",
+            arguments=list(model.arguments or []),
+            state_version=model.authoritative_state_version,
+            network_profile=model.network_profile,
+            reason=code,
+            session=session,
+        )
 
     def _persist_internal_failure(
         self,

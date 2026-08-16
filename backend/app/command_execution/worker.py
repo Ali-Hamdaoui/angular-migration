@@ -550,15 +550,22 @@ class WorkerSupervisor:
 
     @staticmethod
     def _build_safe_environment(allowlist: tuple[str, ...] = (), overrides: dict[str, str] | None = None) -> dict[str, str]:
-        """Build a sanitized environment blocking secret and backend variables."""
+        """Build a sanitized environment blocking secret and backend variables.
+
+        Least privilege (F27-02): an empty allowlist forwards nothing from the
+        ambient environment except the minimal PATH needed to resolve approved
+        executables.  Explicit allowlists grant exactly the listed variables.
+        """
         clean: dict[str, str] = {}
-        allowed = set(allowlist)
+        effective = set(allowlist)
+        if not effective:
+            effective = {"PATH"}
         if os.name == "nt":
-            allowed.add("SYSTEMROOT")
+            effective.add("SYSTEMROOT")
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
-            if not blocked and (not allowed or var in allowed):
+            if not blocked and var in effective:
                 clean[var] = value
         for var, value in (overrides or {}).items():
             upper = var.upper()
