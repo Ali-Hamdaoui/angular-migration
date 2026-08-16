@@ -16,6 +16,28 @@ from app.repositories.baseline_g03_models import BaselineAssessmentModel, G03App
 from app.repositories.discovery_models import DiscoveryEvidenceModel
 from app.repositories.parity_baseline_models import ParityBaselineEvidenceModel
 from app.repositories.execution_profiles import ExecutionProfileModel
+from app.repositories.runtime_evidence import RuntimeExecutionEvidenceModel
+from app.repositories.diagnostics_models import FailureDiagnosticPackModel
+from app.repositories.stage_runtime_models import StageRuntimeBindingModel
+from app.repositories.workspace_generation_models import WorkspaceGenerationModel
+from app.repositories.lockfile_evidence_models import LockfileGenerationEvidenceModel
+from app.repositories.migration_route_models import MigrationRouteModel
+from app.repositories.runtime_certification_models import RuntimeCertificationModel
+from app.repositories.project_capability_models import ProjectCapabilityModel
+from app.repositories.third_party_compatibility_models import ThirdPartyCompatibilityReportModel
+from app.repositories.preflight_check_models import PreflightCheckResultModel
+from app.repositories.stage_knowledge_models import StageKnowledgeEntryModel
+from app.repositories.v2_planning_models import V2PlanningModel
+from app.repositories.failure_intelligence_models import FailureIntelligenceModel
+from app.repositories.proposal_cycle_models import ProposalCycleModel
+from app.repositories.candidate_promotion_models import CandidatePromotionModel
+from app.repositories.stage_chain_run_models import StageChainRunModel
+from app.repositories.stage_validation_seal_models import StageValidationSealModel
+from app.repositories.stage_rollback_models import StageRollbackModel
+from app.repositories.partial_delivery_models import PartialDeliveryModel
+from app.repositories.execution_audit_models import CommandExecutionAuditModel
+from app.repositories.retrieval_benchmark_models import RetrievalBenchmarkModel
+from app.repositories.catalogue_certification_models import CatalogueCertificationModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -115,6 +137,28 @@ __all__ = [
     "ParityBaselineEvidenceModel",
     "G03ApprovalModel",
     "ExecutionProfileModel",
+    "RuntimeExecutionEvidenceModel",
+    "FailureDiagnosticPackModel",
+    "StageRuntimeBindingModel",
+    "WorkspaceGenerationModel",
+    "LockfileGenerationEvidenceModel",
+    "MigrationRouteModel",
+    "RuntimeCertificationModel",
+    "ProjectCapabilityModel",
+    "ThirdPartyCompatibilityReportModel",
+    "PreflightCheckResultModel",
+    "StageKnowledgeEntryModel",
+    "V2PlanningModel",
+    "FailureIntelligenceModel",
+    "ProposalCycleModel",
+    "CandidatePromotionModel",
+    "StageChainRunModel",
+    "StageValidationSealModel",
+    "StageRollbackModel",
+    "PartialDeliveryModel",
+    "CommandExecutionAuditModel",
+    "RetrievalBenchmarkModel",
+    "CatalogueCertificationModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",

@@ -735,6 +735,7 @@ class CommandRequestDto(ContractModel):
     cancellation_policy: CancellationPolicy = CancellationPolicy.TERMINATE_PROCESS_TREE
     idempotency_key: str | None = None
     requested_at: datetime
+    environment_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class CommandResultDto(ContractModel):

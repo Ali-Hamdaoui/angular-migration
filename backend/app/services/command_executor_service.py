@@ -8,48 +8,61 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import queue
+
+logger = logging.getLogger(__name__)
+import re
+import shutil
 import signal
 import subprocess
-import shutil
 import threading
-import queue
-import re
 import traceback
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from time import monotonic
-from uuid import uuid4
 from pathlib import Path
-from typing import Any, Mapping
+from time import monotonic
+from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.artifact_store import LocalFilesystemArtifactStore
 from app.command_execution.worker import (
     CommandDefinition,
+    CommandLogWriter,
     CommandPolicy,
     CommandPolicyViolation,
     CommandRegistry,
-    CommandLogWriter,
     ExecutionWorker,
-    WorkerSupervisor,
     StructuredCommandRequest,
     SupervisedProcessResult,
+    WorkerSupervisor,
 )
+from app.core.config import get_settings
+from app.domain.command import command_arguments_match
 from app.domain.contracts import (
     ArtifactRefDto,
     ArtifactType,
+    CancellationPolicy,
+    CommandPolicyValidateRequestDto,
+    CommandPolicyValidateResponseDto,
     CommandRequestDto,
     CommandResultDto,
     CommandStatus,
-    CancellationPolicy,
-    WorkflowEventType,
-    CommandPolicyValidateRequestDto,
-    CommandPolicyValidateResponseDto,
     RunStatus,
+    WorkflowEventType,
 )
+from app.domain.runtime_execution import (
+    RuntimeExecutableDescriptor,
+    RuntimeExecutableKind,
+    RuntimeRequirement,
+)
+from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
 from app.repositories.models.workflow import (
     ArtifactMetadataModel,
     CommandAuthorizationAuditModel,
@@ -59,15 +72,14 @@ from app.repositories.models.workflow import (
     WorkerLeaseModel,
     WorkflowEventModel,
 )
-from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.services.command_log_service import CommandLogService
 from app.services.command_registry_service import (
     CommandPolicyEngineService,
     CommandRegistryService,
 )
-from app.domain.command import command_arguments_match
+from app.services.diagnostics_application_service import DiagnosticsApplicationService
 from app.services.job_supervisor_service import JobSupervisorService
-from app.services.command_log_service import CommandLogService
+from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
 from app.services.transformer_prompt_service import (
     AngularPromptDetector,
     TransformerPromptService,
@@ -133,6 +145,83 @@ def worker_workspace_aliases(aliases: Mapping[str, str | Path], authorized_alias
     return {authorized_alias: resolved_path}
 
 
+def _profile_runtime_id(node_exact: str | None) -> str | None:
+    """Derive a paired runtime id (``node<major>``) from a profile's exact node version."""
+    if not node_exact:
+        return None
+    major = node_exact.split(".", 1)[0]
+    return f"node{major}" if major.isdigit() else None
+
+
+def _profile_runtime_versions(profile: dict) -> dict[str, str | None]:
+    """Read the profile's declared runtime versions.
+
+    Persisted profiles are ``ExecutionProfile.model_dump()`` where npm is
+    ``package_manager_exact``; legacy aliases are tolerated.
+    """
+    return {
+        "node": profile.get("node_exact"),
+        "npm": profile.get("package_manager_exact") or profile.get("npm_exact"),
+        "npx": profile.get("npx_exact"),
+    }
+
+
+def _runtime_bindings_from_profile(profile: dict) -> dict[str, RuntimeExecutableDescriptor]:
+    """Resolve PATH-independent, checksum-bound descriptors for the profile's runtimes.
+
+    Raises ``CommandExecutorError`` when the profile declares explicit runtime
+    versions that the runtime matrix cannot satisfy (fail-closed).  When the
+    profile declares no node version, returns an empty mapping and the command
+    keeps its existing resolution behavior.
+    """
+    versions = _profile_runtime_versions(profile)
+    node_exact = versions["node"]
+    if not node_exact:
+        return {}
+    runtime_id = _profile_runtime_id(node_exact)
+    if runtime_id is None:
+        return {}
+    requirements = [RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id=runtime_id, version_exact=node_exact)]
+    for kind, exact in (("npm", versions["npm"]), ("npx", versions["npx"])):
+        if exact:
+            requirements.append(RuntimeRequirement(kind=kind, runtime_id=runtime_id, version_exact=exact))
+        else:
+            requirements.append(RuntimeRequirement(kind=kind, runtime_id=runtime_id, minimum_version="0.0.0"))
+    service = RuntimeResolutionApplicationService(get_settings())
+    bindings = {
+        binding.descriptor.kind.value: binding.descriptor
+        for binding in service.resolve(requirements)
+        if binding.descriptor is not None
+    }
+    expected_kinds = {RuntimeExecutableKind.NODE.value, RuntimeExecutableKind.NPM.value, RuntimeExecutableKind.NPX.value}
+    if expected_kinds - set(bindings):
+        missing = sorted(expected_kinds - set(bindings))
+        raise CommandExecutorError(
+            "EXECUTION_PROFILE_RUNTIME_UNBINDABLE",
+            "Declared runtime versions of the execution profile cannot be bound in the runtime matrix: "
+            + ", ".join(missing),
+        )
+    return bindings
+
+
+def _runtime_path_overrides(bindings: dict[str, RuntimeExecutableDescriptor]) -> dict[str, str]:
+    """Prepend bound runtime bin dirs to PATH so npm/npx resolve the same node."""
+    if not bindings:
+        return {}
+    bin_dirs: list[str] = []
+    for descriptor in bindings.values():
+        bin_dir = (
+            Path(descriptor.installation_root) / "bin"
+            if descriptor.installation_root
+            else Path(descriptor.resolved_path).parent
+        )
+        text = str(bin_dir)
+        if text not in bin_dirs:
+            bin_dirs.append(text)
+
+    return {"PATH": os.pathsep.join([*bin_dirs, os.environ.get("PATH", "")])}
+
+
 @dataclass(frozen=True)
 class CommandExecutionResponse:
     """Result from the command executor service."""
@@ -192,12 +281,14 @@ class CommandExecutorService:
         registry_service: CommandRegistryService | None = None,
         supervisor: WorkerSupervisor | None = None,
         default_timeout_seconds: int = 300,
+        runtime_resolution_service: RuntimeResolutionApplicationService | None = None,
     ) -> None:
         self._policy_engine = policy_engine or CommandPolicyEngineService()
         self._registry_service = registry_service or CommandRegistryService()
         self._supervisor = supervisor or WorkerSupervisor()
         self._default_timeout_seconds = default_timeout_seconds
         self._job_supervisor = JobSupervisorService()
+        self._runtime_resolution = runtime_resolution_service
         # Retained for the disabled legacy path; authoritative execution uses
         # JobSupervisorService's process-owned registry above.
         self._cancel_events: dict[str, threading.Event] = {}
@@ -383,9 +474,45 @@ class CommandExecutorService:
                 model.failure_message or "expired command claim recovered",
                 {"execution_id": model.id, "worker_id": prior_worker, "status": model.status},
             )
+            from app.domain.execution_audit import ExecutionAuditEvent
+            from app.services.execution_audit_service import ExecutionAuditTrailService
+
+            if model.status in {
+                CommandStatus.FAILED.value,
+                CommandStatus.INTERRUPTED.value,
+            }:
+                ExecutionAuditTrailService().append(
+                    run_id=model.run_id,
+                    event=(ExecutionAuditEvent.EXECUTION_INTERRUPTED if model.status == CommandStatus.INTERRUPTED.value else ExecutionAuditEvent.EXECUTION_FAILED),
+                    command_id=model.command_id or "",
+                    stage_id=model.stage_id,
+                    execution_id=model.id,
+                    actor=model.requested_by,
+                    executable=model.executable or "",
+                    arguments=list(model.arguments or []),
+                    state_version=model.authoritative_state_version,
+                    network_profile=model.network_profile,
+                    reason=model.failure_code or "expired claim reconciled",
+                    session=session,
+                )
             recovered.append(model.id)
         session.flush()
         return recovered
+
+    def recover_command_orphans(self, scope=None) -> list[str]:
+        """Deterministic worker-restart orphan sweep for command executions.
+
+        Invoked at backend startup (and callable on demand): any command
+        execution left in a running/queued state with an expired durable claim
+        — its owning worker process died mid-command — is reconciled exactly
+        once, either requeued (read-only), sealed as reconstruction-required
+        (mutating), or failed after bounded claim loss.
+        """
+        from app.repositories.session import session_scope as default_scope
+
+        checked_at = datetime.now(UTC)
+        with (scope or default_scope)() as session:
+            return self.reconcile_expired_executions(session, checked_at)
 
     def queue_authorized_command(
         self,
@@ -534,6 +661,23 @@ class CommandExecutorService:
                            WorkflowEventType.COMMAND_QUEUED, "authorized command queued",
                            {"execution_id": execution_id, "authorization_id": authorization.id,
                             "command_id": authorization.command_id, "state_version": run.state_version})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        ExecutionAuditTrailService().append(
+            run_id=run_id,
+            event=ExecutionAuditEvent.EXECUTION_QUEUED,
+            command_id=authorization.command_id,
+            stage_id=authorization.stage_id,
+            execution_id=execution_id,
+            actor=requested_by or authorization.actor,
+            executable=authorization.executable,
+            arguments=list(authorization.arguments or []),
+            state_version=run.state_version,
+            network_profile=authorization.network_profile or "none",
+            reason="authorized command queued",
+            session=session,
+        )
         return self._response_from_model(model)
 
     def resolve_authorized_timeout(
@@ -993,6 +1137,23 @@ class CommandExecutorService:
             self._append_event(session, model.run_id, model.stage_id, f"{model.id}:started",
                                WorkflowEventType.COMMAND_STARTED, "authorized command started",
                                {"execution_id": model.id, "worker_id": worker_id})
+            from app.domain.execution_audit import ExecutionAuditEvent
+            from app.services.execution_audit_service import ExecutionAuditTrailService
+
+            ExecutionAuditTrailService().append(
+                run_id=model.run_id,
+                event=ExecutionAuditEvent.EXECUTION_STARTED,
+                command_id=authorization.command_id,
+                stage_id=model.stage_id,
+                execution_id=model.id,
+                actor=authorization.actor,
+                executable=authorization.executable,
+                arguments=list(authorization.arguments or []),
+                state_version=model.authoritative_state_version,
+                network_profile=authorization.network_profile or "none",
+                reason="authorized command started",
+                session=session,
+            )
 
         cancel_event = threading.Event()
         lease_id: str | None = None
@@ -1059,16 +1220,7 @@ class CommandExecutorService:
                     prompt = session.get(StagePromptRequestModel, model.prompt_request_id)
                     prompt_stdin = TransformerPromptService.selected_stdin(prompt) if prompt else None
                 artifact_root = Path(run.artifact_root)
-                policy = CommandPolicy(
-                    sandbox_root=root,
-                    registry=CommandRegistry(),
-                    working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
-                    runtime_profiles=frozenset({execution_profile_id}),
-                    network_profiles=frozenset({network_profile}),
-                    environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
-                )
                 store = LocalFilesystemArtifactStore(artifact_root, fixed_run_root=artifact_root)
-                worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)
                 request = CommandRequestDto(
                     command_id=command_id,
                     run_id=run_id,
@@ -1086,6 +1238,34 @@ class CommandExecutorService:
                     idempotency_key=idempotency_key,
                     requested_at=requested_at,
                 )
+
+            # Fail-closed runtime binding: resolve the profile's executables to
+            # PATH-independent, checksum-bound descriptors.  Probing runs
+            # outside the database session (no transaction across processes).
+            runtime_bindings = _runtime_bindings_from_profile(selected_profile)
+            if runtime_bindings:
+                policy = CommandPolicy(
+                    sandbox_root=root,
+                    registry=CommandRegistry(),
+                    working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
+                    runtime_profiles=frozenset({execution_profile_id}),
+                    network_profiles=frozenset({network_profile}),
+                    environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
+                    environment_overrides=_runtime_path_overrides(runtime_bindings),
+                    runtime_bindings=runtime_bindings,
+                )
+                worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)
+                self._record_runtime_bindings_evidence(run_id, runtime_bindings, execution_id=execution_id)
+            else:
+                policy = CommandPolicy(
+                    sandbox_root=root,
+                    registry=CommandRegistry(),
+                    working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
+                    runtime_profiles=frozenset({execution_profile_id}),
+                    network_profiles=frozenset({network_profile}),
+                    environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
+                )
+                worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)
 
             def renew_lease() -> None:
                 from app.repositories.session import session_scope
@@ -1177,6 +1357,15 @@ class CommandExecutorService:
                         exc,
                         causal_traceback,
                     )
+                    failure_model = model
+                else:
+                    failure_model = model
+            if failure_model is not None:
+                self._record_diagnostic_pack(
+                    failure_model,
+                    error=exc,
+                    traceback_text=causal_traceback,
+                )
             with session_scope() as session:
                 model = session.get(CommandExecutionModel, execution_id)
                 if model is not None and model.status not in {CommandStatus.SUCCEEDED.value, CommandStatus.FAILED.value, CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
@@ -1341,6 +1530,32 @@ class CommandExecutorService:
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:completed", event_type,
                            f"command {model.status}", {"execution_id": model.id, "status": model.status,
                            "exit_code": model.exit_code, "artifact_ids": model.artifact_ids})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        terminal_event = {
+            CommandStatus.SUCCEEDED.value: ExecutionAuditEvent.EXECUTION_SUCCEEDED,
+            CommandStatus.FAILED.value: ExecutionAuditEvent.EXECUTION_FAILED,
+            CommandStatus.TIMED_OUT.value: ExecutionAuditEvent.EXECUTION_TIMED_OUT,
+            CommandStatus.CANCELLED.value: ExecutionAuditEvent.EXECUTION_CANCELLED,
+            CommandStatus.INTERRUPTED.value: ExecutionAuditEvent.EXECUTION_INTERRUPTED,
+        }.get(model.status)
+        if terminal_event is not None:
+            ExecutionAuditTrailService().append(
+                run_id=model.run_id,
+                event=terminal_event,
+                command_id=model.command_id or authorization.command_id,
+                stage_id=model.stage_id,
+                execution_id=model.id,
+                actor=authorization.actor,
+                executable=model.executable,
+                arguments=list(model.arguments or []),
+                state_version=model.authoritative_state_version,
+                network_profile=model.network_profile,
+                reason=(model.failure_code or f"command {model.status}"),
+                occurred_at=finished,
+                session=session,
+            )
         session.commit()
         # The optional RUN_CANCELLED run-level CAS runs in its own
         # transaction AFTER the terminal event is committed: a stale run
@@ -1349,7 +1564,11 @@ class CommandExecutorService:
         if model.status in {CommandStatus.CANCELLED.value, CommandStatus.TIMED_OUT.value}:
             current_run = session.get(MigrationRunModel, model.run_id)
             if current_run is not None and current_run.status == "CANCELLING":
-                from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionRequest
+                from app.state.transition_service import (
+                    StaleStateVersionError,
+                    StateTransitionService,
+                    TransitionRequest,
+                )
                 try:
                     StateTransitionService(session).apply_transition(TransitionRequest(
                         run_id=model.run_id, idempotency_key=f"{model.id}:run-cancelled",
@@ -1364,6 +1583,15 @@ class CommandExecutorService:
                     session.commit()
                 except StaleStateVersionError:
                     session.rollback()
+        if final_status != CommandStatus.SUCCEEDED.value:
+            # Typed failure diagnostics are persisted after the terminal event
+            # commits, in their own transaction (no transaction across I/O).
+            self._record_diagnostic_pack(
+                model,
+                stdout=result.stdout_artifact.content if result.stdout_artifact else "",
+                stderr=result.stderr_artifact.content if result.stderr_artifact else "",
+                fault_code_override=model.failure_code,
+            )
 
     @staticmethod
     def _register_artifact_metadata(session: Session, stored, *, execution_id: str, correlation_id: str | None, truncated: bool = False) -> None:
@@ -1396,6 +1624,23 @@ class CommandExecutorService:
         model.blockers = model.blockers or [model.failure_code]
         self._append_event(session, model.run_id, model.stage_id, f"{model.id}:failed", WorkflowEventType.COMMAND_FAILED,
                            model.failure_message, {"execution_id": model.id, "error_code": model.failure_code})
+        from app.domain.execution_audit import ExecutionAuditEvent
+        from app.services.execution_audit_service import ExecutionAuditTrailService
+
+        ExecutionAuditTrailService().append(
+            run_id=model.run_id,
+            event=ExecutionAuditEvent.EXECUTION_FAILED,
+            command_id=model.command_id or "",
+            stage_id=model.stage_id,
+            execution_id=model.id,
+            actor=model.requested_by,
+            executable=model.executable or "",
+            arguments=list(model.arguments or []),
+            state_version=model.authoritative_state_version,
+            network_profile=model.network_profile,
+            reason=code,
+            session=session,
+        )
 
     def _persist_internal_failure(
         self,
@@ -1421,6 +1666,44 @@ class CommandExecutorService:
         model.failure_message = model.failure_message or str(error)[:1000]
         model.blockers = model.blockers or [model.failure_code]
         model.duration_ms = self._elapsed_ms(model.started_at)
+
+    def _record_diagnostic_pack(
+        self,
+        model: CommandExecutionModel,
+        *,
+        error: Exception | None = None,
+        traceback_text: str | None = None,
+        stdout: str = "",
+        stderr: str = "",
+        fault_code_override: str | None = None,
+        remediation: str | None = None,
+    ) -> None:
+        """Persist a typed diagnostic pack for a failed command execution."""
+        try:
+            DiagnosticsApplicationService().record_command_failure(
+                run_id=model.run_id,
+                execution_id=model.id,
+                correlation_id=model.correlation_id,
+                error=error,
+                command=(model.executable, *(model.arguments or [])),
+                exit_code=model.exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                working_directory_alias=model.working_directory_alias,
+                runtime_profile_id=model.runtime_profile_id,
+                timeout_seconds=model.timeout_seconds,
+                cancelled=bool(model.cancelled),
+                timed_out=bool(model.timed_out),
+                traceback_text=traceback_text,
+                stage_id=model.stage_id,
+                command_id=model.command_id,
+                state_version=model.state_version,
+                event_sequence=model.event_sequence,
+                remediation=remediation,
+                fault_code_override=fault_code_override,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist diagnostic pack for execution %s: %s", model.id, exc)
 
     @staticmethod
     def _result_failure_message(result, fallback: str) -> str:
@@ -1634,4 +1917,34 @@ class CommandExecutorService:
             timed_out=bool(model.timed_out),
             request_payload_hash=model.request_payload_hash,
             claim_attempt=model.claim_attempt,
+        )
+
+    def _record_runtime_bindings_evidence(
+        self, run_id: str, bindings: dict[str, RuntimeExecutableDescriptor], *, execution_id: str | None
+    ) -> None:
+        """Persist the resolved runtime descriptors as durable execution evidence.
+
+        Evidence persistence is part of the runtime authority guarantee; a
+        failure to persist evidence fails the command closed instead of letting
+        a stage pass without runtime evidence.
+        """
+        service = self._runtime_resolution or RuntimeResolutionApplicationService(get_settings())
+        self._runtime_resolution = service
+        from app.domain.runtime_execution import RuntimeRequirementBinding
+
+        service.record_evidence(
+            run_id,
+            [
+                RuntimeRequirementBinding(
+                    requirement=RuntimeRequirement(
+                        kind=descriptor.kind,
+                        runtime_id=descriptor.runtime_id or descriptor.kind.value,
+                        version_exact=descriptor.version_exact,
+                    ),
+                    descriptor=descriptor,
+                )
+                for descriptor in bindings.values()
+            ],
+            execution_id=execution_id,
+            actor="command-executor-service",
         )

@@ -7,16 +7,16 @@ persists bounded command evidence as artifacts.
 
 from __future__ import annotations
 
-import json
-import os
-import signal
-import subprocess
-import shutil
-import sys
-import threading
-import queue
 import codecs
 import ctypes
+import json
+import os
+import queue
+import shutil
+import signal
+import subprocess
+import sys
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,13 +24,6 @@ from time import monotonic
 from typing import Final
 
 from app.artifact_store import LocalFilesystemArtifactStore, StoredArtifact
-from app.domain.contracts import (
-    ArtifactType,
-    CancellationPolicy,
-    CommandRequestDto,
-    CommandResultDto,
-    CommandStatus,
-)
 from app.domain.command import (
     ANGULAR_UPDATE_V2_RENDERER,
     ANGULAR_UPDATE_V3_RENDERER,
@@ -38,9 +31,20 @@ from app.domain.command import (
     TRANSFORMATION_COMMAND_CATALOGUE,
     command_arguments_match,
 )
+from app.domain.contracts import (
+    ArtifactType,
+    CancellationPolicy,
+    CommandRequestDto,
+    CommandResultDto,
+    CommandStatus,
+)
+from app.domain.runtime_execution import RuntimeExecutableDescriptor, RuntimeExecutableKind
 from app.llm_gateway.redaction import redact_prompt_text
 
 CommandRequest = CommandRequestDto
+
+_RUNTIME_PROBE_COMMAND_ID: Final = "runtime-executable-probe"
+_WILDCARD_EXECUTABLE: Final = "*"
 
 _DEFAULT_RUNTIME_PROFILE: Final = "source-runtime-profile"
 _DEFAULT_NETWORK_PROFILE: Final = "none"
@@ -58,6 +62,15 @@ _MUTABLE_WORKSPACE_ALIASES: Final = frozenset(
         "DELIVERY_CANDIDATE",
     }
 )
+
+
+def _executable_kind(executable: str) -> RuntimeExecutableKind | None:
+    """Map a bare executable name to its runtime executable kind, if any."""
+    name = Path(executable).name.lower()
+    for kind in RuntimeExecutableKind:
+        if name == kind.value or name == f"{kind.value}.exe" or name == f"{kind.value}.cmd":
+            return kind
+    return None
 
 
 class _JobBasicLimitInformation(ctypes.Structure):
@@ -195,6 +208,7 @@ class StructuredCommandRequest:
     environment_allowlist: tuple[str, ...] = ()
     environment_overrides: dict[str, str] = field(default_factory=dict)
     stdin_text: str | None = None
+    runtime_bindings: dict[str, RuntimeExecutableDescriptor] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -236,6 +250,7 @@ class CommandRegistry:
         CommandDefinition("npm-registry", "npm", ("config", "get", "registry"), ("npm.cmd",)),
         CommandDefinition("npx-version", "npx", ("--version",), ("npx.cmd",)),
         CommandDefinition("git-version", "git", ("--version",), ("git.exe",)),
+        CommandDefinition(_RUNTIME_PROBE_COMMAND_ID, _WILDCARD_EXECUTABLE, ("--version",)),
         *_transformation_command_definitions(),
     )
 
@@ -273,12 +288,15 @@ class CommandPolicy:
     network_profiles: frozenset[str] = frozenset({_DEFAULT_NETWORK_PROFILE})
     environment_allowlist: tuple[str, ...] = ()
     environment_overrides: dict[str, str] = field(default_factory=dict)
+    runtime_probe_roots: frozenset[Path] = frozenset()
+    runtime_bindings: dict[str, RuntimeExecutableDescriptor] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         aliases = {name: Path(path).resolve() for name, path in self.working_directory_aliases.items()}
         if any(name not in _MUTABLE_WORKSPACE_ALIASES and not name.startswith("STAGE_WORKSPACE_") for name in aliases):
             raise CommandPolicyViolation("Only registered mutable workspace aliases may execute commands")
         object.__setattr__(self, "working_directory_aliases", aliases)
+        object.__setattr__(self, "runtime_probe_roots", frozenset(Path(path).resolve() for path in self.runtime_probe_roots))
 
     def validate(self, request: CommandRequestDto) -> StructuredCommandRequest:
         """Return a normalized request or raise a policy violation."""
@@ -296,11 +314,7 @@ class CommandPolicy:
             raise CommandPolicyViolation("Cancellation policy is not supported by the Sprint 0 supervisor")
 
         definition = self.registry.find(request.command_id, tuple(request.arguments))
-        if request.executable not in definition.allowed_executables:
-            raise CommandPolicyViolation("Executable does not match the registered command definition")
-        if not definition.matches_arguments(tuple(request.arguments)):
-            raise CommandPolicyViolation("Arguments do not match the registered command definition")
-
+        executable = self._resolve_executable(definition, request)
         working_directory = self._resolve_working_directory(request)
         if not working_directory.is_dir():
             raise CommandPolicyViolation("Working directory must exist inside the sandbox root")
@@ -308,11 +322,77 @@ class CommandPolicy:
         return StructuredCommandRequest(
             dto=request,
             definition=definition,
-            command=(request.executable, *request.arguments),
+            command=(executable, *request.arguments),
             working_directory=working_directory,
             environment_allowlist=self.environment_allowlist,
-            environment_overrides=dict(self.environment_overrides),
+            environment_overrides={**self.environment_overrides, **request.environment_overrides},
+            runtime_bindings=dict(self.runtime_bindings),
         )
+
+    def _resolve_executable(self, definition: CommandDefinition, request: CommandRequestDto) -> str:
+        """Resolve the concrete executable path, fail-closed on descriptor mismatch."""
+        if definition.command_id == _RUNTIME_PROBE_COMMAND_ID:
+            return self._resolve_runtime_probe(request)
+        binding = self._binding_for_executable(request.executable)
+        if request.executable not in definition.allowed_executables and binding is None:
+            raise CommandPolicyViolation("Executable does not match the registered command definition")
+        if binding is not None and binding.kind.value not in definition.allowed_executables:
+            raise CommandPolicyViolation("Bound runtime kind does not match the registered command definition")
+        if not definition.matches_arguments(tuple(request.arguments)):
+            raise CommandPolicyViolation("Arguments do not match the registered command definition")
+        if binding is None:
+            return request.executable
+        resolved = Path(binding.resolved_path).resolve()
+        if not resolved.is_file():
+            raise CommandPolicyViolation(
+                f"RUNTIME_BINDING_MISSING: bound executable {resolved} is not an existing file"
+            )
+        actual = self._sha256(resolved)
+        if actual != binding.sha256:
+            raise CommandPolicyViolation(
+                f"RUNTIME_EXECUTABLE_CHECKSUM_MISMATCH: bound {request.executable} resolved to "
+                f"{resolved} but its sha256 {actual} does not match the expected {binding.sha256}"
+            )
+        return str(resolved)
+
+    def _resolve_runtime_probe(self, request: CommandRequestDto) -> str:
+        """PATH-independent probe: executable must be an absolute path under a runtime root."""
+        candidate = Path(request.executable)
+        if not candidate.is_absolute():
+            raise CommandPolicyViolation("Runtime probe executable must be an absolute path")
+        if not self.runtime_probe_roots:
+            raise CommandPolicyViolation("Runtime probe roots are not configured")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise CommandPolicyViolation("Runtime probe executable is not available") from exc
+        if not any(self._within_root(resolved, root) for root in self.runtime_probe_roots):
+            raise CommandPolicyViolation("Runtime probe executable is outside the configured runtime roots")
+        return str(resolved)
+
+    @staticmethod
+    def _within_root(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    def _binding_for_executable(self, executable: str) -> RuntimeExecutableDescriptor | None:
+        kind = _executable_kind(executable)
+        if kind is None or not self.runtime_bindings:
+            return None
+        return self.runtime_bindings.get(kind.value)
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _resolve_working_directory(self, request: CommandRequestDto) -> Path:
         if request.working_directory_alias:
@@ -470,15 +550,22 @@ class WorkerSupervisor:
 
     @staticmethod
     def _build_safe_environment(allowlist: tuple[str, ...] = (), overrides: dict[str, str] | None = None) -> dict[str, str]:
-        """Build a sanitized environment blocking secret and backend variables."""
+        """Build a sanitized environment blocking secret and backend variables.
+
+        Least privilege (F27-02): an empty allowlist forwards nothing from the
+        ambient environment except the minimal PATH needed to resolve approved
+        executables.  Explicit allowlists grant exactly the listed variables.
+        """
         clean: dict[str, str] = {}
-        allowed = set(allowlist)
+        effective = set(allowlist)
+        if not effective:
+            effective = {"PATH"}
         if os.name == "nt":
-            allowed.add("SYSTEMROOT")
+            effective.add("SYSTEMROOT")
         for var, value in os.environ.items():
             upper = var.upper()
             blocked = any(pattern in upper for pattern in WorkerSupervisor._SECRET_PATTERNS)
-            if not blocked and (not allowed or var in allowed):
+            if not blocked and var in effective:
                 clean[var] = value
         for var, value in (overrides or {}).items():
             upper = var.upper()
@@ -495,13 +582,13 @@ class WorkerSupervisor:
         output_callback=None,
         process_started_callback=None,
     ) -> SupervisedProcessResult:
+        command = list(self._verify_bound_executable(request))
         creationflags = 0
         popen_kwargs: dict[str, object] = {}
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["start_new_session"] = True
-        command = list(request.command)
         if os.name == "nt":
             resolved_executable = (
                 sys.executable
@@ -645,6 +732,38 @@ class WorkerSupervisor:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+
+    def _verify_bound_executable(self, request: StructuredCommandRequest) -> tuple[str, ...]:
+        """Fail-closed at the process boundary: a bound runtime must be exactly the executed path.
+
+        Defensive against a change between policy validation and process launch; the
+        authoritative guard lives in ``CommandPolicy.validate``.
+        """
+        if not request.runtime_bindings:
+            return request.command
+        kind = _executable_kind(request.command[0])
+        binding = request.runtime_bindings.get(kind.value) if kind is not None else None
+        if binding is None:
+            return request.command
+        command_path = Path(request.command[0])
+        bound_path = Path(binding.resolved_path).resolve()
+        if command_path.resolve() != bound_path:
+            raise OSError(
+                f"RUNTIME_BINDING_PATH_MISMATCH: command executable {request.command[0]} does not match "
+                f"the bound runtime path {bound_path}"
+            )
+        import hashlib
+
+        digest = hashlib.sha256()
+        with bound_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != binding.sha256:
+            raise OSError(
+                f"RUNTIME_EXECUTABLE_CHECKSUM_MISMATCH: bound {bound_path} checksum does not match "
+                f"the expected {binding.sha256}"
+            )
+        return request.command
 
 
 class ExecutionWorker:

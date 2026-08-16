@@ -30,6 +30,34 @@ from app.api.routes.planning_review import router as planning_review_router
 from app.api.routes.stage_execution import router as stage_execution_router
 from app.api.routes.assistant import router as run_assistant_router
 from app.api.routes.transformation import router as transformation_router
+from app.api.routes.runtime_execution import router as runtime_execution_router
+from app.api.routes.diagnostics import router as diagnostics_router
+from app.api.routes.stage_runtime import router as stage_runtime_router
+from app.api.routes.workspace_authority import router as workspace_authority_router
+from app.api.routes.lockfile_compatibility import router as lockfile_compatibility_router
+from app.api.routes.catalogue import router as catalogue_router
+from app.api.routes.migration_route import router as migration_route_router
+from app.api.routes.runtime_certification import router as runtime_certification_router
+from app.api.routes.project_capability import router as project_capability_router
+from app.api.routes.ng_update_governance import router as ng_update_governance_router
+from app.api.routes.third_party_compatibility import router as third_party_compatibility_router
+from app.api.routes.preflight_checks import router as preflight_checks_router
+from app.api.routes.stage_knowledge import router as stage_knowledge_router
+from app.api.routes.v2_planner import router as v2_planner_router
+from app.api.routes.failure_intelligence import router as failure_intelligence_router
+from app.api.routes.code_context import router as code_context_router
+from app.api.routes.proposal_cycle import router as proposal_cycle_router
+from app.api.routes.candidate_promotion import router as candidate_promotion_router
+from app.api.routes.stage_orchestration import router as stage_orchestration_router
+from app.api.routes.stage_validation_seal import router as stage_validation_seal_router
+from app.api.routes.terminal_operation import router as terminal_operation_router
+from app.api.routes.terminal_lifecycle import router as terminal_lifecycle_router
+from app.api.routes.stage_rollback import router as stage_rollback_router
+from app.api.routes.partial_delivery import router as partial_delivery_router
+from app.api.routes.execution_audit import router as execution_audit_router
+from app.api.routes.retrieval_benchmark import router as retrieval_benchmark_router
+from app.api.routes.quality_metrics import router as quality_metrics_router
+from app.api.routes.catalogue_certification import router as catalogue_certification_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -45,6 +73,34 @@ api_router.include_router(plans_router)
 api_router.include_router(planning_review_router)
 api_router.include_router(stage_execution_router)
 api_router.include_router(transformation_router)
+api_router.include_router(runtime_execution_router)
+api_router.include_router(diagnostics_router)
+api_router.include_router(stage_runtime_router)
+api_router.include_router(workspace_authority_router)
+api_router.include_router(lockfile_compatibility_router)
+api_router.include_router(catalogue_router)
+api_router.include_router(migration_route_router)
+api_router.include_router(runtime_certification_router)
+api_router.include_router(project_capability_router)
+api_router.include_router(ng_update_governance_router)
+api_router.include_router(third_party_compatibility_router)
+api_router.include_router(preflight_checks_router)
+api_router.include_router(stage_knowledge_router)
+api_router.include_router(v2_planner_router)
+api_router.include_router(failure_intelligence_router)
+api_router.include_router(code_context_router)
+api_router.include_router(proposal_cycle_router)
+api_router.include_router(candidate_promotion_router)
+api_router.include_router(stage_orchestration_router)
+api_router.include_router(stage_validation_seal_router)
+api_router.include_router(terminal_operation_router)
+api_router.include_router(terminal_lifecycle_router)
+api_router.include_router(stage_rollback_router)
+api_router.include_router(partial_delivery_router)
+api_router.include_router(execution_audit_router)
+api_router.include_router(retrieval_benchmark_router)
+api_router.include_router(quality_metrics_router)
+api_router.include_router(catalogue_certification_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -80,6 +136,34 @@ api_v1_router.include_router(plans_router)
 api_v1_router.include_router(planning_review_router)
 api_v1_router.include_router(stage_execution_router)
 api_v1_router.include_router(transformation_router)
+api_v1_router.include_router(runtime_execution_router)
+api_v1_router.include_router(diagnostics_router)
+api_v1_router.include_router(stage_runtime_router)
+api_v1_router.include_router(workspace_authority_router)
+api_v1_router.include_router(lockfile_compatibility_router)
+api_v1_router.include_router(catalogue_router)
+api_v1_router.include_router(migration_route_router)
+api_v1_router.include_router(runtime_certification_router)
+api_v1_router.include_router(project_capability_router)
+api_v1_router.include_router(ng_update_governance_router)
+api_v1_router.include_router(third_party_compatibility_router)
+api_v1_router.include_router(preflight_checks_router)
+api_v1_router.include_router(stage_knowledge_router)
+api_v1_router.include_router(v2_planner_router)
+api_v1_router.include_router(failure_intelligence_router)
+api_v1_router.include_router(code_context_router)
+api_v1_router.include_router(proposal_cycle_router)
+api_v1_router.include_router(candidate_promotion_router)
+api_v1_router.include_router(stage_orchestration_router)
+api_v1_router.include_router(stage_validation_seal_router)
+api_v1_router.include_router(terminal_operation_router)
+api_v1_router.include_router(terminal_lifecycle_router)
+api_v1_router.include_router(stage_rollback_router)
+api_v1_router.include_router(partial_delivery_router)
+api_v1_router.include_router(execution_audit_router)
+api_v1_router.include_router(retrieval_benchmark_router)
+api_v1_router.include_router(quality_metrics_router)
+api_v1_router.include_router(catalogue_certification_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)

@@ -6,8 +6,8 @@ import hashlib
 import json
 import logging
 import re
-from difflib import unified_diff
 from datetime import UTC, datetime
+from difflib import unified_diff
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import uuid4
@@ -26,8 +26,8 @@ from app.core.config import get_settings
 from app.domain.command import TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.contracts import AgentKind, ArtifactType, CommandStatus, WorkflowEventType
 from app.domain.planning import (
-    CommandTemplateReference,
     SUPPORTED_VALIDATION_TARGETS,
+    CommandTemplateReference,
     ValidationTarget,
 )
 from app.llm_gateway import (
@@ -57,8 +57,8 @@ from app.repositories.models import (
     WorkflowEventModel,
 )
 from app.services.causal_review import (
-    CausalRejection,
     REVIEWER_CAUSAL_POLICY,
+    CausalRejection,
     causal_rejection,
     repair_budget,
 )
@@ -333,8 +333,8 @@ def _render_dependency_transition_intent(operation: dict[str, object]) -> str:
     lines = [
         "schema_version: transformer-repair-v2",
         "repair_kind: dependency_transition",
-        f"strategy: {str(operation.get('strategy') or 'detach_update_reattach')}",
-        f"failure_type: {str(operation.get('failure_type') or 'peer_dependency_conflict')}",
+        f"strategy: {operation.get('strategy') or 'detach_update_reattach'!s}",
+        f"failure_type: {operation.get('failure_type') or 'peer_dependency_conflict'!s}",
         f"blocking_dependency: {package}",
         f"target_state: angular {major} / {package}@{target_version}",
         f"checkpoint_id: {checkpoint_id}",
@@ -605,6 +605,11 @@ class RepairApplicationService:
         self._now = now_provider or (lambda: datetime.now(UTC))
 
     def propose(self, attempt_id: str) -> dict[str, object]:
+        from app.services.repair_lifecycle_reliability_service import RepairLifecycleReliabilityService
+
+        # Sealing guard (F04-04): a sealed/terminal repair lifecycle cannot be
+        # proposed again. Uses the caller's scope so injected test scopes work.
+        RepairLifecycleReliabilityService(session_scope_factory=self._scope).assert_mutable(attempt_id)
         self.recover_legacy_fingerprint_authority(attempt_id)
         self._recover_legacy_context_pack(attempt_id)
         semantic_retry_count = 0
