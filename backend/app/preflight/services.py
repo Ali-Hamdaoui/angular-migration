@@ -231,7 +231,10 @@ class PreflightService:
     def _build_worker(self) -> ExecutionWorker:
         sandbox_root = self._settings.sandbox_root.resolve()
         return ExecutionWorker(
-            CommandPolicy(sandbox_root=sandbox_root),
+            CommandPolicy(
+                sandbox_root=sandbox_root,
+                working_directory_aliases={"run_workspace": sandbox_root},
+            ),
             CommandLogWriter(
                 self._artifact_store,
                 max_output_bytes=self._settings.command_max_output_bytes,

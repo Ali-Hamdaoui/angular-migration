@@ -93,6 +93,29 @@ def test_valid_fixture_setup_returns_checksum_artifact_and_capabilities(tmp_path
     assert '"policy_version": "sprint0-preflight-v1"' in stored.content
 
 
+def test_default_worker_registers_run_workspace_for_capability_commands(tmp_path: Path) -> None:
+    source_root = tmp_path / "sources"
+    target_root = tmp_path / "targets"
+    source = source_root / "angular-app"
+    target = target_root / "output"
+    source.mkdir(parents=True)
+    target_root.mkdir()
+    (source / "package.json").write_text('{"dependencies":{"@angular/core":"18.2.0"}}', encoding="utf-8")
+
+    result = PreflightService(
+        settings=_settings(tmp_path, source_root, target_root),
+        artifact_store=LocalFilesystemArtifactStore(tmp_path / "runs"),
+    ).validate(_request(source, target))
+
+    assert result.capabilities == {
+        "python": "succeeded",
+        "node": "succeeded",
+        "npm": "succeeded",
+        "npx": "succeeded",
+        "git": "succeeded",
+    }
+
+
 def test_changing_setup_inputs_changes_checksum(tmp_path: Path) -> None:
     source_root = tmp_path / "sources"
     target_root = tmp_path / "targets"
