@@ -214,7 +214,7 @@ def test_concurrent_appends_do_not_fork_chain():
     run_id = f"run-f27-{uuid4().hex[:8]}"
     _seed_run(run_id)
     service = ExecutionAuditTrailService()
-    errors: list[Exception] = []
+    errors: list[str] = []
 
     def worker(index: int) -> None:
         try:
@@ -228,8 +228,8 @@ def test_concurrent_appends_do_not_fork_chain():
                 arguments=["--version"],
                 reason=f"done-{index}",
             )
-        except Exception as exc:  # pragma: no cover
-            errors.append(exc)
+        except Exception as exc:  # noqa: BLE001 - test thread barrier, reported below
+            errors.append(f"{type(exc).__name__}: {exc}")
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
     for thread in threads:

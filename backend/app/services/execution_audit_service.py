@@ -13,7 +13,7 @@ import threading
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import select
 
@@ -36,7 +36,7 @@ class ExecutionAuditTrailService:
 
     GENESIS = "GENESIS"
 
-    _run_locks: dict[str, threading.Lock] = {}
+    _run_locks: ClassVar[dict[str, threading.Lock]] = {}
     _locks_guard = threading.Lock()
 
     @classmethod
