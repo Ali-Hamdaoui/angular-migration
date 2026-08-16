@@ -12,8 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -46,9 +44,3 @@ class ProjectCapabilitySnapshot(_ImmutableModel):
         return self.model_copy(update={"checksum": f"sha256:{digest}"})
 
 
-def snapshot_checksum(snapshot: ProjectCapabilitySnapshot) -> str:
-    return snapshot.checksum or snapshot.bind_checksum().checksum
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)

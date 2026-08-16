@@ -47,6 +47,12 @@ def test_derive_capabilities_from_angular_project(tmp_path: Path):
 
 def test_derive_capabilities_missing_project(tmp_path: Path):
     capabilities = ProjectCapabilityService().derive(tmp_path / "missing")
+    assert capabilities[0].key == "source_root"
+    assert capabilities[0].value == "missing"
+    # missing package.json in an existing dir
+    root = tmp_path / "empty"
+    root.mkdir()
+    capabilities = ProjectCapabilityService().derive(root)
     assert capabilities[0].key == "package_json"
     assert capabilities[0].value == "missing"
 
@@ -58,7 +64,7 @@ def test_readiness_verdict():
     assert status == "ready" and blockers == []
     bad = [{"key": "package_json", "value": "invalid"}]
     status, blockers = service.readiness(bad)
-    assert status == "blocked" and "CAPABILITY_PACKAGE_JSON_INVALID" in blockers
+    assert status == "blocked" and "CAPABILITY_PACKAGE_JSON_UNAVAILABLE" in blockers
 
 
 def test_snapshot_and_persist(tmp_path: Path):

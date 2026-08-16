@@ -23,9 +23,6 @@ class ProjectCapabilityError(ValueError):
         self.message = message
 
 
-_ANGULAR_MAJOR = re.compile(r"@angular/core[^\n]*(\d+)\.\d+\.\d+")
-
-
 class ProjectCapabilityService:
     """Deterministically derive project capabilities and persist snapshots."""
 
@@ -41,6 +38,9 @@ class ProjectCapabilityService:
     def derive(self, source_root: Path) -> list[ProjectCapability]:
         """Inspect a project root and derive deterministic capability facts."""
         capabilities: list[ProjectCapability] = []
+        if not source_root.is_dir():
+            capabilities.append(ProjectCapability(key="source_root", value="missing", detail="source root is not a directory"))
+            return capabilities
 
         package_json = source_root / "package.json"
         angular_json = source_root / "angular.json"
@@ -53,6 +53,9 @@ class ProjectCapabilityService:
             package = json.loads(package_json.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             capabilities.append(ProjectCapability(key="package_json", value="invalid", detail="package.json is not valid JSON"))
+            return capabilities
+        if not isinstance(package, dict):
+            capabilities.append(ProjectCapability(key="package_json", value="invalid", detail="package.json is not an object"))
             return capabilities
 
         angular_version = _package_version(package, "@angular/core")
@@ -105,6 +108,7 @@ class ProjectCapabilityService:
             existing = session.scalar(
                 select(ProjectCapabilityModel).where(
                     ProjectCapabilityModel.run_id == run_id,
+                    ProjectCapabilityModel.stage_id == stage_id,
                     ProjectCapabilityModel.checksum == snapshot.checksum,
                 )
             )
@@ -133,8 +137,10 @@ class ProjectCapabilityService:
             value = capability["value"] if isinstance(capability, dict) else capability.value
             by_key[key] = value
         blockers: list[str] = []
-        if by_key.get("package_json") != "present" and by_key.get("package_json") is not None:
-            blockers.append("CAPABILITY_PACKAGE_JSON_INVALID")
+        if by_key.get("source_root") == "missing":
+            blockers.append("CAPABILITY_SOURCE_ROOT_MISSING")
+        if by_key.get("package_json") in {"invalid", "missing"}:
+            blockers.append("CAPABILITY_PACKAGE_JSON_UNAVAILABLE")
         if by_key.get("angular_core", "absent") == "absent":
             blockers.append("CAPABILITY_ANGULAR_CORE_ABSENT")
         if by_key.get("workspace_type") == "not_angular_cli":
@@ -154,7 +160,10 @@ class ProjectCapabilityService:
 
 def _package_version(package: dict, name: str) -> str | None:
     for section in ("dependencies", "devDependencies", "optionalDependencies"):
-        value = (package.get(section) or {}).get(name)
+        values = package.get(section)
+        if not isinstance(values, dict):
+            continue
+        value = values.get(name)
         if isinstance(value, str):
             return _strip_range(value)
     return None

@@ -9,6 +9,8 @@ from app.api.project_capability_contracts import (
     CapabilitySnapshotListDto,
     DeriveCapabilitiesRequest,
     ProjectCapabilityDto,
+    ReadinessRequest,
+    ReadinessResponse,
 )
 from app.services.project_capability_service import ProjectCapabilityError, ProjectCapabilityService
 
@@ -51,8 +53,24 @@ def derive_capabilities(
     request: DeriveCapabilitiesRequest,
     service: ProjectCapabilityService = Depends(get_capability_service),
 ) -> CapabilitySnapshotDto:
-    snapshot = service.snapshot(request.run_id, Path(request.source_root), request.stage_id)
+    try:
+        snapshot = service.snapshot(request.run_id, Path(request.source_root), request.stage_id)
+    except ProjectCapabilityError as error:
+        _raise(error)
     return _snapshot_dto(snapshot)
+
+
+@router.post("/capabilities/readiness", response_model=ReadinessResponse)
+def capability_readiness(
+    request: ReadinessRequest,
+    service: ProjectCapabilityService = Depends(get_capability_service),
+) -> ReadinessResponse:
+    try:
+        capabilities = service.derive(Path(request.source_root))
+        status, blockers = service.readiness(capabilities)
+    except ProjectCapabilityError as error:
+        _raise(error)
+    return ReadinessResponse(status=status, blockers=blockers)
 
 
 @router.post("/runs/{run_id}/capabilities", response_model=CapabilitySnapshotDto)

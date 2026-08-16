@@ -1,5 +1,7 @@
 """API contracts for project capabilities (V2 F13)."""
 
+from pydantic import Field
+
 from app.domain.contracts import ContractModel
 
 
@@ -23,5 +25,17 @@ class CapabilitySnapshotListDto(ContractModel):
 
 
 class DeriveCapabilitiesRequest(ContractModel):
+    run_id: str | None = Field(default=None, min_length=1)
     source_root: str
     stage_id: str | None = None
+
+
+class ReadinessRequest(ContractModel):
+    run_id: str = Field(min_length=1)
+    source_root: str
+
+
+class ReadinessResponse(ContractModel):
+    status: str
+    blockers: list[str]
+
