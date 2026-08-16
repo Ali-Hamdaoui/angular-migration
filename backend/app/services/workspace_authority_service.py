@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
@@ -138,8 +139,16 @@ class WorkspaceAuthorityService:
             # unique-index check could silently miss a racing insert. BEGIN
             # IMMEDIATE acquires the write lock up front so the guard always sees
             # the latest committed generation.
-            dbapi = session.connection().connection.driver_connection
-            dbapi.execute("BEGIN IMMEDIATE")
+            try:
+                dbapi = session.connection().connection.driver_connection
+                dbapi.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                session.rollback()
+                raise WorkspaceAuthorityError(
+                    "STALE_GENERATION",
+                    "write lock could not be acquired for workspace promotion",
+                    {"detail": str(exc)},
+                ) from exc
             run = session.get(MigrationRunModel, request.run_id)
             if run is None:
                 raise WorkspaceAuthorityError("RUN_NOT_FOUND", f"Migration run {request.run_id} not found")
