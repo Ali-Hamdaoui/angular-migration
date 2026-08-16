@@ -656,6 +656,12 @@ class RepairApplicationService:
                 context["segments"].append(
                     _semantic_retry_feedback(semantic_retry_code, semantic_retry_message)
                 )
+            bound_proposer_invocation = context.get("proposer_invocation_id")
+            if (
+                isinstance(bound_proposer_invocation, str)
+                and ":recovery-" in bound_proposer_invocation
+            ):
+                context["invocation_key"] = bound_proposer_invocation
             recovered = self._recover_completed(
                 context,
                 role="proposer",
