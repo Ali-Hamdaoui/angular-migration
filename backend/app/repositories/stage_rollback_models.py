@@ -17,4 +17,5 @@ class StageRollbackModel(Base):
     sealed_stage_count: Mapped[int] = mapped_column(Integer, nullable=False)
     evidence_preserved: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -15,7 +15,6 @@ def upgrade() -> None:
         "stage_validation_seals",
         sa.Column("id", sa.String(length=64), primary_key=True),
         sa.Column("stage_id", sa.String(length=64), sa.ForeignKey("migration_stages.id"), nullable=False),
-        sa.Column("stage_order", sa.Integer(), nullable=False),
         sa.Column("run_id", sa.String(length=64), sa.ForeignKey("migration_runs.id"), nullable=False),
         sa.Column("source_major", sa.Integer(), nullable=False),
         sa.Column("target_major", sa.Integer(), nullable=False),

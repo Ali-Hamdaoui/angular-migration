@@ -31,7 +31,7 @@ def _decision_dto(d) -> StageRollbackDecisionDto:
 def _record_dto(row) -> StageRollbackRecordDto:
     return StageRollbackRecordDto(id=row.id, run_id=row.run_id, rollback_point_stage_order=row.rollback_point_stage_order,
                                   sealed_stage_count=row.sealed_stage_count, evidence_preserved=row.evidence_preserved,
-                                  status=row.status, created_at=row.created_at)
+                                  status=row.status, checksum=row.checksum, created_at=row.created_at)
 
 
 @router.post("/runs/{run_id}/rollback", response_model=StageRollbackDecisionDto)

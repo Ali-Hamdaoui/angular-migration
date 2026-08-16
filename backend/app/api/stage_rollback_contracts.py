@@ -22,6 +22,7 @@ class StageRollbackRecordDto(ContractModel):
     sealed_stage_count: int
     evidence_preserved: bool
     status: str
+    checksum: str
     created_at: datetime
 
 

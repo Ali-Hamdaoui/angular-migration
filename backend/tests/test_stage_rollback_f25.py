@@ -79,6 +79,13 @@ def test_rollback_resets_stages_after_point_and_preserves_evidence():
     # sealed evidence preserved
     with session_scope() as session:
         assert session.query(StageValidationSealModel).filter_by(run_id=run_id).count() == 1
+    # idempotent re-rollback (same checksum -> no duplicate row, no crash)
+    again = service.rollback(run_id)
+    assert again.status == "rolled_back"
+    with session_scope() as session:
+        from app.repositories.models import StageRollbackModel
+
+        assert session.query(StageRollbackModel).filter_by(run_id=run_id).count() == 1
 
 
 def test_resume_from_sealed():

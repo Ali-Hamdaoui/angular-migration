@@ -11,6 +11,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "stage_validation_seals",
+        sa.Column("stage_order", sa.Integer(), nullable=False, server_default="0"),
+    )
     op.create_table(
         "stage_rollbacks",
         sa.Column("id", sa.String(length=64), primary_key=True),
@@ -19,6 +23,7 @@ def upgrade() -> None:
         sa.Column("sealed_stage_count", sa.Integer(), nullable=False),
         sa.Column("evidence_preserved", sa.Boolean(), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("checksum", sa.String(length=128), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_stage_rollbacks_run_id", "stage_rollbacks", ["run_id"])
@@ -27,3 +32,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_stage_rollbacks_run_id", table_name="stage_rollbacks")
     op.drop_table("stage_rollbacks")
+    op.drop_column("stage_validation_seals", "stage_order")

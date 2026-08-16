@@ -55,12 +55,15 @@ class StageRollbackService:
             decision = StageRollbackDecision(
                 run_id=run_id, rollback_point_stage_order=None, sealed_stage_count=0,
                 evidence_preserved=True, status="no_rollback_point",
-            )
+            ).bind_checksum()
             self._persist(run_id, decision)
-            return decision.bind_checksum()
-        from app.services.stage_chain_orchestrator import StageChainOrchestrator
+            return decision
+        from app.services.stage_chain_orchestrator import StageChainOrchestrator, StageOrchestrationError
 
-        chain = StageChainOrchestrator().current_state(run_id)
+        try:
+            chain = StageChainOrchestrator().current_state(run_id)
+        except StageOrchestrationError as exc:
+            raise StageRollbackError("CHAIN_NOT_STARTED", f"no chain to roll back for run {run_id}") from exc
         updated_stages = tuple(
             s.model_copy(update={"status": "pending", "gate_passed": False, "failure_code": None})
             if s.stage_order > rollback_point
@@ -73,9 +76,9 @@ class StageRollbackService:
         decision = StageRollbackDecision(
             run_id=run_id, rollback_point_stage_order=rollback_point,
             sealed_stage_count=sealed_count, evidence_preserved=True, status="rolled_back",
-        )
+        ).bind_checksum()
         self._persist(run_id, decision)
-        return decision.bind_checksum()
+        return decision
 
     def resume_from_sealed(self, run_id: str) -> dict:
         """Resume deterministically from the last sealed stage (F25-02).
@@ -86,9 +89,12 @@ class StageRollbackService:
         rollback_point = self.find_rollback_point(run_id)
         if rollback_point is None:
             raise StageRollbackError("NO_ROLLBACK_POINT", f"run {run_id} has no sealed stage to resume from")
-        from app.services.stage_chain_orchestrator import StageChainOrchestrator
+        from app.services.stage_chain_orchestrator import StageChainOrchestrator, StageOrchestrationError
 
-        chain = StageChainOrchestrator().current_state(run_id)
+        try:
+            chain = StageChainOrchestrator().current_state(run_id)
+        except StageOrchestrationError as exc:
+            raise StageRollbackError("CHAIN_NOT_STARTED", f"no chain to resume for run {run_id}") from exc
         next_stage = next(
             (s for s in chain.stages if s.stage_order > rollback_point and s.status == "pending"), None
         )
@@ -101,6 +107,14 @@ class StageRollbackService:
 
     def _persist(self, run_id: str, decision: StageRollbackDecision) -> None:
         with self._session_scope() as session:
+            existing = session.scalar(
+                select(StageRollbackModel).where(
+                    StageRollbackModel.run_id == run_id,
+                    StageRollbackModel.checksum == decision.checksum,
+                )
+            )
+            if existing is not None:
+                return
             session.add(
                 StageRollbackModel(
                     id="rb-" + hashlib.sha256(f"{run_id}:{decision.checksum}".encode()).hexdigest()[:24],
@@ -109,6 +123,7 @@ class StageRollbackService:
                     sealed_stage_count=decision.sealed_stage_count,
                     evidence_preserved=decision.evidence_preserved,
                     status=decision.status,
+                    checksum=decision.checksum,
                     created_at=self._now_provider(),
                 )
             )
