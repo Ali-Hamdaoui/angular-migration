@@ -349,6 +349,15 @@ class CommandPolicyEngineService:
         if not plan_check.passed:
             reasons.append(plan_check.reason or "plan membership rejected")
 
+        # 9. Angular update governance (F14): an ng update command must be
+        # authorized by the per-major governance authority, which requires a
+        # certified runtime for the stage transition.
+        if request.command_id == "angular-update-exact" and request.stage_id:
+            governance_check = self._check_ng_update_governance(session, request)
+            checks.append(governance_check)
+            if not governance_check.passed:
+                reasons.append(governance_check.reason or "ng update governance rejected")
+
         decision = AuthorizationDecision.REJECTED if reasons else AuthorizationDecision.ACCEPTED
         response = CommandPolicyValidateResponseDto(
             authorization_id=authorization_id,
@@ -488,6 +497,24 @@ class CommandPolicyEngineService:
         session.flush()
 
         return self._response_from_audit(audit, replay=False)
+
+    def _check_ng_update_governance(self, session, request) -> AuthorizationCheckResult:
+        """F14 governance gate: ng update requires a certified stage runtime."""
+        from app.repositories.models.workflow import MigrationStageModel
+        from app.services.ng_update_governance_service import NgUpdateGovernanceService
+
+        try:
+            stage = session.get(MigrationStageModel, request.stage_id)
+            if stage is None or not stage.source_version_family or not stage.target_version_family:
+                return AuthorizationCheckResult(passed=False, rule_name="ng_update_governance", reason="NG_UPDATE_GOVERNANCE: stage transition families are not set")
+            source_major = int(stage.source_version_family.removeprefix("angular-").removesuffix(".x"))
+            target_major = int(stage.target_version_family.removeprefix("angular-").removesuffix(".x"))
+            authz = NgUpdateGovernanceService().authorize_update(source_major, target_major, stage_id=stage.id)
+        except Exception as exc:
+            return AuthorizationCheckResult(passed=False, rule_name="ng_update_governance", reason=f"NG_UPDATE_GOVERNANCE: {exc}")
+        if not authz.allowed:
+            return AuthorizationCheckResult(passed=False, rule_name="ng_update_governance", reason=f"NG_UPDATE_GOVERNANCE: {authz.reason or 'not authorized'}")
+        return AuthorizationCheckResult(passed=True, rule_name="ng_update_governance")
 
     @staticmethod
     def _request_payload_hash(request: CommandPolicyValidateRequestDto) -> str:

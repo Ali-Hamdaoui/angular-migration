@@ -69,6 +69,19 @@ def test_authorize_certified_transition():
     assert authz.spec_checksum.startswith("sha256:")
 
 
+def test_authorize_mismatched_transition_denied():
+    """A request whose transition differs from the stage's families must be denied."""
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    _seed(stage_id, "angular-18.x", "angular-19.x")
+    service = NgUpdateGovernanceService()
+    authz = service.authorize_update(18, 19, stage_id=stage_id)
+    assert authz.allowed is True
+    # a certified 18->19 stage must NOT authorize an 19->20 spec request
+    mismatched = service.authorize_update(19, 20, stage_id=stage_id)
+    assert mismatched.allowed is False
+    assert "does not match" in mismatched.reason
+
+
 def test_authorize_experimental_transition_denied():
     stage_id = f"stage-{uuid4().hex[:8]}"
     run_id = _seed(stage_id, "angular-11.x", "angular-12.x")

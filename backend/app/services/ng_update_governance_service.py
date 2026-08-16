@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-
 from app.domain.command import ANGULAR_UPDATE_V3_RENDERER
 from app.domain.migration_route import validate_envelope
 from app.domain.ng_update_governance import NgUpdateAuthorization, NgUpdateCommandSpec
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
-from app.services.runtime_certification_service import RuntimeCertificationService
+from app.services.runtime_certification_service import RuntimeCertificationError, RuntimeCertificationService
 
 
 class NgUpdateGovernanceError(ValueError):
@@ -61,17 +59,25 @@ class NgUpdateGovernanceService:
     def authorize_update(self, source_major: int, target_major: int, *, stage_id: str) -> NgUpdateAuthorization:
         """Govern an update execution: certified runtime + catalogue-derived spec (F14-02/04).
 
-        The update is authorized only when the stage's runtime is certified for
-        the transition (F11 gate) and the spec resolves from the catalogue.
+        The update is authorized only when the stage's transition matches the
+        requested source/target majors, its runtime is certified for that
+        transition (F11 gate), and the spec resolves from the catalogue.
         """
         spec = self.spec_for_transition(source_major, target_major)
-        try:
-            certification = self._certification.enforce_stage_certification(stage_id)
-        except Exception as exc:
+        families = self._certification._stage_runtime.stage_version_families(stage_id)
+        if families != (f"angular-{source_major}.x", f"angular-{target_major}.x"):
             return NgUpdateAuthorization(
                 source_major=source_major, target_major=target_major,
                 spec_checksum=spec.checksum, certified=False, allowed=False,
-                reason=f"stage runtime is not certified: {exc}",
+                reason=f"stage transition {families} does not match the requested {source_major}->{target_major} update",
+            )
+        try:
+            certification = self._certification.enforce_stage_certification(stage_id)
+        except RuntimeCertificationError as exc:
+            return NgUpdateAuthorization(
+                source_major=source_major, target_major=target_major,
+                spec_checksum=spec.checksum, certified=False, allowed=False,
+                reason=exc.message,
             )
         if not certification.certified:
             return NgUpdateAuthorization(
@@ -85,9 +91,3 @@ class NgUpdateGovernanceService:
             reason="update authorized against the certified runtime and catalogue spec",
         )
 
-    def render_command(self, source_major: int, target_major: int) -> NgUpdateCommandSpec:
-        return self.spec_for_transition(source_major, target_major)
-
-
-def _spec_id(source_major: int, target_major: int, checksum: str) -> str:
-    return "ngu-" + hashlib.sha256(f"{source_major}:{target_major}:{checksum}".encode()).hexdigest()[:24]
