@@ -61,13 +61,18 @@ class CandidatePromotionService:
         generation = self._next_generation(run_id, stage_id)
         blockers: list[str] = []
         resolved = workspace.resolve(strict=False)
-        if run_root and not _within_root(resolved, Path(run_root).resolve(strict=False)):
+        if not run_root:
+            blockers.append("CANDIDATE_NO_RUN_ROOT")
+        elif not _within_root(resolved, Path(run_root).resolve(strict=False)):
             blockers.append("CANDIDATE_OUTSIDE_RUN_ROOT")
-        if not resolved.is_dir():
-            blockers.append("CANDIDATE_WORKSPACE_MISSING")
-        elif not (resolved / "package.json").is_file():
-            blockers.append("CANDIDATE_PACKAGE_JSON_MISSING")
-        fingerprint = _dir_fingerprint(resolved)
+        # The filesystem is only touched for candidates that pass containment;
+        # out-of-root/missing candidates get a sentinel fingerprint (no oracle).
+        if not blockers:
+            if not resolved.is_dir():
+                blockers.append("CANDIDATE_WORKSPACE_MISSING")
+            elif not (resolved / "package.json").is_file():
+                blockers.append("CANDIDATE_PACKAGE_JSON_MISSING")
+        fingerprint = _dir_fingerprint(resolved) if not blockers else "none"
         status = "candidate_ready" if not blockers else "rejected"
         decision = CandidatePromotionDecision(
             run_id=run_id,
@@ -195,6 +200,8 @@ def _stage_alias(stage_id: str) -> str:
 def _dir_fingerprint(workspace: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(workspace.rglob("*")):
+        if path.is_symlink():
+            continue
         if path.is_file() and "node_modules" not in path.parts:
             digest.update(path.relative_to(workspace).as_posix().encode())
             digest.update(b":")

@@ -60,11 +60,17 @@ def test_validate_candidate_ready():
 
 def test_validate_missing_candidate_rejected():
     stage_id = f"stage-{uuid4().hex[:8]}"
-    run_id = _seed(stage_id)
+    root = _run_root()
+    run_id = _seed(stage_id, root)
     service = CandidatePromotionService()
-    decision = service.validate_candidate(Path("/tmp/does-not-exist"), run_id=run_id, stage_id=stage_id)
+    missing = root / "does-not-exist"
+    decision = service.validate_candidate(missing, run_id=run_id, stage_id=stage_id)
     assert decision.validated is False
     assert "CANDIDATE_WORKSPACE_MISSING" in decision.blockers
+    # no filesystem oracle for out-of-root candidates
+    out = service.validate_candidate(Path("/tmp"), run_id=run_id, stage_id=stage_id)
+    assert "CANDIDATE_OUTSIDE_RUN_ROOT" in out.blockers
+    assert out.candidate_fingerprint == "none"
 
 
 def test_promote_candidate_atomic_and_generation_increment():
