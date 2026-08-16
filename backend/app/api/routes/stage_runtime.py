@@ -26,7 +26,7 @@ def get_stage_runtime_service() -> StageRuntimeApplicationService:
 
 
 def _raise(error: StageRuntimeError) -> None:
-    raise HTTPException(status_code=404 if error.code in {"STAGE_NOT_FOUND", "CATALOGUE_ENTRY_MISSING"} else 422,
+    raise HTTPException(status_code=404 if error.code in {"STAGE_NOT_FOUND", "CATALOGUE_ENTRY_MISSING", "RUN_NOT_FOUND"} else 422,
                         detail={"error_code": error.code, "message": error.message})
 
 
@@ -121,9 +121,9 @@ def record_stage_runtime_binding(
     try:
         families = service.stage_version_families(stage_id)
         binding = service.resolve_stage(stage_id, families[0], families[1])
+        rows = service.record_binding(run_id, binding, actor=request.actor)
     except StageRuntimeError as error:
         _raise(error)
-    rows = service.record_binding(run_id, binding, actor=request.actor)
     return StageRuntimeBindingListDto(bindings=[_row_dto(row) for row in rows])
 
 

@@ -32,9 +32,9 @@ class StageRuntimeBindingRowDto(ContractModel):
     kind: Literal["node", "npm", "npx"]
     runtime_id: str | None = None
     version_exact: str | None = None
-    sha256: str
-    resolved_path: str
-    source: str
+    sha256: str | None = None
+    resolved_path: str | None = None
+    source: str | None = None
     status: str
     blocked_reason: str | None = None
     created_at: datetime

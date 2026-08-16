@@ -15,7 +15,7 @@ from app.domain.runtime_execution import (
     RuntimeRequirementBinding,
 )
 from app.domain.stage_runtime import StageRuntimeBinding, StageRuntimeRequirement
-from app.repositories.models import MigrationStageModel, StageRuntimeBindingModel
+from app.repositories.models import MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
 from app.repositories.session import session_scope
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.runtime_resolution_application_service import _build_worker_version_probe
@@ -146,33 +146,36 @@ class StageRuntimeApplicationService:
         return binding.bind_checksum()
 
     def record_binding(self, run_id: str, binding: StageRuntimeBinding, *, actor: str | None = None) -> list[StageRuntimeBindingModel]:
-        """Persist the resolved stage binding rows idempotently."""
+        """Persist the resolved stage binding rows idempotently.
+
+        Blocked resolutions persist a status-only row per kind so evidence of a
+        failed binding attempt is durable, never silently absent.
+        """
         now = self._now_provider()
         rows: list[StageRuntimeBindingModel] = []
         with self._session_scope() as session:
+            if session.get(MigrationRunModel, run_id) is None:
+                raise StageRuntimeError("RUN_NOT_FOUND", f"Migration run {run_id} not found")
             stage = session.get(MigrationStageModel, binding.stage_id)
             if stage is None:
                 raise StageRuntimeError("STAGE_NOT_FOUND", f"Migration stage {binding.stage_id} not found")
             for item in binding.bindings:
-                descriptor = item.descriptor
-                if descriptor is None:
-                    continue
-                existing = session.get(StageRuntimeBindingModel, _binding_id(binding.stage_id, descriptor.kind.value))
+                existing = session.get(StageRuntimeBindingModel, _binding_id(binding.stage_id, item.requirement.kind.value))
                 if existing is not None:
                     rows.append(existing)
                     continue
                 row = StageRuntimeBindingModel(
-                    id=_binding_id(binding.stage_id, descriptor.kind.value),
+                    id=_binding_id(binding.stage_id, item.requirement.kind.value),
                     run_id=run_id,
                     stage_id=binding.stage_id,
-                    kind=descriptor.kind.value,
-                    runtime_id=descriptor.runtime_id,
-                    version_exact=descriptor.version_exact,
-                    sha256=descriptor.sha256,
-                    resolved_path=descriptor.resolved_path,
-                    source=descriptor.source,
+                    kind=item.requirement.kind.value,
+                    runtime_id=item.descriptor.runtime_id if item.descriptor else None,
+                    version_exact=item.descriptor.version_exact if item.descriptor else None,
+                    sha256=item.descriptor.sha256 if item.descriptor else None,
+                    resolved_path=item.descriptor.resolved_path if item.descriptor else None,
+                    source=item.descriptor.source if item.descriptor else None,
                     status=binding.status,
-                    blocked_reason=binding.blocked_reason,
+                    blocked_reason=item.blocked_reason or binding.blocked_reason,
                     created_at=now,
                 )
                 session.add(row)

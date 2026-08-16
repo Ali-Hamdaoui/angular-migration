@@ -70,3 +70,13 @@ def test_resolve_unknown_stage_returns_404():
 def test_record_unknown_stage_returns_404():
     response = client.post("/runs/run-x/stages/stage-missing/runtime/bindings", json={"run_id": "run-x"})
     assert response.status_code == 404
+
+
+def test_record_with_unknown_run_returns_404():
+    run_id, stage_id = _seed()
+    response = client.post(
+        f"/runs/run-does-not-exist/stages/{stage_id}/runtime/bindings",
+        json={"run_id": "run-does-not-exist"},
+    )
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "RUN_NOT_FOUND"

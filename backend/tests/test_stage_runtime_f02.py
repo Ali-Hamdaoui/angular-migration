@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.domain.runtime_execution import RuntimeExecutableKind, RuntimeRequirement
+from app.domain.runtime_execution import RuntimeExecutableKind, RuntimeRequirement, RuntimeRequirementBinding
 from app.domain.stage_runtime import StageRuntimeBinding, StageRuntimeRequirement
 from app.repositories.models import MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
 from app.repositories.session import session_scope
@@ -143,3 +143,38 @@ def test_record_binding_unknown_stage_raises(tmp_path: Path):
     with pytest.raises(StageRuntimeError) as exc:
         service.resolve_stage("stage-missing", "angular-18.x", "angular-19.x")
     assert exc.value.code == "STAGE_NOT_FOUND"
+
+
+def test_record_binding_unknown_run_raises(tmp_path: Path):
+    service = make_service(tmp_path)
+    _seed_stage("stage-run-check")
+    binding = service.resolve_stage("stage-run-check", "angular-18.x", "angular-19.x")
+    with pytest.raises(StageRuntimeError) as exc:
+        service.record_binding("run-does-not-exist", binding)
+    assert exc.value.code == "RUN_NOT_FOUND"
+
+
+def test_blocked_resolution_persists_status_only_evidence(tmp_path: Path):
+    """A blocked stage binding persists per-kind rows with no descriptors (F02 evidence integrity)."""
+    _seed_stage("stage-blocked")
+    service = make_service(tmp_path)
+
+    class BlockingAuthority:
+        def resolve(self, requirements):
+            return tuple(
+                RuntimeRequirementBinding(requirement=r, blocked_reason="no compatible install")
+                for r in requirements
+            )
+
+    service._authority = BlockingAuthority()  # type: ignore[assignment]
+    binding = service.resolve_stage("stage-blocked", "angular-18.x", "angular-19.x")
+    assert binding.status == "blocked"
+    assert binding.blocked_reason is not None
+
+    rows = service.record_binding("run-stage-blocked", binding)
+    assert len(rows) == 3
+    for row in rows:
+        assert row.status == "blocked"
+        assert row.sha256 is None
+        assert row.resolved_path is None
+        assert row.blocked_reason is not None

@@ -13,6 +13,7 @@ This module has no process, filesystem, database, or network side effects.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -67,14 +68,6 @@ class StageRuntimeBinding(_ImmutableModel):
         canonical = self.model_dump(mode="json")
         canonical.pop("checksum", None)
         digest = hashlib.sha256(
-            __import__("json").dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         return self.model_copy(update={"checksum": f"sha256:{digest}"})
-
-
-def stage_binding_checksum(binding: StageRuntimeBinding) -> str:
-    return binding.checksum or binding.bind_checksum().checksum
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)
