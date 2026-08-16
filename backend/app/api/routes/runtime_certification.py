@@ -26,7 +26,7 @@ def _decision_dto(decision) -> RuntimeCertificationDto:
         run_id=decision.run_id, stage_id=decision.stage_id,
         source_family=decision.source_family, target_family=decision.target_family,
         runtime_id=decision.runtime_id, node_exact=decision.node_exact, npm_exact=decision.npm_exact,
-        certified=decision.certified, reason=decision.reason,
+        certified=decision.certified, allowed=decision.allowed, classification=decision.classification, reason=decision.reason,
         certified_against=decision.certified_against, resolved_at=decision.resolved_at,
     )
 
@@ -37,7 +37,7 @@ def _record_dto(row) -> RuntimeCertificationRecordDto:
         source_family=row.source_family, target_family=row.target_family,
         runtime_id=row.runtime_id, node_version=row.node_version, npm_version=row.npm_version,
         node_sha256=row.node_sha256, npm_sha256=row.npm_sha256,
-        certified=row.certified, reason=row.reason, certified_against=row.certified_against,
+        certified=row.certified, allowed=row.allowed, classification=row.classification, reason=row.reason, certified_against=row.certified_against,
         created_at=row.created_at,
     )
 

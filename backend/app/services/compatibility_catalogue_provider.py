@@ -41,6 +41,16 @@ _TYPESCRIPT_RANGES: dict[int, tuple[str, str]] = {
     21: ("5.9.0", "6.0.0"),
 }
 
+# Official Angular source/target Node ranges.  A stage uses the intersection
+# of its two adjacent Angular-family rows; npm has no equivalent official
+# Angular-major range and is governed by executable/probe policy instead.
+_NODE_RANGES: dict[int, tuple[str, ...]] = {
+    18: ("^18.19.1", "^20.11.1", "^22.0.0"),
+    19: ("^18.19.1", "^20.11.1", "^22.0.0"),
+    20: ("^20.19.0", "^22.12.0", "^24.0.0"),
+    21: ("^20.19.0", "^22.12.0", "^24.0.0"),
+}
+
 
 #: The certified (runtime-proven) transition; the rest of the envelope is
 #: seeded with official compatibility data and historical_experimental
@@ -139,6 +149,8 @@ class CompatibilityCatalogueProvider:
             validation_policy_id="angular-stage-standard-v2",
             known_risks=() if certified else ("historical_fixture_evidence_incomplete",),
             validated_runtime_profiles=validated,
+            source_node_ranges=_NODE_RANGES.get(major, ()),
+            target_node_ranges=_NODE_RANGES.get(target, ()),
             certification_status="certified" if certified else "seeded_official",
             certification_source="angular.dev/reference/versions" if not certified else "bridge-certification",
             certified_at=CERTIFIED_AT if certified else None,

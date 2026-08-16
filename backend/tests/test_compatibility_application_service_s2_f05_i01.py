@@ -9,6 +9,7 @@ from app.domain.compatibility import (
     CompatibilityResolutionRequest,
 )
 from app.domain.execution_profile import RuntimeCandidate
+from app.domain.runtime_compatibility import classify_runtime_versions
 from app.services.compatibility_application_service import (
     CompatibilityApplicationError,
     CompatibilityApplicationService,
@@ -118,14 +119,56 @@ def test_current_catalogue_preserves_certified_node_18_profile():
     assert result.selected_profile.npm_exact == "10.8.2"
 
 
-def test_current_catalogue_rejects_nearby_unvalidated_node_22_profile():
+def test_current_catalogue_accepts_unvalidated_node_22_profile_by_official_range():
     catalogue = CompatibilityCatalogueProvider().load()
     candidate = _candidate(node_exact="22.23.2", npm_exact="10.9.8", npx_exact="10.9.8")
     result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
 
-    assert result.status == "blocked"
-    assert result.selected_profile is None
-    assert "NO_COMPATIBLE_STAGE1_PROFILE" in result.package.blockers
+    assert result.status in {"feasible", "feasible_with_warnings"}
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "RANGE_COMPATIBLE"
+
+
+def test_current_catalogue_accepts_windows_node_22_as_range_compatible():
+    catalogue = CompatibilityCatalogueProvider().load()
+    candidate = _candidate(profile_id="node-22-range", node_exact="22.23.1", npm_exact="10.9.8", npx_exact="10.9.8")
+    result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
+
+    assert result.status in {"feasible", "feasible_with_warnings"}
+    assert result.package.blockers == ()
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "RANGE_COMPATIBLE"
+
+
+def test_node_22_range_is_compatible_for_every_route_stage():
+    catalogue = CompatibilityCatalogueProvider().load()
+    for source, target in ((18, 19), (19, 20), (20, 21)):
+        entry = catalogue.entry_for(f"angular-{source}.x", f"angular-{target}.x")
+        assert entry is not None
+        assert classify_runtime_versions(
+            node_exact="22.23.1", npm_exact="10.9.8", npx_exact="10.9.8",
+            validated_runtime_profiles=entry.validated_runtime_profiles,
+            source_node_ranges=entry.source_node_ranges,
+            target_node_ranges=entry.target_node_ranges,
+        ) == "RANGE_COMPATIBLE"
+
+
+def test_runtime_range_policy_fails_closed_for_incompatible_and_incomplete_candidates():
+    catalogue = CompatibilityCatalogueProvider().load()
+    entry = catalogue.entry_for("angular-19.x", "angular-20.x")
+    assert entry is not None
+    for values in (
+        {"node_exact": "16.20.2", "npm_exact": "8.19.4", "npx_exact": "8.19.4"},
+        {"node_exact": "18.20.8", "npm_exact": "10.8.2", "npx_exact": "10.8.2"},
+        {"node_exact": "not-a-version", "npm_exact": "10.9.8", "npx_exact": "10.9.8"},
+        {"node_exact": "22.23.1", "npm_exact": "", "npx_exact": "10.9.8"},
+    ):
+        assert classify_runtime_versions(
+            **values,
+            validated_runtime_profiles=entry.validated_runtime_profiles,
+            source_node_ranges=entry.source_node_ranges,
+            target_node_ranges=entry.target_node_ranges,
+        ) == "UNSUPPORTED"
 
 
 def test_service_replays_identical_idempotent_request_and_rejects_payload_reuse():

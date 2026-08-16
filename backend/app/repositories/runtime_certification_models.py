@@ -22,6 +22,8 @@ class RuntimeCertificationModel(Base):
     node_sha256: Mapped[str | None] = mapped_column(String(64))
     npm_sha256: Mapped[str | None] = mapped_column(String(64))
     certified: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False, default="UNSUPPORTED")
     reason: Mapped[str | None] = mapped_column(String(512))
     certified_against: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

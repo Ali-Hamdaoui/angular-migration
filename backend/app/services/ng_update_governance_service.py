@@ -79,15 +79,15 @@ class NgUpdateGovernanceService:
                 spec_checksum=spec.checksum, certified=False, allowed=False,
                 reason=exc.message,
             )
-        if not certification.certified:
+        if not certification.allowed:
             return NgUpdateAuthorization(
                 source_major=source_major, target_major=target_major,
-                spec_checksum=spec.checksum, certified=False, allowed=False,
-                reason=certification.reason or "runtime not certified",
+                spec_checksum=spec.checksum, certified=certification.certified, allowed=False,
+                reason=certification.reason or "runtime is not compatible",
             )
         return NgUpdateAuthorization(
             source_major=source_major, target_major=target_major,
-            spec_checksum=spec.checksum, certified=True, allowed=True,
-            reason="update authorized against the certified runtime and catalogue spec",
+            spec_checksum=spec.checksum, certified=certification.certified, allowed=True,
+            reason=f"update authorized against {certification.classification} runtime and catalogue spec",
         )
 

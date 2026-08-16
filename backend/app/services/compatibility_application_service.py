@@ -17,6 +17,7 @@ from app.domain.compatibility import (
     calculate_stage1_profile_checksum,
 )
 from app.domain.execution_profile import RuntimeCandidate, Version
+from app.domain.runtime_compatibility import RuntimeCompatibilityClass, classify_runtime_versions
 from app.services.artifact_binding import canonical_artifact_set_checksum
 
 
@@ -64,11 +65,15 @@ class CompatibilityResolver:
         return self._result(request, source_family, route, profile, support_level, status, tuple(blockers), tuple(warnings))
 
     def _select_stage1_profile(self, request, entry) -> Stage1ExecutionProfile | None:
-        candidates = [candidate for candidate in request.runtime_candidates if self._candidate_allowed(candidate, entry)]
+        candidates = [
+            (candidate, classification)
+            for candidate in request.runtime_candidates
+            if (classification := self._candidate_classification(candidate, entry)) is not None
+        ]
         if not candidates:
             return None
-        candidates.sort(key=lambda candidate: (self._version_key(candidate.node_exact), candidate.profile_id), reverse=True)
-        candidate = candidates[0]
+        candidates.sort(key=lambda item: (item[1] != "EXACT_CERTIFIED", self._version_key(item[0].node_exact), item[0].profile_id))
+        candidate, classification = candidates[0]
         payload = {
             "profile_id": candidate.profile_id,
             "angular_exact": entry.target_angular_exact,
@@ -83,6 +88,7 @@ class CompatibilityResolver:
             "architecture": candidate.architecture,
             "catalogue_version": self.catalogue.version,
             "source_angular_exact": request.source_angular_exact,
+            "classification": classification,
         }
         stage1_checksum = "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return Stage1ExecutionProfile(
@@ -93,33 +99,17 @@ class CompatibilityResolver:
         )
 
     @staticmethod
-    def _candidate_allowed(candidate: RuntimeCandidate, entry) -> bool:
+    def _candidate_classification(candidate: RuntimeCandidate, entry) -> RuntimeCompatibilityClass | None:
         node = Version.parse(candidate.node_exact)
         npm = Version.parse(candidate.npm_exact)
         npx = Version.parse(candidate.npx_exact)
-        if entry.validated_runtime_profiles:
-            version_allowed = bool(
-                node
-                and npm
-                and any(str(node) == node_exact and str(npm) == npm_exact for node_exact, npm_exact in entry.validated_runtime_profiles)
-            )
-        else:
-            version_allowed = bool(
-                node
-                and npm
-                and node.major == entry.node_major
-                and npm.major == entry.npm_major
-                and (entry.node_exact is None or str(node) == entry.node_exact)
-                and (entry.npm_exact is None or str(npm) == entry.npm_exact)
-            )
-        return bool(
+        governance = bool(
             candidate.available
             and candidate.operating_system.lower() == "windows"
             and candidate.architecture.lower() == "amd64"
             and node
             and npm
             and npx
-            and version_allowed
             and npx.major == entry.npm_major
             and (candidate.angular_cli_exact is None or candidate.angular_cli_exact == (entry.cli_exact or entry.target_cli_exact))
             and candidate.registry_configured
@@ -128,14 +118,40 @@ class CompatibilityResolver:
             and candidate.cache_policy_valid
             and candidate.network_policy == "approved-registries-only"
         )
+        if not governance:
+            return None
+        classification = classify_runtime_versions(
+            node_exact=candidate.node_exact,
+            npm_exact=candidate.npm_exact,
+            npx_exact=candidate.npx_exact,
+            validated_runtime_profiles=entry.validated_runtime_profiles,
+            source_node_ranges=entry.source_node_ranges,
+            target_node_ranges=entry.target_node_ranges,
+        )
+        if classification != "UNSUPPORTED":
+            return classification
+        # Legacy/custom catalogues without official range metadata retain their
+        # prior exact constraints, but are not promoted to certified evidence.
+        if not entry.source_node_ranges and node and npm and str(node) == entry.node_exact and str(npm) == entry.npm_exact:
+            return "RANGE_COMPATIBLE"
+        return None
+
+    @classmethod
+    def _candidate_allowed(cls, candidate: RuntimeCandidate, entry) -> bool:
+        return cls._candidate_classification(candidate, entry) is not None
 
     @staticmethod
     def _version_key(value: str) -> tuple[int, int, int]:
         version = Version.parse(value)
         return (version.major, version.minor, version.patch) if version else (-1, -1, -1)
 
-    @staticmethod
-    def _stage(entry, request, blockers, warnings):
+    def _stage(self, entry, request, blockers, warnings):
+        classifications = [
+            self._candidate_classification(candidate, entry)
+            for candidate in request.runtime_candidates
+        ]
+        classification = next((item for item in classifications if item == "EXACT_CERTIFIED"), None)
+        classification = classification or next((item for item in classifications if item == "RANGE_COMPATIBLE"), None)
         return {
             "stage_id": entry.stage_id,
             "source_family": entry.source_family,
@@ -147,6 +163,7 @@ class CompatibilityResolver:
             "npm_exact": entry.npm_exact,
             "blockers": tuple(blockers),
             "warnings": tuple(warnings),
+            "runtime_classification": classification,
         }
 
     def _blocked(self, request, reason, source_family=None):

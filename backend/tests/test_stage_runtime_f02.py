@@ -45,7 +45,7 @@ def test_derive_requirement_from_catalogue():
     node = requirement.requirement_for(RuntimeExecutableKind.NODE)
     assert node is not None
     assert node.minimum_version == "18.19.1"
-    assert node.runtime_id == "node18"
+    assert node.runtime_id == "angular-stage-runtime"
 
 
 def test_derive_requirement_missing_entry_raises():

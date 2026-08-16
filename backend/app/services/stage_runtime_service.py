@@ -91,13 +91,16 @@ class StageRuntimeApplicationService:
 
     @staticmethod
     def _requirement_from_entry(stage_id: str, entry: CompatibilityCatalogueEntry, catalogue_version: str) -> StageRuntimeRequirement:
-        runtime_id = f"node{entry.node_major}"
+        # Range-compatible stages may bind any governed installation that can
+        # satisfy both Angular-family rows; do not pin resolution to the
+        # historical certified Node major.
+        runtime_id = "angular-stage-runtime"
         node_requirement = RuntimeRequirement(
             kind=RuntimeExecutableKind.NODE,
             runtime_id=runtime_id,
             minimum_version=entry.node_minimum or entry.node_exact or f"{entry.node_major}.0.0",
         )
-        npm_minimum = entry.npm_exact or "0.0.0"
+        npm_minimum = f"{entry.npm_major}.0.0"
         requirements = (
             node_requirement,
             RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, minimum_version=npm_minimum),

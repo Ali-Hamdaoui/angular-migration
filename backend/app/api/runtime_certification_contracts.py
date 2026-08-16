@@ -14,6 +14,8 @@ class RuntimeCertificationDto(ContractModel):
     node_exact: str | None = None
     npm_exact: str | None = None
     certified: bool
+    allowed: bool = False
+    classification: str = "UNSUPPORTED"
     reason: str | None = None
     certified_against: str | None = None
     resolved_at: datetime
@@ -31,6 +33,8 @@ class RuntimeCertificationRecordDto(ContractModel):
     node_sha256: str | None = None
     npm_sha256: str | None = None
     certified: bool
+    allowed: bool = False
+    classification: str = "UNSUPPORTED"
     reason: str | None = None
     certified_against: str | None = None
     created_at: datetime

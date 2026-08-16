@@ -43,13 +43,23 @@ class RuntimeCertificationService:
     def certify_stage(self, stage_id: str) -> RuntimeCertificationDecision:
         """Resolve the stage runtime and certify it against the catalogue."""
         families = self._stage_runtime.stage_version_families(stage_id)
-        binding = self._stage_runtime.resolve_stage(stage_id, families[0], families[1])
         catalogue = self._catalogue_provider.load()
         entry = catalogue.entry_for(families[0], families[1])
         if entry is None:
             raise RuntimeCertificationError("CATALOGUE_ENTRY_MISSING", f"No catalogue entry for {families[0]} -> {families[1]}")
+        if not entry.validated_runtime_profiles and not entry.source_node_ranges and not entry.target_node_ranges:
+            decision = RuntimeCertificationDecision(
+                run_id=self._stage_run_id(stage_id), stage_id=stage_id,
+                source_family=families[0], target_family=families[1],
+                certified=False, allowed=False, classification="UNSUPPORTED",
+                reason="transition has no certified runtime profiles yet",
+                certified_against=catalogue.version, resolved_at=self._now_provider(),
+            )
+            return self._persist_decision(decision, None, None)
+        binding = self._stage_runtime.resolve_stage(stage_id, families[0], families[1])
         node = binding.descriptor_for(_kind("node"))
         npm = binding.descriptor_for(_kind("npm"))
+        npx = binding.descriptor_for(_kind("npx"))
         decision = evaluate_certification(
             run_id=self._stage_run_id(stage_id),
             stage_id=stage_id,
@@ -57,7 +67,10 @@ class RuntimeCertificationService:
             target_family=families[1],
             node_descriptor=node,
             npm_descriptor=npm,
+            npx_descriptor=npx,
             catalogue_validated_profiles=entry.validated_runtime_profiles,
+            source_node_ranges=entry.source_node_ranges,
+            target_node_ranges=entry.target_node_ranges,
             catalogue_version=catalogue.version,
             resolved_at=self._now_provider(),
         )
@@ -87,6 +100,8 @@ class RuntimeCertificationService:
                     node_sha256=node.sha256 if node else None,
                     npm_sha256=npm.sha256 if npm else None,
                     certified=decision.certified,
+                    allowed=decision.allowed,
+                    classification=decision.classification,
                     reason=decision.reason,
                     certified_against=decision.certified_against,
                     created_at=decision.resolved_at,
@@ -110,7 +125,8 @@ class RuntimeCertificationService:
                 run_id=record.run_id, stage_id=record.stage_id,
                 source_family=record.source_family, target_family=record.target_family,
                 runtime_id=record.runtime_id, node_exact=record.node_version, npm_exact=record.npm_version,
-                certified=True, reason=record.reason, certified_against=record.certified_against,
+                certified=record.certified, allowed=record.allowed, classification=record.classification,
+                reason=record.reason, certified_against=record.certified_against,
                 resolved_at=record.created_at,
             )
 
@@ -123,13 +139,13 @@ class RuntimeCertificationService:
         """
         families = self._stage_runtime.stage_version_families(stage_id)
         entry = self._catalogue_provider.load().entry_for(families[0], families[1])
-        if entry is None or not entry.validated_runtime_profiles:
+        if entry is None:
             raise RuntimeCertificationError(
                 "RUNTIME_NOT_CERTIFIED",
                 f"stage {stage_id} ({families[0]} -> {families[1]}) has no certified runtime profile",
             )
         decision = self.certify_stage(stage_id)
-        if not decision.certified:
+        if not decision.allowed:
             raise RuntimeCertificationError(
                 "RUNTIME_NOT_CERTIFIED",
                 decision.reason or "stage runtime is not certified for the transition",

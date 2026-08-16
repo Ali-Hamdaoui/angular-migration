@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.execution_profile import RuntimeCandidate
+from app.domain.runtime_compatibility import RuntimeCompatibilityClass
 
 SupportLevel = Literal[
     "officially_supported",
@@ -63,6 +64,8 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     known_risks: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
     validated_runtime_profiles: tuple[tuple[str, str], ...] = ()
+    source_node_ranges: tuple[str, ...] = ()
+    target_node_ranges: tuple[str, ...] = ()
     certification_status: str | None = None
     certification_source: str | None = None
     certified_at: datetime | None = None
@@ -92,6 +95,10 @@ class CompatibilityCatalogue(CompatibilityModel):
             serialized = entry.model_dump(mode="json")
             if not entry.validated_runtime_profiles:
                 serialized.pop("validated_runtime_profiles", None)
+            if not entry.source_node_ranges:
+                serialized.pop("source_node_ranges", None)
+            if not entry.target_node_ranges:
+                serialized.pop("target_node_ranges", None)
             # Drop None-valued fields so the checksum is stable across schema
             # evolution and legacy versions checksum identically to their
             # original contracts.
@@ -151,6 +158,7 @@ class Stage1ExecutionProfile(CompatibilityModel):
     source_execution_profile_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     stage1_profile_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    classification: RuntimeCompatibilityClass = "EXACT_CERTIFIED"
 
 
 def calculate_stage1_profile_checksum(profile: Stage1ExecutionProfile | dict) -> str:
@@ -172,6 +180,7 @@ class CompatibilityStage(CompatibilityModel):
     npm_exact: str | None = None
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    runtime_classification: RuntimeCompatibilityClass | None = None
 
 
 class FeasibilityPackage(CompatibilityModel):
