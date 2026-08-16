@@ -73,6 +73,28 @@ def test_discover_enumerates_runtime_matrix():
     assert all(len(item.sha256) == 64 for item in found)
 
 
+def test_discover_enumerates_windows_nvm_layout(tmp_path: Path):
+    version_dir = tmp_path / "v22.23.1"
+    version_dir.mkdir()
+    for name in ("node.exe", "npm.cmd", "npx.cmd"):
+        (version_dir / name).write_text(name, encoding="utf-8")
+
+    def probe(path: Path) -> str:
+        return {"node.exe": "22.23.1", "npm.cmd": "10.9.8", "npx.cmd": "10.9.8"}[path.name]
+
+    found = RuntimeResolverAuthority(
+        RuntimeMatrix(node_install_root=tmp_path, angular_cli_root=tmp_path),
+        probe=probe,
+        now_provider=lambda: NOW,
+    ).discover()
+
+    assert {(item.kind, Path(item.resolved_path).name) for item in found} == {
+        (RuntimeExecutableKind.NODE, "node.exe"),
+        (RuntimeExecutableKind.NPM, "npm.cmd"),
+        (RuntimeExecutableKind.NPX, "npx.cmd"),
+    }
+
+
 def test_resolve_exact_node_version_is_path_independent():
     bindings = authority().resolve(
         [RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="node18", version_exact="18.20.8")]

@@ -72,14 +72,21 @@ class RuntimeResolverAuthority:
                 continue
             installation_root = version_dir
             bin_dir = version_dir / "bin"
-            if not bin_dir.is_dir():
-                continue
-            for kind, executable_name in (
-                (RuntimeExecutableKind.NODE, "node"),
-                (RuntimeExecutableKind.NPM, "npm"),
-                (RuntimeExecutableKind.NPX, "npx"),
-            ):
-                path = bin_dir / executable_name
+            executable_root, executable_names = (
+                (bin_dir, {
+                    RuntimeExecutableKind.NODE: "node",
+                    RuntimeExecutableKind.NPM: "npm",
+                    RuntimeExecutableKind.NPX: "npx",
+                })
+                if bin_dir.is_dir()
+                else (version_dir, {
+                    RuntimeExecutableKind.NODE: "node.exe",
+                    RuntimeExecutableKind.NPM: "npm.cmd",
+                    RuntimeExecutableKind.NPX: "npx.cmd",
+                })
+            )
+            for kind, executable_name in executable_names.items():
+                path = executable_root / executable_name
                 if not path.is_file():
                     continue
                 descriptor = self._build_descriptor(
