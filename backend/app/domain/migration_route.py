@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -64,5 +62,3 @@ def validate_envelope(source_major: int, target_major: int) -> str | None:
     return None
 
 
-def now_utc() -> datetime:
-    return datetime.now(UTC)

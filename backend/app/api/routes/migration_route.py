@@ -6,7 +6,6 @@ from app.api.migration_route_contracts import (
     ComputeRouteRequest,
     MigrationRouteDto,
     RouteRecordDto,
-    RouteRecordListDto,
     RouteStageDto,
 )
 from app.services.migration_route_service import MigrationRouteError, MigrationRouteService

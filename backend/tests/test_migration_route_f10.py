@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.domain.migration_route import validate_envelope
 from app.main import app
-from app.repositories.models import MigrationRouteModel, MigrationRunModel
+from app.repositories.models import MigrationRunModel
 from app.repositories.session import session_scope
 from app.services.migration_route_service import MigrationRouteError, MigrationRouteService
 

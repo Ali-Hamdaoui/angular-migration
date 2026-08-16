@@ -47,7 +47,14 @@ class MigrationRouteService:
         blocker = validate_envelope(source_major, target_major)
         if blocker:
             raise MigrationRouteError("ENVELOPE_VIOLATION", f"source/target outside the supported envelope: {blocker}", {"blocker": blocker})
-        catalogue = self._catalogue_provider.load(catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION)
+        try:
+            catalogue = self._catalogue_provider.load(catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION)
+        except ValueError as exc:
+            raise MigrationRouteError(
+                "UNSUPPORTED_CATALOGUE_VERSION",
+                f"unsupported catalogue version {catalogue_version!r}",
+                {"catalogue_version": catalogue_version},
+            ) from exc
         stages = []
         for order, major in enumerate(range(source_major, target_major), start=1):
             source_family = f"angular-{major}.x"
