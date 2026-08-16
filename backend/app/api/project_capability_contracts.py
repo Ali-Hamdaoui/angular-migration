@@ -31,7 +31,6 @@ class DeriveCapabilitiesRequest(ContractModel):
 
 
 class ReadinessRequest(ContractModel):
-    run_id: str = Field(min_length=1)
     source_root: str
 
 

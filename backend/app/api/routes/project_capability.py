@@ -53,6 +53,8 @@ def derive_capabilities(
     request: DeriveCapabilitiesRequest,
     service: ProjectCapabilityService = Depends(get_capability_service),
 ) -> CapabilitySnapshotDto:
+    if not request.run_id:
+        raise HTTPException(status_code=422, detail={"error_code": "RUN_ID_REQUIRED", "message": "run_id is required"})
     try:
         snapshot = service.snapshot(request.run_id, Path(request.source_root), request.stage_id)
     except ProjectCapabilityError as error:
