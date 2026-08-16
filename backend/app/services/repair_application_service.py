@@ -235,6 +235,11 @@ _SEMANTIC_RETRY_CODES = frozenset(
     }
 )
 _LEGACY_SEMANTIC_RECOVERY_CODES = frozenset({"REPAIR_OPERATION_AMBIGUOUS"})
+_RECOVERABLE_PROPOSER_RETRY_CODES = frozenset(
+    _SEMANTIC_RETRY_CODES
+    | _LEGACY_SEMANTIC_RECOVERY_CODES
+    | {"LLM_PROTOCOL_FAILED"}
+)
 _PROPOSER_GROUNDING_INSTRUCTIONS = (
     "CURRENT_WORKSPACE_FILES are the only valid preimage authority. "
     "PREVIOUS_PROPOSAL is reference-only and has not been applied. "
@@ -1600,7 +1605,7 @@ class RepairApplicationService:
             or retry_invocation.retries != 1
             or retry_invocation.failure_stage != "repair_semantics"
             or retry_invocation.failure_code
-            not in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
+            not in _RECOVERABLE_PROPOSER_RETRY_CODES
         ):
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",

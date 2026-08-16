@@ -1762,6 +1762,27 @@ def test_recovery_accepts_legacy_ambiguous_semantic_retry_failure(tmp_path: Path
     engine.dispose()
 
 
+def test_recovery_accepts_exhausted_protocol_retry_failure(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(
+        factory,
+        tmp_path,
+        retry_failure_code="LLM_PROTOCOL_FAILED",
+    )
+
+    result = _recovery_service(factory).recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-protocol-failure",
+        actor="operator",
+    )
+
+    assert result["attempt_id"] == "repair-stage-1-2"
+    assert result["status"] == "evidence_frozen"
+    engine.dispose()
+
+
 def test_recovery_child_context_preserves_existing_human_revision(tmp_path: Path):
     engine, factory = _database(tmp_path)
     human_revision = {
