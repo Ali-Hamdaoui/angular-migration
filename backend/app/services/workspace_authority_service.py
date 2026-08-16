@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.domain.workspace_authority import (
     WorkspaceGenerationRecord,
@@ -133,6 +133,13 @@ class WorkspaceAuthorityService:
         """
         now = self._now_provider()
         with self._session_scope() as session:
+            # Serialize writers BEFORE the guard read: with SQLite WAL a deferred
+            # transaction's snapshot would predate a concurrent commit, so the
+            # unique-index check could silently miss a racing insert. BEGIN
+            # IMMEDIATE acquires the write lock up front so the guard always sees
+            # the latest committed generation.
+            dbapi = session.connection().connection.driver_connection
+            dbapi.execute("BEGIN IMMEDIATE")
             run = session.get(MigrationRunModel, request.run_id)
             if run is None:
                 raise WorkspaceAuthorityError("RUN_NOT_FOUND", f"Migration run {request.run_id} not found")
@@ -206,9 +213,10 @@ class WorkspaceAuthorityService:
             session.add(generation_row)
             try:
                 session.commit()
-            except IntegrityError:
+            except (IntegrityError, OperationalError):
                 # Concurrent promotion lost: the partial unique index on active
-                # generations rejected a second active row. Fail closed.
+                # generations rejected a second active row, or the write lock
+                # upgrade raced. Fail closed.
                 session.rollback()
                 raise WorkspaceAuthorityError(
                     "STALE_GENERATION",
