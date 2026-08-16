@@ -1754,7 +1754,6 @@ class RepairApplicationService:
             for field in (
                 "proposal_artifact_id",
                 "proposal_checksum",
-                "proposer_invocation_id",
                 "review_artifact_id",
                 "review_checksum",
                 "reviewer_invocation_id",
@@ -1769,6 +1768,12 @@ class RepairApplicationService:
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Repair attempt already has proposal, review, gate, apply, or validation evidence",
+            )
+        recovered_proposer_id = attempt.proposer_invocation_id
+        if recovered_proposer_id is not None and ":recovery-" not in recovered_proposer_id:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                "Repair attempt has an unexpected proposer invocation binding",
             )
         if (
             context.get("failure_evidence_artifact_id")
@@ -1869,16 +1874,15 @@ class RepairApplicationService:
         retry_invocation = session.scalar(
             select(LlmInvocationModel).where(
                 LlmInvocationModel.run_id == run_id,
-                LlmInvocationModel.idempotency_key == retry_invocation_id,
+                LlmInvocationModel.idempotency_key
+                == (recovered_proposer_id or retry_invocation_id),
             )
         )
-        if (
-            base_invocation is None
-            or retry_invocation is None
-            or base_invocation.status != "failed"
-            or retry_invocation.status != "failed"
-            or retry_invocation.failure_code not in _RECOVERABLE_PROPOSER_RETRY_CODES
-            or not (
+        retry_valid = (
+            retry_invocation is not None
+            and retry_invocation.status == "failed"
+            and retry_invocation.failure_code in _RECOVERABLE_PROPOSER_RETRY_CODES
+            and (
                 (
                     retry_invocation.retries == 1
                     and retry_invocation.failure_stage == "repair_semantics"
@@ -1889,7 +1893,8 @@ class RepairApplicationService:
                     and retry_invocation.failure_stage == "response_state_validation"
                 )
             )
-        ):
+        )
+        if base_invocation is None or base_invocation.status != "failed" or not retry_valid:
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Persisted semantic retry evidence is missing or invalid",
