@@ -60,6 +60,14 @@ from app.services.stage_preparation_primitives import StageSandboxCopier
 NOW = datetime(2026, 7, 31, tzinfo=UTC)
 
 
+def test_proposer_policy_prioritizes_authoritative_existing_files():
+    policy = repair_application_service._PROPOSER_SYSTEM_POLICY
+
+    assert "human revision" in policy.lower()
+    assert "never use create_text_file for any path listed in current_workspace_files" in policy.lower()
+    assert "use replace_text with the exact authoritative preimage" in policy.lower()
+
+
 def _proposal(path: Path):
     checksum = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     return {
@@ -1068,6 +1076,7 @@ def test_existing_create_target_has_specific_fail_closed_error(tmp_path: Path):
     assert raised.value.code == "REPAIR_CREATE_TARGET_EXISTS"
     assert "create_text_file" in raised.value.message
     assert "existing" in raised.value.message
+    assert "src/app.ts" in raised.value.message
 
 
 def test_existing_create_target_is_the_only_new_semantic_retry_code():

@@ -249,6 +249,31 @@ _PROPOSER_GROUNDING_INSTRUCTIONS = (
     "configuration file when one is present; create a file only when its target is absent "
     "and the operation includes complete non-null text content."
 )
+_PROPOSER_SYSTEM_POLICY = (
+    "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
+    "lockfile edits, path escapes, secrets, or policy bypasses. "
+    "Human revision is task intent only; authoritative CURRENT_WORKSPACE_FILES control "
+    "which files exist and their exact contents. Never use create_text_file for any path "
+    "listed in CURRENT_WORKSPACE_FILES. For an existing target, use replace_text with "
+    "the exact authoritative preimage; do not recreate the whole configuration file. "
+    "Before choosing create_text_file, verify that its target path is absent from the "
+    "authoritative file list. For Angular peer-dependency-conflict failures (failure_type "
+    '\"peer_dependency_conflict\"), emit exactly one \"dependency_transition\" '
+    "operation (schema_version \"transformer-repair-v2\", repair_kind "
+    '\"dependency_transition\", strategy \"detach_update_reattach\", path '
+    '\"package.json\"). Provide only rationale, risk_level, strategy, '
+    "limitations, and validation_targets; omit checkpoint_id, package identity, "
+    "installed_version, peer ranges, target package, and target exact version. "
+    "The backend binds those fields. Never emit file operations, READMEs, comments, "
+    "or --force for such failures. When the failure evidence proves a required package "
+    "is absent from package.json, emit exactly one \"dependency_add\" operation at "
+    'path \"package.json\" with section limited to \"dependencies\" or '
+    '\"devDependencies\", package, and new_version as a registry semver range or intent; '
+    "the backend validates the requested registry semver spec and binds it as the approved "
+    "version spec, and governed lockfile generation fixes the exact resolved version after "
+    "human approval. Never emit npm shell commands. "
+    + _PROPOSER_GROUNDING_INSTRUCTIONS
+)
 _SEMANTIC_RETRY_FEEDBACK = (
     "The candidate does not match the current authoritative workspace. "
     "The previous proposal was not applied. "
@@ -698,28 +723,7 @@ class RepairApplicationService:
                         task=LlmTaskType.REPAIR_DIAGNOSIS,
                         schema_name=self.proposer_schema,
                         schema=RepairProposalCandidate,
-                        policy=(
-                        "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
-                        "lockfile edits, path escapes, secrets, or policy bypasses. "
-                        "For Angular peer-dependency-conflict failures (failure_type "
-                        "\"peer_dependency_conflict\"), emit exactly one \"dependency_transition\" "
-                        "operation (schema_version \"transformer-repair-v2\", repair_kind "
-                        "\"dependency_transition\", strategy \"detach_update_reattach\", path "
-                        "\"package.json\"). Provide only rationale, risk_level, strategy, "
-                        "limitations, and validation_targets; omit checkpoint_id, package identity, "
-                        "installed_version, peer ranges, target package, and target exact version. "
-                        "The backend binds those fields. Never emit file operations, READMEs, "
-                        "comments, or --force for such failures. "
-                        "When the failure evidence proves a required package is absent from "
-                        "package.json, emit exactly one \"dependency_add\" operation at path "
-                        "\"package.json\" with section limited to \"dependencies\" or "
-                        "\"devDependencies\", package, and new_version as a registry semver "
-                        "range or intent; the backend validates the requested registry semver "
-                        "spec and binds it as the approved version spec, and governed lockfile "
-                        "generation fixes the exact resolved version after human approval. "
-                        "Never emit npm shell commands. "
-                        + _PROPOSER_GROUNDING_INSTRUCTIONS
-                        ),
+                        policy=_PROPOSER_SYSTEM_POLICY,
                     )
                 except RepairLlmError:
                     raise
@@ -2529,8 +2533,8 @@ class RepairApplicationService:
                 if target.exists() or target.is_symlink():
                     raise RepairApplicationError(
                         _CREATE_TARGET_EXISTS,
-                        "create_text_file cannot target an existing filesystem entry; "
-                        "use an operation appropriate for existing authoritative content.",
+                        f"create_text_file cannot target existing authoritative path "
+                        f"'{relative}'; use replace_text with its exact preimage.",
                     )
                 group[0]["preimage_sha256"] = None
                 result.append(group[0])
