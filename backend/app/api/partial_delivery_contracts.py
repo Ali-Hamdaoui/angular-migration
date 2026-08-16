@@ -1,7 +1,6 @@
 """API contracts for partial migration delivery (V2 F26)."""
 
 from datetime import datetime
-from typing import Any
 
 from app.domain.contracts import ContractModel
 

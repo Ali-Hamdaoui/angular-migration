@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.main import app
 from app.repositories.models import (
@@ -78,6 +79,24 @@ def test_validate_partial_workspace_blocks_missing():
     decision = service.deliver_partial(run_id, Path("/tmp/does-not-exist"))
     assert decision.validated is False
     assert decision.resumable is True
+
+
+def test_validate_partial_workspace_blocks_diverged_evidence():
+    run_id = f"run-f26-{uuid4().hex[:8]}"
+    _seed(run_id, stages=2)
+    _seal_stage(run_id, 1)
+    root = Path(f"/tmp/f26d-{uuid4().hex[:6]}")
+    root.mkdir(parents=True)
+    (root / "package.json").write_text('{"name":"diverged","extra":true}')
+    service = PartialDeliveryService()
+    decision = service.deliver_partial(run_id, root)
+    assert decision.validated is False
+    assert decision.resumable is True
+    with session_scope() as session:
+        record = session.scalar(
+            select(PartialDeliveryModel).where(PartialDeliveryModel.run_id == run_id)
+        )
+        assert "PARTIAL_WORKSPACE_NOT_SEALED_EVIDENCE" in record.blockers
 
 
 def test_resume_partial():

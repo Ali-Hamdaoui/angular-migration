@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.domain.partial_delivery import PartialDeliveryDecision
 from app.repositories.models import MigrationRunModel, PartialDeliveryModel, StageValidationSealModel
@@ -47,7 +48,7 @@ class PartialDeliveryService:
         rollback_point = self._rollback.find_rollback_point(run_id)
         if rollback_point is None:
             raise PartialDeliveryError("NO_SEALED_STAGE", f"run {run_id} has no sealed stage to deliver")
-        validated, fingerprint, blockers = self._validate_partial_workspace(workspace)
+        validated, fingerprint, blockers = self._validate_partial_workspace(run_id, workspace, rollback_point)
         remaining = self._remaining_stages(run_id, rollback_point)
         decision = PartialDeliveryDecision(
             run_id=run_id,
@@ -65,21 +66,24 @@ class PartialDeliveryService:
                 )
             )
             if existing is None:
-                session.add(
-                    PartialDeliveryModel(
-                        id="pd-" + hashlib.sha256(f"{run_id}:{decision.checksum}".encode()).hexdigest()[:24],
-                        run_id=run_id,
-                        delivered_at_stage=rollback_point,
-                        delivered_fingerprint=fingerprint,
-                        validated=validated,
-                        remaining_stages=list(remaining),
-                        resumable=True,
-                        blockers=blockers,
-                        checksum=decision.checksum,
-                        created_at=self._now_provider(),
+                try:
+                    session.add(
+                        PartialDeliveryModel(
+                            id="pd-" + hashlib.sha256(f"{run_id}:{decision.checksum}".encode()).hexdigest()[:24],
+                            run_id=run_id,
+                            delivered_at_stage=rollback_point,
+                            delivered_fingerprint=fingerprint,
+                            validated=validated,
+                            remaining_stages=list(remaining),
+                            resumable=True,
+                            blockers=blockers,
+                            checksum=decision.checksum,
+                            created_at=self._now_provider(),
+                        )
                     )
-                )
-                session.commit()
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
         return decision
 
     def resume_partial(self, run_id: str) -> dict:
@@ -101,8 +105,13 @@ class PartialDeliveryService:
             "resume_action": "resume_chain_from_delivered_stage",
         }
 
-    def _validate_partial_workspace(self, workspace: Path) -> tuple[bool, str, list[str]]:
-        """Validate the partial workspace before delivery (F26-02)."""
+    def _validate_partial_workspace(self, run_id: str, workspace: Path, delivered_at_stage: int) -> tuple[bool, str, list[str]]:
+        """Validate the partial workspace before delivery (F26-02).
+
+        The workspace must exist and carry the delivered stage's sealed
+        evidence: when a seal is recorded for the rollback stage, the freshly
+        computed fingerprint must match the frozen evidence.
+        """
         blockers: list[str] = []
         if not workspace.is_dir():
             blockers.append("PARTIAL_WORKSPACE_MISSING")
@@ -111,10 +120,24 @@ class PartialDeliveryService:
         from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
         fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace) if workspace.is_dir() else ""
+        with self._session_scope() as session:
+            seal = session.scalar(
+                select(StageValidationSealModel).where(
+                    StageValidationSealModel.run_id == run_id,
+                    StageValidationSealModel.stage_order == delivered_at_stage,
+                )
+            )
+        if seal is not None and fingerprint and seal.workspace_fingerprint and fingerprint != seal.workspace_fingerprint:
+            blockers.append("PARTIAL_WORKSPACE_NOT_SEALED_EVIDENCE")
         return (not blockers, fingerprint, blockers)
 
     def _remaining_stages(self, run_id: str, delivered_at_stage: int) -> list[str]:
-        """Record the remaining work for the partial delivery (F26-03)."""
+        """Record the remaining work for the partial delivery (F26-03).
+
+        The remaining labels come from the durable chain's authoritative
+        per-stage source/target majors, so any route (not just 11->12...)
+        is recorded correctly.
+        """
         from app.repositories.models import MigrationStageModel, StageChainRunModel
 
         with self._session_scope() as session:
@@ -125,14 +148,24 @@ class PartialDeliveryService:
                 .limit(1)
             )
             if chain is not None:
-                chain_orders = sorted(s.get("stage_order") for s in (chain.stages or []))
+                chain_stages = sorted(chain.stages or [], key=lambda s: s.get("stage_order"))
+                remaining = [
+                    f"angular-{s['source_major']}.x -> angular-{s['target_major']}.x"
+                    for s in chain_stages
+                    if s.get("stage_order") > delivered_at_stage
+                ]
             else:
-                chain_orders = sorted(
-                    session.scalars(
-                        select(MigrationStageModel.stage_order).where(MigrationStageModel.run_id == run_id)
-                    ).all()
-                )
-        return [f"angular-{order+10}.x -> angular-{order+11}.x" for order in chain_orders if order > delivered_at_stage]
+                stages = session.scalars(
+                    select(MigrationStageModel)
+                    .where(MigrationStageModel.run_id == run_id)
+                    .order_by(MigrationStageModel.stage_order.asc())
+                ).all()
+                remaining = [
+                    f"{s.source_version_family} -> {s.target_version_family}"
+                    for s in stages
+                    if s.stage_order > delivered_at_stage
+                ]
+        return remaining
 
     def list_partial_deliveries(self, run_id: str) -> list[PartialDeliveryModel]:
         with self._session_scope() as session:
