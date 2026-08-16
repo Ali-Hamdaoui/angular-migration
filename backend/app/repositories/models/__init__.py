@@ -31,6 +31,7 @@ from app.repositories.v2_planning_models import V2PlanningModel
 from app.repositories.failure_intelligence_models import FailureIntelligenceModel
 from app.repositories.proposal_cycle_models import ProposalCycleModel
 from app.repositories.candidate_promotion_models import CandidatePromotionModel
+from app.repositories.stage_chain_run_models import StageChainRunModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -145,6 +146,7 @@ __all__ = [
     "FailureIntelligenceModel",
     "ProposalCycleModel",
     "CandidatePromotionModel",
+    "StageChainRunModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
