@@ -1117,6 +1117,25 @@ def test_create_operation_without_text_content_remains_fail_closed(tmp_path: Pat
     assert "REPAIR_OPERATION_AMBIGUOUS" not in repair_application_service._SEMANTIC_RETRY_CODES
 
 
+def test_create_operation_without_text_content_gets_one_governed_retry(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    invalid = _create_candidate(path="src/new-setup.ts", content=None)
+    corrected = _proposal_candidate()
+    transport = _RecordingTransport(
+        [_responses_body(json.dumps(invalid)), _responses_body(json.dumps(corrected))]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    proposal = service.propose(attempt_id)
+
+    assert proposal["operations"][0]["operation"] == "replace_text"
+    assert len(transport.calls) == 2
+    engine.dispose()
+
+
 def test_create_target_retry_hydrates_exact_authoritative_file_and_binds_replace(
     tmp_path: Path,
 ):

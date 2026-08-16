@@ -774,7 +774,11 @@ class RepairApplicationService:
                         else None
                     ),
                 )
-                if retry_error.code in _SEMANTIC_RETRY_CODES and semantic_retry_count == 0:
+                retryable_semantics = retry_error.code in _SEMANTIC_RETRY_CODES or (
+                    retry_error.code == "REPAIR_OPERATION_AMBIGUOUS"
+                    and retry_error.message == "Create operations require non-null text content"
+                )
+                if retryable_semantics and semantic_retry_count == 0:
                     retry_of_invocation_key = _context_invocation_key(context, LlmRole.REPAIR_PROPOSER)
                     semantic_retry_code = retry_error.code
                     semantic_retry_message = retry_error.message
