@@ -56,6 +56,7 @@ from app.api.routes.stage_rollback import router as stage_rollback_router
 from app.api.routes.partial_delivery import router as partial_delivery_router
 from app.api.routes.execution_audit import router as execution_audit_router
 from app.api.routes.retrieval_benchmark import router as retrieval_benchmark_router
+from app.api.routes.quality_metrics import router as quality_metrics_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -97,6 +98,7 @@ api_router.include_router(stage_rollback_router)
 api_router.include_router(partial_delivery_router)
 api_router.include_router(execution_audit_router)
 api_router.include_router(retrieval_benchmark_router)
+api_router.include_router(quality_metrics_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -158,6 +160,7 @@ api_v1_router.include_router(stage_rollback_router)
 api_v1_router.include_router(partial_delivery_router)
 api_v1_router.include_router(execution_audit_router)
 api_v1_router.include_router(retrieval_benchmark_router)
+api_v1_router.include_router(quality_metrics_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)
