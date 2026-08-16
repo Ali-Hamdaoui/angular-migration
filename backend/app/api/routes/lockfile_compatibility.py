@@ -74,6 +74,12 @@ def record_lockfile_evidence(
         )
         row = service.record_evidence(
             run_id=run_id, stage_id=stage_id, workspace=Path(request.workspace_path), verdict=verdict,
+            execution_id=request.execution_id,
+            node_version=request.node_version,
+            npm_version=request.npm_version,
+            node_sha256=request.node_sha256,
+            npm_sha256=request.npm_sha256,
+            deterministic=request.deterministic,
         )
     except LockfileCompatibilityError as error:
         _raise(error)

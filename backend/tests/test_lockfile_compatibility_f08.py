@@ -155,3 +155,50 @@ def test_record_evidence_unknown_run_raises(tmp_path: Path):
     with pytest.raises(LockfileCompatibilityError) as exc:
         service.record_evidence(run_id="run-missing", stage_id="stage-missing", workspace=workspace, verdict=verdict)
     assert exc.value.code == "RUN_NOT_FOUND"
+
+
+def test_inspect_v1_lockfile_format(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    v1 = {
+        "name": "app", "version": "1.0.0", "lockfileVersion": 1,
+        "dependencies": {
+            "typescript": {"version": "5.5.4"},
+            "@angular/core": {"version": "19.0.0", "dependencies": {"rxjs": {"version": "7.8.1"}}},
+        },
+    }
+    (workspace / "package-lock.json").write_text(json.dumps(v1))
+    service = LockfileCompatibilityService()
+    dependency_set = service.inspect_lockfile(workspace)
+    assert dependency_set.resolved_version("typescript") == "5.5.4"
+    assert dependency_set.resolved_version("@angular/core") == "19.0.0"
+    assert dependency_set.resolved_version("rxjs") == "7.8.1"
+    assert dependency_set.lockfile_version == 1
+
+
+def test_inspect_malformed_lockfile_hashes_raw_bytes(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "package-lock.json").write_text("not json{{{")
+    service = LockfileCompatibilityService()
+    dependency_set = service.inspect_lockfile(workspace)
+    assert dependency_set.checksum.startswith("sha256:")
+    assert dependency_set.checksum != "missing"
+
+
+def test_record_evidence_with_runtime_binding(tmp_path: Path):
+    run_id = f"run-f08b-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    _seed(run_id, stage_id)
+    workspace = tmp_path / "ws"
+    write_lockfile(workspace, deps=dict(FULL_DEPS))
+    service = LockfileCompatibilityService()
+    verdict = service.validate_stage_lockfile(workspace, "angular-18.x", "angular-19.x")
+    row = service.record_evidence(
+        run_id=run_id, stage_id=stage_id, workspace=workspace, verdict=verdict,
+        execution_id="exec-f08b", node_version="20.20.2", npm_version="10.8.2",
+        node_sha256="c" * 64, npm_sha256="d" * 64, deterministic=True,
+    )
+    assert row.node_version == "20.20.2"
+    assert row.execution_id == "exec-f08b"
+    assert row.deterministic is True

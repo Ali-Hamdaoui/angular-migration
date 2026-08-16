@@ -12,7 +12,6 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.domain.compatibility import CompatibilityCatalogueEntry
-from app.domain.execution_profile import Version
 from app.domain.lockfile_compatibility import (
     LockfileCompatibilityVerdict,
     LockfileDependencySet,
@@ -50,14 +49,23 @@ class LockfileCompatibilityService:
 
     @staticmethod
     def inspect_lockfile(workspace: Path) -> LockfileDependencySet:
-        """Parse package-lock.json into a deterministic dependency set."""
+        """Parse package-lock.json into a deterministic dependency set.
+
+        Supports npm lockfile v2/v3 (``packages`` tree) and the legacy v1
+        format (``dependencies`` tree) used by npm 6 / Angular 11-13 projects.
+        A present-but-malformed file is hashed by raw bytes so it never
+        collides with a missing file.
+        """
         path = workspace / "package-lock.json"
         if not path.is_file():
             return LockfileDependencySet(checksum="missing")
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        checksum = f"sha256:{digest}"
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return LockfileDependencySet(checksum="missing")
+            return LockfileDependencySet(checksum=checksum)
         packages = payload.get("packages", {}) if isinstance(payload, dict) else {}
         resolved: dict[str, str] = {}
         if isinstance(packages, dict):
@@ -65,7 +73,6 @@ class LockfileCompatibilityService:
                 if not isinstance(entry, dict) or not key.startswith("node_modules/"):
                     continue
                 name = key[len("node_modules/"):]
-                # scoped packages use nested paths like node_modules/@scope/name
                 if "/" in name and not name.startswith("@"):
                     continue
                 version = entry.get("version")
@@ -73,18 +80,40 @@ class LockfileCompatibilityService:
                     resolved[name] = version
         root = packages.get("", {}) if isinstance(packages, dict) else {}
         root_deps = root.get("dependencies", {}) if isinstance(root, dict) else {}
-        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+        if not packages and isinstance(payload, dict):
+            # Legacy v1 lockfile: dependencies tree with nested node_modules.
+            def walk(node: object) -> None:
+                if not isinstance(node, dict):
+                    return
+                for name, entry in node.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    version = entry.get("version")
+                    if isinstance(version, str) and name not in resolved:
+                        resolved[name] = version
+                    nested = entry.get("dependencies")
+                    if isinstance(nested, dict) and nested:
+                        walk(nested)
+
+            walk(payload.get("dependencies", {}))
         return LockfileDependencySet(
             lockfile_version=payload.get("lockfileVersion") if isinstance(payload, dict) and isinstance(payload.get("lockfileVersion"), int) else None,
             root_dependencies={k: v for k, v in root_deps.items() if isinstance(v, str)},
             resolved_packages=resolved,
-            checksum=f"sha256:{digest}" if digest else "missing",
+            checksum=checksum,
         )
 
     def validate_stage_lockfile(
         self, workspace: Path, source_family: str, target_family: str, catalogue_version: str | None = None
     ) -> LockfileCompatibilityVerdict:
-        """Validate a stage workspace lockfile against the catalogue entry."""
+        """Validate a stage workspace lockfile against the catalogue entry.
+
+        The compatibility catalogue is the authority for Angular/CLI pins and for
+        typescript/rxjs/zone.js when it declares exact versions.  When the
+        catalogue does not pin those, conservative per-major minimums are used as
+        documented fallbacks (``_DEFAULT_TYPESCRIPT_MINIMUMS`` plus rxjs>=6.5.3
+        and zone.js>=0.14.0), mirroring the Angular support envelope.
+        """
         entry = self._catalogue_entry(source_family, target_family, catalogue_version)
         target_major = _target_major(target_family)
         dependency_set = self.inspect_lockfile(workspace)
@@ -194,6 +223,4 @@ def _target_major(target_family: str) -> int:
 
 
 def _evidence_id(run_id: str, stage_id: str, lockfile_checksum: str) -> str:
-    import hashlib
-
     return "lke-" + hashlib.sha256(f"{run_id}:{stage_id}:{lockfile_checksum}".encode()).hexdigest()[:24]

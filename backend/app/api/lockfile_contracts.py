@@ -27,6 +27,12 @@ class LockfileValidationRequest(ContractModel):
     source_family: str
     target_family: str
     catalogue_version: str | None = None
+    execution_id: str | None = None
+    node_version: str | None = None
+    npm_version: str | None = None
+    node_sha256: str | None = None
+    npm_sha256: str | None = None
+    deterministic: bool = True
 
 
 class LockfileEvidenceDto(ContractModel):

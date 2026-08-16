@@ -7,8 +7,6 @@ no filesystem, database, or network side effects.
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.execution_profile import Version

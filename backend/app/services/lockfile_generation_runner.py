@@ -182,8 +182,59 @@ class LockfileGenerationRunner:
         if (execution.start_fingerprint or {}).get("fingerprint_scope") != LOCKFILE_GENERATION_FINGERPRINT_SCOPE:
             return self._queue_successor(session, continuation, execution)
         self._verify(session, continuation, step, execution)
+        self._record_catalogue_evidence(session, continuation, execution)
         self._resume(continuation, next_node)
         return "passed"
+
+    def _record_catalogue_evidence(self, session, continuation, execution) -> None:
+        """Record F08 catalogue-compatibility evidence for the generated lockfile.
+
+        Supplementary to the runner's prequalification gate: a catalogue verdict
+        (including blockers) is frozen per stage with the execution's runtime
+        binding.  Never fails the step — the evidence is a durable record.
+        """
+        try:
+            from app.repositories.models import LockfileGenerationEvidenceModel, MigrationStageModel
+            from app.services.lockfile_compatibility_service import LockfileCompatibilityService
+
+            stage = session.get(MigrationStageModel, continuation.current_stage_id)
+            if stage is None or not stage.source_version_family or not stage.target_version_family:
+                return
+            service = LockfileCompatibilityService()
+            workspace = Path(continuation.workspace_path) if getattr(continuation, "workspace_path", None) else None
+            if workspace is None or not workspace.is_dir():
+                return
+            verdict = service.validate_stage_lockfile(workspace, stage.source_version_family, stage.target_version_family)
+            dependency_set = service.inspect_lockfile(workspace)
+            evidence_id = "lke-" + hashlib.sha256(
+                f"{continuation.run_id}:{stage.id}:{dependency_set.checksum}".encode()
+            ).hexdigest()[:24]
+            existing = session.get(LockfileGenerationEvidenceModel, evidence_id)
+            if existing is not None:
+                return
+            session.add(
+                LockfileGenerationEvidenceModel(
+                    id=evidence_id,
+                    run_id=continuation.run_id,
+                    stage_id=stage.id,
+                    execution_id=execution.id,
+                    lockfile_checksum=dependency_set.checksum,
+                    lockfile_version=dependency_set.lockfile_version,
+                    source_family=verdict.source_family,
+                    target_family=verdict.target_family,
+                    node_version=None,
+                    npm_version=None,
+                    node_sha256=execution.runtime_checksum,
+                    npm_sha256=None,
+                    validation_status=verdict.status,
+                    blockers=list(verdict.blockers),
+                    findings=[finding.model_dump(mode="json") for finding in verdict.findings],
+                    deterministic=True,
+                    created_at=execution.finished_at or self._now(),
+                )
+            )
+        except Exception:
+            return
 
     def _queue(self, session, continuation, *, generation: int = 1) -> str:
         if generation not in {1, 2}:
