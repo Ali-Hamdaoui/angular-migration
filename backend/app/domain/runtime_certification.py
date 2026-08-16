@@ -1,6 +1,6 @@
 """Bridge runtime certification contracts (V2 F11).
 
-A runtime installation is certified for a migration stage when its node/npm/npx
+A runtime installation is certified for a migration stage when its node/npm
 descriptors satisfy the compatibility catalogue's certified runtime profile for
 that stage's transition.  Certification is the pre-execution gate authority.
 """

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from app.domain.runtime_certification import RuntimeCertificationDecision, evaluate_certification
-from app.repositories.models import MigrationRunModel, MigrationStageModel, RuntimeCertificationModel
+from app.repositories.models import MigrationStageModel, RuntimeCertificationModel
 from app.repositories.session import session_scope
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
 from app.services.stage_runtime_service import StageRuntimeApplicationService, StageRuntimeError
@@ -61,14 +61,14 @@ class RuntimeCertificationService:
             catalogue_version=catalogue.version,
             resolved_at=self._now_provider(),
         )
-        return self._persist_decision(binding, decision, node, npm)
+        return self._persist_decision(decision, node, npm)
 
     def _stage_run_id(self, stage_id: str) -> str:
         with self._session_scope() as session:
             stage = session.get(MigrationStageModel, stage_id)
             return stage.run_id if stage else ""
 
-    def _persist_decision(self, binding, decision: RuntimeCertificationDecision, node, npm) -> RuntimeCertificationDecision:
+    def _persist_decision(self, decision: RuntimeCertificationDecision, node, npm) -> RuntimeCertificationDecision:
         with self._session_scope() as session:
             record_id = _certification_id(decision.stage_id, node.sha256 if node else "none")
             existing = session.get(RuntimeCertificationModel, record_id)
