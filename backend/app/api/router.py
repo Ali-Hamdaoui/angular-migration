@@ -34,6 +34,7 @@ from app.api.routes.runtime_execution import router as runtime_execution_router
 from app.api.routes.diagnostics import router as diagnostics_router
 from app.api.routes.stage_runtime import router as stage_runtime_router
 from app.api.routes.workspace_authority import router as workspace_authority_router
+from app.api.routes.lockfile_compatibility import router as lockfile_compatibility_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -53,6 +54,7 @@ api_router.include_router(runtime_execution_router)
 api_router.include_router(diagnostics_router)
 api_router.include_router(stage_runtime_router)
 api_router.include_router(workspace_authority_router)
+api_router.include_router(lockfile_compatibility_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -92,6 +94,7 @@ api_v1_router.include_router(runtime_execution_router)
 api_v1_router.include_router(diagnostics_router)
 api_v1_router.include_router(stage_runtime_router)
 api_v1_router.include_router(workspace_authority_router)
+api_v1_router.include_router(lockfile_compatibility_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)
