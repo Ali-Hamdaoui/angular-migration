@@ -85,7 +85,3 @@ def evaluate_promotion(
         generation=request.generation, current_active_generation=current_active_generation,
         allowed=True, reason="strictly newer generation",
     )
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)

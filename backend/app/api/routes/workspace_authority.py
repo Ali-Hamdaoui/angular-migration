@@ -36,7 +36,7 @@ def _generation_dto(row) -> WorkspaceGenerationDto:
 def resolve_active_workspace(
     run_id: str,
     alias: str,
-    stage_id: str | None = None,
+    stage_id: str,
     service: WorkspaceAuthorityService = Depends(get_workspace_authority_service),
 ) -> ResolveActiveWorkspaceResponse:
     active = service.resolve_active(run_id, stage_id, alias)
@@ -52,7 +52,7 @@ def promote_workspace(
     run_id: str,
     alias: str,
     request: PromoteWorkspaceRequest,
-    stage_id: str | None = None,
+    stage_id: str,
     service: WorkspaceAuthorityService = Depends(get_workspace_authority_service),
 ) -> PromoteWorkspaceResponse:
     try:
@@ -81,7 +81,7 @@ def promote_workspace(
 def list_workspace_generations(
     run_id: str,
     alias: str,
-    stage_id: str | None = None,
+    stage_id: str,
     service: WorkspaceAuthorityService = Depends(get_workspace_authority_service),
 ) -> WorkspaceGenerationListDto:
     return WorkspaceGenerationListDto(generations=[_generation_dto(row) for row in service.list_generations(run_id, stage_id, alias)])

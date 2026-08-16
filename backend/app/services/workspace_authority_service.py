@@ -7,6 +7,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.domain.workspace_authority import (
     WorkspaceGenerationRecord,
@@ -14,7 +15,12 @@ from app.domain.workspace_authority import (
     WorkspacePromotionRequest,
     evaluate_promotion,
 )
-from app.repositories.models import MigrationRunModel, StageWorkspaceBindingModel, WorkspaceGenerationModel
+from app.repositories.models import (
+    MigrationRunModel,
+    MigrationStageModel,
+    StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
+)
 from app.repositories.session import session_scope
 
 
@@ -75,8 +81,8 @@ class WorkspaceAuthorityService:
             )
             if binding is None:
                 return None
-            generation = session.scalar(
-                select(WorkspaceGenerationModel.generation)
+            generation_row = session.scalar(
+                select(WorkspaceGenerationModel)
                 .where(
                     WorkspaceGenerationModel.run_id == run_id,
                     WorkspaceGenerationModel.stage_id == stage_id,
@@ -87,6 +93,8 @@ class WorkspaceAuthorityService:
                 .order_by(WorkspaceGenerationModel.generation.desc())
                 .limit(1)
             )
+            if generation_row is None:
+                return None
             highest = session.execute(
                 select(WorkspaceGenerationModel.generation)
                 .where(
@@ -97,7 +105,7 @@ class WorkspaceAuthorityService:
                 .order_by(WorkspaceGenerationModel.generation.desc())
                 .limit(1)
             ).first()
-            if generation is None or (highest is not None and generation < highest[0]):
+            if highest is not None and generation_row.generation < highest[0]:
                 # The active binding is not the newest generation: the workspace
                 # is stale. Never return it as authoritative.
                 return None
@@ -105,43 +113,63 @@ class WorkspaceAuthorityService:
                 run_id=run_id,
                 stage_id=stage_id,
                 alias=alias,
-                generation=generation,
-                workspace_path=binding.workspace_path,
-                fingerprint=binding.workspace_fingerprint,
-                input_fingerprint=binding.input_fingerprint,
+                generation=generation_row.generation,
+                workspace_path=generation_row.workspace_path,
+                fingerprint=generation_row.fingerprint,
+                input_fingerprint=generation_row.input_fingerprint,
                 status="active",
-                created_at=binding.created_at,
+                created_at=generation_row.created_at,
             )
 
     def promote(self, request: WorkspacePromotionRequest) -> WorkspacePromotionDecision:
         """Register a generation and promote it to active under the monotonic guard.
 
-        The promotion is atomic: the previous active binding is retired and the
-        new generation's binding becomes active in one transaction.  A request
-        whose generation is not strictly newer is rejected (STALE_GENERATION).
+        The promotion is atomic: the guard is re-evaluated inside the write
+        transaction against the highest recorded generation, the previous active
+        generation is retired, and the new generation's binding becomes active —
+        all in one commit.  A partial unique index on active generations makes
+        concurrent promotion races impossible at the database level: the second
+        writer fails with STALE_GENERATION instead of a lost update.
         """
-        decision = evaluate_promotion(request, self.current_generation(request.run_id, request.stage_id, request.alias))
-        if not decision.allowed:
-            raise WorkspaceAuthorityError(
-                "STALE_GENERATION",
-                decision.reason or "generation is not strictly newer",
-                {"current_active_generation": decision.current_active_generation, "requested_generation": decision.generation},
-            )
         now = self._now_provider()
         with self._session_scope() as session:
-            if session.get(MigrationRunModel, request.run_id) is None:
+            run = session.get(MigrationRunModel, request.run_id)
+            if run is None:
                 raise WorkspaceAuthorityError("RUN_NOT_FOUND", f"Migration run {request.run_id} not found")
-            binding_id = _binding_id(request.run_id, request.stage_id, request.alias)
+            if not request.stage_id:
+                raise WorkspaceAuthorityError("STAGE_REQUIRED", "stage_id is required for a stage workspace binding")
+            stage = session.get(MigrationStageModel, request.stage_id)
+            if stage is None:
+                raise WorkspaceAuthorityError("STAGE_NOT_FOUND", f"Migration stage {request.stage_id} not found")
+            highest = session.execute(
+                select(WorkspaceGenerationModel.generation)
+                .where(
+                    WorkspaceGenerationModel.run_id == request.run_id,
+                    WorkspaceGenerationModel.stage_id == request.stage_id,
+                    WorkspaceGenerationModel.alias == request.alias,
+                )
+                .order_by(WorkspaceGenerationModel.generation.desc())
+                .limit(1)
+            ).first()
+            current_active_generation = highest[0] if highest else None
+            decision = evaluate_promotion(request, current_active_generation)
+            if not decision.allowed:
+                raise WorkspaceAuthorityError(
+                    "STALE_GENERATION",
+                    decision.reason or "generation is not strictly newer",
+                    {"current_active_generation": current_active_generation, "requested_generation": request.generation},
+                )
             previous = session.scalar(
-                select(StageWorkspaceBindingModel).where(
-                    StageWorkspaceBindingModel.run_id == request.run_id,
-                    StageWorkspaceBindingModel.stage_id == request.stage_id,
-                    StageWorkspaceBindingModel.alias == request.alias,
-                    StageWorkspaceBindingModel.active.is_(True),
+                select(WorkspaceGenerationModel).where(
+                    WorkspaceGenerationModel.run_id == request.run_id,
+                    WorkspaceGenerationModel.stage_id == request.stage_id,
+                    WorkspaceGenerationModel.alias == request.alias,
+                    WorkspaceGenerationModel.status == "active",
                 )
             )
             if previous is not None:
-                previous.active = False
+                previous.status = "retired"
+            binding_id = _binding_id(request.run_id, request.stage_id, request.alias)
             binding = session.get(StageWorkspaceBindingModel, binding_id)
             if binding is None:
                 binding = StageWorkspaceBindingModel(
@@ -162,22 +190,31 @@ class WorkspaceAuthorityService:
                 binding.workspace_path = request.workspace_path
                 binding.workspace_fingerprint = request.fingerprint
                 binding.input_fingerprint = request.input_fingerprint
-            session.add(
-                WorkspaceGenerationModel(
-                    id=_generation_id(request.run_id, request.stage_id, request.alias, request.generation),
-                    run_id=request.run_id,
-                    stage_id=request.stage_id,
-                    alias=request.alias,
-                    generation=request.generation,
-                    workspace_path=request.workspace_path,
-                    fingerprint=request.fingerprint,
-                    input_fingerprint=request.input_fingerprint,
-                    status="active",
-                    active_binding_id=binding_id,
-                    created_at=now,
-                )
+            generation_row = WorkspaceGenerationModel(
+                id=_generation_id(request.run_id, request.stage_id, request.alias, request.generation),
+                run_id=request.run_id,
+                stage_id=request.stage_id,
+                alias=request.alias,
+                generation=request.generation,
+                workspace_path=request.workspace_path,
+                fingerprint=request.fingerprint,
+                input_fingerprint=request.input_fingerprint,
+                status="active",
+                active_binding_id=binding_id,
+                created_at=now,
             )
-            session.commit()
+            session.add(generation_row)
+            try:
+                session.commit()
+            except IntegrityError:
+                # Concurrent promotion lost: the partial unique index on active
+                # generations rejected a second active row. Fail closed.
+                session.rollback()
+                raise WorkspaceAuthorityError(
+                    "STALE_GENERATION",
+                    f"concurrent promotion raced; active generation is already {current_active_generation or 'set'}",
+                    {"requested_generation": request.generation},
+                )
         return decision
 
     def list_generations(self, run_id: str, stage_id: str | None, alias: str) -> list[WorkspaceGenerationModel]:

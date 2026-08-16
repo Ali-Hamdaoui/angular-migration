@@ -52,7 +52,7 @@ def test_promote_and_resolve_active_api():
 
 def test_promote_unknown_run_404():
     response = client.post(
-        "/runs/run-missing/workspaces/STAGE_WORKSPACE_1/promote",
+        "/runs/run-missing/workspaces/STAGE_WORKSPACE_1/promote?stage_id=stage-any",
         json={"generation": 1, "workspace_path": "/ws/1", "fingerprint": "fp-1"},
     )
     assert response.status_code == 404

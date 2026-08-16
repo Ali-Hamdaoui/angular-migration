@@ -1,8 +1,8 @@
 """Persist workspace generations (V2 F07)."""
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "20260816_50"
 down_revision = "20260816_49"
@@ -15,7 +15,7 @@ def upgrade() -> None:
         "workspace_generations",
         sa.Column("id", sa.String(length=64), primary_key=True),
         sa.Column("run_id", sa.String(length=64), sa.ForeignKey("migration_runs.id"), nullable=False),
-        sa.Column("stage_id", sa.String(length=64), sa.ForeignKey("migration_stages.id"), nullable=True),
+        sa.Column("stage_id", sa.String(length=64), sa.ForeignKey("migration_stages.id"), nullable=False),
         sa.Column("alias", sa.String(length=128), nullable=False),
         sa.Column("generation", sa.Integer(), nullable=False),
         sa.Column("workspace_path", sa.Text(), nullable=False),
@@ -28,6 +28,13 @@ def upgrade() -> None:
     )
     op.create_index("ix_workspace_generations_run_id", "workspace_generations", ["run_id"])
     op.create_index("ix_workspace_generations_stage_id", "workspace_generations", ["stage_id"])
+    op.create_index(
+        "uq_workspace_generation_active",
+        "workspace_generations",
+        ["run_id", "stage_id", "alias"],
+        unique=True,
+        sqlite_where=sa.text("status = 'active'"),
+    )
 
 
 def downgrade() -> None:

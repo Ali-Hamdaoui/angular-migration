@@ -7,10 +7,14 @@ from uuid import uuid4
 import pytest
 
 from app.domain.workspace_authority import WorkspacePromotionRequest, evaluate_promotion
-from app.repositories.models import MigrationRunModel, MigrationStageModel, StageWorkspaceBindingModel, WorkspaceGenerationModel
+from app.repositories.models import (
+    MigrationRunModel,
+    MigrationStageModel,
+    StageWorkspaceBindingModel,
+    WorkspaceGenerationModel,
+)
 from app.repositories.session import session_scope
 from app.services.workspace_authority_service import WorkspaceAuthorityError, WorkspaceAuthorityService
-
 
 NOW = datetime.now(UTC)
 
@@ -86,9 +90,10 @@ def test_promote_second_generation_retires_old_active(tmp_path: Path):
     assert active is not None and active.generation == 2
     with session_scope() as session:
         generations = session.query(WorkspaceGenerationModel).filter_by(run_id=run_id).all()
-        assert {g.status for g in generations} == {"active"}
-        # exactly one active binding
+        assert {g.status for g in generations} == {"active", "retired"}
+        # exactly one active binding and exactly one active generation
         assert session.query(StageWorkspaceBindingModel).filter_by(run_id=run_id, active=True).count() == 1
+        assert session.query(WorkspaceGenerationModel).filter_by(run_id=run_id, status="active").count() == 1
 
 
 def test_promote_stale_generation_rejected(tmp_path: Path):
@@ -143,3 +148,45 @@ def test_stage_scoped_generation_is_isolated(tmp_path: Path):
     # a different stage (None) has no active workspace
     assert service.resolve_active(run_id, "other-stage", "STAGE_WORKSPACE_1") is None
     assert service.resolve_active(run_id, stage_id, "STAGE_WORKSPACE_1") is not None
+
+
+def test_concurrent_promotions_cannot_activate_two_generations(tmp_path: Path):
+    """Two racing promotions must not both become active (RV-F07 concurrency guard)."""
+    import threading
+
+    run_id = f"run-f07-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    _seed_run(run_id)
+    _seed_stage(run_id, stage_id)
+    service = WorkspaceAuthorityService()
+
+    barrier = threading.Barrier(2)
+    results: list[str] = []
+
+    def promote_generation(generation: int) -> None:
+        barrier.wait()
+        try:
+            service.promote(_request(run_id, generation=generation, stage_id=stage_id))
+            results.append(f"ok:{generation}")
+        except WorkspaceAuthorityError:
+            results.append(f"rejected:{generation}")
+
+    threads = [threading.Thread(target=promote_generation, args=(g,)) for g in (4, 5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert "ok:4" in results or "ok:5" in results
+    # only one generation became active; the other was rejected or serialized
+    with session_scope() as session:
+        active = session.query(WorkspaceGenerationModel).filter_by(
+            run_id=run_id, stage_id=stage_id, status="active"
+        ).all()
+        assert len(active) == 1
+        active_gen = active[0].generation
+    resolved = service.resolve_active(run_id, stage_id, "STAGE_WORKSPACE_1")
+    assert resolved is not None
+    assert resolved.generation == active_gen
+    # the resolved workspace must match the active generation's own ledger row
+    assert resolved.fingerprint == active[0].fingerprint
