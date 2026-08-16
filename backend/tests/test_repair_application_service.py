@@ -1196,6 +1196,25 @@ def test_create_target_retry_hydrates_exact_authoritative_file_and_binds_replace
     engine.dispose()
 
 
+def test_semantic_retry_ignores_valid_missing_create_target(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    workspace = tmp_path / "workspace"
+    candidate = _proposal_candidate()
+    candidate["operations"].extend(
+        [{"operation": "create_text_file", "path": "src/new-setup.ts", "content": "setup"}]
+    )
+    service = RepairApplicationService(scope=_scope(factory))
+
+    context = service._attempt_context(attempt_id)
+    hydrated = service._hydrate_semantic_retry_context(candidate, context)
+
+    assert hydrated is not None
+    assert [target["path"] for target in hydrated["payload"]["targets"]] == ["src/app.ts"]
+    assert not (workspace / "src" / "new-setup.ts").exists()
+    engine.dispose()
+
+
 def test_create_target_retry_is_bounded_to_one(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)

@@ -2833,12 +2833,8 @@ class RepairApplicationService:
                 ) from error
             if operation_name == "create_text_file":
                 target = workspace / relative
-                if not target.exists() and not target.is_symlink():
-                    raise RepairApplicationError(
-                        _REPLACEMENT_CONTEXT_INVALID,
-                        "create_text_file target is not an existing filesystem entry",
-                    )
-                existing_create_paths.append(relative)
+                if target.exists() or target.is_symlink():
+                    existing_create_paths.append(relative)
                 continue
             if excerpts is None:
                 excerpts = self._context_pack_excerpts(authoritative)
