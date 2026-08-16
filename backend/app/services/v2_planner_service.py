@@ -75,14 +75,19 @@ class V2PlannerService:
         return findings
 
     def derive_plan(self, run_id: str, source_root: Path | None = None) -> V2MigrationPlan:
-        """Derive the deterministic migration plan (F18-02)."""
+        """Derive the deterministic migration plan (F18-02).
+
+        The checksum-bound plan captures only deterministic route/catalogue/
+        knowledge facts; source_root capability findings are advisory and are
+        NOT part of the immutable plan so the checksum is reproducible.
+        """
         try:
             source_family, target_family = self._run_context(run_id)
             source_major = _major(source_family)
             target_major = _major(target_family)
             route = self._route.compute(source_major, target_major)
             catalogue = self._catalogue.load()
-            findings = self.analyze(run_id, source_root)
+            findings = self.analyze(run_id, None)
             stages: list[V2PlannedStage] = []
             for stage in route.stages:
                 entry = catalogue.entry_for(stage.source_family, stage.target_family)
