@@ -91,10 +91,28 @@ class FailureIntelligenceService:
         result.sort(key=lambda g: g.group_key)
         return result
 
-    def resolve_root_cause(self, group: FailureGroup) -> FailureRootCause:
-        """Deterministic root cause for a group (F19-03)."""
-        taxonomy = group.taxonomy
-        code = group.fault_codes[0] if group.fault_codes else "UNKNOWN"
+    def resolve_root_cause(self, group: FailureGroup, graph: FailureDependencyGraph | None = None) -> FailureRootCause:
+        """Deterministic root cause for a group (F19-03).
+
+        When the group has inbound dependency edges, the root cause resolves to
+        the earliest-precedence upstream group; otherwise it is the group's own
+        dominant code.
+        """
+        root = group
+        if graph is not None:
+            visited = {group.group_key}
+            current = group
+            while True:
+                inbound = [edge.depends_on for edge in graph.edges if edge.dependent == current.group_key]
+                candidates = [n for n in graph.nodes if n.group_key in inbound and n.group_key not in visited]
+                if not candidates:
+                    break
+                next_root = min(candidates, key=lambda n: (_precedence(n.taxonomy), n.first_seen))
+                visited.add(next_root.group_key)
+                current = next_root
+            root = current
+        taxonomy = root.taxonomy
+        code = root.fault_codes[0] if root.fault_codes else "UNKNOWN"
         confidence = "high" if taxonomy in {"environment", "dependency"} else "medium"
         explanation = f"{taxonomy} failure {code} is the deterministic root cause of group {group.group_key}"
         return FailureRootCause(
@@ -103,28 +121,32 @@ class FailureIntelligenceService:
             taxonomy=taxonomy,
             explanation=explanation,
             confidence=confidence,
-            contributing_codes=group.fault_codes,
+            contributing_codes=root.fault_codes,
         )
 
     def build_dependency_graph(self, groups: list[FailureGroup]) -> FailureDependencyGraph:
         """Model dependency edges between failure groups (F19-04).
 
         A group whose taxonomy appears earlier in the causal precedence is a
-        candidate blocker for groups of later taxonomies.
+        candidate blocker for groups of later taxonomies, and a blocker is only
+        linked when it occurred at or before the dependent (time guard).
         """
         edges: list[FailureDependencyEdge] = []
         for blocker in groups:
             for dependent in groups:
                 if blocker.group_key == dependent.group_key:
                     continue
-                if _precedence(blocker.taxonomy) < _precedence(dependent.taxonomy):
-                    edges.append(
-                        FailureDependencyEdge(
-                            depends_on=blocker.group_key,
-                            dependent=dependent.group_key,
-                            reason=f"{blocker.taxonomy} failure precedes {dependent.taxonomy} failure",
-                        )
+                if _precedence(blocker.taxonomy) >= _precedence(dependent.taxonomy):
+                    continue
+                if blocker.first_seen > dependent.last_seen:
+                    continue
+                edges.append(
+                    FailureDependencyEdge(
+                        depends_on=blocker.group_key,
+                        dependent=dependent.group_key,
+                        reason=f"{blocker.taxonomy} failure precedes {dependent.taxonomy} failure",
                     )
+                )
         graph = FailureDependencyGraph(nodes=tuple(groups), edges=tuple(sorted(edges, key=lambda e: (e.depends_on, e.dependent))))
         return graph.bind_checksum()
 
@@ -141,8 +163,8 @@ class FailureIntelligenceService:
             for p in packs
         ]
         groups = self.group(payloads)
-        roots = {g.group_key: self.resolve_root_cause(g) for g in groups}
         graph = self.build_dependency_graph(groups)
+        roots = {g.group_key: self.resolve_root_cause(g, graph) for g in groups}
         return {"groups": groups, "root_causes": roots, "graph": graph}
 
     def persist(self, run_id: str, intelligence: dict[str, Any]) -> FailureIntelligenceModel:

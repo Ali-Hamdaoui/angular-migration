@@ -62,7 +62,7 @@ def test_root_cause_resolution():
     assert cause.confidence == "high"
 
 
-def test_dependency_graph_precedence():
+def test_dependency_graph_precedence_and_time_guard():
     service = FailureIntelligenceService()
     groups = service.group([
         {"fault_code": "A", "category": "dependency", "message": "d", "created_at": NOW},
@@ -72,6 +72,31 @@ def test_dependency_graph_precedence():
     dep = next(g for g in groups if g.taxonomy == "dependency")
     cmd = next(g for g in groups if g.taxonomy == "command")
     assert any(e.depends_on == dep.group_key and e.dependent == cmd.group_key for e in graph.edges)
+
+    # time guard: a later dependency failure must NOT block an earlier command failure
+    from datetime import timedelta
+    later_dep = service.group([
+        {"fault_code": "A", "category": "dependency", "message": "d", "created_at": NOW + timedelta(days=1)},
+        {"fault_code": "B", "category": "command", "message": "c", "created_at": NOW},
+    ])
+    dep2 = next(g for g in later_dep if g.taxonomy == "dependency")
+    cmd2 = next(g for g in later_dep if g.taxonomy == "command")
+    graph2 = service.build_dependency_graph(later_dep)
+    assert not any(e.depends_on == dep2.group_key and e.dependent == cmd2.group_key for e in graph2.edges)
+
+
+def test_root_cause_resolves_to_upstream_group():
+    service = FailureIntelligenceService()
+    groups = service.group([
+        {"fault_code": "DEPENDENCY_PREFLIGHT_BLOCKED", "category": "dependency", "message": "x", "created_at": NOW},
+        {"fault_code": "COMMAND_EXIT_NONZERO", "category": "command", "message": "y", "created_at": NOW},
+    ])
+    graph = service.build_dependency_graph(groups)
+    command_group = next(g for g in groups if g.taxonomy == "command")
+    cause = service.resolve_root_cause(command_group, graph)
+    assert cause.root_cause_code == "DEPENDENCY_PREFLIGHT_BLOCKED"
+    assert cause.taxonomy == "dependency"
+    assert cause.confidence == "high"
 
 
 def test_intelligence_for_run_and_persist():

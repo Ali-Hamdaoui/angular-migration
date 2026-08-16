@@ -23,9 +23,11 @@ def upgrade() -> None:
     )
     op.create_index("ix_failure_intelligence_run_id", "failure_intelligence", ["run_id"])
     op.create_index("ix_failure_intelligence_checksum", "failure_intelligence", ["checksum"])
+    op.create_index("uq_failure_intelligence_run_checksum", "failure_intelligence", ["run_id", "checksum"], unique=True)
 
 
 def downgrade() -> None:
+    op.drop_index("uq_failure_intelligence_run_checksum", table_name="failure_intelligence")
     op.drop_index("ix_failure_intelligence_checksum", table_name="failure_intelligence")
     op.drop_index("ix_failure_intelligence_run_id", table_name="failure_intelligence")
     op.drop_table("failure_intelligence")

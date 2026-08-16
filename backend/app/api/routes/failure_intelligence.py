@@ -20,23 +20,15 @@ def get_intelligence_service() -> FailureIntelligenceService:
 
 
 def _group_dto(g) -> FailureGroupDto:
-    return FailureGroupDto(group_key=g["group_key"] if isinstance(g, dict) else g.group_key,
-                           taxonomy=g["taxonomy"] if isinstance(g, dict) else g.taxonomy,
-                           fault_codes=g["fault_codes"] if isinstance(g, dict) else list(g.fault_codes),
-                           member_count=g["member_count"] if isinstance(g, dict) else g.member_count,
-                           first_seen=g["first_seen"] if isinstance(g, dict) else g.first_seen,
-                           last_seen=g["last_seen"] if isinstance(g, dict) else g.last_seen,
-                           signature=g.get("signature", "") if isinstance(g, dict) else g.signature,
-                           checksum=g["checksum"] if isinstance(g, dict) else g.checksum)
+    return FailureGroupDto(group_key=g.group_key, taxonomy=g.taxonomy, fault_codes=list(g.fault_codes),
+                           member_count=g.member_count, first_seen=g.first_seen, last_seen=g.last_seen,
+                           signature=g.signature, checksum=g.checksum)
 
 
 def _root_dto(r) -> FailureRootCauseDto:
-    return FailureRootCauseDto(group_key=r["group_key"] if isinstance(r, dict) else r.group_key,
-                               root_cause_code=r["root_cause_code"] if isinstance(r, dict) else r.root_cause_code,
-                               taxonomy=r["taxonomy"] if isinstance(r, dict) else r.taxonomy,
-                               explanation=r.get("explanation", "") if isinstance(r, dict) else r.explanation,
-                               confidence=r["confidence"] if isinstance(r, dict) else r.confidence,
-                               contributing_codes=r["contributing_codes"] if isinstance(r, dict) else list(r.contributing_codes))
+    return FailureRootCauseDto(group_key=r.group_key, root_cause_code=r.root_cause_code, taxonomy=r.taxonomy,
+                               explanation=r.explanation, confidence=r.confidence,
+                               contributing_codes=list(r.contributing_codes))
 
 
 def _intelligence_dto(intelligence) -> FailureIntelligenceDto:
