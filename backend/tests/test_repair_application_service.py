@@ -66,6 +66,7 @@ def test_proposer_policy_prioritizes_authoritative_existing_files():
     assert "human revision" in policy.lower()
     assert "never use create_text_file for any path listed in current_workspace_files" in policy.lower()
     assert "use replace_text with the exact authoritative preimage" in policy.lower()
+    assert "short exact unique substring" in policy.lower()
 
 
 def test_create_target_retry_feedback_identifies_rejected_path():

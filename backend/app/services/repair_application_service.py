@@ -256,6 +256,8 @@ _PROPOSER_SYSTEM_POLICY = (
     "which files exist and their exact contents. Never use create_text_file for any path "
     "listed in CURRENT_WORKSPACE_FILES. For an existing target, use replace_text with "
     "the exact authoritative preimage; do not recreate the whole configuration file. "
+    "For replace_text, prefer a short exact unique substring copied from the authoritative "
+    "file and never reconstruct or reformat a whole-file preimage. "
     "Before choosing create_text_file, verify that its target path is absent from the "
     "authoritative file list. For Angular peer-dependency-conflict failures (failure_type "
     '\"peer_dependency_conflict\"), emit exactly one \"dependency_transition\" '
