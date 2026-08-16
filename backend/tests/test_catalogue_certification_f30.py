@@ -31,20 +31,22 @@ def test_fixture_workspace_is_deterministic():
     assert (first / "src" / "main.ts").read_text() == (second / "src" / "main.ts").read_text()
 
 
-def test_pipeline_certifies_certified_transitions():
+def test_pipeline_certifies_only_runtime_proven_transitions():
     root = _root()
     pipeline = CatalogueCertificationPipeline()
     run = pipeline.run(fixture_root=root)
     assert run.deterministic is True
-    assert run.certified_count > 0
-    assert run.rejected_count >= 0
+    assert run.certified_count == 3  # only the runtime-proven transitions
+    assert run.rejected_count == len(run.outcomes) - 3
     assert run.certified_count + run.rejected_count == len(run.outcomes)
     assert run.checksum.startswith("sha256:")
-    # the certified transitions (18,19),(19,20),(20,21) must be certified
     certified_pairs = {(o.source_family, o.target_family) for o in run.outcomes if o.status is CertificationStatus.CERTIFIED}
-    assert ("angular-18.x", "angular-19.x") in certified_pairs
-    assert ("angular-19.x", "angular-20.x") in certified_pairs
-    assert ("angular-20.x", "angular-21.x") in certified_pairs
+    assert certified_pairs == {("angular-18.x", "angular-19.x"), ("angular-19.x", "angular-20.x"), ("angular-20.x", "angular-21.x")}
+    # unproven entries are rejected with evidence
+    rejected = [o for o in run.outcomes if o.status is CertificationStatus.REJECTED]
+    assert rejected
+    assert all("runtime_profile_missing" in o.evidence for o in rejected)
+    assert all("runtime_proof" not in o.evidence for o in rejected)
 
 
 def test_pipeline_is_reproducible():
@@ -135,10 +137,21 @@ def test_api_run_and_list():
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["catalogue_version"] == "catalog-v3"
-    assert body["certified_count"] >= 3
+    assert body["certified_count"] == 3
     assert body["checksum"].startswith("sha256:")
     assert body["deterministic"] is True
 
     listed = client.get("/catalogue-certification?source=angular-18.x")
     assert listed.status_code == 200
     assert all(r["source_family"] == "angular-18.x" for r in listed.json())
+
+
+def test_api_fixture_root_outside_allowed_roots_fails_closed():
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    outside = Path("/tmp") / f"F30-outside-{uuid4().hex[:6]}"
+    outside.mkdir(parents=True, exist_ok=True)
+    response = client.post("/catalogue-certification/run", json={"fixture_root": str(outside)})
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "FIXTURE_ROOT_NOT_ALLOWED"

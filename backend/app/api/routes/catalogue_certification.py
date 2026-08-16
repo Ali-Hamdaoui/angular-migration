@@ -19,7 +19,12 @@ router = APIRouter(tags=["catalogue-certification"])
 
 
 def get_pipeline() -> CatalogueCertificationPipeline:
-    return CatalogueCertificationPipeline()
+    from app.core.config import get_settings
+
+    roots = get_settings().allowed_source_roots
+    if not roots:
+        raise RuntimeError("ALLOWED_SOURCE_ROOTS must be configured for the catalogue certification endpoint")
+    return CatalogueCertificationPipeline(allowed_roots=roots)
 
 
 def _outcome_dto(o) -> CatalogueCertificationOutcomeDto:

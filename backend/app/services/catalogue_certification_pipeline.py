@@ -1,10 +1,10 @@
 """Catalogue certification pipeline service (V2 F30).
 
-For each catalogue entry the pipeline materializes a fixture workspace, runs
-the fixture migration through the V2 stage chain (F12), and certifies the
-entry only when the runtime proof is durable: PASS promotes the entry to
-certified; FAIL rejects it with evidence.  Deterministic: identical fixture
-+ identical runtime proof -> identical outcome.
+For each catalogue entry the pipeline materializes a deterministic per-entry
+fixture workspace and certifies the entry only when the catalogue records
+validated runtime proof: PASS promotes the entry to certified; FAIL rejects
+it with durable evidence.  Deterministic: identical fixture + identical
+catalogue -> identical outcome.
 """
 
 from __future__ import annotations
@@ -24,10 +24,9 @@ from app.domain.catalogue_certification import (
     CatalogueCertificationRun,
     CertificationStatus,
 )
-from app.repositories.catalogue_certification_models import CatalogueCertificationModel
+from app.repositories.models import CatalogueCertificationModel
 from app.repositories.session import session_scope
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
-from app.services.stage_chain_orchestrator import StageChainOrchestrator
 
 
 class CatalogueCertificationError(ValueError):
@@ -73,14 +72,25 @@ class CatalogueCertificationPipeline:
         self,
         *,
         catalogue_provider: CompatibilityCatalogueProvider | None = None,
-        orchestrator: StageChainOrchestrator | None = None,
         session_scope_factory: Callable[[], AbstractContextManager] | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        allowed_roots: list[Path] | None = None,
     ) -> None:
         self._catalogue = catalogue_provider or CompatibilityCatalogueProvider()
-        self._orchestrator = orchestrator or StageChainOrchestrator()
         self._session_scope = session_scope_factory or session_scope
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
+        self._allowed_roots = [Path(path).resolve() for path in (allowed_roots or [])]
+
+    def _assert_fixture_root_allowed(self, fixture_root: Path) -> None:
+        """Fail closed before any fixture is written (review hardening)."""
+        if not self._allowed_roots:
+            return
+        resolved = fixture_root.resolve(strict=False)
+        if not any(_within_root(resolved, root) for root in self._allowed_roots):
+            raise CatalogueCertificationError(
+                "FIXTURE_ROOT_NOT_ALLOWED",
+                f"fixture_root {fixture_root} is outside the allowed source roots",
+            )
 
     def run(
         self,
@@ -90,6 +100,7 @@ class CatalogueCertificationPipeline:
         run_id: str | None = None,
     ) -> CatalogueCertificationRun:
         """Run the pipeline over the catalogue entries and certify/reject (F30-01/03)."""
+        self._assert_fixture_root_allowed(fixture_root)
         catalogue = self._catalogue.load()
         run_id = run_id or f"certrun-{uuid4().hex[:12]}"
         if cases is None:
@@ -138,20 +149,20 @@ class CatalogueCertificationPipeline:
         if entry.support_level == "blocked":
             evidence.append("entry_blocked")
             return self._reject(case, evidence, "catalogue marks the transition as blocked")
-        if entry.certification_status == "certified":
+        # Runtime-proven certification (F30-03): an entry is certified only
+        # when its runtime profiles are actually recorded/validated.  A node
+        # minimum alone is documentation, not proof — unproven entries are
+        # rejected with durable evidence.
+        if entry.certification_status == "certified" and entry.validated_runtime_profiles:
             runtime_proof = list(entry.validated_runtime_profiles)
             evidence.append("runtime_proof:certified_profiles")
             return self._certify(case, runtime_proof, evidence, f"certified against {catalogue_version}")
-        # Deterministic runtime proof: a resolved profile is durable proof.
-        node_minimum = entry.node_minimum or entry.node_exact
-        npm_minimum = entry.npm_exact or "10.0.0"
-        if node_minimum is None:
-            evidence.append("runtime_profile_missing")
-            return self._reject(case, evidence, "entry has no certified runtime profile to prove")
-        profile = (node_minimum, npm_minimum)
-        runtime_proof = [profile]
-        evidence.append("runtime_proof:resolved_profile")
-        return self._certify(case, runtime_proof, evidence, f"runtime proof recorded for {case.source_family} -> {case.target_family}")
+        evidence.append("runtime_profile_missing")
+        return self._reject(
+            case,
+            evidence,
+            f"entry {case.source_family} -> {case.target_family} has no validated runtime proof to certify",
+        )
 
     @staticmethod
     def _certify(case, runtime_proof, evidence, reason) -> CatalogueCertificationOutcome:
@@ -177,8 +188,9 @@ class CatalogueCertificationPipeline:
                 record_id = "cert-" + hashlib.sha256(
                     f"{outcome.source_family}:{outcome.target_family}:{run.run_id}".encode()
                 ).hexdigest()[:24]
-                if session.get(CatalogueCertificationModel, record_id) is not None:
-                    stored.append(session.get(CatalogueCertificationModel, record_id))
+                existing = session.get(CatalogueCertificationModel, record_id)
+                if existing is not None:
+                    stored.append(existing)
                     continue
                 model = CatalogueCertificationModel(
                     id=record_id,
@@ -208,3 +220,11 @@ class CatalogueCertificationPipeline:
             if target:
                 query = query.where(CatalogueCertificationModel.target_family == target)
             return list(session.scalars(query.order_by(CatalogueCertificationModel.created_at.desc())).all())
+
+
+def _within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
