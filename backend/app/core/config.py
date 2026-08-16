@@ -1,8 +1,8 @@
 """Centralized, server-side configuration for the backend."""
 
+import os
 from functools import lru_cache
 from pathlib import Path
-import os
 from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     sqlite_wal_enabled: bool = True
     sqlite_busy_timeout_ms: int = Field(default=5_000, gt=0)
 
+    # PATH-independent runtime matrix used by the V2 resolver authority.
+    # node/npm/npx candidates are discovered under these roots only, never from PATH.
+    runtime_node_install_root: Path | None = None
+    runtime_angular_cli_root: Path | None = None
+
     azure_openai_endpoint: str | None = None
     azure_openai_deployment: str | None = None
     azure_openai_api_version: str | None = None
@@ -137,6 +142,16 @@ class Settings(BaseSettings):
                 if str(error).endswith("platform repository"):
                     raise
             object.__setattr__(self, field, resolved)
+        return self
+
+    @model_validator(mode="after")
+    def derive_runtime_matrix_roots(self) -> "Settings":
+        if self.runtime_node_install_root is None:
+            object.__setattr__(
+                self, "runtime_node_install_root", Path.home() / ".nvm" / "versions" / "node"
+            )
+        if self.runtime_angular_cli_root is None:
+            object.__setattr__(self, "runtime_angular_cli_root", Path.home() / "migration-lab" / "runtimes")
         return self
 
     @model_validator(mode="after")
