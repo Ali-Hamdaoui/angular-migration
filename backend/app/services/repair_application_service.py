@@ -1134,6 +1134,32 @@ class RepairApplicationService:
         actor: str,
         reason: str,
     ) -> dict[str, object]:
+        with self._scope() as session:
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = (
+                session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id,
+                        TransformationContinuationModel.current_stage_id == attempt.stage_id,
+                    )
+                )
+                if attempt is not None
+                else None
+            )
+            proposer_recovery = (
+                continuation is not None
+                and continuation.status == "blocked"
+                and continuation.current_node == "propose_repair"
+            )
+        if proposer_recovery:
+            return self._recover_uncertain_proposer_invocation(
+                run_id=run_id,
+                attempt_id=attempt_id,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+                actor=actor,
+                reason=reason,
+            )
         """Abandon one irrecoverable reviewer call and queue one new review identity."""
         request_checksum = self._request_checksum(
             {
@@ -1422,6 +1448,243 @@ class RepairApplicationService:
                 "new_invocation_key": successor.idempotency_key,
                 "new_invocation_id": successor.id,
                 "proposal_checksum": attempt.proposal_checksum,
+                "idempotent_replay": False,
+            }
+
+    def _recover_uncertain_proposer_invocation(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        reason: str,
+    ) -> dict[str, object]:
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "reason": reason,
+                "role": "proposer",
+                "generation": 1,
+            }
+        )
+        event_marker = f"repair-invocation-recovery:{attempt_id}:proposer:1"
+        with self._scope() as session:
+            prior = next(
+                (
+                    event
+                    for event in session.scalars(
+                        select(WorkflowEventModel).where(
+                            WorkflowEventModel.run_id == run_id,
+                            WorkflowEventModel.event_type
+                            == WorkflowEventType.REPAIR_INVOCATION_RECOVERED.value,
+                        )
+                    ).all()
+                    if (event.payload or {}).get("attempt_id") == attempt_id
+                    and (event.payload or {}).get("role") == "proposer"
+                ),
+                None,
+            )
+            if prior is not None:
+                successor_key = str((prior.payload or {}).get("new_invocation_key") or "")
+                successor = session.scalar(
+                    select(LlmInvocationModel).where(
+                        LlmInvocationModel.run_id == run_id,
+                        LlmInvocationModel.idempotency_key == successor_key,
+                    )
+                )
+                if successor is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_CONFLICT",
+                        "Existing uncertain-invocation recovery evidence is incomplete",
+                    )
+                return {
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "old_invocation_key": (prior.payload or {}).get("old_invocation_key"),
+                    "new_invocation_key": successor_key,
+                    "new_invocation_id": successor.id,
+                    "proposal_checksum": None,
+                    "idempotent_replay": True,
+                }
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = (
+                session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id,
+                        TransformationContinuationModel.current_stage_id == attempt.stage_id,
+                    )
+                )
+                if attempt is not None
+                else None
+            )
+            if (
+                attempt is None
+                or continuation is None
+                or continuation.state_version != expected_state_version
+                or continuation.status != "blocked"
+                or continuation.current_node != "propose_repair"
+                or continuation.last_error_code != "REPAIR_INVOCATION_UNCERTAIN"
+                or continuation.worker_id is not None
+                or continuation.lease_expires_at is not None
+                or attempt.status != "evidence_frozen"
+                or attempt.proposal_artifact_id is not None
+                or attempt.proposer_invocation_id is not None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Proposer invocation is not an irrecoverable uncertain call",
+                )
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            checkpoint = (
+                session.get(StageCheckpointModel, attempt.checkpoint_id)
+                if attempt.checkpoint_id
+                else None
+            )
+            if (
+                stage_plan is None
+                or stage_plan.run_id != run_id
+                or stage_plan.stage_id != attempt.stage_id
+                or stage_plan.checksum != continuation.stage_plan_checksum
+                or binding is None
+                or checkpoint is None
+                or checkpoint.kind != "pre_repair"
+                or not checkpoint.safe_for_resume
+                or checkpoint.workspace_path != binding.workspace_path
+                or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
+                or attempt.pre_fingerprint != binding.workspace_fingerprint
+                or StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                != binding.workspace_fingerprint
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Proposer recovery authority is missing or stale",
+                )
+            old = session.scalar(
+                select(LlmInvocationModel)
+                .where(
+                    LlmInvocationModel.run_id == run_id,
+                    LlmInvocationModel.id.like(f"{attempt_id}:proposer%"),
+                    LlmInvocationModel.status == "in_progress",
+                )
+                .order_by(LlmInvocationModel.created_at.desc())
+                .limit(1)
+            )
+            if (
+                old is None
+                or old.stage_id != attempt.stage_id
+                or old.role != "repair_proposer"
+                or old.task_type != LlmTaskType.REPAIR_DIAGNOSIS.value
+                or not old.transport_started
+                or old.response_received is True
+                or old.completed_at is not None
+                or old.provider_response_id is not None
+                or old.provider_request_id is not None
+                or old.provider_http_status is not None
+                or old.provider_error_code is not None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Proposer invocation is not an irrecoverable uncertain call",
+                )
+            now = self._now()
+            successor_key = f"{old.id}:recovery-1"
+            successor = LlmInvocationModel(
+                id=successor_key,
+                run_id=run_id,
+                stage_id=attempt.stage_id,
+                idempotency_key=successor_key,
+                request_checksum=old.request_checksum,
+                input_hashes=[
+                    *(old.input_hashes or []),
+                    f"recovery_of:{old.idempotency_key}",
+                    "recovery_generation:1",
+                ],
+                correlation_id=successor_key,
+                actor=actor,
+                role=old.role,
+                task_type=old.task_type,
+                provider=old.provider,
+                deployment_alias=old.deployment_alias,
+                prompt_version=old.prompt_version,
+                schema_version=old.schema_version,
+                pricing_version=old.pricing_version,
+                stage=old.stage,
+                redacted_summary=None,
+                status="in_progress",
+                artifact_ids=[],
+                artifact_checksums={},
+                state_version=1,
+                event_sequence=0,
+                retries=old.retries or 0,
+                transport_started=False,
+                response_received=None,
+                started_at=now,
+                completed_at=None,
+                created_at=now,
+            )
+            old.status = "uncertain_abandoned"
+            old.completed_at = now
+            old.state_version += 1
+            attempt.proposer_invocation_id = successor.id
+            attempt.updated_at = now
+            continuation.status = "queued"
+            continuation.current_node = "propose_repair"
+            continuation.worker_id = None
+            continuation.lease_expires_at = None
+            continuation.next_attempt_at = None
+            continuation.waiting_execution_id = None
+            continuation.last_error_code = None
+            continuation.last_error_message = None
+            continuation.wake_sequence += 1
+            continuation.state_version += 1
+            continuation.updated_at = now
+            session.add(successor)
+            append_continuation_event(
+                session,
+                continuation,
+                event_type=WorkflowEventType.REPAIR_INVOCATION_RECOVERED,
+                key=event_marker,
+                reason=reason,
+                actor=actor,
+                occurred_at=now,
+                payload={
+                    "run_id": run_id,
+                    "stage_id": attempt.stage_id,
+                    "attempt_id": attempt_id,
+                    "old_invocation_id": old.id,
+                    "old_invocation_key": old.idempotency_key,
+                    "new_invocation_id": successor.id,
+                    "new_invocation_key": successor.idempotency_key,
+                    "role": "proposer",
+                    "proposal_checksum": None,
+                    "request_checksum": old.request_checksum,
+                    "operator_actor": actor,
+                    "recovery_request_idempotency_key": idempotency_key,
+                    "reason": reason,
+                    "recovery_generation": 1,
+                    "recovery_request_checksum": request_checksum,
+                    "recovered_at": now.isoformat(),
+                },
+            )
+            return {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "old_invocation_key": old.idempotency_key,
+                "new_invocation_key": successor.idempotency_key,
+                "new_invocation_id": successor.id,
+                "proposal_checksum": None,
                 "idempotent_replay": False,
             }
 
