@@ -44,16 +44,14 @@ curl -s -X POST http://localhost:8000/terminal/runs/run-1/resume -H 'Content-Typ
 
 ## 4. Approve a gate (governed approval actions)
 
-```
-POST /runs/{run_id}/approvals
-```
-
-Submit a governed approval decision for the pending gate.
+The governed approval decisions live under `/runs/{run_id}/approvals/G0X/decisions`
+(e.g. `G01` preflight, `G02` source intake, `G03` baseline, `G05` feasibility).
+Submit the decision through the governing gate endpoint.
 
 ```
-curl -s -X POST http://localhost:8000/runs/run-1/approvals \
+curl -s -X POST http://localhost:8000/runs/run-1/approvals/G01/decisions \
   -H 'Content-Type: application/json' \
-  -d '{"gate_id":"G01","decision":"approve","actor":"operator","idempotency_key":"term-approve-1"}'
+  -d '{"decision":"APPROVED","actor":"operator","idempotency_key":"term-approve-1","expected_state_version":1}'
 ```
 
 ## 5. Full terminal lifecycle (setup → seal)
@@ -65,5 +63,6 @@ curl -s -X POST http://localhost:8000/runs/run-1/approvals \
    `POST /runs/{run}/stages/{stage}/validate`, `POST /runs/{run}/stages/{stage}/seal`.
 5. On gate wait, approve: `POST /runs/{run}/approvals`.
 6. On failure, diagnose and repair: `GET /terminal/runs/{run}/diagnostics`,
-   `POST /attempts/{attempt}/cycles` + `POST /cycles/{cycle}/decide`.
-7. Deliver: after all stages seal, use the delivery endpoint.
+   `POST /runs/{run}/attempts/{attempt}/cycles` + `POST /cycles/{cycle}/decide`.
+7. Deliver: after all stages seal, use the workspace delivery endpoint
+   (the atomic delivery surface under the delivery router).

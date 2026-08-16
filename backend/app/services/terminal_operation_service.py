@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime
 
 from app.repositories.session import session_scope
 from app.services.failure_intelligence_service import FailureIntelligenceService
@@ -32,8 +31,16 @@ class TerminalOperationService:
         self._intelligence = intelligence_service or FailureIntelligenceService()
         self._session_scope = session_scope_factory or session_scope
 
+    def _require_run(self, run_id: str) -> None:
+        from app.repositories.models import MigrationRunModel
+
+        with self._session_scope() as session:
+            if session.get(MigrationRunModel, run_id) is None:
+                raise TerminalOperationError("RUN_NOT_FOUND", f"Migration run {run_id} not found")
+
     def next_action(self, run_id: str) -> dict:
         """Return the next permitted action for a run (F06-01)."""
+        self._require_run(run_id)
         with self._session_scope() as session:
             projection = self._projection.build(session, run_id)
         return {
@@ -47,6 +54,7 @@ class TerminalOperationService:
 
     def terminal_diagnostics(self, run_id: str) -> dict:
         """Compose structured diagnostics for terminal use (F06-02)."""
+        self._require_run(run_id)
         with self._session_scope() as session:
             from sqlalchemy import select
 
@@ -68,18 +76,15 @@ class TerminalOperationService:
 
     def terminal_resume(self, run_id: str) -> dict:
         """Resume the run through the terminal (F06-04)."""
-        from app.services.stage_chain_orchestrator import StageChainOrchestrator
+        self._require_run(run_id)
+        from app.services.stage_chain_orchestrator import StageChainOrchestrator, StageOrchestrationError
 
         try:
             chain = StageChainOrchestrator().resume(run_id)
-        except Exception as exc:
+        except StageOrchestrationError:
             chain = None
         return {
             "run_id": run_id,
             "chain_status": chain.status if chain else "not_started",
             "next": self.next_action(run_id),
         }
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
