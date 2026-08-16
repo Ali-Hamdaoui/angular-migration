@@ -59,4 +59,6 @@ def authorize_ng_update(
         authz = service.authorize_update(source_major, target_major, stage_id=stage_id)
     except NgUpdateGovernanceError as error:
         _raise(error)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail={"error_code": "STAGE_NOT_FOUND", "message": str(error)})
     return _authz_dto(authz)

@@ -115,3 +115,52 @@ def test_api_authorize_experimental_denied():
     assert response.status_code == 200
     assert response.json()["allowed"] is False
     assert response.json()["certified"] is False
+
+
+def test_command_registry_enforces_governance_gate(tmp_path):
+    """An angular-update-exact request against an uncertified stage is REJECTED."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.domain.contracts import CommandPolicyValidateRequestDto
+    from app.repositories.models import Base
+    from app.repositories.models import MigrationRunModel, MigrationStageModel
+    from app.services.command_registry_service import CommandPolicyEngineService
+
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    run_id = f"run-{uuid4().hex[:8]}"
+    engine = create_engine(f"sqlite:///{tmp_path / 'g.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = factory()
+    session.add(MigrationRunModel(id=run_id, status="CREATED", run_phase="initialized",
+                                  source_version_family="angular-11.x", target_version_family="angular-12.x",
+                                  state_version=1, created_at=NOW, updated_at=NOW))
+    session.add(MigrationStageModel(id=stage_id, run_id=run_id, stage_order=1,
+                                    source_version_family="angular-11.x", target_version_family="angular-12.x",
+                                    status="planned", created_at=NOW))
+    session.commit()
+
+    request = CommandPolicyValidateRequestDto(
+        run_id=run_id,
+        expected_state_version=1,
+        stage_id=stage_id,
+        command_id="angular-update-exact",
+        template_id="tpl-angular-update-exact-v3",
+        template_version=3,
+        executable="npx",
+        arguments=["--yes", "-p", "@angular/cli@12.0.0", "ng", "update", "@angular/cli@12.0.0", "@angular/core@12.0.0", "--allow-dirty"],
+        execution_profile_id="source-runtime-profile",
+        network_profile="none",
+        cancellation_policy="terminate_process_tree",
+        timeout_seconds=1800,
+        idempotency_key="governance-test",
+        correlation_id="corr-gov",
+        shell=False,
+    )
+    try:
+        response = CommandPolicyEngineService().validate(session, request)
+        assert response.decision == "rejected"
+        assert any("NG_UPDATE_GOVERNANCE" in (r or "") for r in response.reasons)
+    finally:
+        session.close()
+        engine.dispose()
