@@ -84,45 +84,43 @@ def _seed(run_id: str, stage_id: str, attempt_id: str, status: str) -> None:
         session.commit()
 
 
-def test_restart_sweep_recovers_interrupted_apply(tmp_path: Path):
+def test_restart_sweep_marks_in_flight_attempts_idempotently(tmp_path: Path):
     run_id = f"run-f04-{uuid4().hex[:8]}"
     stage_id = f"stage-{run_id}"
     attempt_id = f"attempt-{uuid4().hex[:8]}"
     _seed(run_id, stage_id, attempt_id, "executing")
 
     service = RepairLifecycleReliabilityService()
-    recovered = service.recover_in_flight_repairs(run_id=run_id)
-    assert attempt_id in recovered
+    first = service.recover_in_flight_repairs(run_id=run_id)
+    assert attempt_id in first
 
     with session_scope() as session:
         attempt = session.get(RepairAttemptModel, attempt_id)
-        assert attempt.status == "apply_recovery_required"
-        assert attempt.state_version == 2
-        # a recovery event was recorded
-        events = session.query(WorkflowEventModel).filter_by(run_id=run_id).all()
-        assert any("recover" in (e.idempotency_key or "") for e in events)
-        # a diagnostic pack was recorded
-        packs = session.query(FailureDiagnosticPackModel).filter_by(run_id=run_id).all()
-        assert any(p.fault_code == "REPAIR_LIFECYCLE_RECOVERED" for p in packs)
-
-
-def test_restart_sweep_keeps_resumable_states_with_marker(tmp_path: Path):
-    run_id = f"run-f04-{uuid4().hex[:8]}"
-    stage_id = f"stage-{run_id}"
-    attempt_id = f"attempt-{uuid4().hex[:8]}"
-    _seed(run_id, stage_id, attempt_id, "proposed")
-
-    service = RepairLifecycleReliabilityService()
-    recovered = service.recover_in_flight_repairs(run_id=run_id)
-    assert attempt_id in recovered
-
-    with session_scope() as session:
-        attempt = session.get(RepairAttemptModel, attempt_id)
-        # proposed is resumable by the continuation authority; status unchanged
-        assert attempt.status == "proposed"
+        # the sweep never demotes status; the continuation authority owns recovery
+        assert attempt.status == "executing"
         assert attempt.state_version == 1
         events = session.query(WorkflowEventModel).filter_by(run_id=run_id).all()
         assert any("resumable" in (e.idempotency_key or "") for e in events)
+        packs = session.query(FailureDiagnosticPackModel).filter_by(run_id=run_id).all()
+        assert any(p.fault_code == "REPAIR_LIFECYCLE_RECOVERED" for p in packs)
+
+    # second boot is idempotent (no new events, no crash)
+    second = service.recover_in_flight_repairs(run_id=run_id)
+    with session_scope() as session:
+        events = session.query(WorkflowEventModel).filter_by(run_id=run_id).all()
+        assert sum("resumable" in (e.idempotency_key or "") for e in events) == 1
+
+
+def test_restart_sweep_skips_sealed(tmp_path: Path):
+    run_id = f"run-f04-{uuid4().hex[:8]}"
+    stage_id = f"stage-{run_id}"
+    attempt_id = f"attempt-{uuid4().hex[:8]}"
+    _seed(run_id, stage_id, attempt_id, "superseded")
+
+    service = RepairLifecycleReliabilityService()
+    assert service.recover_in_flight_repairs(run_id=run_id) == []
+    with session_scope() as session:
+        assert session.get(RepairAttemptModel, attempt_id).status == "superseded"
 
 
 def test_restart_sweep_is_idempotent_and_skips_sealed(tmp_path: Path):

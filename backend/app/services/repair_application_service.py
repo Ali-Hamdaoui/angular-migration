@@ -608,8 +608,8 @@ class RepairApplicationService:
         from app.services.repair_lifecycle_reliability_service import RepairLifecycleReliabilityService
 
         # Sealing guard (F04-04): a sealed/terminal repair lifecycle cannot be
-        # proposed again. Enforced by the lifecycle authority before mutation.
-        RepairLifecycleReliabilityService().assert_mutable(attempt_id)
+        # proposed again. Uses the caller's scope so injected test scopes work.
+        RepairLifecycleReliabilityService(session_scope_factory=self._scope).assert_mutable(attempt_id)
         self.recover_legacy_fingerprint_authority(attempt_id)
         self._recover_legacy_context_pack(attempt_id)
         semantic_retry_count = 0

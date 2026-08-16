@@ -14,15 +14,14 @@ logger = logging.getLogger(__name__)
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.domain.repair_lifecycle import (
     IN_FLIGHT_STATUSES,
     evaluate_transition,
     is_sealed,
-    restart_recovery_target,
 )
-from app.repositories.models import RepairAttemptModel
+from app.repositories.models import RepairAttemptModel, WorkflowEventModel
 from app.repositories.session import session_scope
 from app.services.diagnostics_application_service import DiagnosticsApplicationService
 from app.state.event_sequencer import append_workflow_event
@@ -49,71 +48,47 @@ class RepairLifecycleReliabilityService:
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     def recover_in_flight_repairs(self, run_id: str | None = None) -> list[str]:
-        """Restart recovery sweep for stranded in-flight repair attempts.
+        """Restart recovery sweep for in-flight repair attempts.
 
-        - ``executing``/``applying`` applies interrupted by a restart recover
-          deterministically to the real ``apply_recovery_required`` state, with
-          an optimistic CAS on ``state_version``.
-        - Other in-flight attempts (evidence_frozen/proposed/review_accepted/
-          waiting_g10/approved_pending_execution) resume through the existing
-          continuation authority: their status is NEVER demoted; a recovery
-          marker event and diagnostic pack make the resumability durable.
-        - Sealed/terminal attempts are never touched.
+        Repair restart recovery is owned by the existing continuation/reconstruction
+        authority (transformer worker re-claims continuations and reconstructs
+        interrupted applies against their pre-repair checkpoint).  This sweep
+        NEVER changes attempt status: it records a durable, idempotent recovery
+        marker event and a diagnostic pack per stranded in-flight attempt so the
+        resumability of a repair after a restart is visible and auditable.
+        Sealed/terminal attempts are never touched.
         """
         now = self._now_provider()
-        recovered: list[str] = []
+        marked: list[str] = []
         with self._session_scope() as session:
             query = select(RepairAttemptModel).where(RepairAttemptModel.status.in_(tuple(IN_FLIGHT_STATUSES)))
             if run_id:
                 query = query.where(RepairAttemptModel.run_id == run_id)
             for attempt in session.scalars(query).all():
-                target = restart_recovery_target(attempt.status)
-                if target is not None and target != attempt.status:
-                    expected = attempt.state_version
-                    updated = session.execute(
-                        update(RepairAttemptModel)
-                        .where(
-                            RepairAttemptModel.id == attempt.id,
-                            RepairAttemptModel.status == attempt.status,
-                            RepairAttemptModel.state_version == expected,
-                        )
-                        .values(
-                            status=target,
-                            state_version=expected + 1,
-                            updated_at=now,
-                        )
+                idempotency_key = f"repair-lifecycle-resumable:{attempt.id}:{attempt.status}"
+                existing = session.scalar(
+                    select(WorkflowEventModel.id).where(
+                        WorkflowEventModel.run_id == attempt.run_id,
+                        WorkflowEventModel.idempotency_key == idempotency_key,
                     )
-                    if updated.rowcount != 1:
-                        continue
-                    recovered.append(attempt.id)
-                    append_workflow_event(
-                        session,
-                        run_id=attempt.run_id,
-                        stage_id=attempt.stage_id,
-                        event_type="repair_lifecycle_recovered",
-                        occurred_at=now,
-                        idempotency_key=f"repair-lifecycle-recover:{attempt.id}:{target}",
-                        reason=f"restart recovery: {attempt.status} -> {target}",
-                        payload={"attempt_id": attempt.id, "from_status": attempt.status, "to_status": target},
-                    )
-                else:
-                    # Resumable in-flight attempt: keep status, record the
-                    # deterministic recovery marker (idempotent).
-                    append_workflow_event(
-                        session,
-                        run_id=attempt.run_id,
-                        stage_id=attempt.stage_id,
-                        event_type="repair_lifecycle_recovered",
-                        occurred_at=now,
-                        idempotency_key=f"repair-lifecycle-resumable:{attempt.id}:{attempt.status}",
-                        reason=f"restart recovery: {attempt.status} is resumable by the continuation authority",
-                        payload={"attempt_id": attempt.id, "status": attempt.status, "resumes": True},
-                    )
-                    recovered.append(attempt.id)
+                )
+                if existing is not None:
+                    continue
+                append_workflow_event(
+                    session,
+                    run_id=attempt.run_id,
+                    stage_id=attempt.stage_id,
+                    event_type="repair_lifecycle_recovered",
+                    occurred_at=now,
+                    idempotency_key=idempotency_key,
+                    reason=f"restart recovery: {attempt.status} is resumable by the continuation authority",
+                    payload={"attempt_id": attempt.id, "status": attempt.status, "resumes": True},
+                )
+                marked.append(attempt.id)
             session.commit()
-        for attempt_id in recovered:
+        for attempt_id in marked:
             self._record_recovery_pack(attempt_id)
-        return recovered
+        return marked
 
     def _record_recovery_pack(self, attempt_id: str) -> None:
         try:
@@ -151,16 +126,24 @@ class RepairLifecycleReliabilityService:
                 raise RepairLifecycleError("ATTEMPT_NOT_FOUND", f"Repair attempt {attempt.id} not found")
             if current.status != observed_status:
                 # Intended (persisted) state wins; a recovery event documents the drift.
-                append_workflow_event(
-                    session,
-                    run_id=current.run_id,
-                    stage_id=current.stage_id,
-                    event_type="repair_lifecycle_reconciled",
-                    occurred_at=self._now_provider(),
-                    idempotency_key=f"repair-lifecycle-reconcile:{attempt.id}:{observed_status}:{current.status}",
-                    reason=f"observed {observed_status} reconciled to persisted {current.status}",
-                    payload={"attempt_id": attempt.id, "observed": observed_status, "intended": current.status},
+                idempotency_key = f"repair-lifecycle-reconcile:{attempt.id}:{observed_status}:{current.status}"
+                existing = session.scalar(
+                    select(WorkflowEventModel.id).where(
+                        WorkflowEventModel.run_id == current.run_id,
+                        WorkflowEventModel.idempotency_key == idempotency_key,
+                    )
                 )
+                if existing is None:
+                    append_workflow_event(
+                        session,
+                        run_id=current.run_id,
+                        stage_id=current.stage_id,
+                        event_type="repair_lifecycle_reconciled",
+                        occurred_at=self._now_provider(),
+                        idempotency_key=idempotency_key,
+                        reason=f"observed {observed_status} reconciled to persisted {current.status}",
+                        payload={"attempt_id": attempt.id, "observed": observed_status, "intended": current.status},
+                    )
                 session.commit()
                 session.refresh(current)
             return current
