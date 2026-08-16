@@ -15,7 +15,6 @@ from app.services.third_party_compatibility_service import (
     ThirdPartyCompatibilityScanner,
 )
 
-
 NOW = datetime.now(UTC)
 client = TestClient(app)
 
