@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,7 +49,3 @@ class StageChainStateRecord(_ImmutableModel):
         canonical.pop("checksum", None)
         digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return self.model_copy(update={"checksum": f"sha256:{digest}"})
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)

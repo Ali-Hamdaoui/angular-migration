@@ -2,11 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.stage_orchestration_contracts import (
-    StageChainRecordDto,
-    StageChainStateDto,
-    StageRunRecordDto,
-)
+from app.api.stage_orchestration_contracts import StageChainStateDto, StageRunRecordDto
 from app.services.stage_chain_orchestrator import StageChainOrchestrator, StageOrchestrationError
 
 router = APIRouter(tags=["stage-orchestration"])
@@ -22,13 +18,9 @@ def _raise(error: StageOrchestrationError) -> None:
 
 
 def _stage_dto(s) -> StageRunRecordDto:
-    return StageRunRecordDto(stage_order=s["stage_order"] if isinstance(s, dict) else s.stage_order,
-                             stage_id=s["stage_id"] if isinstance(s, dict) else s.stage_id,
-                             source_major=s["source_major"] if isinstance(s, dict) else s.source_major,
-                             target_major=s["target_major"] if isinstance(s, dict) else s.target_major,
-                             status=s["status"] if isinstance(s, dict) else s.status,
-                             gate_passed=s["gate_passed"] if isinstance(s, dict) else s.gate_passed,
-                             failure_code=s.get("failure_code") if isinstance(s, dict) else s.failure_code)
+    return StageRunRecordDto(stage_order=s.stage_order, stage_id=s.stage_id,
+                             source_major=s.source_major, target_major=s.target_major,
+                             status=s.status, gate_passed=s.gate_passed, failure_code=s.failure_code)
 
 
 def _state_dto(state) -> StageChainStateDto:

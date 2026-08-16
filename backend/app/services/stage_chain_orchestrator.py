@@ -36,32 +36,57 @@ class StageChainOrchestrator:
     ) -> None:
         self._route = route_service or MigrationRouteService()
         self._certification = certification_service or RuntimeCertificationService()
+        self._last_gate_reason = ""
         self._session_scope = session_scope_factory or session_scope
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     def start_chain(self, run_id: str) -> StageChainStateRecord:
-        """Initialize the durable chain state from the routed plan (F12-01)."""
+        """Initialize the durable chain state from the routed plan (F12-01).
+
+        Materializes real run-owned MigrationStageModel rows so per-stage gates
+        (certification, families) resolve against authoritative stage state.
+        """
+        from app.repositories.models import MigrationStageModel
+
         with self._session_scope() as session:
             run = session.get(MigrationRunModel, run_id)
             if run is None:
                 raise StageOrchestrationError("RUN_NOT_FOUND", f"Migration run {run_id} not found")
         route = self._route.compute_for_run(run_id)
-        stages = tuple(
-            StageRunRecord(
-                stage_order=stage.stage_order,
-                stage_id=_stage_id(run_id, stage.stage_order),
-                source_major=stage.source_major,
-                target_major=stage.target_major,
-            )
-            for stage in route.stages
-        )
+        stages = []
+        with self._session_scope() as session:
+            for stage in route.stages:
+                stage_id = _stage_id(run_id, stage.stage_order)
+                if session.get(MigrationStageModel, stage_id) is None:
+                    session.add(
+                        MigrationStageModel(
+                            id=stage_id,
+                            run_id=run_id,
+                            stage_order=stage.stage_order,
+                            source_version_family=stage.source_family,
+                            target_version_family=stage.target_family,
+                            source_angular_version=f"{stage.source_major}.0.0",
+                            target_angular_version=f"{stage.target_major}.0.0",
+                            status="planned",
+                            created_at=self._now_provider(),
+                        )
+                    )
+                stages.append(
+                    StageRunRecord(
+                        stage_order=stage.stage_order,
+                        stage_id=stage_id,
+                        source_major=stage.source_major,
+                        target_major=stage.target_major,
+                    )
+                )
+            session.commit()
         state = StageChainStateRecord(
             run_id=run_id,
             source_major=route.source_major,
             target_major=route.target_major,
             catalogue_version=route.catalogue_version,
             status="created",
-            stages=stages,
+            stages=tuple(stages),
         ).bind_checksum()
         with self._session_scope() as session:
             existing = session.scalar(
@@ -104,13 +129,17 @@ class StageChainOrchestrator:
             new_state = state.model_copy(update={"status": "completed", "stages": tuple(updated)}).bind_checksum()
             return self._persist_state(run_id, new_state)
         stage_id = next_stage.stage_id
+        from app.services.runtime_certification_service import RuntimeCertificationError
+        from app.services.stage_runtime_service import StageRuntimeError
+
         try:
             self._certification.enforce_stage_certification(stage_id)
             gate_passed = True
-        except Exception:
+        except (RuntimeCertificationError, StageRuntimeError) as exc:
             gate_passed = False
+            self._last_gate_reason = exc.message
         status = "running" if gate_passed else "failed"
-        failure_code = None if gate_passed else "STAGE_GATE_NOT_PASSED"
+        failure_code = None if gate_passed else f"STAGE_GATE_NOT_PASSED:{self._last_gate_reason}"
         updated_stages = tuple(
             s.model_copy(update={"status": status, "gate_passed": gate_passed, "failure_code": failure_code})
             if s.stage_order == next_stage.stage_order
@@ -124,6 +153,8 @@ class StageChainOrchestrator:
     def mark_stage_failed(self, run_id: str, stage_order: int, failure_code: str) -> StageChainStateRecord:
         """Route a stage failure into the repair lifecycle (F12-03)."""
         state = self._current_state(run_id)
+        if not any(s.stage_order == stage_order for s in state.stages):
+            raise StageOrchestrationError("STAGE_ORDER_NOT_IN_CHAIN", f"stage order {stage_order} is not in the chain")
         updated_stages = tuple(
             s.model_copy(update={"status": "failed", "failure_code": failure_code})
             if s.stage_order == stage_order

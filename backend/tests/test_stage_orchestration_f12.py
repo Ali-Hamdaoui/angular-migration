@@ -34,7 +34,19 @@ def test_start_chain_from_route():
     assert state.checksum.startswith("sha256:")
 
 
-def test_advance_completes_chain():
+def test_advance_passes_gate_on_certified_chain():
+    """A certified transition (18->19) advances to running; the chain can complete."""
+    run_id = f"run-f12-{uuid4().hex[:8]}"
+    _seed(run_id, "angular-18.x", "angular-19.x")
+    orchestrator = StageChainOrchestrator()
+    orchestrator.start_chain(run_id)
+    advanced = orchestrator.advance(run_id)
+    assert advanced.stages[0].status == "running"
+    assert advanced.stages[0].gate_passed is True
+    assert advanced.status == "running"
+
+
+def test_advance_fails_gate_on_experimental_chain():
     run_id = f"run-f12-{uuid4().hex[:8]}"
     _seed(run_id, "angular-11.x", "angular-13.x")
     orchestrator = StageChainOrchestrator()
@@ -43,7 +55,7 @@ def test_advance_completes_chain():
     # first stage (11->12) is experimental -> gate fails -> repairing
     assert first.status == "repairing"
     assert first.stages[0].status == "failed"
-    assert first.stages[0].failure_code == "STAGE_GATE_NOT_PASSED"
+    assert first.stages[0].failure_code.startswith("STAGE_GATE_NOT_PASSED")
 
 
 def test_failure_routes_to_repair_and_resume():
@@ -67,6 +79,18 @@ def test_resume_without_start_raises():
         assert False, "expected CHAIN_NOT_STARTED"
     except StageOrchestrationError as exc:
         assert exc.code == "CHAIN_NOT_STARTED"
+
+
+def test_mark_stage_failed_unknown_order_raises():
+    run_id = f"run-f12-{uuid4().hex[:8]}"
+    _seed(run_id, "angular-11.x", "angular-13.x")
+    orchestrator = StageChainOrchestrator()
+    orchestrator.start_chain(run_id)
+    try:
+        orchestrator.mark_stage_failed(run_id, 99, "X")
+        assert False, "expected STAGE_ORDER_NOT_IN_CHAIN"
+    except StageOrchestrationError as exc:
+        assert exc.code == "STAGE_ORDER_NOT_IN_CHAIN"
 
 
 def test_api_chain_lifecycle():
