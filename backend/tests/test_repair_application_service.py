@@ -2565,6 +2565,27 @@ def test_strict_replacement_matcher_still_rejects_incorrect_preimage():
     )
 
 
+def test_replace_preimage_failure_identifies_authoritative_path(tmp_path: Path):
+    target = tmp_path / "src" / "app.ts"
+    target.parent.mkdir()
+    target.write_text("actual", encoding="utf-8", newline="")
+    candidate = _proposal_candidate()
+    candidate["operations"][0]["old_text"] = "wrong"
+
+    with pytest.raises(RepairApplicationError) as raised:
+        RepairApplicationService(scope=None)._bind_proposal_candidate(
+            candidate,
+            {
+                "workspace_path": str(tmp_path),
+                "failure_evidence_checksum": "sha256:failure",
+                "context_pack_checksum": "sha256:context",
+            },
+        )
+
+    assert raised.value.code == "REPAIR_REPLACEMENT_MISSING"
+    assert "src/app.ts" in raised.value.message
+
+
 def test_unknown_reviewer_target_persists_no_review_artifact(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, _app_ts, artifacts = _seed_service(factory, tmp_path)

@@ -310,8 +310,12 @@ _UNIFIED_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 def _semantic_retry_feedback(error_code: str | None, error_message: str | None = None) -> str:
-    if error_code == _REPLACEMENT_CONTEXT_MISSING:
-        return _REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK
+    if error_code in {_REPLACEMENT_CONTEXT_MISSING, "REPAIR_REPLACEMENT_MISSING"}:
+        return _REPLACEMENT_CONTEXT_MISSING_RETRY_FEEDBACK + (
+            "\nBackend rejection for the prior candidate: "
+            + (error_message or "the replacement preimage did not match")
+            + "\n"
+        )
     if error_code == _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE:
         return _DEPENDENCY_TRANSITION_RETRY_FEEDBACK
     if error_code == _CREATE_TARGET_EXISTS:
@@ -2521,7 +2525,18 @@ class RepairApplicationService:
                 )
             if actions == {"replace_text"}:
                 for item in group:
-                    self._replacement_preimage(item)
+                    try:
+                        self._replacement_preimage(item)
+                    except RepairApplicationError as error:
+                        if error.code not in {
+                            "REPAIR_REPLACEMENT_MISSING",
+                            "REPAIR_REPLACEMENT_AMBIGUOUS",
+                        }:
+                            raise
+                        raise RepairApplicationError(
+                            error.code,
+                            f"{error.message} Target path: '{relative}'.",
+                        ) from error
             if "create_text_file" in actions:
                 if len(group) != 1:
                     raise RepairApplicationError(
@@ -2791,8 +2806,16 @@ class RepairApplicationService:
                     after = replace_text_once(
                         after, old_text, str(item.get("new_text"))
                     )
-                except RepairApplicationError:
-                    raise
+                except RepairApplicationError as error:
+                    if error.code not in {
+                        "REPAIR_REPLACEMENT_MISSING",
+                        "REPAIR_REPLACEMENT_AMBIGUOUS",
+                    }:
+                        raise
+                    raise RepairApplicationError(
+                        error.code,
+                        f"{error.message} Target path: '{relative}'.",
+                    ) from error
                 provenance.append(
                     {
                         "operation": "replace_text",
