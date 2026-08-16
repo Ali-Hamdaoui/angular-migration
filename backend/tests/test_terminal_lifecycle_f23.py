@@ -42,6 +42,21 @@ def test_drive_next_starts_chain():
         assert session.query(StageChainRunModel).filter_by(run_id=run_id).count() == 1
 
 
+def test_drive_starts_chain_even_with_events_but_no_chain():
+    """A run with events but no chain must still be at setup, and drive must start it."""
+    run_id = f"run-f23-{uuid4().hex[:8]}"
+    _seed(run_id)
+    with session_scope() as session:
+        session.add(WorkflowEventModel(id=f"ev-{run_id}", run_id=run_id, event_type="run_created",
+                                       sequence=1, payload={}, occurred_at=NOW))
+        session.commit()
+    service = TerminalLifecycleService()
+    sequence = service.lifecycle_sequence(run_id)
+    assert sequence["current_phase"] == "setup"
+    driven = service.drive_next(run_id)
+    assert driven["chain_status"] == "created"
+
+
 def test_lifecycle_evidence_composes_events():
     run_id = f"run-f23-{uuid4().hex[:8]}"
     _seed(run_id)

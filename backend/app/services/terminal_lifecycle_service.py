@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.repositories.session import session_scope
 from app.services.terminal_operation_service import TerminalOperationService
@@ -59,10 +58,9 @@ class TerminalLifecycleService:
                 stage_progress = sum(1 for s in (chain.stages or []) if s.get("status") in {"sealed", "failed", "repairing"})
             from app.repositories.models import WorkflowEventModel
 
-            event_count = session.execute(
-                select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id)
-            ).scalars().all()
-            event_count = len(event_count)
+            event_count = session.scalar(
+                select(func.count()).select_from(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id)
+            ) or 0
         chain_status = chain.status if chain else "not_started"
         if chain_status == "completed":
             current_phase = "delivery"
@@ -70,7 +68,9 @@ class TerminalLifecycleService:
             current_phase = "sealing"
         elif chain_status == "running":
             current_phase = "stages"
-        elif chain_status == "not_started" and event_count == 0:
+        elif chain_status == "not_started":
+            # a nonexistent chain is always setup (a run with events but no
+            # chain is still at the setup stage)
             current_phase = "setup"
         else:
             current_phase = "chain_start"
@@ -115,19 +115,15 @@ class TerminalLifecycleService:
         """
         sequence = self.lifecycle_sequence(run_id)
         phase = sequence["current_phase"]
-        if phase == "setup":
-            from app.services.stage_chain_orchestrator import StageChainOrchestrator
+        from app.services.stage_chain_orchestrator import StageChainOrchestrator, StageOrchestrationError
 
-            StageChainOrchestrator().start_chain(run_id)
-        elif phase in {"chain_start", "stages"}:
-            from app.services.stage_chain_orchestrator import StageChainOrchestrator
-
-            StageChainOrchestrator().advance(run_id)
-        elif phase == "sealing":
-            # advance the chain; sealing proceeds per-stage via the seal API.
-            from app.services.stage_chain_orchestrator import StageChainOrchestrator
-
-            StageChainOrchestrator().advance(run_id)
+        try:
+            if phase == "setup":
+                StageChainOrchestrator().start_chain(run_id)
+            elif phase in {"chain_start", "stages", "sealing"}:
+                StageChainOrchestrator().advance(run_id)
+        except StageOrchestrationError as exc:
+            raise TerminalLifecycleError("CHAIN_ERROR", f"lifecycle drive failed: {exc}") from exc
         return self.lifecycle_sequence(run_id)
 
     def _require_run(self, run_id: str) -> None:
@@ -136,7 +132,3 @@ class TerminalLifecycleService:
         with self._session_scope() as session:
             if session.get(MigrationRunModel, run_id) is None:
                 raise TerminalLifecycleError("RUN_NOT_FOUND", f"Migration run {run_id} not found")
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
