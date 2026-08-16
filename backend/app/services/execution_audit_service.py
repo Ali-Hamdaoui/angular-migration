@@ -19,8 +19,8 @@ from sqlalchemy import select
 
 from app.domain.command import CommandClass, command_class_for
 from app.domain.execution_audit import ExecutionAuditEntry, ExecutionAuditEvent
-from app.repositories.execution_audit_models import CommandExecutionAuditModel
 from app.repositories.models import MigrationRunModel
+from app.repositories.execution_audit_models import CommandExecutionAuditModel
 from app.repositories.session import session_scope
 
 
