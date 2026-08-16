@@ -39,27 +39,35 @@ class CandidatePromotionService:
         self._session_scope = session_scope_factory or session_scope
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
-    def _stage_context(self, stage_id: str) -> tuple[str, str]:
+    def _stage_context(self, stage_id: str) -> tuple[str, str, str | None]:
         with self._session_scope() as session:
             stage = session.get(MigrationStageModel, stage_id)
             if stage is None:
                 raise CandidatePromotionError("STAGE_NOT_FOUND", f"Migration stage {stage_id} not found")
-            return (stage.run_id, stage.source_version_family or "")
+            run = session.get(MigrationRunModel, stage.run_id)
+            return (stage.run_id, stage.source_version_family or "", run.run_root if run else None)
 
     def validate_candidate(self, workspace: Path, *, run_id: str, stage_id: str) -> CandidatePromotionDecision:
         """Validate a candidate workspace (F22-02).
 
-        Runs deterministic preconditions: the workspace must exist, contain a
-        package.json, and the stage runtime certification must be satisfiable.
+        Runs deterministic preconditions: the candidate must be inside the run's
+        sanctioned root, exist, and contain a package.json.  The candidate is
+        an externally-produced workspace (diff application materializes in the
+        existing patch-apply authority); this gate validates before promotion.
         """
-        run_id, _ = self._stage_context(stage_id)
+        stage_run_id, _, run_root = self._stage_context(stage_id)
+        if stage_run_id != run_id:
+            raise CandidatePromotionError("RUN_ID_MISMATCH", f"stage {stage_id} belongs to run {stage_run_id}, not {run_id}")
         generation = self._next_generation(run_id, stage_id)
         blockers: list[str] = []
-        if not workspace.is_dir():
+        resolved = workspace.resolve(strict=False)
+        if run_root and not _within_root(resolved, Path(run_root).resolve(strict=False)):
+            blockers.append("CANDIDATE_OUTSIDE_RUN_ROOT")
+        if not resolved.is_dir():
             blockers.append("CANDIDATE_WORKSPACE_MISSING")
-        elif not (workspace / "package.json").is_file():
+        elif not (resolved / "package.json").is_file():
             blockers.append("CANDIDATE_PACKAGE_JSON_MISSING")
-        fingerprint = _dir_fingerprint(workspace)
+        fingerprint = _dir_fingerprint(resolved)
         status = "candidate_ready" if not blockers else "rejected"
         decision = CandidatePromotionDecision(
             run_id=run_id,
@@ -94,10 +102,12 @@ class CandidatePromotionService:
             workspace_path=str(candidate_path),
             fingerprint=validation.candidate_fingerprint,
         )
+        from app.services.workspace_authority_service import WorkspaceAuthorityError
+
         try:
             self._authority.promote(request)
-        except Exception as exc:
-            rejected = validation.model_copy(update={"status": "rollback_required", "blockers": (f"PROMOTION_FAILED:{type(exc).__name__}",)})
+        except WorkspaceAuthorityError as exc:
+            rejected = validation.model_copy(update={"status": "rollback_required", "blockers": (f"PROMOTION_FAILED:{exc.code}",)})
             return rejected.bind_checksum()
         promoted = validation.model_copy(update={"status": "promoted", "validated": True})
         return promoted.bind_checksum()
@@ -120,7 +130,7 @@ class CandidatePromotionService:
         return CandidatePromotionDecision(
             run_id=run_id, stage_id=stage_id, alias=alias,
             candidate_fingerprint=active.fingerprint, generation=active.generation,
-            status="candidate_ready", validated=True, previous_generation=active.generation,
+            status="promoted", validated=True, previous_generation=active.generation,
         ).bind_checksum()
 
     def _next_generation(self, run_id: str, stage_id: str) -> int:
@@ -168,6 +178,14 @@ class CandidatePromotionService:
                     .order_by(CandidatePromotionModel.created_at.desc())
                 ).all()
             )
+
+
+def _within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _stage_alias(stage_id: str) -> str:

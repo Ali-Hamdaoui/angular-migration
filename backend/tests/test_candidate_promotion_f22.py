@@ -15,12 +15,15 @@ NOW = datetime.now(UTC)
 client = TestClient(app)
 
 
-def _seed(stage_id: str) -> str:
+def _seed(stage_id: str, root: Path | None = None):
+    import tempfile
+
     run_id = f"run-{uuid4().hex[:8]}"
+    root = root or Path(tempfile.mkdtemp(prefix="f22-run-"))
     with session_scope() as session:
         session.add(MigrationRunModel(id=run_id, status="CREATED", run_phase="initialized",
                                       source_version_family="angular-18.x", target_version_family="angular-19.x",
-                                      created_at=NOW, updated_at=NOW))
+                                      run_root=str(root), created_at=NOW, updated_at=NOW))
         session.add(MigrationStageModel(id=stage_id, run_id=run_id, stage_order=1,
                                         source_version_family="angular-18.x", target_version_family="angular-19.x",
                                         status="planned", created_at=NOW))
@@ -36,10 +39,17 @@ def _candidate(base: Path | None = None) -> Path:
     return ws
 
 
+def _run_root() -> Path:
+    import tempfile
+
+    return Path(tempfile.mkdtemp(prefix="f22-cand-"))
+
+
 def test_validate_candidate_ready():
     stage_id = f"stage-{uuid4().hex[:8]}"
-    run_id = _seed(stage_id)
-    candidate = _candidate()
+    root = _run_root()
+    run_id = _seed(stage_id, root)
+    candidate = _candidate(root)
     service = CandidatePromotionService()
     decision = service.validate_candidate(candidate, run_id=run_id, stage_id=stage_id)
     assert decision.status == "candidate_ready"
@@ -59,8 +69,9 @@ def test_validate_missing_candidate_rejected():
 
 def test_promote_candidate_atomic_and_generation_increment():
     stage_id = f"stage-{uuid4().hex[:8]}"
-    run_id = _seed(stage_id)
-    candidate = _candidate()
+    root = _run_root()
+    run_id = _seed(stage_id, root)
+    candidate = _candidate(root)
     service = CandidatePromotionService()
     first = service.promote_candidate(run_id=run_id, stage_id=stage_id, candidate_path=candidate)
     assert first.status == "promoted"
@@ -84,14 +95,38 @@ def test_promote_rejected_candidate_not_promoted():
 
 def test_persist_and_list():
     stage_id = f"stage-{uuid4().hex[:8]}"
-    run_id = _seed(stage_id)
-    candidate = _candidate()
+    root = _run_root()
+    run_id = _seed(stage_id, root)
+    candidate = _candidate(root)
     service = CandidatePromotionService()
     decision = service.validate_candidate(candidate, run_id=run_id, stage_id=stage_id)
     row = service.persist(decision)
     assert row.checksum == decision.checksum
     with session_scope() as session:
         assert session.query(CandidatePromotionModel).filter_by(stage_id=stage_id).count() == 1
+
+
+def test_candidate_outside_run_root_rejected():
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    run_id = _seed(stage_id)
+    candidate = _candidate()  # /tmp, outside the run root
+    service = CandidatePromotionService()
+    decision = service.validate_candidate(candidate, run_id=run_id, stage_id=stage_id)
+    assert decision.validated is False
+    assert "CANDIDATE_OUTSIDE_RUN_ROOT" in decision.blockers
+
+
+def test_run_id_mismatch_raises():
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    root = _run_root()
+    run_id = _seed(stage_id, root)
+    candidate = _candidate(root)
+    service = CandidatePromotionService()
+    try:
+        service.validate_candidate(candidate, run_id="run-other", stage_id=stage_id)
+        assert False, "expected RUN_ID_MISMATCH"
+    except CandidatePromotionError as exc:
+        assert exc.code == "RUN_ID_MISMATCH"
 
 
 def test_unknown_stage_raises():
@@ -105,7 +140,7 @@ def test_unknown_stage_raises():
 
 def test_api_validate_and_promote(tmp_path: Path):
     stage_id = f"stage-{uuid4().hex[:8]}"
-    run_id = _seed(stage_id)
+    run_id = _seed(stage_id, tmp_path)
     candidate = _candidate(tmp_path)
     validated = client.post(f"/runs/{run_id}/stages/{stage_id}/candidate/validate", json={"candidate_path": str(candidate)})
     assert validated.status_code == 200

@@ -28,9 +28,11 @@ def upgrade() -> None:
     )
     op.create_index("ix_candidate_promotions_run_id", "candidate_promotions", ["run_id"])
     op.create_index("ix_candidate_promotions_stage_id", "candidate_promotions", ["stage_id"])
+    op.create_index("ix_candidate_promotions_checksum", "candidate_promotions", ["checksum"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_candidate_promotions_checksum", table_name="candidate_promotions")
     op.drop_index("ix_candidate_promotions_stage_id", table_name="candidate_promotions")
     op.drop_index("ix_candidate_promotions_run_id", table_name="candidate_promotions")
     op.drop_table("candidate_promotions")
