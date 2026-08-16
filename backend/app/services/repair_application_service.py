@@ -1884,7 +1884,9 @@ class RepairApplicationService:
             and retry_invocation.failure_code in _RECOVERABLE_PROPOSER_RETRY_CODES
             and (
                 (
-                    retry_invocation.retries == 1
+                    retry_invocation.retries >= 1
+                    if recovered_proposer_id
+                    else retry_invocation.retries == 1
                     and retry_invocation.failure_stage == "repair_semantics"
                 )
                 or (
