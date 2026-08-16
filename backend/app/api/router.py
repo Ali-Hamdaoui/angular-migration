@@ -52,6 +52,7 @@ from app.api.routes.stage_orchestration import router as stage_orchestration_rou
 from app.api.routes.stage_validation_seal import router as stage_validation_seal_router
 from app.api.routes.terminal_operation import router as terminal_operation_router
 from app.api.routes.terminal_lifecycle import router as terminal_lifecycle_router
+from app.api.routes.stage_rollback import router as stage_rollback_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -89,6 +90,7 @@ api_router.include_router(stage_orchestration_router)
 api_router.include_router(stage_validation_seal_router)
 api_router.include_router(terminal_operation_router)
 api_router.include_router(terminal_lifecycle_router)
+api_router.include_router(stage_rollback_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -146,6 +148,7 @@ api_v1_router.include_router(stage_orchestration_router)
 api_v1_router.include_router(stage_validation_seal_router)
 api_v1_router.include_router(terminal_operation_router)
 api_v1_router.include_router(terminal_lifecycle_router)
+api_v1_router.include_router(stage_rollback_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)

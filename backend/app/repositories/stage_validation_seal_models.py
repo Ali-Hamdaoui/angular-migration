@@ -15,6 +15,7 @@ class StageValidationSealModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     stage_id: Mapped[str] = mapped_column(ForeignKey("migration_stages.id"), nullable=False)
+    stage_order: Mapped[int] = mapped_column(Integer, nullable=False)
     run_id: Mapped[str] = mapped_column(ForeignKey("migration_runs.id"), nullable=False, index=True)
     source_major: Mapped[int] = mapped_column(Integer, nullable=False)
     target_major: Mapped[int] = mapped_column(Integer, nullable=False)

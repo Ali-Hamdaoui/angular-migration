@@ -33,6 +33,7 @@ from app.repositories.proposal_cycle_models import ProposalCycleModel
 from app.repositories.candidate_promotion_models import CandidatePromotionModel
 from app.repositories.stage_chain_run_models import StageChainRunModel
 from app.repositories.stage_validation_seal_models import StageValidationSealModel
+from app.repositories.stage_rollback_models import StageRollbackModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -149,6 +150,7 @@ __all__ = [
     "CandidatePromotionModel",
     "StageChainRunModel",
     "StageValidationSealModel",
+    "StageRollbackModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
