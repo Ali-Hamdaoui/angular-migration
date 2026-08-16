@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("checksum", sa.String(length=128), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("run_id", "checksum", name="uq_stage_rollbacks_run_checksum"),
     )
     op.create_index("ix_stage_rollbacks_run_id", "stage_rollbacks", ["run_id"])
 

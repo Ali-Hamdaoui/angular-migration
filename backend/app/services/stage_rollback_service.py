@@ -106,6 +106,8 @@ class StageRollbackService:
         }
 
     def _persist(self, run_id: str, decision: StageRollbackDecision) -> None:
+        from sqlalchemy.exc import IntegrityError
+
         with self._session_scope() as session:
             existing = session.scalar(
                 select(StageRollbackModel).where(
@@ -115,19 +117,22 @@ class StageRollbackService:
             )
             if existing is not None:
                 return
-            session.add(
-                StageRollbackModel(
-                    id="rb-" + hashlib.sha256(f"{run_id}:{decision.checksum}".encode()).hexdigest()[:24],
-                    run_id=run_id,
-                    rollback_point_stage_order=decision.rollback_point_stage_order,
-                    sealed_stage_count=decision.sealed_stage_count,
-                    evidence_preserved=decision.evidence_preserved,
-                    status=decision.status,
-                    checksum=decision.checksum,
-                    created_at=self._now_provider(),
+            try:
+                session.add(
+                    StageRollbackModel(
+                        id="rb-" + hashlib.sha256(f"{run_id}:{decision.checksum}".encode()).hexdigest()[:24],
+                        run_id=run_id,
+                        rollback_point_stage_order=decision.rollback_point_stage_order,
+                        sealed_stage_count=decision.sealed_stage_count,
+                        evidence_preserved=decision.evidence_preserved,
+                        status=decision.status,
+                        checksum=decision.checksum,
+                        created_at=self._now_provider(),
+                    )
                 )
-            )
-            session.commit()
+                session.commit()
+            except IntegrityError:
+                session.rollback()
 
     def list_rollbacks(self, run_id: str) -> list[StageRollbackModel]:
         with self._session_scope() as session:
