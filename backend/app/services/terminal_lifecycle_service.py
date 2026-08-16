@@ -115,6 +115,7 @@ class TerminalLifecycleService:
         """
         sequence = self.lifecycle_sequence(run_id)
         phase = sequence["current_phase"]
+        from app.services.migration_route_service import MigrationRouteError
         from app.services.stage_chain_orchestrator import StageChainOrchestrator, StageOrchestrationError
 
         try:
@@ -122,7 +123,7 @@ class TerminalLifecycleService:
                 StageChainOrchestrator().start_chain(run_id)
             elif phase in {"chain_start", "stages", "sealing"}:
                 StageChainOrchestrator().advance(run_id)
-        except StageOrchestrationError as exc:
+        except (StageOrchestrationError, MigrationRouteError, ValueError) as exc:
             raise TerminalLifecycleError("CHAIN_ERROR", f"lifecycle drive failed: {exc}") from exc
         return self.lifecycle_sequence(run_id)
 
