@@ -72,6 +72,17 @@ def test_run_checks_on_valid_project(tmp_path: Path):
     assert all(c.passed for c in verdict.checks)
 
 
+def test_run_checks_flags_malformed_lockfile(tmp_path: Path):
+    root = _angular_project(tmp_path)
+    (root / "package-lock.json").write_text("not valid json{{{")
+    run_id = f"run-f16-{uuid4().hex[:8]}"
+    _seed(run_id)
+    verdict = PreflightCheckService().run_checks(run_id, root)
+    lockfile_check = next(c for c in verdict.checks if c.check_id == "lockfile_compatibility")
+    assert lockfile_check.passed is False
+    assert "LOCKFILE_INVALID" in lockfile_check.blockers
+
+
 def test_run_checks_blocks_on_capability_failure(tmp_path: Path):
     root = tmp_path / "bad"
     root.mkdir()
