@@ -245,7 +245,9 @@ _PROPOSER_GROUNDING_INSTRUCTIONS = (
     "PREVIOUS_PROPOSAL is reference-only and has not been applied. "
     "Generate the revised proposal directly from the current authoritative workspace state. "
     "Never use previous_proposal.new_text as old_text unless that exact value exists in "
-    "CURRENT_WORKSPACE_FILES."
+    "CURRENT_WORKSPACE_FILES. Prefer updating an existing authoritative test setup or "
+    "configuration file when one is present; create a file only when its target is absent "
+    "and the operation includes complete non-null text content."
 )
 _SEMANTIC_RETRY_FEEDBACK = (
     "The candidate does not match the current authoritative workspace. "
