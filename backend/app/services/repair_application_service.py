@@ -4451,7 +4451,7 @@ class RepairApplicationService:
                         for index, content in enumerate(context["segments"])
                     ],
                     response_schema=schema_name,
-                    max_output_tokens=4096,
+                    max_output_tokens=16384,
                 )
             )
             return registry.validate(schema_name, response.structured_output), response
@@ -4497,7 +4497,7 @@ class RepairApplicationService:
                 for index, content in enumerate(context["segments"])
             ],
             response_schema=schema_name,
-            max_output_tokens=4096,
+            max_output_tokens=16384,
         )
         try:
             response = gateway.retrieve_response(request, provider_response_id=provider_response_id)
