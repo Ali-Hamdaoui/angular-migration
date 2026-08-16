@@ -7,15 +7,14 @@ responsible for supplying its versioned data and runtime inventory.
 
 from __future__ import annotations
 
-from datetime import datetime
 import hashlib
 import json
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.execution_profile import RuntimeCandidate
-
 
 SupportLevel = Literal[
     "officially_supported",
@@ -42,16 +41,20 @@ class CompatibilityArtifact(CompatibilityModel):
 
 class CompatibilityCatalogueEntry(CompatibilityModel):
     stage_id: str = Field(min_length=1)
-    source_family: str = Field(pattern=r"^angular-(18|19|20|21)\.x$")
-    target_family: str = Field(pattern=r"^angular-(18|19|20|21)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
+    target_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     target_angular_exact: str = Field(min_length=1)
     target_cli_exact: str = Field(min_length=1)
     typescript_exact: str | None = None
+    typescript_minimum: str | None = None
+    typescript_exclusive_maximum: str | None = None
     rxjs_exact: str | None = None
+    rxjs_minimum: str | None = None
     zone_js_exact: str | None = None
     node_major: int = Field(ge=0)
     npm_major: int = Field(ge=0)
     node_exact: str | None = None
+    node_minimum: str | None = None
     npm_exact: str | None = None
     cli_exact: str | None = None
     support_level: SupportLevel
@@ -60,9 +63,12 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     known_risks: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
     validated_runtime_profiles: tuple[tuple[str, str], ...] = ()
+    certification_status: str | None = None
+    certification_source: str | None = None
+    certified_at: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_adjacent_families(self) -> "CompatibilityCatalogueEntry":
+    def validate_adjacent_families(self) -> CompatibilityCatalogueEntry:
         source = int(self.source_family.removeprefix("angular-").removesuffix(".x"))
         target = int(self.target_family.removeprefix("angular-").removesuffix(".x"))
         if target != source + 1:
@@ -86,6 +92,10 @@ class CompatibilityCatalogue(CompatibilityModel):
             serialized = entry.model_dump(mode="json")
             if not entry.validated_runtime_profiles:
                 serialized.pop("validated_runtime_profiles", None)
+            # Drop None-valued fields so the checksum is stable across schema
+            # evolution and legacy versions checksum identically to their
+            # original contracts.
+            serialized = {key: value for key, value in serialized.items() if value is not None}
             serialized_entries.append(serialized)
         payload = {"version": version, "entries": serialized_entries}
         checksum = "sha256:" + hashlib.sha256(

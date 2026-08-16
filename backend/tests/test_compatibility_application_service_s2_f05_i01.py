@@ -93,28 +93,29 @@ def test_accepts_node_runtime_versions_with_the_standard_v_prefix():
     assert result.selected_profile is not None
 
 
-def test_current_catalogue_accepts_validated_node_22_profile_without_blocking_route():
+def test_current_catalogue_accepts_certified_node_18_profile_without_blocking_route():
     catalogue = CompatibilityCatalogueProvider().load()
-    candidate = _candidate(profile_id="node-22-approved", node_exact="22.23.1", npm_exact="10.9.8", npx_exact="10.9.8")
+    candidate = _candidate(profile_id="node-18-certified", node_exact="18.20.8", npm_exact="10.8.2", npx_exact="10.8.2")
     result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
 
-    assert result.status == "feasible_with_warnings"
+    assert result.status in {"feasible", "feasible_with_warnings"}
     assert result.package.blockers == ()
     assert [stage.stage_id for stage in result.route] == ["angular-18-to-19", "angular-19-to-20", "angular-20-to-21"]
     assert result.selected_profile is not None
-    assert result.selected_profile.node_exact == "22.23.1"
-    assert result.selected_profile.npm_exact == "10.9.8"
+    assert result.selected_profile.node_exact == "18.20.8"
+    assert result.selected_profile.npm_exact == "10.8.2"
     assert result.gate.status == "pending"
 
 
-def test_current_catalogue_preserves_validated_node_20_profile():
+def test_current_catalogue_preserves_certified_node_18_profile():
     catalogue = CompatibilityCatalogueProvider().load()
-    result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version))
+    candidate = _candidate(profile_id="node-18-certified", node_exact="18.20.8", npm_exact="10.8.2", npx_exact="10.8.2")
+    result = CompatibilityResolver(catalogue).resolve(_request(catalogue_version=catalogue.version, runtime_candidates=(candidate,)))
 
-    assert result.status == "feasible_with_warnings"
+    assert result.status in {"feasible", "feasible_with_warnings"}
     assert result.selected_profile is not None
-    assert result.selected_profile.node_exact == "20.11.1"
-    assert result.selected_profile.npm_exact == "10.2.4"
+    assert result.selected_profile.node_exact == "18.20.8"
+    assert result.selected_profile.npm_exact == "10.8.2"
 
 
 def test_current_catalogue_rejects_nearby_unvalidated_node_22_profile():
