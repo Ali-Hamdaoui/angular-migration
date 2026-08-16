@@ -30,6 +30,7 @@ class CodeContextService:
     def __init__(self, *, budget: int = DEFAULT_BUDGET, allowed_roots: list[Path] | None = None) -> None:
         self._budget = budget
         self._allowed_roots = [Path(path).resolve() for path in (allowed_roots or [])]
+        self._allow_all = allowed_roots == ["*"]
 
     def retrieve_context(
         self,
@@ -103,7 +104,9 @@ class CodeContextService:
         resolved = workspace.resolve(strict=False)
         if not resolved.is_dir():
             raise CodeContextError("WORKSPACE_MISSING", f"workspace {workspace} is not a directory")
-        if self._allowed_roots and not any(self._within_root(resolved, root) for root in self._allowed_roots):
+        if self._allow_all:
+            pass
+        elif not self._allowed_roots or not any(self._within_root(resolved, root) for root in self._allowed_roots):
             raise CodeContextError("WORKSPACE_NOT_ALLOWED", f"workspace {workspace} is outside the allowed source roots")
         files: list[Path] = []
         for pattern in ("**/*.ts", "**/*.html"):
@@ -176,7 +179,7 @@ def _enclosing_block(lines: list[str], index: int, symbol: str) -> tuple[int, in
         start = cursor
     # Forward scan from the symbol line: balance braces to the block close.
     depth = 0
-    end = min(len(lines), index + 12)
+    end = min(len(lines), index + MAX_EXCERPT_LINES)
     for cursor in range(index, end + 1):
         depth += lines[cursor - 1].count("{")
         depth -= lines[cursor - 1].count("}")
