@@ -2,9 +2,9 @@
 
 Codifies the repair attempt status vocabulary as actually used by the
 repository (``repair_application_service.py``, ``transformer_graph.py``,
-``stage_gate_service.py``), the legal forward transitions, the conservative
-sealed set, and restart-recovery mapping.  Pure domain: no process, filesystem,
-database, or network side effects.
+``stage_gate_service.py``), the legal forward transitions, and the conservative
+sealed set.  Pure domain: no process, filesystem, database, or network side
+effects.
 """
 
 from __future__ import annotations
@@ -76,16 +76,16 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     RepairLifecycleStatus.WAITING_G10.value: frozenset({RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.APPROVED_PENDING_EXECUTION.value: frozenset({RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.EXECUTING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.APPLYING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.APPLIED.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLYING.value: frozenset({RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.APPLY_FAILED.value, RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLIED.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.APPLIED_VERIFIED.value: frozenset({RepairLifecycleStatus.MIGRATION_RETRIED.value, RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.REVALIDATING_AFFECTED.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.VALIDATION_PASSED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.VALIDATION_FAILED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.MIGRATION_RETRIED.value: frozenset({RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.REVALIDATING_AFFECTED.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.REVALIDATING.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.REVALIDATING_AFFECTED.value: frozenset({RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REVALIDATING.value: frozenset({RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.REVALIDATING_AFFECTED.value: frozenset({RepairLifecycleStatus.REVALIDATING.value, RepairLifecycleStatus.WAITING_G11.value, RepairLifecycleStatus.SUPERSEDED.value, RepairLifecycleStatus.CANCELLED.value}),
     RepairLifecycleStatus.WAITING_G11.value: frozenset({RepairLifecycleStatus.VALIDATION_PASSED.value, RepairLifecycleStatus.VALIDATION_FAILED.value, RepairLifecycleStatus.CANCELLED.value}),
-    RepairLifecycleStatus.APPLY_FAILED.value: frozenset({RepairLifecycleStatus.CANCELLED.value}),
+    RepairLifecycleStatus.APPLY_FAILED.value: frozenset(),
     RepairLifecycleStatus.APPLY_RECOVERY_REQUIRED.value: frozenset({RepairLifecycleStatus.EXECUTING.value, RepairLifecycleStatus.APPLIED_VERIFIED.value, RepairLifecycleStatus.CANCELLED.value}),
 }
 
