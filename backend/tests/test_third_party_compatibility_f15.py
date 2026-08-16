@@ -38,7 +38,7 @@ def _workspace(tmp_path: Path) -> Path:
             "": {"dependencies": {}},
             "node_modules/lodash": {"version": "4.17.21"},
             "node_modules/express": {"version": "4.19.2"},
-            "node_modules/@ngrx/store": {"version": "17.0.0"},
+            "node_modules/@ngrx/store": {"version": "17.0.0", "peerDependencies": {"@angular/core": "^17.0.0"}},
         },
     }))
     return root
@@ -85,8 +85,55 @@ def test_scan_stage_classifies_inventory(tmp_path: Path):
     by_name = {f.name: f for f in report.findings}
     assert by_name["lodash"].status == "compatible"
     assert by_name["lodash"].resolved == "4.17.21"
+    # @ngrx/store@17 peers @angular/core ^17 -> peer conflict for target 19
+    assert by_name["@ngrx/store"].status == "peer_conflict"
+    assert report.status == "blocked"
+    assert "@ngrx/store" in report.blockers
+
+
+def test_classify_peer_range_allowing_target_is_compatible(tmp_path: Path):
+    root = tmp_path / "ws2"
+    root.mkdir(parents=True)
+    (root / "package.json").write_text(json.dumps({"dependencies": {"@ngrx/store": "^18.0.0"}}))
+    (root / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {"node_modules/@ngrx/store": {"version": "18.0.0", "peerDependencies": {"@angular/core": ">=18.0.0 <20.0.0"}}},
+    }))
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    run_id = _seed(stage_id)
+    report = ThirdPartyCompatibilityScanner().scan_stage(root, run_id=run_id, stage_id=stage_id)
+    by_name = {f.name: f for f in report.findings}
     assert by_name["@ngrx/store"].status == "compatible"
     assert report.status in {"compatible", "warnings"}
+
+
+def test_classify_peer_range_excluding_target_is_peer_conflict(tmp_path: Path):
+    root = tmp_path / "ws4"
+    root.mkdir(parents=True)
+    (root / "package.json").write_text(json.dumps({"dependencies": {"@ngrx/store": "^18.0.0"}}))
+    (root / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {"node_modules/@ngrx/store": {"version": "18.0.0", "peerDependencies": {"@angular/core": "^18.0.0"}}},
+    }))
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    run_id = _seed(stage_id)
+    report = ThirdPartyCompatibilityScanner().scan_stage(root, run_id=run_id, stage_id=stage_id)
+    finding = next(f for f in report.findings if f.name == "@ngrx/store")
+    assert finding.status == "peer_conflict"
+    assert report.status == "blocked"
+
+
+def test_classify_unresolved_is_unknown_not_fabricated(tmp_path: Path):
+    root = tmp_path / "ws3"
+    root.mkdir(parents=True)
+    (root / "package.json").write_text(json.dumps({"dependencies": {"some-lib": "1.2.3"}}))
+    (root / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {}}))
+    stage_id = f"stage-{uuid4().hex[:8]}"
+    run_id = _seed(stage_id)
+    report = ThirdPartyCompatibilityScanner().scan_stage(root, run_id=run_id, stage_id=stage_id)
+    finding = report.findings[0]
+    assert finding.status == "unknown"
+    assert finding.resolved is None
 
 
 def test_scan_stage_unknown_stage_raises(tmp_path: Path):

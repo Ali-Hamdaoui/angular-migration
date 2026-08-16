@@ -29,7 +29,7 @@ class ThirdPartyCompatibilityError(ValueError):
         self.message = message
 
 
-_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+_SEMVER = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 class ThirdPartyCompatibilityScanner:
@@ -69,34 +69,41 @@ class ThirdPartyCompatibilityScanner:
                 inventory.append(
                     DependencyInventoryItem(
                         name=name, declared=declared,
-                        resolved=resolved.get(name), scope=_scope_name(scope),
+                        resolved=resolved.get("versions", {}).get(name), scope=_scope_name(scope),
                     )
                 )
         inventory.sort(key=lambda item: item.name)
         return inventory
 
     @staticmethod
-    def _resolved_versions(workspace: Path) -> dict[str, str]:
+    def _resolved_versions(workspace: Path) -> dict:
+        """Resolved versions plus per-package @angular/core peer ranges from the lockfile."""
         lock = workspace / "package-lock.json"
+        result: dict = {"versions": {}, "peers": {}}
         if not lock.is_file():
-            return {}
+            return result
         try:
             payload = json.loads(lock.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return {}
+            return result
         packages = payload.get("packages", {}) if isinstance(payload, dict) else {}
-        resolved: dict[str, str] = {}
-        if isinstance(packages, dict):
-            for key, entry in packages.items():
-                if not isinstance(entry, dict) or not key.startswith("node_modules/"):
-                    continue
-                name = key[len("node_modules/"):]
-                if "/" in name and not name.startswith("@"):
-                    continue
-                version = entry.get("version")
-                if isinstance(version, str) and name not in resolved:
-                    resolved[name] = version
-        return resolved
+        if not isinstance(packages, dict):
+            return result
+        for key, entry in packages.items():
+            if not isinstance(entry, dict) or not key.startswith("node_modules/"):
+                continue
+            name = key[len("node_modules/"):]
+            if "/" in name and not name.startswith("@"):
+                continue
+            version = entry.get("version")
+            if isinstance(version, str) and name not in result["versions"]:
+                result["versions"][name] = version
+            peers = entry.get("peerDependencies")
+            if isinstance(peers, dict):
+                angular_range = peers.get("@angular/core")
+                if isinstance(angular_range, str) and name not in result["peers"]:
+                    result["peers"][name] = angular_range
+        return result
 
     def scan_stage(self, workspace: Path, *, run_id: str, stage_id: str) -> DependencyCompatibilityReport:
         """Extract and classify the inventory for a stage target (F15-02/03)."""
@@ -107,7 +114,8 @@ class ThirdPartyCompatibilityScanner:
             source_major = _major(stage.source_version_family)
             target_major = _major(stage.target_version_family)
         inventory = self.extract_inventory(workspace)
-        findings = [self._classify(item, target_major) for item in inventory]
+        resolved = self._resolved_versions(workspace)
+        findings = [self._classify(item, target_major, resolved.get("peers", {})) for item in inventory]
         blockers = tuple(f.name for f in findings if f.status in {"incompatible", "peer_conflict"})
         status = "blocked" if blockers else ("warnings" if any(f.status == "unknown" for f in findings) else "compatible")
         return DependencyCompatibilityReport(
@@ -116,24 +124,36 @@ class ThirdPartyCompatibilityScanner:
         )
 
     @staticmethod
-    def _classify(item: DependencyInventoryItem, target_major: int) -> DependencyCompatibilityFinding:
+    def _classify(item: DependencyInventoryItem, target_major: int, peers: dict[str, str]) -> DependencyCompatibilityFinding:
         """Classify one dependency against the target Angular major.
 
-        Peer-dependency-bearing libraries (e.g. @ngrx/store, Angular Material is
-        managed above) are flagged as peer_conflict when their declared version
-        requires a different Angular major.  Otherwise a resolved version is
-        compatible; an unresolved one is unknown (no lockfile evidence).
+        Uses the lockfile entry's ``@angular/core`` peer range when present: a
+        range that excludes the target major is a peer conflict.  Without peer
+        evidence, a resolved version is compatible; an unresolved one is unknown.
         """
-        resolved = item.resolved or _coerce_declared(item.declared)
-        if item.name.startswith("@"):
-            # Scoped non-Angular packages: peer compatibility is not derivable
-            # statically; treat resolved versions as compatible, unresolved as unknown.
-            if resolved is None:
-                return DependencyCompatibilityFinding(name=item.name, declared=item.declared, resolved=None, target_major=target_major, status="unknown", detail="resolved version not found in lockfile")
-            return DependencyCompatibilityFinding(name=item.name, declared=item.declared, resolved=resolved, target_major=target_major, status="compatible", detail="resolved version present")
-        if resolved is None:
-            return DependencyCompatibilityFinding(name=item.name, declared=item.declared, resolved=None, target_major=target_major, status="unknown", detail="version not resolved")
-        return DependencyCompatibilityFinding(name=item.name, declared=item.declared, resolved=resolved, target_major=target_major, status="compatible", detail="declared and resolved")
+        peer_range = peers.get(item.name)
+        if peer_range:
+            if not _range_satisfies_major(peer_range, target_major):
+                return DependencyCompatibilityFinding(
+                    name=item.name, declared=item.declared, resolved=item.resolved,
+                    target_major=target_major, status="peer_conflict",
+                    detail=f"peer range {peer_range} does not allow Angular {target_major}",
+                )
+            return DependencyCompatibilityFinding(
+                name=item.name, declared=item.declared, resolved=item.resolved,
+                target_major=target_major, status="compatible",
+                detail=f"peer range {peer_range} allows Angular {target_major}",
+            )
+        if item.resolved is None:
+            return DependencyCompatibilityFinding(
+                name=item.name, declared=item.declared, resolved=None,
+                target_major=target_major, status="unknown",
+                detail="resolved version not found in lockfile and no peer evidence",
+            )
+        return DependencyCompatibilityFinding(
+            name=item.name, declared=item.declared, resolved=item.resolved,
+            target_major=target_major, status="compatible", detail="resolved version present",
+        )
 
     def persist(self, run_id: str, report: DependencyCompatibilityReport) -> ThirdPartyCompatibilityReportModel:
         """Persist the per-stage compatibility report (F15-04)."""
@@ -183,6 +203,41 @@ def _scope_name(scope: str) -> str:
     return "dependency"
 
 
+def _range_satisfies_major(peer_range: str, target_major: int) -> bool:
+    """Does a peer range (e.g. '^17.0.0', '>=16 <19', '16 - 18') allow a major?"""
+    range_text = peer_range.strip()
+    if range_text.startswith("^"):
+        match = _SEMVER.search(range_text)
+        if match:
+            return int(match.group(1)) == target_major
+    if range_text.startswith("~"):
+        match = _SEMVER.search(range_text)
+        if match:
+            return int(match.group(1)) == target_major
+    if " - " in range_text:
+        low, high = range_text.split(" - ", 1)
+        low_match = _SEMVER.search(low)
+        high_match = _SEMVER.search(high)
+        if low_match and high_match:
+            return int(low_match.group(1)) <= target_major <= int(high_match.group(1))
+    comparisons = re.findall(r"(>=|<=|>|<|=)\s*(\d+)\.\d+\.\d+", range_text)
+    if comparisons:
+        allowed = True
+        for operator, major_text in comparisons:
+            major = int(major_text)
+            if operator in {">=", ">"} and target_major < major:
+                allowed = False
+            if operator in {"<=", "<"} and target_major > major:
+                allowed = False
+        return allowed
+    # bare exact version
+    match = _SEMVER.search(range_text)
+    if match and "," not in range_text and not any(c in range_text for c in "><^~|-"):
+        return int(match.group(1)) == target_major
+    # unknown range syntax: conservative "unknown" -> allow scan to proceed as compatible
+    return True
+
+
 def _major(family: str | None) -> int:
     if not family:
         return 0
@@ -190,11 +245,6 @@ def _major(family: str | None) -> int:
         return int(family.removeprefix("angular-").removesuffix(".x"))
     except ValueError:
         return 0
-
-
-def _coerce_declared(declared: str) -> str | None:
-    match = _SEMVER.search(declared)
-    return match.group(0) if match else None
 
 
 def _report_id(stage_id: str) -> str:
