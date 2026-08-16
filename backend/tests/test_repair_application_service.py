@@ -68,6 +68,16 @@ def test_proposer_policy_prioritizes_authoritative_existing_files():
     assert "use replace_text with the exact authoritative preimage" in policy.lower()
 
 
+def test_create_target_retry_feedback_identifies_rejected_path():
+    feedback = repair_application_service._semantic_retry_feedback(
+        "REPAIR_CREATE_TARGET_EXISTS",
+        "create_text_file cannot target existing authoritative path 'jest.config.ts'; use replace_text with its exact preimage.",
+    )
+
+    assert "jest.config.ts" in feedback
+    assert "replace_text" in feedback
+
+
 def _proposal(path: Path):
     checksum = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     return {

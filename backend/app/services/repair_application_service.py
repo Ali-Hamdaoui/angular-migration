@@ -315,7 +315,11 @@ def _semantic_retry_feedback(error_code: str | None, error_message: str | None =
     if error_code == _DEPENDENCY_TRANSITION_NOT_EXCLUSIVE:
         return _DEPENDENCY_TRANSITION_RETRY_FEEDBACK
     if error_code == _CREATE_TARGET_EXISTS:
-        return _CREATE_TARGET_EXISTS_RETRY_FEEDBACK
+        return _CREATE_TARGET_EXISTS_RETRY_FEEDBACK + (
+            "\nBackend rejection for the prior candidate: "
+            + (error_message or "the existing target path was not included")
+            + "\n"
+        )
     if error_code == _DEPENDENCY_SECTION_MISMATCH:
         return (
             "The requested dependency exists exactly once in authoritative package.json, "
