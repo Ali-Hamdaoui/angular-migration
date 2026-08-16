@@ -47,6 +47,7 @@ from app.api.routes.v2_planner import router as v2_planner_router
 from app.api.routes.failure_intelligence import router as failure_intelligence_router
 from app.api.routes.code_context import router as code_context_router
 from app.api.routes.proposal_cycle import router as proposal_cycle_router
+from app.api.routes.candidate_promotion import router as candidate_promotion_router
 
 api_router = APIRouter()
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -79,6 +80,7 @@ api_router.include_router(v2_planner_router)
 api_router.include_router(failure_intelligence_router)
 api_router.include_router(code_context_router)
 api_router.include_router(proposal_cycle_router)
+api_router.include_router(candidate_promotion_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route.
 # Otherwise /approvals/G03/decisions is captured by G02 and rejected with a
 # misleading gate_id mismatch (400).
@@ -131,6 +133,7 @@ api_v1_router.include_router(v2_planner_router)
 api_v1_router.include_router(failure_intelligence_router)
 api_v1_router.include_router(code_context_router)
 api_v1_router.include_router(proposal_cycle_router)
+api_v1_router.include_router(candidate_promotion_router)
 # Keep the fixed G03 route ahead of G02's parameterized approval route in the
 # versioned surface as well.
 api_v1_router.include_router(baseline_g03_router)
