@@ -17,7 +17,10 @@ router = APIRouter(tags=["code-context"])
 def get_context_service() -> CodeContextService:
     from app.core.config import get_settings
 
-    return CodeContextService(allowed_roots=get_settings().allowed_source_roots)
+    roots = get_settings().allowed_source_roots
+    if not roots:
+        raise RuntimeError("ALLOWED_SOURCE_ROOTS must be configured for the code context endpoint")
+    return CodeContextService(allowed_roots=roots)
 
 
 def _raise(error: CodeContextError) -> None:
