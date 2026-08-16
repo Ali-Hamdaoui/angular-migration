@@ -76,29 +76,34 @@ class V2PlannerService:
 
     def derive_plan(self, run_id: str, source_root: Path | None = None) -> V2MigrationPlan:
         """Derive the deterministic migration plan (F18-02)."""
-        source_family, target_family = self._run_context(run_id)
-        source_major = _major(source_family)
-        target_major = _major(target_family)
-        route = self._route.compute(source_major, target_major)
-        catalogue = self._catalogue.load()
-        findings = self.analyze(run_id, source_root)
-        stages: list[V2PlannedStage] = []
-        for stage in route.stages:
-            entry = catalogue.entry_for(stage.source_family, stage.target_family)
-            knowledge = self._knowledge.entry(stage.source_major, stage.target_major)
-            stages.append(
-                V2PlannedStage(
-                    stage_order=stage.stage_order,
-                    source_major=stage.source_major,
-                    target_major=stage.target_major,
-                    source_family=stage.source_family,
-                    target_family=stage.target_family,
-                    target_exact=entry.target_angular_exact if entry else f"{stage.target_major}.0.0",
-                    node_minimum=entry.node_minimum if entry else None,
-                    expected_transforms=knowledge.expected_transforms,
-                    validation_expectations=knowledge.validation_expectations,
+        try:
+            source_family, target_family = self._run_context(run_id)
+            source_major = _major(source_family)
+            target_major = _major(target_family)
+            route = self._route.compute(source_major, target_major)
+            catalogue = self._catalogue.load()
+            findings = self.analyze(run_id, source_root)
+            stages: list[V2PlannedStage] = []
+            for stage in route.stages:
+                entry = catalogue.entry_for(stage.source_family, stage.target_family)
+                knowledge = self._knowledge.entry(stage.source_major, stage.target_major)
+                stages.append(
+                    V2PlannedStage(
+                        stage_order=stage.stage_order,
+                        source_major=stage.source_major,
+                        target_major=stage.target_major,
+                        source_family=stage.source_family,
+                        target_family=stage.target_family,
+                        target_exact=entry.target_angular_exact if entry else f"{stage.target_major}.0.0",
+                        node_minimum=entry.node_minimum if entry else None,
+                        expected_transforms=knowledge.expected_transforms,
+                        validation_expectations=knowledge.validation_expectations,
+                    )
                 )
-            )
+        except V2PlanningError:
+            raise
+        except Exception as exc:
+            raise V2PlanningError("PLAN_DERIVATION_FAILED", f"plan derivation failed: {exc}") from exc
         plan = V2MigrationPlan(
             run_id=run_id,
             source_major=source_major,
@@ -146,6 +151,23 @@ class V2PlannerService:
                 .order_by(V2PlanningModel.created_at.desc())
                 .limit(1)
             )
+
+    def validate_plan(self, run_id: str) -> V2MigrationPlan:
+        """Recompute the plan deterministically and compare with the persisted one.
+
+        Raises PLAN_DRIFT when the persisted plan no longer matches the
+        catalogue/knowledge-derived plan (immutability enforcement, F18-03).
+        """
+        derived = self.derive_plan(run_id)
+        persisted = self.get_run_plan(run_id)
+        if persisted is None:
+            raise V2PlanningError("PLAN_NOT_PERSISTED", f"run {run_id} has no persisted V2 plan")
+        if persisted.checksum != derived.checksum or persisted.source_major != derived.source_major or persisted.target_major != derived.target_major:
+            raise V2PlanningError(
+                "PLAN_DRIFT",
+                "The persisted V2 plan drifted from the catalogue/knowledge-derived plan",
+            )
+        return derived
 
 
 def _major(family: str | None) -> int:

@@ -103,6 +103,18 @@ def persist_plan(
     return _record_dto(row)
 
 
+@router.post("/runs/{run_id}/v2/plan/validate", response_model=V2MigrationPlanDto)
+def validate_run_plan(
+    run_id: str,
+    service: V2PlannerService = Depends(get_planner_service),
+) -> V2MigrationPlanDto:
+    try:
+        plan = service.validate_plan(run_id)
+    except V2PlanningError as error:
+        _raise(error)
+    return _plan_dto(plan)
+
+
 @router.get("/runs/{run_id}/v2/plan", response_model=V2PlanRecordDto)
 def get_run_plan(
     run_id: str,

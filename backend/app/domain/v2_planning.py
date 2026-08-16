@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -56,7 +54,3 @@ class V2MigrationPlan(_ImmutableModel):
         canonical.pop("checksum", None)
         digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return self.model_copy(update={"checksum": f"sha256:{digest}"})
-
-
-def plan_checksum(plan: V2MigrationPlan) -> str:
-    return plan.checksum or plan.bind_checksum().checksum

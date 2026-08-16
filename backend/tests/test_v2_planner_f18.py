@@ -106,3 +106,24 @@ def test_api_plan_missing_run_404():
     response = client.post("/runs/run-missing/v2/plan", json={})
     assert response.status_code == 404
     assert response.json()["error_code"] == "RUN_NOT_FOUND"
+
+
+def test_plan_validation_detects_drift():
+    run_id = f"run-f18-{uuid4().hex[:8]}"
+    _seed(run_id, "angular-11.x", "angular-16.x")
+    service = V2PlannerService()
+    plan = service.derive_plan(run_id)
+    service.persist(run_id, plan)
+    validated = service.validate_plan(run_id)
+    assert validated.checksum == plan.checksum
+
+    # drift: change the run's target family
+    with session_scope() as session:
+        run = session.get(MigrationRunModel, run_id)
+        run.target_version_family = "angular-17.x"
+        session.commit()
+    try:
+        service.validate_plan(run_id)
+        assert False, "expected PLAN_DRIFT"
+    except V2PlanningError as exc:
+        assert exc.code == "PLAN_DRIFT"
