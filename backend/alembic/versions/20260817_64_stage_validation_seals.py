@@ -24,7 +24,7 @@ def upgrade() -> None:
         sa.Column("checksum", sa.String(length=128), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_stage_validation_seals_stage_id", "stage_validation_seals", ["stage_id"])
+    op.create_index("ix_stage_validation_seals_stage_id", "stage_validation_seals", ["stage_id"], unique=True)
     op.create_index("ix_stage_validation_seals_run_id", "stage_validation_seals", ["run_id"])
 
 

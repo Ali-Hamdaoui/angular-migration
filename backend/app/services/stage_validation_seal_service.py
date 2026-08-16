@@ -9,10 +9,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.domain.stage_validation import StageSeal, StageValidationResult
 from app.repositories.models import MigrationStageModel, StageValidationSealModel
 from app.repositories.session import session_scope
+from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
 
 
 class StageValidationError(ValueError):
@@ -53,7 +55,7 @@ class StageValidationSealService:
             blockers.append("STAGE_PACKAGE_JSON_MISSING")
         if not stage.target_angular_version:
             blockers.append("STAGE_TARGET_VERSION_MISSING")
-        fingerprint = _dir_fingerprint(workspace)
+        fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace) if workspace.is_dir() else ""
         result = StageValidationResult(
             stage_id=stage_id,
             checks=tuple(checks),
@@ -63,7 +65,7 @@ class StageValidationSealService:
         )
         return result.bind_checksum()
 
-    def seal_stage(self, stage_id: str, workspace: Path) -> StageSeal:
+    def seal_stage(self, stage_id: str, workspace: Path, *, run_id: str | None = None) -> StageSeal:
         """Seal the stage's validated evidence (F24-02).
 
         A stage can be sealed only when its validation passes; the seal freezes
@@ -76,6 +78,8 @@ class StageValidationSealService:
             stage = session.get(MigrationStageModel, stage_id)
             if stage is None:
                 raise StageValidationError("STAGE_NOT_FOUND", f"Migration stage {stage_id} not found")
+            if run_id is not None and stage.run_id != run_id:
+                raise StageValidationError("STAGE_NOT_FOUND", f"stage {stage_id} does not belong to run {run_id}")
             existing = session.scalar(
                 select(StageValidationSealModel).where(StageValidationSealModel.stage_id == stage_id)
             )
@@ -89,21 +93,25 @@ class StageValidationSealService:
                 workspace_fingerprint=result.workspace_fingerprint,
                 sealed_at=self._now_provider(),
             ).bind_checksum()
-            session.add(
-                StageValidationSealModel(
-                    id="svs-" + hashlib.sha256(stage_id.encode()).hexdigest()[:24],
-                    stage_id=stage_id,
-                    run_id=stage.run_id,
-                    source_major=seal.source_major,
-                    target_major=seal.target_major,
-                    validation_checksum=seal.validation_checksum,
-                    workspace_fingerprint=seal.workspace_fingerprint,
-                    sealed_at=seal.sealed_at,
-                    checksum=seal.checksum,
-                    created_at=self._now_provider(),
+            try:
+                session.add(
+                    StageValidationSealModel(
+                        id="svs-" + hashlib.sha256(stage_id.encode()).hexdigest()[:24],
+                        stage_id=stage_id,
+                        run_id=stage.run_id,
+                        source_major=seal.source_major,
+                        target_major=seal.target_major,
+                        validation_checksum=seal.validation_checksum,
+                        workspace_fingerprint=seal.workspace_fingerprint,
+                        sealed_at=seal.sealed_at,
+                        checksum=seal.checksum,
+                        created_at=self._now_provider(),
+                    )
                 )
-            )
-            session.commit()
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                raise StageValidationError("STAGE_ALREADY_SEALED", f"stage {stage_id} is already sealed") from None
         return seal
 
     def is_sealed(self, stage_id: str) -> StageValidationSealModel | None:
@@ -135,20 +143,3 @@ def _major(family: str | None) -> int:
         return int(family.removeprefix("angular-").removesuffix(".x"))
     except ValueError:
         return 0
-
-
-def _dir_fingerprint(workspace: Path) -> str:
-    digest = hashlib.sha256()
-    if workspace.is_dir():
-        for path in sorted(workspace.rglob("*")):
-            if path.is_symlink():
-                continue
-            if path.is_file() and "node_modules" not in path.parts:
-                digest.update(path.relative_to(workspace).as_posix().encode())
-                digest.update(b":")
-                try:
-                    digest.update(path.read_bytes()[:4096])
-                except OSError:
-                    pass
-                digest.update(b";")
-    return "sha256:" + digest.hexdigest()

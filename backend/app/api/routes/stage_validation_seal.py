@@ -66,7 +66,7 @@ def seal_stage(
     service: StageValidationSealService = Depends(get_seal_service),
 ) -> StageSealDto:
     try:
-        seal = service.seal_stage(stage_id, Path(request.workspace_path))
+        seal = service.seal_stage(stage_id, Path(request.workspace_path), run_id=run_id)
     except StageValidationError as error:
         _raise(error)
     return _seal_dto(seal)
