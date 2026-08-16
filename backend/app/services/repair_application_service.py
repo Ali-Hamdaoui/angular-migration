@@ -1467,33 +1467,36 @@ class RepairApplicationService:
         actor: str,
         reason: str,
     ) -> dict[str, object]:
-        request_checksum = self._request_checksum(
-            {
-                "run_id": run_id,
-                "attempt_id": attempt_id,
-                "expected_state_version": expected_state_version,
-                "actor": actor,
-                "reason": reason,
-                "role": "proposer",
-                "generation": 1,
-            }
-        )
-        event_marker = f"repair-invocation-recovery:{attempt_id}:proposer:1"
+        generation = 1
+        old = None
         with self._scope() as session:
-            prior = next(
-                (
-                    event
-                    for event in session.scalars(
-                        select(WorkflowEventModel).where(
-                            WorkflowEventModel.run_id == run_id,
-                            WorkflowEventModel.event_type
-                            == WorkflowEventType.REPAIR_INVOCATION_RECOVERED.value,
-                        )
-                    ).all()
-                    if (event.payload or {}).get("attempt_id") == attempt_id
-                    and (event.payload or {}).get("role") == "proposer"
-                ),
-                None,
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = (
+                session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id,
+                        TransformationContinuationModel.current_stage_id == attempt.stage_id,
+                    )
+                )
+                if attempt is not None
+                else None
+            )
+            prior_events = [
+                event
+                for event in session.scalars(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.event_type
+                        == WorkflowEventType.REPAIR_INVOCATION_RECOVERED.value,
+                    )
+                ).all()
+                if (event.payload or {}).get("attempt_id") == attempt_id
+                and (event.payload or {}).get("role") == "proposer"
+            ]
+            prior = max(
+                prior_events,
+                key=lambda event: int((event.payload or {}).get("recovery_generation") or 0),
+                default=None,
             )
             if prior is not None:
                 successor_key = str((prior.payload or {}).get("new_invocation_key") or "")
@@ -1508,26 +1511,39 @@ class RepairApplicationService:
                         "REPAIR_RECOVERY_CONFLICT",
                         "Existing uncertain-invocation recovery evidence is incomplete",
                     )
-                return {
-                    "run_id": run_id,
-                    "attempt_id": attempt_id,
-                    "old_invocation_key": (prior.payload or {}).get("old_invocation_key"),
-                    "new_invocation_key": successor_key,
-                    "new_invocation_id": successor.id,
-                    "proposal_checksum": None,
-                    "idempotent_replay": True,
-                }
-            attempt = session.get(RepairAttemptModel, attempt_id)
-            continuation = (
-                session.scalar(
-                    select(TransformationContinuationModel).where(
-                        TransformationContinuationModel.run_id == run_id,
-                        TransformationContinuationModel.current_stage_id == attempt.stage_id,
-                    )
+                can_retry_recovered = (
+                    attempt is not None
+                    and continuation is not None
+                    and continuation.state_version == expected_state_version
+                    and continuation.status == "blocked"
+                    and continuation.current_node == "propose_repair"
+                    and continuation.last_error_code == "REPAIR_INVOCATION_UNCERTAIN"
+                    and continuation.worker_id is None
+                    and continuation.lease_expires_at is None
+                    and attempt.status == "evidence_frozen"
+                    and attempt.proposal_artifact_id is None
+                    and attempt.proposer_invocation_id == successor.id
+                    and successor.status == "in_progress"
+                    and successor.transport_started
+                    and successor.response_received is not True
+                    and successor.completed_at is None
+                    and successor.provider_response_id is None
+                    and successor.provider_request_id is None
+                    and successor.provider_http_status is None
+                    and successor.provider_error_code is None
                 )
-                if attempt is not None
-                else None
-            )
+                if not can_retry_recovered:
+                    return {
+                        "run_id": run_id,
+                        "attempt_id": attempt_id,
+                        "old_invocation_key": (prior.payload or {}).get("old_invocation_key"),
+                        "new_invocation_key": successor_key,
+                        "new_invocation_id": successor.id,
+                        "proposal_checksum": None,
+                        "idempotent_replay": True,
+                    }
+                old = successor
+                generation = int((prior.payload or {}).get("recovery_generation") or 1) + 1
             if (
                 attempt is None
                 or continuation is None
@@ -1539,7 +1555,7 @@ class RepairApplicationService:
                 or continuation.lease_expires_at is not None
                 or attempt.status != "evidence_frozen"
                 or attempt.proposal_artifact_id is not None
-                or attempt.proposer_invocation_id is not None
+                or (old is None and attempt.proposer_invocation_id is not None)
             ):
                 raise RepairApplicationError(
                     "REPAIR_RECOVERY_NOT_ELIGIBLE",
@@ -1577,16 +1593,17 @@ class RepairApplicationService:
                     "REPAIR_RECOVERY_NOT_ELIGIBLE",
                     "Proposer recovery authority is missing or stale",
                 )
-            old = session.scalar(
-                select(LlmInvocationModel)
-                .where(
-                    LlmInvocationModel.run_id == run_id,
-                    LlmInvocationModel.id.like(f"{attempt_id}:proposer%"),
-                    LlmInvocationModel.status == "in_progress",
+            if old is None:
+                old = session.scalar(
+                    select(LlmInvocationModel)
+                    .where(
+                        LlmInvocationModel.run_id == run_id,
+                        LlmInvocationModel.id.like(f"{attempt_id}:proposer%"),
+                        LlmInvocationModel.status == "in_progress",
+                    )
+                    .order_by(LlmInvocationModel.created_at.desc())
+                    .limit(1)
                 )
-                .order_by(LlmInvocationModel.created_at.desc())
-                .limit(1)
-            )
             if (
                 old is None
                 or old.stage_id != attempt.stage_id
@@ -1605,7 +1622,20 @@ class RepairApplicationService:
                     "Proposer invocation is not an irrecoverable uncertain call",
                 )
             now = self._now()
-            successor_key = f"{old.id}:recovery-1"
+            request_checksum = self._request_checksum(
+                {
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "expected_state_version": expected_state_version,
+                    "actor": actor,
+                    "reason": reason,
+                    "role": "proposer",
+                    "generation": generation,
+                }
+            )
+            event_marker = f"repair-invocation-recovery:{attempt_id}:proposer:{generation}"
+            recovery_root = old.id.split(":recovery-", 1)[0]
+            successor_key = f"{recovery_root}:recovery-{generation}"
             successor = LlmInvocationModel(
                 id=successor_key,
                 run_id=run_id,
@@ -1615,7 +1645,7 @@ class RepairApplicationService:
                 input_hashes=[
                     *(old.input_hashes or []),
                     f"recovery_of:{old.idempotency_key}",
-                    "recovery_generation:1",
+                    f"recovery_generation:{generation}",
                 ],
                 correlation_id=successor_key,
                 actor=actor,
@@ -1679,7 +1709,7 @@ class RepairApplicationService:
                     "operator_actor": actor,
                     "recovery_request_idempotency_key": idempotency_key,
                     "reason": reason,
-                    "recovery_generation": 1,
+                    "recovery_generation": generation,
                     "recovery_request_checksum": request_checksum,
                     "recovered_at": now.isoformat(),
                 },

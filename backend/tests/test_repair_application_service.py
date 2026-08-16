@@ -3626,6 +3626,113 @@ def test_uncertain_reviewer_recovery_null_waiter_retains_eligibility(tmp_path: P
     engine.dispose()
 
 
+def test_uncertain_proposer_recovery_allocates_next_generation_after_prior_recovery(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    session = factory()
+    attempt = session.get(RepairAttemptModel, attempt_id)
+    binding = session.get(StageWorkspaceBindingModel, "binding-1")
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    checkpoint = StageCheckpointModel(
+        id="checkpoint-pre-repair",
+        run_id="run-1",
+        stage_id="stage-1",
+        kind="pre_repair",
+        sequence=1,
+        workspace_alias="STAGE_WORKSPACE_1",
+        workspace_path=binding.workspace_path,
+        workspace_fingerprint=binding.workspace_fingerprint,
+        safe_for_resume=True,
+        sealed=True,
+        state_version=1,
+        created_at=NOW,
+    )
+    old_key = f"{attempt_id}:proposer"
+    session.add(checkpoint)
+    session.add(
+        LlmInvocationModel(
+            id=old_key,
+            run_id="run-1",
+            stage_id="stage-1",
+            idempotency_key=old_key,
+            request_checksum="sha256:original-proposer-request",
+            input_hashes=[attempt.failure_evidence_checksum, attempt.context_pack_checksum],
+            correlation_id=old_key,
+            actor="transformer",
+            role="repair_proposer",
+            task_type="repair_diagnosis",
+            provider="azure_openai",
+            deployment_alias="azure-openai",
+            prompt_version="prompt-repair-proposer-candidate-v5",
+            schema_version="schema-registry-v1",
+            pricing_version="mvp-pricing-2026-01",
+            stage="repair",
+            status="in_progress",
+            failure_code="LLM_PROVIDER_TIMEOUT",
+            artifact_ids=[],
+            artifact_checksums={},
+            state_version=1,
+            event_sequence=0,
+            retries=3,
+            transport_started=True,
+            response_received=None,
+            started_at=NOW,
+            completed_at=None,
+            created_at=NOW,
+        )
+    )
+    attempt.checkpoint_id = checkpoint.id
+    attempt.pre_fingerprint = binding.workspace_fingerprint
+    continuation.status = "blocked"
+    continuation.current_node = "propose_repair"
+    continuation.worker_id = None
+    continuation.lease_expires_at = None
+    continuation.last_error_code = "REPAIR_INVOCATION_UNCERTAIN"
+    continuation.last_error_message = "Repair provider transport started without a response"
+    session.commit()
+    session.close()
+    service = RepairApplicationService(scope=_scope(factory))
+
+    first = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="operator-recovery-1",
+        actor="operator",
+        reason="First proposer recovery",
+    )
+    assert first["new_invocation_key"] == f"{attempt_id}:proposer:recovery-1"
+
+    session = factory()
+    successor = session.get(LlmInvocationModel, first["new_invocation_key"])
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+    successor.transport_started = True
+    successor.failure_code = "LLM_PROVIDER_TIMEOUT"
+    successor.retries = 5
+    continuation.status = "blocked"
+    continuation.current_node = "propose_repair"
+    continuation.worker_id = None
+    continuation.lease_expires_at = None
+    continuation.last_error_code = "REPAIR_INVOCATION_UNCERTAIN"
+    continuation.last_error_message = "Repair provider transport started without a response"
+    continuation.state_version += 1
+    expected_state_version = continuation.state_version
+    session.commit()
+    session.close()
+
+    second = service.recover_uncertain_invocation(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=expected_state_version,
+        idempotency_key="operator-recovery-2",
+        actor="operator",
+        reason="Second proposer recovery after another timeout",
+    )
+    assert second["idempotent_replay"] is False
+    assert second["new_invocation_key"] == f"{attempt_id}:proposer:recovery-2"
+    engine.dispose()
+
+
 class _RetrievalTransport:
     def __init__(self, result):
         self.result = result
