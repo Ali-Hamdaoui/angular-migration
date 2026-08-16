@@ -24,6 +24,7 @@ from app.repositories.lockfile_evidence_models import LockfileGenerationEvidence
 from app.repositories.migration_route_models import MigrationRouteModel
 from app.repositories.runtime_certification_models import RuntimeCertificationModel
 from app.repositories.project_capability_models import ProjectCapabilityModel
+from app.repositories.third_party_compatibility_models import ThirdPartyCompatibilityReportModel
 from app.repositories.models.workflow import (
     AgentExecutionModel,
     AssistantConversationModel,
@@ -131,6 +132,7 @@ __all__ = [
     "MigrationRouteModel",
     "RuntimeCertificationModel",
     "ProjectCapabilityModel",
+    "ThirdPartyCompatibilityReportModel",
     "CommandAuthorizationAuditModel",
     "CommandExecutionModel",
     "CommandLogChunkModel",
