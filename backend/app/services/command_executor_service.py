@@ -477,20 +477,24 @@ class CommandExecutorService:
             from app.domain.execution_audit import ExecutionAuditEvent
             from app.services.execution_audit_service import ExecutionAuditTrailService
 
-            ExecutionAuditTrailService().append(
-                run_id=model.run_id,
-                event=(ExecutionAuditEvent.EXECUTION_INTERRUPTED if model.status == CommandStatus.INTERRUPTED.value else ExecutionAuditEvent.EXECUTION_FAILED),
-                command_id=model.command_id or "",
-                stage_id=model.stage_id,
-                execution_id=model.id,
-                actor=model.requested_by,
-                executable=model.executable or "",
-                arguments=list(model.arguments or []),
-                state_version=model.authoritative_state_version,
-                network_profile=model.network_profile,
-                reason=model.failure_code or "expired claim reconciled",
-                session=session,
-            )
+            if model.status in {
+                CommandStatus.FAILED.value,
+                CommandStatus.INTERRUPTED.value,
+            }:
+                ExecutionAuditTrailService().append(
+                    run_id=model.run_id,
+                    event=(ExecutionAuditEvent.EXECUTION_INTERRUPTED if model.status == CommandStatus.INTERRUPTED.value else ExecutionAuditEvent.EXECUTION_FAILED),
+                    command_id=model.command_id or "",
+                    stage_id=model.stage_id,
+                    execution_id=model.id,
+                    actor=model.requested_by,
+                    executable=model.executable or "",
+                    arguments=list(model.arguments or []),
+                    state_version=model.authoritative_state_version,
+                    network_profile=model.network_profile,
+                    reason=model.failure_code or "expired claim reconciled",
+                    session=session,
+                )
             recovered.append(model.id)
         session.flush()
         return recovered
