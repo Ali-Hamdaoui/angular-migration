@@ -256,3 +256,10 @@ def test_v2_repair_candidate_registry_and_prompt_versions_exist():
     assert "Never patch package-lock.json or npm-shrinkwrap.json directly" in proposer_policy
     assert ("repair_proposer_candidate_v2", repair_application_service.LlmTaskType.REPAIR_DIAGNOSIS) in PRODUCTION_LLM_POLICY_TUPLES
     assert ("repair_reviewer_candidate_v2", repair_application_service.LlmTaskType.REPAIR_REVIEW) in PRODUCTION_LLM_POLICY_TUPLES
+
+
+def test_reviewer_policy_matches_backend_bound_dependency_transition_contract():
+    policy = repair_application_service.REVIEWER_CAUSAL_POLICY
+    assert "blocking_dependency" in policy
+    assert "target_state" in policy
+    assert "do not require operation-level" in policy

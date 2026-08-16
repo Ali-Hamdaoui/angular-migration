@@ -53,8 +53,11 @@ REVIEWER_CAUSAL_POLICY = (
     "operation violates causal policy. For dependency-conflict failures (for example Angular "
     "peer-dependency conflicts), only a complete dependency transition "
     "(detach/update/reattach with blocking dependency and target state, plus lockfile "
-    "regeneration) is causally valid. Accept only proposals that change the state responsible "
-    "for the failure."
+    "regeneration) is causally valid. For dependency_transition, the backend binds the "
+    "authoritative package, section, installed version, and target version into "
+    "blocking_dependency and target_state; do not require operation-level package, "
+    "section, or new_version fields or a proposal diff. Accept only proposals that "
+    "change the state responsible for the failure."
 )
 
 CAUSAL_REJECTION_DOCUMENTATION = "CAUSAL_REJECTION_DOCUMENTATION"
