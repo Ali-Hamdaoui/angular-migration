@@ -361,6 +361,27 @@ ANGULAR_UPDATE_V4_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute a strict exact Angular update in the isolated stage workspace (v4)",
 )
 
+# v5 runs the workspace-local CLI.  Passing a target CLI as an npx temporary
+# package makes Angular CLI 12 perform a second temporary-bin lookup, which
+# fails on npm 6 Windows.  The local CLI is the supported authority for
+# `ng update`; its package arguments still bind the adjacent target exactly.
+ANGULAR_UPDATE_V5_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v5",
+    executable="npx",
+    argument_patterns=(
+        "ng",
+        "update",
+        "@angular/cli@{target_cli_exact}",
+        "@angular/core@{target_exact}",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute an exact Angular update through the workspace-local CLI (v5)",
+)
+
 ANGULAR_INSTALLED_MIGRATION_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="angular-migrate-installed",
     template_id="tpl-angular-migrate-installed-v1",
@@ -531,6 +552,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         version=4,
         allowed_env_vars=ANGULAR_UPDATE_V4_RENDERER.allowed_env_vars,
         max_output_bytes=ANGULAR_UPDATE_V4_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V5_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V5_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V5_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V5_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V5_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V5_RENDERER.description,
+        version=5,
+        allowed_env_vars=ANGULAR_UPDATE_V5_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V5_RENDERER.max_output_bytes,
     ),
 )
 

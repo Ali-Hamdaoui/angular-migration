@@ -33,8 +33,8 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     assert result.first_stage_plan.target_exact == "19.2.0"
     assert result.first_stage_plan.commands["angular_update"][0].shell is False
     update = result.first_stage_plan.commands["angular_update"][0]
-    assert update.template_id == "tpl-angular-update-exact-v4"
-    assert update.template_version == 4
+    assert update.template_id == "tpl-angular-update-exact-v5"
+    assert update.template_version == 5
     assert "--allow-dirty" not in update.arguments
     assert "--force" not in update.arguments
     assert "--legacy-peer-deps" not in update.arguments

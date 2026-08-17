@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.domain.command import ANGULAR_UPDATE_V4_RENDERER
+from app.domain.command import ANGULAR_UPDATE_V5_RENDERER
 from app.domain.migration_route import validate_envelope
 from app.domain.ng_update_governance import NgUpdateAuthorization, NgUpdateCommandSpec
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
@@ -44,12 +44,12 @@ class NgUpdateGovernanceService:
             "target_exact": entry.target_angular_exact,
             "target_cli_exact": entry.target_cli_exact or entry.cli_exact or entry.target_angular_exact,
         }
-        rendered = ANGULAR_UPDATE_V4_RENDERER.render_arguments(bindings)
+        rendered = ANGULAR_UPDATE_V5_RENDERER.render_arguments(bindings)
         spec = NgUpdateCommandSpec(
             source_major=source_major,
             target_major=target_major,
-            template_id=ANGULAR_UPDATE_V4_RENDERER.template_id,
-            executable=ANGULAR_UPDATE_V4_RENDERER.executable,
+            template_id=ANGULAR_UPDATE_V5_RENDERER.template_id,
+            executable=ANGULAR_UPDATE_V5_RENDERER.executable,
             target_exact=bindings["target_exact"],
             target_cli_exact=bindings["target_cli_exact"],
             rendered_arguments=rendered,

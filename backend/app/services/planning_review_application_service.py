@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.command import ANGULAR_UPDATE_V4_RENDERER
+from app.domain.command import ANGULAR_UPDATE_V5_RENDERER
 from app.domain.contracts import AgentKind
 from app.domain.planning import (
     APPROVED_BUILDERS,
@@ -372,10 +372,10 @@ class PlanRevisionService:
             stage_values["execution_profile_id"] = changes.execution_profile_id
         commands = dict(stage_values["commands"])
         update = dict(commands["angular_update"][0])
-        definition = ANGULAR_UPDATE_V4_RENDERER
+        definition = ANGULAR_UPDATE_V5_RENDERER
         target_cli_exact = changes.target_cli_exact or stage.target_cli_exact
         stage_values["target_cli_exact"] = target_cli_exact
-        update["template_version"] = 4
+        update["template_version"] = 5
         update["template_id"] = definition.template_id
         update["parameter_bindings"] = {
             "target_cli_exact": target_cli_exact,

@@ -204,9 +204,9 @@ class TestCommandRegistryService:
         """All immutable angular-update-exact templates remain seeded."""
         seeded = registry.seed_defaults(db_session)
         angular = [t for t in seeded if t.command_id == "angular-update-exact"]
-        assert len(angular) == 4
+        assert len(angular) == 5
         versions = {t.version for t in angular}
-        assert versions == {1, 2, 3, 4}
+        assert versions == {1, 2, 3, 4, 5}
 
     def test_installed_migration_fallback_is_registered(self, registry, db_session):
         seeded = registry.seed_defaults(db_session)

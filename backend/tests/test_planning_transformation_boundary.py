@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from pydantic import ValidationError
 
-from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V4_RENDERER, DEFAULT_COMMAND_TEMPLATES, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
+from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V4_RENDERER, ANGULAR_UPDATE_V5_RENDERER, DEFAULT_COMMAND_TEMPLATES, TRANSFORMATION_COMMAND_CATALOGUE, command_arguments_match
 from app.domain.planning import CommandTemplateReference
 from app.domain.planning import PlanGenerationRequest, StageExecutionPlan
 from app.domain.contracts import CommandRequestDto
@@ -81,7 +81,7 @@ def test_generated_commands_are_rendered_from_the_shared_transformation_catalogu
     for references in plan.commands.values():
         for reference in references:
             if reference.command_id == "angular-update-exact":
-                definition = ANGULAR_UPDATE_V4_RENDERER
+                definition = ANGULAR_UPDATE_V5_RENDERER
             else:
                 definition = TRANSFORMATION_COMMAND_CATALOGUE[reference.command_id]
             assert reference.template_id == definition.template_id
@@ -114,7 +114,7 @@ def test_worker_registers_every_generated_command_shape():
     registry = CommandRegistry()
     planner_commands = {
         "npm-ci-bootstrap": ("ci",),
-        "angular-update-exact": ("--yes", "--package=@angular/cli@19.2.0", "ng", "update", "@angular/cli@19.2.0", "@angular/core@19.2.0"),
+        "angular-update-exact": ("ng", "update", "@angular/cli@19.2.0", "@angular/core@19.2.0"),
         "angular-version-verify": ("ng", "version"),
         "npm-ci-final": ("ci",),
         "npm-script-build-production": ("run", "build", "--", "--configuration", "production"),
@@ -213,11 +213,11 @@ def test_path_classification_is_host_independent(value):
     assert is_portable_absolute_path(value) is True
 
 
-def test_new_plan_uses_v4_template():
-    """Newly generated angular-update-exact commands use the strict V4 template."""
+def test_new_plan_uses_v5_local_cli_template():
+    """New plans invoke the workspace-local CLI for npm 6 Windows compatibility."""
     plan = StageExecutionPlanService().create(
         PlanGenerationRequest(
-            run_id="run-v4-test", expected_state_version=1, idempotency_key="v4-test", actor="operator",
+            run_id="run-v5-test", expected_state_version=1, idempotency_key="v5-test", actor="operator",
             source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
             catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
             execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
@@ -226,24 +226,24 @@ def test_new_plan_uses_v4_template():
         )
     )
     update = plan.commands["angular_update"][0]
-    assert update.template_version == 4
-    assert update.template_id == ANGULAR_UPDATE_V4_RENDERER.template_id
+    assert update.template_version == 5
+    assert update.template_id == ANGULAR_UPDATE_V5_RENDERER.template_id
     assert "--allow-dirty" not in update.arguments
     assert "--force" not in update.arguments
     assert "--legacy-peer-deps" not in update.arguments
     assert "--interactive=false" not in " ".join(update.arguments)
-    assert update.arguments[1].startswith("--package=@angular/cli@")
-    assert ANGULAR_UPDATE_V4_RENDERER.render_arguments({
+    assert update.arguments[:2] == ("ng", "update")
+    assert ANGULAR_UPDATE_V5_RENDERER.render_arguments({
         "target_cli_exact": plan.target_cli_exact,
         "target_exact": plan.target_exact,
     }) == update.arguments
 
 
-def test_planned_angular_update_matches_v4_template():
-    """The rendered arguments match the strict V4 template pattern."""
+def test_planned_angular_update_matches_v5_template():
+    """The rendered arguments match the local-CLI V5 template pattern."""
     plan = StageExecutionPlanService().create(
         PlanGenerationRequest(
-            run_id="run-match-v4", expected_state_version=1, idempotency_key="match-v4", actor="operator",
+            run_id="run-match-v5", expected_state_version=1, idempotency_key="match-v5", actor="operator",
             source_exact="18.2.0", source_family="angular-18.x", target_family="angular-19.x",
             catalogue_version="catalog-v1", input_fingerprint="sha256:" + "1" * 64,
             execution_profile_id="profile-1", execution_profile_checksum="sha256:" + "4" * 64,
@@ -252,21 +252,20 @@ def test_planned_angular_update_matches_v4_template():
         )
     )
     update = plan.commands["angular_update"][0]
-    assert command_arguments_match(ANGULAR_UPDATE_V4_RENDERER.argument_patterns, update.arguments)
+    assert command_arguments_match(ANGULAR_UPDATE_V5_RENDERER.argument_patterns, update.arguments)
     assert command_arguments_match(ANGULAR_UPDATE_V2_RENDERER.argument_patterns, update.arguments) is False
 
 
-def test_v4_angular_update_uses_npm6_safe_scoped_package_argument():
-    """npm 6 on Windows must receive the scoped package as one --package token."""
-    rendered = ANGULAR_UPDATE_V4_RENDERER.render_arguments({
+def test_v5_angular_update_invokes_workspace_local_cli():
+    rendered = ANGULAR_UPDATE_V5_RENDERER.render_arguments({
         "target_cli_exact": "12.0.0",
         "target_exact": "12.0.0",
     })
-    assert rendered[:3] == ("--yes", "--package=@angular/cli@12.0.0", "ng")
+    assert rendered == ("ng", "update", "@angular/cli@12.0.0", "@angular/core@12.0.0")
 
 
 def test_rebuilt_plan_uses_catalogue_for_arguments():
-    """Revised angular_update commands are rendered via the strict V4 catalogue."""
+    """Revised angular_update commands use the current local-CLI renderer."""
     from app.services.planning_application_service import PlanningApplicationService
     from app.domain.planning_review import PlanRevisionRequest, G06Gate
 
@@ -291,18 +290,19 @@ def test_rebuilt_plan_uses_catalogue_for_arguments():
     revision = service.revise(request)
     revised_commands = revision.stage_plan.get("commands", {})
     angular_update = revised_commands.get("angular_update", [{}])[0]
-    expected_v4 = ANGULAR_UPDATE_V4_RENDERER.render_arguments({
+    expected_v5 = ANGULAR_UPDATE_V5_RENDERER.render_arguments({
         "target_cli_exact": "19.3.0",
         "target_exact": "19.2.0",
     })
-    assert angular_update["arguments"] == list(expected_v4), (
+    assert angular_update["arguments"] == list(expected_v5), (
         f"Revised arguments {angular_update['arguments']} do not match "
-        f"ANGULAR_UPDATE_V4_RENDERER output {list(expected_v4)}"
+        f"ANGULAR_UPDATE_V5_RENDERER output {list(expected_v5)}"
     )
-    assert angular_update.get("template_version") == 4, (
-        f"Expected template_version=4, got {angular_update.get('template_version')}"
+    assert angular_update["arguments"] == list(expected_v5)
+    assert angular_update.get("template_version") == 5, (
+        f"Expected template_version=5, got {angular_update.get('template_version')}"
     )
-    assert angular_update.get("template_id") == ANGULAR_UPDATE_V4_RENDERER.template_id
+    assert angular_update.get("template_id") == ANGULAR_UPDATE_V5_RENDERER.template_id
 
 
 def test_v1_plan_remains_immutable():
