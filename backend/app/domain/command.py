@@ -348,8 +348,7 @@ ANGULAR_UPDATE_V4_RENDERER: Final[TransformationCommandDefinition] = Transformat
     executable="npx",
     argument_patterns=(
         "--yes",
-        "-p",
-        "@angular/cli@{target_cli_exact}",
+        "--package=@angular/cli@{target_cli_exact}",
         "ng",
         "update",
         "@angular/cli@{target_cli_exact}",

@@ -114,7 +114,7 @@ def test_worker_registers_every_generated_command_shape():
     registry = CommandRegistry()
     planner_commands = {
         "npm-ci-bootstrap": ("ci",),
-        "angular-update-exact": ("--yes", "-p", "@angular/cli@19.2.0", "ng", "update", "@angular/cli@19.2.0", "@angular/core@19.2.0"),
+        "angular-update-exact": ("--yes", "--package=@angular/cli@19.2.0", "ng", "update", "@angular/cli@19.2.0", "@angular/core@19.2.0"),
         "angular-version-verify": ("ng", "version"),
         "npm-ci-final": ("ci",),
         "npm-script-build-production": ("run", "build", "--", "--configuration", "production"),
@@ -232,6 +232,7 @@ def test_new_plan_uses_v4_template():
     assert "--force" not in update.arguments
     assert "--legacy-peer-deps" not in update.arguments
     assert "--interactive=false" not in " ".join(update.arguments)
+    assert update.arguments[1].startswith("--package=@angular/cli@")
     assert ANGULAR_UPDATE_V4_RENDERER.render_arguments({
         "target_cli_exact": plan.target_cli_exact,
         "target_exact": plan.target_exact,
@@ -253,6 +254,15 @@ def test_planned_angular_update_matches_v4_template():
     update = plan.commands["angular_update"][0]
     assert command_arguments_match(ANGULAR_UPDATE_V4_RENDERER.argument_patterns, update.arguments)
     assert command_arguments_match(ANGULAR_UPDATE_V2_RENDERER.argument_patterns, update.arguments) is False
+
+
+def test_v4_angular_update_uses_npm6_safe_scoped_package_argument():
+    """npm 6 on Windows must receive the scoped package as one --package token."""
+    rendered = ANGULAR_UPDATE_V4_RENDERER.render_arguments({
+        "target_cli_exact": "12.0.0",
+        "target_exact": "12.0.0",
+    })
+    assert rendered[:3] == ("--yes", "--package=@angular/cli@12.0.0", "ng")
 
 
 def test_rebuilt_plan_uses_catalogue_for_arguments():
