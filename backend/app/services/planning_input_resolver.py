@@ -125,13 +125,25 @@ class PlanningInputResolver:
 
     @staticmethod
     def _exact_source_from_evidence(session, run: MigrationRunModel) -> str | None:
-        if run.source_version_detected and re.fullmatch(r"\d+\.\d+\.\d+", run.source_version_detected):
-            return run.source_version_detected
+        exact = PlanningInputResolver._single_version(run.source_version_detected)
+        if exact:
+            return exact
         preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
         analysis = session.get(SourceAnalysisModel, (preflight.binding or {}).get("source_analysis_id")) if preflight else None
         versions = (analysis.snapshot or {}).get("versions", []) if analysis else []
-        exact = next((item.get("resolved") for item in versions if item.get("package") == "@angular/core" and re.fullmatch(r"\d+\.\d+\.\d+", str(item.get("resolved") or ""))), None)
+        exact = next((PlanningInputResolver._single_version(item.get("resolved")) for item in versions if item.get("package") == "@angular/core"), None)
+        if exact is None:
+            # Preserve resumability for evidence created before npm v1
+            # resolution was supported. Only a single semver base is accepted;
+            # broad ranges remain fail-closed.
+            exact = next((PlanningInputResolver._single_version(item.get("declared")) for item in versions if item.get("package") == "@angular/core"), None)
         if exact:
             run.source_version_detected = exact
             run.source_version_family = f"angular-{exact.split('.', 1)[0]}.x"
         return exact
+
+    @staticmethod
+    def _single_version(value: object) -> str | None:
+        text = str(value or "").strip()
+        match = re.fullmatch(r"[~^=]?\s*(\d+\.\d+\.\d+)", text)
+        return match.group(1) if match else None

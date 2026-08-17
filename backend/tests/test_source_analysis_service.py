@@ -38,6 +38,28 @@ def test_analyze_reads_versions_lockfile_and_topology(tmp_path: Path):
     assert next(item for item in result.snapshot.versions if item.package == "@angular/core").resolved == "18.2.3"
 
 
+def test_analyze_reads_versions_from_npm_lockfile_v1(tmp_path: Path):
+    source = tmp_path / "app"
+    source.mkdir()
+    (source / "package.json").write_text(json.dumps({
+        "dependencies": {"@angular/core": "~11.0.4"},
+        "devDependencies": {"@angular/cli": "~11.0.4"},
+    }), encoding="utf-8")
+    (source / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "dependencies": {
+            "@angular/core": {"version": "11.0.4"},
+            "@angular/cli": {"version": "11.0.4"},
+        },
+    }), encoding="utf-8")
+
+    result = SourceAnalysisService().analyze(SourceAnalysisRequest(
+        source_path=str(source), idempotency_key="analysis-v1"
+    ))
+
+    assert next(item for item in result.snapshot.versions if item.package == "@angular/core").resolved == "11.0.4"
+
+
 def test_analyze_blocks_missing_lockfile_and_unsupported_angular(tmp_path: Path):
     source = tmp_path / "app"
     source.mkdir()
