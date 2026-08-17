@@ -21,6 +21,7 @@ from app.domain.baseline_parity import (
     RouteInventoryBuilder,
     anchor_to_dict,
 )
+from app.domain.baseline_matrix import latest_records_by_key
 from app.domain.contracts import ArtifactType, WorkflowEventType
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -64,9 +65,10 @@ class BaselineParityApplicationService:
             self._require_state(run, request.expected_state_version)
             self._require_prerequisites(session, run, baseline, request.prerequisite_artifact_ids, request.prerequisite_artifact_checksums)
             self._invalidate_bound_g03(session, run, actor=request.actor)
-            validations = session.scalars(select(BaselineValidationModel).where(
+            validation_rows = session.scalars(select(BaselineValidationModel).where(
                 BaselineValidationModel.run_id == run_id,
             )).all()
+            validations = latest_records_by_key(validation_rows, lambda row: row.kind)
             profile = session.scalar(select(ExecutionProfileModel).where(ExecutionProfileModel.run_id == run_id).order_by(ExecutionProfileModel.updated_at.desc()))
             run_root = Path(run.artifact_root).resolve()
             sandbox = Path(baseline.sandbox_path).resolve()
@@ -75,7 +77,11 @@ class BaselineParityApplicationService:
             baseline_checksum = baseline.checksum
             runtime_profile_id = profile.selected_profile_id if profile else None
             runtime_checksum = profile.selected_checksum if profile else None
-            installations = session.scalars(select(CommandExecutionModel).where(CommandExecutionModel.run_id == run_id)).all()
+            installation_rows = session.scalars(select(CommandExecutionModel).where(
+                CommandExecutionModel.run_id == run_id,
+                CommandExecutionModel.command_id == "npm-ci-bootstrap",
+            )).all()
+            installations = latest_records_by_key(installation_rows, lambda row: row.command_id)
             source_artifact_ids.extend(artifact for row in installations for artifact in (row.artifact_ids or []))
 
         store = LocalFilesystemArtifactStore(run_root, fixed_run_root=run_root)
@@ -144,6 +150,8 @@ class BaselineParityApplicationService:
                 for message in result.get("failed_tests", []) or result.get("warnings", []) or [result.get("blocker") or "baseline command failed"]:
                     diagnostics.append({"kind": result.get("kind", validation.kind), "message": message, "group": result.get("target_id")})
         for installation in installations:
+            if getattr(installation, "command_id", "npm-ci-bootstrap") != "npm-ci-bootstrap":
+                continue
             if installation.status not in {"failed", "timed_out", "cancelled"}:
                 continue
             for blocker in installation.blockers or []:

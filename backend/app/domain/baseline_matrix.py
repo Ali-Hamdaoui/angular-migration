@@ -60,6 +60,23 @@ class BaselineTargetInventory:
     angular_json_present: bool
 
 
+def latest_records_by_key(records: Iterable[Any], key) -> tuple[Any, ...]:
+    """Select the newest durable attempt for each evidence key."""
+    latest: dict[Any, Any] = {}
+    for record in records:
+        record_key = key(record)
+        if record_key is None:
+            continue
+        current = latest.get(record_key)
+        if current is None or _record_order(record) > _record_order(current):
+            latest[record_key] = record
+    return tuple(latest.values())
+
+
+def _record_order(record: Any) -> tuple[str, str, str]:
+    return tuple(str(getattr(record, name, "") or "") for name in ("updated_at", "created_at", "id"))
+
+
 @dataclass(frozen=True)
 class BaselineTargetResult:
     target_id: str

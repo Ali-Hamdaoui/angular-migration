@@ -101,6 +101,35 @@ def test_capture_versions_artifacts_when_validation_evidence_changes(tmp_path):
     engine.dispose()
 
 
+def test_capture_uses_latest_validation_attempt_per_kind(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    service = BaselineParityApplicationService(scope=scope, now_provider=lambda: NOW)
+    with sessions() as session:
+        session.add(BaselineValidationModel(
+            id="validation-2",
+            run_id="run-1",
+            idempotency_key="test-2",
+            actor="operator",
+            kind="test",
+            status="passed",
+            targets=[],
+            results=[{"kind": "test", "target_id": "script:test", "status": "passed"}],
+            parser_summary={},
+            artifact_ids=[],
+            artifact_checksums={},
+            prerequisite_artifact_ids=[],
+            baseline_checksum="sha256:baseline",
+            state_version=2,
+            event_sequence=2,
+            created_at=NOW + timedelta(seconds=1),
+            updated_at=NOW + timedelta(seconds=1),
+        ))
+        session.commit()
+    result = service.capture("run-1", BaselineParityCaptureRequest(expected_state_version=1, idempotency_key="parity-latest", actor="operator"))
+    assert not any(item["kind"] == "test" for item in result.failures)
+    engine.dispose()
+
+
 
 def test_capture_is_available_through_versioned_api(monkeypatch, tmp_path):
     scope, _sessions, engine = fixture(tmp_path)
