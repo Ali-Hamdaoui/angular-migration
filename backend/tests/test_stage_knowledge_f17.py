@@ -30,6 +30,18 @@ def test_knowledge_varied_by_major():
     assert old.known_risks != modern.known_risks
 
 
+def test_dependency_rules_are_capability_driven():
+    entry = knowledge_entry_for(12, 13)
+    legacy = StageKnowledgeRegistry.dependency_dispositions(
+        entry,
+        [{"key": "package:tslint", "value": "present"}, {"key": "lockfile_format:v1", "value": "present"}],
+    )
+    modern = StageKnowledgeRegistry.dependency_dispositions(entry, [])
+    assert {item["package"] for item in legacy} >= {"tslint", "package-lock"}
+    assert not any(item["package"] == "tslint" for item in modern)
+    assert entry.migration_actions == ({"action": "run-official-angular-migrations", "package": "@angular/core"},)
+
+
 def test_registry_entries_cover_envelope():
     registry = StageKnowledgeRegistry()
     entries = registry.entries()

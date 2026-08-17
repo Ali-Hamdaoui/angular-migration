@@ -63,6 +63,65 @@ def test_analyze_with_source_root():
     assert any(f.finding_id in {"capability_ready", "capability_blockers"} for f in findings)
 
 
+def test_plan_stage_knowledge_changes_with_observed_capabilities(tmp_path: Path):
+    run_id = f"run-f18-cap-{uuid4().hex[:8]}"
+    _seed(run_id, "angular-11.x", "angular-13.x")
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "package.json").write_text(json.dumps({
+        "dependencies": {"@angular/core": "^11.0.0"},
+        "devDependencies": {"tslint": "^6.1.0", "codelyzer": "^6.0.0"},
+    }))
+    (legacy / "angular.json").write_text("{}")
+    (legacy / "package-lock.json").write_text(json.dumps({"lockfileVersion": 1, "dependencies": {}}))
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    (clean / "package.json").write_text(json.dumps({"dependencies": {"@angular/core": "^11.0.0"}}))
+    (clean / "angular.json").write_text("{}")
+    (clean / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {}}))
+
+    service = V2PlannerService()
+    legacy_plan = service.derive_plan(run_id, legacy)
+    clean_plan = service.derive_plan(run_id, clean)
+    legacy_changes = {
+        (item["package"], item["action"])
+        for stage in legacy_plan.stages
+        for item in stage.expected_dependency_changes
+    }
+    clean_changes = {
+        (item["package"], item["action"])
+        for stage in clean_plan.stages
+        for item in stage.expected_dependency_changes
+    }
+    assert ("tslint", "remove") in legacy_changes
+    assert ("codelyzer", "remove") in legacy_changes
+    assert ("package-lock", "use-legacy-parser") in legacy_changes
+    assert ("tslint", "remove") not in clean_changes
+    assert ("package-lock", "use-legacy-parser") not in clean_changes
+    assert legacy_plan.checksum != clean_plan.checksum
+
+
+def test_angular_eslint_rule_requires_angular_eslint_capability(tmp_path: Path):
+    run_id = f"run-f18-eslint-{uuid4().hex[:8]}"
+    _seed(run_id, "angular-12.x", "angular-13.x")
+    with_eslint = tmp_path / "with-eslint"
+    with_eslint.mkdir()
+    (with_eslint / "package.json").write_text(json.dumps({
+        "dependencies": {"@angular/core": "^12.0.0"},
+        "devDependencies": {"@angular-eslint/eslint-plugin": "^12.0.0"},
+    }))
+    (with_eslint / "angular.json").write_text("{}")
+    without_eslint = tmp_path / "without-eslint"
+    without_eslint.mkdir()
+    (without_eslint / "package.json").write_text(json.dumps({"dependencies": {"@angular/core": "^12.0.0"}}))
+    (without_eslint / "angular.json").write_text("{}")
+    service = V2PlannerService()
+    with_changes = service.derive_plan(run_id, with_eslint).stages[0].expected_dependency_changes
+    without_changes = service.derive_plan(run_id, without_eslint).stages[0].expected_dependency_changes
+    assert any(item["package"] == "@angular-eslint" for item in with_changes)
+    assert not any(item["package"] == "@angular-eslint" for item in without_changes)
+
+
 def test_persist_and_get_plan():
     run_id = f"run-f18-{uuid4().hex[:8]}"
     _seed(run_id, "angular-14.x", "angular-17.x")

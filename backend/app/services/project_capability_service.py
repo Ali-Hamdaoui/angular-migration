@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.domain.project_capability import ProjectCapability, ProjectCapabilitySnapshot
 from app.repositories.models import MigrationRunModel, ProjectCapabilityModel
 from app.repositories.session import session_scope
+from app.services.lockfile_compatibility_service import LockfileCompatibilityService
 
 
 class ProjectCapabilityError(ValueError):
@@ -75,6 +76,27 @@ class ProjectCapabilityService:
                 ProjectCapability(key="package_manager", value=package_manager, detail="detected package manager"),
             ]
         )
+
+        package_names = {
+            name
+            for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+            for name in (package.get(section, {}) if isinstance(package.get(section, {}), dict) else {})
+        }
+        capabilities.extend(
+            ProjectCapability(key=f"package:{name}", value="present", detail="declared package capability")
+            for name in sorted(package_names)
+        )
+        if any(name.startswith("@angular-eslint/") for name in package_names):
+            capabilities.append(ProjectCapability(key="package:angular-eslint", value="present", detail="angular-eslint package family present"))
+        lockfile_path = source_root / "package-lock.json"
+        if lockfile_path.is_file():
+            try:
+                lock_payload = json.loads(lockfile_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                lock_format = "unknown"
+            else:
+                lock_format = LockfileCompatibilityService.detect_lockfile_format(lock_payload) or "unknown"
+            capabilities.append(ProjectCapability(key=f"lockfile_format:{lock_format}", value="present", detail="package-lock format"))
 
         workspace = "single_application" if angular_json.is_file() else "not_angular_cli"
         capabilities.append(ProjectCapability(key="workspace_type", value=workspace, detail="angular.json presence"))

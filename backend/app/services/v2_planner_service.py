@@ -88,6 +88,7 @@ class V2PlannerService:
             route = self._route.compute(source_major, target_major)
             catalogue = self._catalogue.load()
             findings = self.analyze(run_id, None)
+            capabilities = self._capabilities.derive(source_root) if source_root is not None else []
             stages: list[V2PlannedStage] = []
             for stage in route.stages:
                 entry = catalogue.entry_for(stage.source_family, stage.target_family)
@@ -103,6 +104,7 @@ class V2PlannerService:
                         node_minimum=entry.node_minimum if entry else None,
                         expected_transforms=knowledge.expected_transforms,
                         validation_expectations=knowledge.validation_expectations,
+                        expected_dependency_changes=self._knowledge.dependency_dispositions(knowledge, capabilities),
                     )
                 )
         except V2PlanningError:

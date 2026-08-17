@@ -36,6 +36,7 @@ class V2PlannedStage(_ImmutableModel):
     node_minimum: str | None = None
     expected_transforms: tuple[str, ...] = Field(default_factory=tuple)
     validation_expectations: tuple[str, ...] = Field(default_factory=tuple)
+    expected_dependency_changes: tuple[dict[str, str], ...] = Field(default_factory=tuple)
 
 
 class V2MigrationPlan(_ImmutableModel):

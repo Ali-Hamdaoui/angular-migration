@@ -46,6 +46,29 @@ class StageKnowledgeRegistry:
     def entries(self) -> list[StageKnowledgeEntry]:
         return [knowledge_entry_for(major, major + 1) for major in range(11, 21)]
 
+    @staticmethod
+    def dependency_dispositions(
+        entry: StageKnowledgeEntry,
+        capabilities: list | tuple = (),
+    ) -> tuple[dict[str, str], ...]:
+        """Apply structured stage rules only to observed project capabilities."""
+        observed = {
+            capability["key"] if isinstance(capability, dict) else capability.key: "present"
+            for capability in capabilities
+        }
+        changes = list(entry.expected_dependency_changes)
+        for rule in entry.dependency_rules:
+            if observed.get(rule["capability"]) != "present":
+                continue
+            changes.append(
+                {
+                    "package": rule["package"],
+                    "action": rule["action"],
+                    "source": "capability-rule",
+                }
+            )
+        return tuple(changes)
+
     def persist(self, entry: StageKnowledgeEntry, *, actor: str | None = None, reason: str | None = None) -> StageKnowledgeEntryModel:
         """Persist a knowledge entry version with an audit record (F17-03)."""
         with self._session_scope() as session:
@@ -65,6 +88,8 @@ class StageKnowledgeRegistry:
                 expected_transforms=list(entry.expected_transforms),
                 validation_expectations=list(entry.validation_expectations),
                 expected_dependency_changes=[dict(item) for item in entry.expected_dependency_changes],
+                dependency_rules=[dict(item) for item in entry.dependency_rules],
+                migration_actions=[dict(item) for item in entry.migration_actions],
                 known_risks=list(entry.known_risks),
                 version=entry.version,
                 created_by=actor,
