@@ -37,7 +37,10 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     CommandExecutionModel,
     CommandLogChunkModel,
+    CompatibilityCatalogueModel,
+    CompatibilityResolutionModel,
     G06ApprovalModel,
+    FailureIntelligenceModel,
     LlmInvocationModel,
     MigrationPlanModel,
     MigrationRunModel,
@@ -65,6 +68,7 @@ from app.services.dependency_transition_runner import (
     DependencyTransitionRunner,
 )
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.failure_intelligence_service import FailureIntelligenceService
 from app.services.lockfile_generation_runner import (
     LOCKFILE_GENERATION_ETARGET,
     LOCKFILE_GENERATION_ERESOLVE,
@@ -83,6 +87,11 @@ from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.stage_execution_application_service import validation_execution_key
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+from app.services.transformation_replan_recovery_service import (
+    TransformationReplanRecoveryError,
+    TransformationReplanRecoveryRequest,
+    TransformationReplanRecoveryService,
+)
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
@@ -214,6 +223,8 @@ class TransformerOrchestrator:
             self._aggregate_validation(continuation_id, worker_id)
         elif node == "classify_failure":
             self._classify_failure(continuation_id, worker_id)
+        elif node == "deterministic_replan":
+            self._deterministic_replan(continuation_id, worker_id)
         elif node == "propose_repair":
             self._propose_repair(continuation_id, worker_id)
         elif node == "review_repair":
@@ -1411,7 +1422,13 @@ class TransformerOrchestrator:
                     updated_at=datetime.now(UTC),
                 )
                 session.add(attempt)
-                self._queue(continuation, "propose_repair")
+                next_node = (
+                    "deterministic_replan"
+                    if route.value == "dependency_incompatible"
+                    and self._has_deterministic_replan_intelligence(session, continuation, evidence)
+                    else "propose_repair"
+                )
+                self._queue(continuation, next_node)
         except (IntegrityError, TransformerStageError) as error:
             if isinstance(error, TransformerStageError) and error.code != "ARTIFACT_METADATA_IDENTITY_CONFLICT":
                 raise
@@ -1431,6 +1448,96 @@ class TransformerOrchestrator:
                     continuation_id,
                     cleanup_error,
                 )
+
+    @staticmethod
+    def _has_deterministic_replan_intelligence(session, continuation, evidence) -> bool:
+        intelligence = session.scalar(
+            select(FailureIntelligenceModel)
+            .where(FailureIntelligenceModel.run_id == continuation.run_id)
+            .order_by(FailureIntelligenceModel.created_at.desc())
+            .limit(1)
+        )
+        group_key = TransformerOrchestrator._deterministic_replan_group_key(evidence)
+        root = (intelligence.root_causes or {}).get(group_key) if intelligence else None
+        return bool(root and root.get("taxonomy") == "dependency")
+
+    @staticmethod
+    def _deterministic_replan_group_key(evidence) -> str:
+        normalized = evidence.get("normalized_failure") or {}
+        code = str(normalized.get("error_code") or "UNKNOWN")
+        message = str(normalized.get("failure_message") or "")
+        return FailureIntelligenceService.stable_group_key(code, "dependency", message)
+
+    def _deterministic_replan(self, continuation_id: str, worker_id: str) -> None:
+        with self._scope() as session:
+            continuation = self._owned(session, continuation_id, worker_id)
+            attempt = self._latest_repair(session, continuation)
+            checkpoint = session.get(StageCheckpointModel, attempt.checkpoint_id) if attempt else None
+            stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
+            plan = session.get(MigrationPlanModel, continuation.plan_id)
+            binding = self._stage._binding(session, continuation)
+            execution = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == continuation.run_id,
+                    CommandExecutionModel.stage_id == continuation.current_stage_id,
+                    CommandExecutionModel.status.in_(("failed", "timed_out", "interrupted")),
+                )
+                .order_by(CommandExecutionModel.requested_at.desc())
+                .limit(1)
+            )
+            intelligence = session.scalar(
+                select(FailureIntelligenceModel)
+                .where(FailureIntelligenceModel.run_id == continuation.run_id)
+                .order_by(FailureIntelligenceModel.created_at.desc())
+                .limit(1)
+            )
+            normalized_code = (execution.failure_code if execution else None) or continuation.last_error_code or "UNKNOWN"
+            message = (execution.failure_message if execution else None) or continuation.last_error_message or ""
+            group_key = FailureIntelligenceService.stable_group_key(normalized_code, "dependency", message)
+            root = (intelligence.root_causes or {}).get(group_key) if intelligence else None
+            resolution = session.scalar(
+                select(CompatibilityResolutionModel)
+                .where(CompatibilityResolutionModel.run_id == continuation.run_id)
+                .order_by(CompatibilityResolutionModel.created_at.desc())
+                .limit(1)
+            )
+            catalogue_version = (plan.plan or {}).get("catalogue_version") if plan else None
+            catalogue = session.scalar(
+                select(CompatibilityCatalogueModel).where(CompatibilityCatalogueModel.version == catalogue_version)
+            )
+            if not all((attempt, checkpoint, stage_plan, plan, binding, execution, root, resolution, catalogue)):
+                self._queue(continuation, "propose_repair")
+                return
+            request = TransformationReplanRecoveryRequest(
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                failed_execution_id=execution.id,
+                failed_execution_result_checksum=TransformationReplanRecoveryService.execution_result_checksum(execution),
+                failure_group_key=group_key,
+                root_cause_code=root["root_cause_code"],
+                continuation_state_version=continuation.state_version,
+                current_plan_id=plan.id,
+                current_plan_checksum=plan.checksum,
+                current_stage_plan_id=stage_plan.id,
+                current_stage_plan_checksum=stage_plan.checksum,
+                safe_checkpoint_id=checkpoint.id,
+                safe_checkpoint_checksum=TransformationReplanRecoveryService.checkpoint_checksum(checkpoint),
+                safe_checkpoint_fingerprint=checkpoint.workspace_fingerprint,
+                workspace_fingerprint=binding.workspace_fingerprint,
+                catalogue_version=catalogue.version,
+                catalogue_checksum=catalogue.checksum,
+                compatibility_resolution_checksum=TransformationReplanRecoveryService.compatibility_resolution_checksum(resolution),
+                idempotency_key=f"transformer-replan:{execution.id}",
+            )
+        try:
+            TransformationReplanRecoveryService(
+                session_scope_factory=self._scope
+            ).recover(request)
+        except TransformationReplanRecoveryError:
+            with self._scope() as session:
+                continuation = self._owned(session, continuation_id, worker_id)
+                self._queue(continuation, "propose_repair")
 
     @staticmethod
     def _deterministic_failure_code(error: Exception) -> str:
