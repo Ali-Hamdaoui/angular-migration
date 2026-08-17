@@ -201,6 +201,8 @@ class FrozenBaselineInspectionService:
         for package_json in node_modules.rglob("package.json"):
             if package_json.is_symlink() or not package_json.is_file():
                 continue
+            if not self._is_installed_package_manifest(package_json, sandbox):
+                continue
             try:
                 payload = json.loads(package_json.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -217,3 +219,17 @@ class FrozenBaselineInspectionService:
         encoded = json.dumps(sorted(manifests, key=lambda item: item["path"]), sort_keys=True, separators=(",", ":")).encode()
         checksum = hashlib.sha256(encoded).hexdigest()
         return DependencyTreeVerification("verified", len(manifests), f"sha256:{checksum}")
+
+    @staticmethod
+    def _is_installed_package_manifest(path: Path, sandbox: Path) -> bool:
+        """Ignore package metadata nested inside an installed package."""
+        current = path.parent
+        while current != sandbox and current.name != "node_modules":
+            current = current.parent
+        if current.name != "node_modules":
+            return False
+        relative = path.relative_to(current)
+        return (
+            len(relative.parts) == 2
+            or (len(relative.parts) == 3 and relative.parts[0].startswith("@"))
+        ) and relative.parts[-1] == "package.json"

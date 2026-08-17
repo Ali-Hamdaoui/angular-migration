@@ -53,6 +53,25 @@ def test_npm6_manifest_inventory_verifies_without_hidden_package_lock(tmp_path) 
     assert result.dependency_tree.package_count == 1
 
 
+def test_npm6_manifest_inventory_ignores_nested_package_metadata(tmp_path) -> None:
+    sandbox = tmp_path / "baseline"
+    package = sandbox / "node_modules" / "example"
+    package.mkdir(parents=True)
+    (sandbox / "package.json").write_text('{"name":"fixture"}', encoding="utf-8")
+    (sandbox / "package-lock.json").write_text('{"lockfileVersion":1}', encoding="utf-8")
+    (package / "package.json").write_text('{"name":"example","version":"1.2.3"}', encoding="utf-8")
+    (package / "fixtures").mkdir()
+    (package / "fixtures" / "package.json").write_text('{"fixture":true}', encoding="utf-8")
+    service = FrozenBaselineInspectionService()
+
+    before_package, before_lockfile = service.inspect_before(sandbox)
+    result = service.inspect_after(sandbox, before_package_json=before_package, before_lockfile=before_lockfile, command_status=CommandStatus.SUCCEEDED)
+
+    assert result.status == "succeeded"
+    assert result.dependency_tree is not None
+    assert result.dependency_tree.package_count == 1
+
+
 def test_changed_lockfile_blocks_and_requires_reconstruction(tmp_path) -> None:
     sandbox = tmp_path / "baseline"
     sandbox.mkdir()

@@ -19,7 +19,7 @@ from app.command_execution import CommandDefinition, CommandLogWriter, CommandPo
 from app.domain.baseline_installation import BaselineInstallPrerequisites, BaselineInstallationError, BaselineInstallationService, FrozenBaselineCommandPolicy, FrozenBaselineInspectionService
 from app.domain.contracts import ArtifactType, CommandStatus, WorkflowEventType
 from app.repositories.g02_models import G02ApprovalModel
-from app.repositories.models import ArtifactMetadataModel, BaselineQualificationModel, CommandExecutionModel, ExecutionProfileModel, MigrationRunModel, WorkerLeaseModel
+from app.repositories.models import ArtifactMetadataModel, BaselineQualificationModel, CommandExecutionModel, ExecutionProfileModel, MigrationRunModel, SourceSnapshotModel, WorkerLeaseModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, StaleStateVersionError, TransitionRequest
 from app.workspaces.baseline import BaselineSandboxService
@@ -229,9 +229,10 @@ class BaselineInstallApplicationService:
     def _reconstruct_baseline(self, session, run, execution_id):
         baseline = self._baseline(session, run.id)
         aliases = run.workspace_aliases or {}
-        snapshot_raw = aliases.get("SOURCE_SNAPSHOT")
+        snapshot = session.get(SourceSnapshotModel, baseline.snapshot_id) if baseline is not None and baseline.snapshot_id else None
+        snapshot_raw = snapshot.snapshot_path if snapshot is not None else None
         baseline_raw = aliases.get("BASELINE_SANDBOX")
-        if baseline is None or not snapshot_raw or not baseline_raw or not Path(snapshot_raw).is_dir() or not run.run_root:
+        if baseline is None or snapshot is None or not snapshot_raw or not baseline_raw or not Path(snapshot_raw).is_dir() or not run.run_root:
             return {"status": "failed", "execution_id": execution_id, "blocker": "BASELINE_RECONSTRUCTION_INPUTS_MISSING"}
         try:
             workspace = BaselineSandboxService().reconstruct(run_id=run.id, snapshot_root=Path(snapshot_raw), baseline_path=Path(baseline_raw), approved_snapshot_fingerprint=baseline.input_fingerprint, registered_run_root=Path(run.run_root))
