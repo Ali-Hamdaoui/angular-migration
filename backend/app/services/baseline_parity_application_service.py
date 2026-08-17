@@ -103,7 +103,12 @@ class BaselineParityApplicationService:
             "baseline_parser_diagnostics.json": {"schema_version": SCHEMA_VERSION, "parser_version": PARSER_VERSION, "diagnostics": diagnostics},
         }
         store = LocalFilesystemArtifactStore(run_root, fixed_run_root=run_root)
-        stored = [self._store_or_reuse(store, run_id, f"01_baseline/{name}", json.dumps(value, indent=2, sort_keys=True), baseline_checksum) for name, value in payloads.items()]
+        # Each capture is a new evidence version. Keep the stable filename as
+        # the leaf so consumers can validate the evidence schema while the
+        # parent directory prevents a later capture from colliding with an
+        # immutable artifact from an earlier validation pass.
+        capture_root = f"01_baseline/parity-captures/{uuid4().hex[:12]}"
+        stored = [self._store_or_reuse(store, run_id, f"{capture_root}/{name}", json.dumps(value, indent=2, sort_keys=True), baseline_checksum) for name, value in payloads.items()]
         self._verify_artifacts(store, stored)
         artifact_ids = [item.ref.artifact_id for item in stored]
         artifact_checksums = {item.ref.artifact_id: item.ref.checksum for item in stored}

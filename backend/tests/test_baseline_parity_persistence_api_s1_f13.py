@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import timedelta
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
@@ -78,6 +79,25 @@ def test_capture_replays_idempotently_and_rejects_stale_state(tmp_path):
         assert getattr(error, "code") == "STALE_STATE_VERSION"
     else:
         raise AssertionError("stale capture was accepted")
+    engine.dispose()
+
+
+def test_capture_versions_artifacts_when_validation_evidence_changes(tmp_path):
+    scope, sessions, engine = fixture(tmp_path)
+    service = BaselineParityApplicationService(scope=scope, now_provider=lambda: NOW)
+    first = service.capture("run-1", BaselineParityCaptureRequest(expected_state_version=1, idempotency_key="parity-first", actor="operator"))
+
+    with sessions() as session:
+        validation = session.get(BaselineValidationModel, "validation-1")
+        validation.results = [{"kind": "test", "target_id": "script:test", "status": "failed", "failed_tests": ["FAIL C:/source/app.spec.ts:43 expected 2"]}]
+        validation.updated_at = NOW + timedelta(seconds=1)
+        session.commit()
+
+    second = service.capture("run-1", BaselineParityCaptureRequest(expected_state_version=first.state_version, idempotency_key="parity-second", actor="operator"))
+
+    assert second.status == "captured"
+    assert second.evidence_id != first.evidence_id
+    assert set(second.artifact_ids).isdisjoint(first.artifact_ids)
     engine.dispose()
 
 
