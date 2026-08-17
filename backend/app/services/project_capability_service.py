@@ -179,6 +179,33 @@ class ProjectCapabilityService:
                 ).all()
             )
 
+    def get_snapshot(self, run_id: str, snapshot_id: str) -> ProjectCapabilitySnapshot:
+        """Load and verify one immutable snapshot by its durable identity."""
+        with self._session_scope() as session:
+            row = session.scalar(
+                select(ProjectCapabilityModel).where(
+                    ProjectCapabilityModel.id == snapshot_id,
+                    ProjectCapabilityModel.run_id == run_id,
+                )
+            )
+            if row is None:
+                raise ProjectCapabilityError("SNAPSHOT_NOT_FOUND", "Capability snapshot does not exist")
+            snapshot = ProjectCapabilitySnapshot(
+                run_id=row.run_id,
+                stage_id=row.stage_id,
+                source_root=row.source_root,
+                angular_major=row.angular_major,
+                capabilities=tuple(ProjectCapability.model_validate(item) for item in row.capabilities),
+                checksum=row.checksum,
+            )
+            if snapshot.bind_checksum().checksum != row.checksum:
+                raise ProjectCapabilityError("SNAPSHOT_CHECKSUM_MISMATCH", "Capability snapshot checksum is invalid")
+            return snapshot
+
+    @staticmethod
+    def snapshot_id(run_id: str, checksum: str) -> str:
+        return "cap-" + hashlib_short(run_id, checksum)
+
 
 def _package_version(package: dict, name: str) -> str | None:
     for section in ("dependencies", "devDependencies", "optionalDependencies"):

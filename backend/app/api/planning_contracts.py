@@ -31,6 +31,8 @@ class PlanCreateRequest(ContractModel):
     repair_policy_id: str = Field(default="proposer-reviewer-human-v1", min_length=1, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
     capability_facts: list[dict[str, str]] = Field(default_factory=list, max_length=256)
+    capability_snapshot_id: str | None = Field(default=None, max_length=64)
+    capability_snapshot_checksum: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class PlanResponse(ContractModel):

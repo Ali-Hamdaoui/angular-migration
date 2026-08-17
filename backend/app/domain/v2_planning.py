@@ -46,6 +46,8 @@ class V2MigrationPlan(_ImmutableModel):
     source_major: int
     target_major: int
     catalogue_version: str
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
     findings: tuple[V2AnalysisFinding, ...] = Field(default_factory=tuple)
     stages: tuple[V2PlannedStage, ...] = Field(min_length=1)
     checksum: str = ""

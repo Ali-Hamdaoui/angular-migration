@@ -101,6 +101,28 @@ def test_plan_stage_knowledge_changes_with_observed_capabilities(tmp_path: Path)
     assert legacy_plan.checksum != clean_plan.checksum
 
 
+def test_validation_reloads_the_immutable_capability_snapshot(tmp_path: Path):
+    run_id = f"run-f18-snapshot-{uuid4().hex[:8]}"
+    _seed(run_id, "angular-11.x", "angular-13.x")
+    root = tmp_path / "project"
+    root.mkdir()
+    package = {"dependencies": {"@angular/core": "^11.0.0"}}
+    (root / "package.json").write_text(json.dumps(package))
+    (root / "angular.json").write_text("{}")
+
+    service = V2PlannerService()
+    original = service.derive_plan(run_id, root)
+    service.persist(run_id, original)
+
+    package["devDependencies"] = {"tslint": "^6.1.0"}
+    (root / "package.json").write_text(json.dumps(package))
+    validated = service.validate_plan(run_id)
+    assert validated.checksum == original.checksum
+    assert validated.capability_snapshot_id == original.capability_snapshot_id
+    changed = service.derive_plan(run_id, root)
+    assert changed.checksum != original.checksum
+
+
 def test_angular_eslint_rule_requires_angular_eslint_capability(tmp_path: Path):
     run_id = f"run-f18-eslint-{uuid4().hex[:8]}"
     _seed(run_id, "angular-12.x", "angular-13.x")

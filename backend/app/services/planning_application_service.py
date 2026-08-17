@@ -102,7 +102,7 @@ class StageExecutionPlanService:
             )
         knowledge = StageKnowledgeRegistry().entry(_major(source_family), _major(target_family))
         dispositions = StageKnowledgeRegistry.dependency_dispositions(knowledge, request.capability_facts)
-        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
+        draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, expected_dependency_changes=dispositions, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
     @staticmethod
@@ -148,7 +148,7 @@ class MigrationPlanService:
             )
             for item in request.stage_route
         }
-        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, stage_dependency_dispositions=dispositions, checksum="sha256:" + "0" * 64)
+        draft = MigrationPlan(plan_id=f"plan-{request.run_id}-v{plan_version}", run_id=request.run_id, version=plan_version, source_family=request.source_family, source_exact=request.source_exact, target_family=request.target_family, route=route, catalogue_version=request.catalogue_version, repair_policy=repair, capability_snapshot_id=request.capability_snapshot_id, capability_snapshot_checksum=request.capability_snapshot_checksum, stage_dependency_dispositions=dispositions, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
 

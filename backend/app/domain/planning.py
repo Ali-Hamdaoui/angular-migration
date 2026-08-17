@@ -143,6 +143,8 @@ class MigrationPlan(ContractModel):
     stage_plan_strategy: Literal["resolve_exact_before_each_stage"] = "resolve_exact_before_each_stage"
     approval_policy: str = "mandatory-human-v1"
     repair_policy: RepairPolicy
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
     stage_dependency_dispositions: dict[str, tuple[dict[str, str], ...]] = Field(default_factory=dict)
     command_policy: str = "structured-registry-v1"
     artifact_policy: str = "immutable-stage-scoped-v1"
@@ -162,6 +164,8 @@ class StageExecutionPlan(ContractModel):
     target_exact: str = Field(min_length=1, max_length=64)
     target_cli_exact: str | None = Field(default=None, max_length=64)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
     expected_dependency_changes: tuple[dict[str, str], ...] = Field(default_factory=tuple)
     package_manager: str = Field(default="npm", min_length=1, max_length=32)
     resolved_scripts: dict[str, str] = Field(default_factory=dict)
@@ -218,6 +222,8 @@ class PlanGenerationRequest(ContractModel):
     recovery_policy_id: str = "safe-boundary-v1"
     repair_policy_id: str = "proposer-reviewer-human-v1"
     capability_facts: tuple[dict[str, str], ...] = ()
+    capability_snapshot_id: str | None = None
+    capability_snapshot_checksum: str | None = None
     installed_migration_fallback: bool = False
 
     @model_validator(mode="after")
