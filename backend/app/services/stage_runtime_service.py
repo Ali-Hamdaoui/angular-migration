@@ -102,11 +102,13 @@ class StageRuntimeApplicationService:
             minimum_version=entry.node_minimum or entry.node_exact or f"{entry.node_major}.0.0",
             allowed_major_versions=tuple(sorted(_range_majors(entry.source_node_ranges) & _range_majors(entry.target_node_ranges))),
         )
-        npm_minimum = f"{entry.npm_major}.0.0"
+        # Angular publishes Node/TypeScript/RxJS ranges, not an official npm
+        # major range. npm and npx are governed as a real paired installation.
+        npm_minimum = "0.0.0"
         requirements = (
             node_requirement,
-            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, minimum_version=npm_minimum, allowed_major_versions=(entry.npm_major,)),
-            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, minimum_version=npm_minimum, allowed_major_versions=(entry.npm_major,)),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, minimum_version=npm_minimum),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, minimum_version=npm_minimum),
         )
         return StageRuntimeRequirement(
             stage_id=stage_id,
@@ -193,7 +195,7 @@ class StageRuntimeApplicationService:
         if pair in (*entry.validated_runtime_profiles, *entry.proven_runtime_profiles):
             return True
         node_majors = _range_majors(entry.source_node_ranges) & _range_majors(entry.target_node_ranges)
-        return npm.major == entry.npm_major and node.major in node_majors and node.at_least(Version.parse(entry.node_minimum or "0.0.0"))
+        return node.major in node_majors and node.at_least(Version.parse(entry.node_minimum or "0.0.0"))
 
     def _selected_profile(self, stage_id: str) -> dict | None:
         with self._session_scope() as session:

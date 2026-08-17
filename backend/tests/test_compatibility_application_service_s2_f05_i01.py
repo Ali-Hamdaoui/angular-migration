@@ -141,6 +141,26 @@ def test_current_catalogue_accepts_windows_node_22_as_range_compatible():
     assert result.selected_profile.classification == "RANGE_COMPATIBLE"
 
 
+def test_current_catalogue_accepts_angular_11_baseline_node12_with_paired_npm6():
+    catalogue = CompatibilityCatalogueProvider().load()
+    candidate = _candidate(
+        profile_id="node-12-range",
+        node_exact="12.22.12",
+        npm_exact="6.14.16",
+        npx_exact="6.14.16",
+    )
+    result = CompatibilityResolver(catalogue).resolve(_request(
+        source_angular_exact="11.0.4",
+        catalogue_version=catalogue.version,
+        runtime_candidates=(candidate,),
+    ))
+
+    assert result.status == "feasible_with_warnings"
+    assert result.package.blockers == ()
+    assert result.selected_profile is not None
+    assert result.selected_profile.classification == "RANGE_COMPATIBLE"
+
+
 def test_node_22_range_is_compatible_for_every_route_stage():
     catalogue = CompatibilityCatalogueProvider().load()
     for source, target in ((18, 19), (19, 20), (20, 21)):
@@ -170,6 +190,18 @@ def test_runtime_range_policy_fails_closed_for_incompatible_and_incomplete_candi
             source_node_ranges=entry.source_node_ranges,
             target_node_ranges=entry.target_node_ranges,
         ) == "UNSUPPORTED"
+
+
+def test_runtime_governance_rejects_mismatched_npm_and_npx_pair():
+    catalogue = CompatibilityCatalogueProvider().load()
+    candidate = _candidate(node_exact="12.22.12", npm_exact="6.14.16", npx_exact="10.9.8")
+    result = CompatibilityResolver(catalogue).resolve(_request(
+        source_angular_exact="11.0.4",
+        catalogue_version=catalogue.version,
+        runtime_candidates=(candidate,),
+    ))
+    assert result.status == "blocked"
+    assert "NO_COMPATIBLE_STAGE1_PROFILE" in result.package.blockers
 
 
 def test_service_replays_identical_idempotent_request_and_rejects_payload_reuse():

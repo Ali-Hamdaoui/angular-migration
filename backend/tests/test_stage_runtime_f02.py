@@ -117,6 +117,15 @@ def test_derive_requirement_from_catalogue():
     assert node.runtime_id == "angular-stage-runtime"
 
 
+def test_derive_requirement_does_not_invent_an_npm_major_policy_for_legacy_stage():
+    service = make_service(Path("/tmp"))
+    requirement = service.derive_requirement("stage-1", "angular-11.x", "angular-12.x")
+    npm = requirement.requirement_for(RuntimeExecutableKind.NPM)
+    npx = requirement.requirement_for(RuntimeExecutableKind.NPX)
+    assert npm is not None and npm.allowed_major_versions == ()
+    assert npx is not None and npx.allowed_major_versions == ()
+
+
 def test_derive_requirement_missing_entry_raises():
     service = make_service(Path("/tmp"))
     with pytest.raises(StageRuntimeError) as exc:

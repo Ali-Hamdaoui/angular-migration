@@ -99,16 +99,20 @@ def test_evaluate_certification_requires_npm_and_npx_for_range_compatibility():
     assert decision.classification == "UNSUPPORTED"
 
 
-def test_evaluate_certification_requires_validated_profiles():
+def test_evaluate_certification_allows_range_compatible_profile_without_exact_certification():
     decision = evaluate_certification(
         run_id="run", stage_id="stage", source_family="angular-11.x", target_family="angular-12.x",
         node_descriptor=_descriptor("node", "12.14.0", "v12.14.0"),
         npm_descriptor=_descriptor("npm", "6.14.0", "v12.14.0"),
+        npx_descriptor=_descriptor("npx", "6.14.0", "v12.14.0"),
         catalogue_validated_profiles=(),
+        source_node_ranges=("^10.13.0", "^12.11.0"),
+        target_node_ranges=("^12.14.0", "^14.15.0"),
         catalogue_version="catalog-v3", resolved_at=NOW,
     )
     assert decision.certified is False
-    assert "no certified runtime profiles" in decision.reason
+    assert decision.allowed is True
+    assert decision.classification == "RANGE_COMPATIBLE"
 
 
 def _seed(stage_id: str, source: str, target: str) -> str:
@@ -160,7 +164,7 @@ def test_certify_experimental_transition_is_not_certified(tmp_path: Path):
     service = RuntimeCertificationService()
     decision = service.certify_stage(stage_id)
     assert decision.certified is False
-    assert "no certified runtime profiles" in decision.reason
+    assert "runtime could not be resolved" in decision.reason
 
 
 def test_enforce_gate_fails_closed_on_experimental_transition(tmp_path: Path):
