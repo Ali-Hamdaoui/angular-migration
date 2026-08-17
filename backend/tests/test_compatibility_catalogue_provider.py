@@ -73,6 +73,14 @@ def test_provider_uses_stage_specific_node_runtime_constraints():
     assert catalogue.entry_for("angular-16.x", "angular-17.x").target_node_ranges == ("^18.13.0", "^20.9.0")
 
 
+def test_angular_12_official_ranges_include_node_16_bridge_for_12_to_13():
+    catalogue = CompatibilityCatalogueProvider().load()
+    entry = catalogue.entry_for("angular-12.x", "angular-13.x")
+
+    assert entry.source_node_ranges == ("^12.14.0", "^14.15.0", "^16.10.0")
+    assert entry.target_node_ranges == ("^12.20.0", "^14.15.0", "^16.10.0")
+
+
 def test_provider_uses_stage_specific_typescript_ranges():
     catalogue = CompatibilityCatalogueProvider().load()
     entry = catalogue.entry_for("angular-12.x", "angular-13.x")

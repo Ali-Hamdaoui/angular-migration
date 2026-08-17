@@ -61,7 +61,7 @@ _RXJS_RANGES: dict[int, tuple[str, ...]] = {
 # Angular-major range and is governed by executable/probe policy instead.
 _NODE_RANGES: dict[int, tuple[str, ...]] = {
     11: ("^10.13.0", "^12.11.0"),
-    12: ("^12.14.0", "^14.15.0"),
+    12: ("^12.14.0", "^14.15.0", "^16.10.0"),
     13: ("^12.20.0", "^14.15.0", "^16.10.0"),
     14: ("^14.15.0", "^16.10.0"),
     15: ("^14.20.0", "^16.13.0", "^18.10.0"),

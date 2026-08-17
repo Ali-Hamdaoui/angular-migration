@@ -115,6 +115,23 @@ def test_evaluate_certification_allows_range_compatible_profile_without_exact_ce
     assert decision.classification == "RANGE_COMPATIBLE"
 
 
+def test_12_to_13_node_16_bridge_is_range_compatible():
+    decision = evaluate_certification(
+        run_id="run", stage_id="stage", source_family="angular-12.x", target_family="angular-13.x",
+        node_descriptor=_descriptor("node", "16.20.2", "v16.20.2"),
+        npm_descriptor=_descriptor("npm", "8.19.4", "v16.20.2"),
+        npx_descriptor=_descriptor("npx", "8.19.4", "v16.20.2"),
+        catalogue_validated_profiles=(),
+        source_node_ranges=("^12.14.0", "^14.15.0", "^16.10.0"),
+        target_node_ranges=("^12.20.0", "^14.15.0", "^16.10.0"),
+        catalogue_version="catalog-v3", resolved_at=NOW,
+    )
+
+    assert decision.allowed is True
+    assert decision.certified is False
+    assert decision.classification == "RANGE_COMPATIBLE"
+
+
 def _seed(stage_id: str, source: str, target: str) -> str:
     run_id = f"run-{uuid4().hex[:8]}"
     with session_scope() as session:
