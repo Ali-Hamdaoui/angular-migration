@@ -150,6 +150,24 @@ def test_grouped_runtime_resolution_never_mixes_installations(monkeypatch):
     assert all(binding.descriptor is None for binding in bindings)
 
 
+def test_runtime_candidate_ordering_is_semantic(monkeypatch):
+    resolver = authority()
+    monkeypatch.setattr(
+        resolver,
+        "discover",
+        lambda: [
+            descriptor(runtime_id="v9.9.9", version_exact="9.9.9"),
+            descriptor(runtime_id="v12.0.0", version_exact="12.0.0"),
+            descriptor(runtime_id="v20.0.0", version_exact="20.0.0"),
+        ],
+    )
+    binding = resolver.resolve([
+        RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id="angular-stage-runtime", minimum_version="9.0.0")
+    ])[0]
+    assert binding.descriptor is not None
+    assert binding.descriptor.version_exact == "20.0.0"
+
+
 # --- F01-03 fail-closed guard -------------------------------------------------
 
 def make_worker(policy: CommandPolicy) -> ExecutionWorker:

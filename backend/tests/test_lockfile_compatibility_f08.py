@@ -179,6 +179,19 @@ def test_inspect_v1_lockfile_format(tmp_path: Path):
     assert service.resolve_package_version(v1, "rxjs") == "7.8.1"
 
 
+def test_root_package_resolution_does_not_accept_nested_angular_copy():
+    lock = {
+        "lockfileVersion": 1,
+        "dependencies": {
+            "@angular/core": {
+                "version": "12.2.17",
+                "dependencies": {"@angular/core": {"version": "13.3.12"}},
+            }
+        },
+    }
+    assert LockfileCompatibilityService.resolve_root_package_version(lock, "@angular/core") == "12.2.17"
+
+
 @pytest.mark.parametrize("version", (1, 2, 3))
 def test_supported_lockfile_formats_are_detected(version):
     assert LockfileCompatibilityService.detect_lockfile_format({"lockfileVersion": version}) == f"v{version}"

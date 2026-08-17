@@ -47,13 +47,13 @@ class AngularTransformationEvidenceService:
         dependencies = {**(package.get("dependencies") or {}), **(package.get("devDependencies") or {})}
         core_sources = {
             "package_json": self._version(dependencies.get("@angular/core")),
-            "package_lock": self._version(LockfileCompatibilityService.resolve_package_version(lock, "@angular/core")),
+            "package_lock": self._version(LockfileCompatibilityService.resolve_root_package_version(lock, "@angular/core")),
             "installed_metadata": self._version(installed_core.get("version")),
             "ng_version": self._line_version(ng_version_output, "Angular:"),
         }
         cli_sources = {
             "package_json": self._version(dependencies.get("@angular/cli")),
-            "package_lock": self._version(LockfileCompatibilityService.resolve_package_version(lock, "@angular/cli")),
+            "package_lock": self._version(LockfileCompatibilityService.resolve_root_package_version(lock, "@angular/cli")),
             "installed_metadata": self._version(installed_cli.get("version")),
             "ng_version": self._line_version(ng_version_output, "Angular CLI:"),
         }

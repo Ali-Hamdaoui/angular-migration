@@ -81,6 +81,19 @@ class LockfileCompatibilityService:
         return walk(payload.get("dependencies"))
 
     @staticmethod
+    def resolve_root_package_version(payload: object, package_name: str) -> str | None:
+        """Resolve only the project's root package, never a nested copy."""
+        if not isinstance(payload, dict) or not package_name:
+            return None
+        packages = payload.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{package_name}")
+            return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+        dependencies = payload.get("dependencies")
+        entry = dependencies.get(package_name) if isinstance(dependencies, dict) else None
+        return entry.get("version") if isinstance(entry, dict) and isinstance(entry.get("version"), str) else None
+
+    @staticmethod
     def inspect_lockfile(workspace: Path) -> LockfileDependencySet:
         """Parse package-lock.json into a deterministic dependency set.
 

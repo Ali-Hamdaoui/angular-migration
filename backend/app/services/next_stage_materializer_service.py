@@ -171,7 +171,7 @@ class NextStageMaterializerService:
             or ((package.get("devDependencies") or {}).get("@angular/core"))
         )
         declared = self._version(declared_value)
-        locked = self._version(LockfileCompatibilityService.resolve_package_version(lock, "@angular/core"))
+        locked = self._version(LockfileCompatibilityService.resolve_root_package_version(lock, "@angular/core"))
         if (
             not declared
             or not locked

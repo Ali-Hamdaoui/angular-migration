@@ -133,9 +133,10 @@ class RuntimeResolverAuthority:
                 )
                 for requirement in requirements
             }
-            if all(matches.values()):
-                node = matches.get(RuntimeExecutableKind.NODE)
-                candidates.append((node.version_exact if node else "", runtime_id, matches))
+            if not all(matches.values()):
+                continue
+            node = matches.get(RuntimeExecutableKind.NODE)
+            candidates.append((_semantic_version(node.version_exact if node else None), runtime_id, matches))
         return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else {}
 
     def _build_descriptor(
@@ -175,8 +176,8 @@ class RuntimeResolverAuthority:
         if paired:
             candidates = paired
 
-        def key(item: RuntimeExecutableDescriptor) -> tuple[bool, str, str]:
-            return (item.version_exact == requirement.version_exact, item.version_exact or "", item.resolved_path)
+        def key(item: RuntimeExecutableDescriptor) -> tuple[bool, tuple[int, int, int], str]:
+            return (item.version_exact == requirement.version_exact, _semantic_version(item.version_exact), item.resolved_path)
 
         return max(candidates, key=key)
 
@@ -204,3 +205,11 @@ def _architecture() -> str:
     import platform
 
     return platform.machine().lower()
+
+
+def _semantic_version(value: str | None) -> tuple[int, int, int]:
+    try:
+        major, minor, patch = (int(part) for part in (value or "").split(".", 3)[:3])
+        return major, minor, patch
+    except (TypeError, ValueError):
+        return 0, 0, 0
