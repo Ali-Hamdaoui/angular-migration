@@ -80,8 +80,13 @@ class G02ApprovalApplicationService:
                 raise G02ApplicationError("RUN_NOT_FOUND", "Migration run does not exist.", status_code=404)
             existing = session.scalar(select(G02ApprovalModel).where(G02ApprovalModel.run_id == run_id).order_by(G02ApprovalModel.created_at.desc()))
             if existing is not None:
-                return self._dto(existing, replay=True)
-            if run.state_version != request.expected_state_version:
+                latest_snapshot = session.scalar(select(SourceSnapshotModel).where(SourceSnapshotModel.run_id == run_id).order_by(SourceSnapshotModel.created_at.desc()))
+                if latest_snapshot is None or existing.snapshot_id == latest_snapshot.id:
+                    return self._dto(existing, replay=True)
+                if run.state_version != request.expected_state_version:
+                    raise G02ApplicationError("STALE_STATE_VERSION", "The run state version is stale.", status_code=409)
+                self._mark_stale(session, run, existing, "G02 boundary superseded by a newer immutable source snapshot.")
+            elif run.state_version != request.expected_state_version:
                 raise G02ApplicationError("STALE_STATE_VERSION", "The run state version is stale.", status_code=409)
             record = self._create_pending_record(session, run, request.actor, request.idempotency_key, now)
             return self._dto(record)

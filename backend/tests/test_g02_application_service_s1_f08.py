@@ -99,5 +99,26 @@ def test_authorize_baseline_resolves_persisted_approval(tmp_path: Path):
     _, _, _, scope, engine = _fixture(tmp_path); service = G02ApprovalApplicationService(session_scope_factory=scope); approved = service.decide("run-1", _request()); package = service.authorize_baseline("run-1")
     assert package.snapshot_id == approved.baseline_input_boundary; engine.dispose()
 
+def test_initialize_replaces_boundary_when_retry_creates_new_snapshot(tmp_path: Path):
+    source, snapshot_root, _, scope, engine = _fixture(tmp_path)
+    service = G02ApprovalApplicationService(session_scope_factory=scope)
+    approved = service.decide("run-1", _request(key="decision-1"))
+    snapshot_service = SourceSnapshotApplicationService(SimpleNamespace(platform_repository_root=tmp_path / "platform"), session_scope_factory=scope, snapshot_service_factory=lambda root: SnapshotService(root))
+    with scope() as session:
+        run = session.get(MigrationRunModel, "run-1")
+        assert run is not None
+        run.status = "SOURCE_VALIDATION_RUNNING"
+        expected = run.state_version
+    retry_snapshot = snapshot_service.create("run-1", CreateSourceSnapshotRequest(expected_state_version=expected, idempotency_key="snapshot-retry", actor="operator"))
+    initialized = service.initialize("run-1", _request(key="package-retry", expected=retry_snapshot.state_version))
+
+    assert initialized.status == "pending"
+    assert initialized.package["snapshot_id"] != approved.baseline_input_boundary
+    with scope() as session:
+        records = list(session.scalars(select(G02ApprovalModel).where(G02ApprovalModel.run_id == "run-1").order_by(G02ApprovalModel.created_at)))
+        assert [record.status for record in records] == ["stale", "pending"]
+        assert records[-1].snapshot_id == initialized.package["snapshot_id"]
+    engine.dispose()
+
 
 
