@@ -16,6 +16,7 @@ from app.domain.contracts import ArtifactRefDto, ArtifactType, CommandStatus, Ru
 from app.domain.preflight import PreflightSnapshot
 from app.orchestration.source_intake import SourceIntakeGraph, default_source_intake_graph
 from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, CommandExecutionModel, CompatibilityResolutionModel, DiscoveryEvidenceModel, MigrationRunModel, PathValidationModel, PlanningJobModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
+from app.repositories.path_validation import PathValidationRepository
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.repositories.session import session_scope
 from app.state.transition_service import (
@@ -187,6 +188,7 @@ class MigrationRunService:
             now = self._now()
             claim.lease_owner = actor
             claim.expires_at = now + timedelta(seconds=self._lease_seconds)
+            self._renew_bound_target_reservation(session, run, now)
 
     def start(self, *, run_id: str, expected_state_version: int, idempotency_key: str, actor: str) -> RunResult:
         thread_id = ""
@@ -324,10 +326,20 @@ class MigrationRunService:
         preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
         snapshot = PreflightSnapshot.model_validate(preflight.snapshot) if preflight is not None else None
         reservation = session.get(TargetReservationModel, snapshot.target_reservation_id) if snapshot and snapshot.target_reservation_id else None
-        if reservation is None or self._utc(reservation.expires_at) <= self._utc(self._now()):
+        if reservation is None or reservation.status not in {"claimed", "consumed"} or reservation.target_path != run.target_output_path:
             return
-        if reservation.status in {"claimed", "consumed"} and reservation.target_path == run.target_output_path:
-            claim.expires_at = self._now() + timedelta(seconds=self._lease_seconds)
+        now = self._now()
+        if self._utc(reservation.expires_at) <= self._utc(now):
+            reservation.expires_at = now + PathValidationRepository.reservation_ttl
+        claim.expires_at = now + timedelta(seconds=self._lease_seconds)
+
+    @staticmethod
+    def _renew_bound_target_reservation(session, run: MigrationRunModel, now: datetime) -> None:
+        preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
+        snapshot = PreflightSnapshot.model_validate(preflight.snapshot) if preflight is not None else None
+        reservation = session.get(TargetReservationModel, snapshot.target_reservation_id) if snapshot and snapshot.target_reservation_id else None
+        if reservation is not None and reservation.status in {"claimed", "consumed"} and reservation.target_path == run.target_output_path:
+            reservation.expires_at = now + PathValidationRepository.reservation_ttl
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
