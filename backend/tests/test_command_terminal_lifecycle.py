@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import sys
 import os
 from datetime import UTC, datetime
@@ -290,6 +291,76 @@ def test_windows_long_working_directory_uses_identity_preserving_short_path(tmp_
     assert process_path.is_dir()
     assert process_path.resolve(strict=True) == long_directory.resolve(strict=True)
     assert len(str(process_path)) < len(str(long_directory))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process path contract")
+def test_windows_medium_working_directory_preserves_descendant_path_budget(tmp_path: Path):
+    """A workspace below the old 200-char threshold but above the path-budget
+    threshold is converted so nested native binaries stay under MAX_PATH.
+
+    Reproduces the Cold Replay #4 class: a 176-char stage sandbox whose nested
+    esbuild executable reached 263 chars (>260).  The 8.3 alias must be applied
+    even though the working directory itself is below 200 chars.
+    """
+    from app.command_execution.worker import _WINDOWS_SHORT_PATH_THRESHOLD
+
+    from app.command_execution.worker import _windows_short_process_path
+
+    assert _WINDOWS_SHORT_PATH_THRESHOLD < 200
+
+    medium_directory = tmp_path
+    while len(str(medium_directory)) < 170:
+        medium_directory /= "stage-workspace-segment"
+    medium_directory.mkdir(parents=True)
+    resolved = medium_directory.resolve(strict=True)
+    assert 170 <= len(str(resolved)) < 200
+
+    process_path = _windows_short_process_path(resolved)
+
+    assert process_path.is_dir()
+    assert process_path.resolve(strict=True) == resolved
+    assert len(str(process_path)) < len(str(resolved))
+    nested_suffix = "node_modules/@angular-devkit/build-angular/node_modules/@esbuild/win32-x64/esbuild.exe"
+    assert len(str(process_path)) + 1 + len(nested_suffix) < 260
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process path contract")
+def test_windows_short_working_directory_not_converted(tmp_path: Path):
+    """A genuinely short workspace has enough descendant budget and is not
+    unnecessarily converted."""
+    from app.command_execution.worker import _windows_short_process_path
+
+    short_directory = tmp_path / "short"
+    short_directory.mkdir()
+    resolved = short_directory.resolve(strict=True)
+    assert len(str(resolved)) < 140
+
+    process_path = _windows_short_process_path(resolved)
+
+    assert process_path == resolved
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process path contract")
+def test_windows_short_path_fallback_returns_original_on_api_failure(tmp_path: Path):
+    """When GetShortPathNameW cannot produce a shorter alias, the original
+    authorized path is returned so execution proceeds safely."""
+    from app.command_execution import worker as worker_module
+
+    directory = tmp_path
+    while len(str(directory)) < 170:
+        directory /= "stage-workspace-segment"
+    directory.mkdir(parents=True)
+    resolved = directory.resolve(strict=True)
+
+    original_fn = ctypes.windll.kernel32.GetShortPathNameW
+    ctypes.windll.kernel32.GetShortPathNameW = lambda *args: 0
+    try:
+        process_path = worker_module._windows_short_process_path(resolved)
+    finally:
+        ctypes.windll.kernel32.GetShortPathNameW = original_fn
+
+    assert process_path == resolved
+    assert process_path.is_dir()
 
 
 def test_nonzero_exit_persists_exit_code_logs_and_duration(tmp_path: Path):

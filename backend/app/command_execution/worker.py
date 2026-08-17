@@ -350,15 +350,27 @@ class CommandPolicy:
         return _windows_short_process_path(resolved)
 
 
+_WINDOWS_MAX_PATH: Final = 260
+_RESERVED_DESCENDANT_PATH_BUDGET: Final = 120
+_WINDOWS_SHORT_PATH_THRESHOLD: Final = _WINDOWS_MAX_PATH - _RESERVED_DESCENDANT_PATH_BUDGET
+
+
 def _windows_short_process_path(path: Path) -> Path:
-    """Keep nested npm child working directories below legacy Windows limits.
+    """Preserve path budget for nested npm descendants on Windows.
 
     Authorization and containment are evaluated against the canonical resolved
     path before this helper is called.  The 8.3 spelling is an identity-
-    preserving alias for that same directory and prevents npm lifecycle script
-    working directories from crossing the legacy MAX_PATH boundary.
+    preserving alias for that same directory.
+
+    The threshold is not the working directory's own proximity to MAX_PATH but
+    the remaining budget for nested descendant paths that npm install and
+    postinstall scripts create (e.g. platform-specific native binaries at
+    ``node_modules/<scope>/<builder>/node_modules/<scope>/<platform>/<exe>``).
+    A working directory well below MAX_PATH can still push a nested native
+    binary spawn above it; reserving ``_RESERVED_DESCENDANT_PATH_BUDGET`` chars
+    for descendants triggers 8.3 conversion early enough to prevent that.
     """
-    if os.name != "nt" or len(str(path)) < 200:
+    if os.name != "nt" or len(str(path)) < _WINDOWS_SHORT_PATH_THRESHOLD:
         return path
     get_short_path_name = ctypes.windll.kernel32.GetShortPathNameW
     required = get_short_path_name(str(path), None, 0)
