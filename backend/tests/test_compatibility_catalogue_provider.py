@@ -35,6 +35,31 @@ def test_empirical_profiles_do_not_promote_official_entry_to_certified():
     assert entry.support_level == "historical_experimental"
 
 
+def test_empirical_proof_binds_exact_source_target_and_cli_without_certifying():
+    entry = CompatibilityCatalogueProvider().load().entry_for("angular-11.x", "angular-12.x")
+    proof = entry.proven_runtime_evidence[0]
+
+    assert proof.source_angular_exact == "11.0.4"
+    assert proof.target_angular_exact == "12.2.17"
+    assert proof.target_cli_exact == "12.2.18"
+    assert proof.node_exact == "12.22.12"
+    assert proof.npm_exact == "8.19.4"
+    assert proof.proof_source == "dev-runtimes-real-e2e"
+    assert proof.proof_status == "observed"
+    assert entry.target_angular_exact == "12.0.0"
+    assert entry.validated_runtime_profiles == ()
+
+
+def test_certified_transition_keeps_official_target_separate_from_empirical_target():
+    entry = CompatibilityCatalogueProvider().load().entry_for("angular-18.x", "angular-19.x")
+    proof = entry.proven_runtime_evidence[0]
+
+    assert entry.certification_status == "certified"
+    assert entry.target_angular_exact == "19.0.0"
+    assert proof.target_angular_exact == "19.2.25"
+    assert entry.validated_runtime_profiles == (("18.20.8", "10.8.2"),)
+
+
 def test_provider_uses_stage_specific_node_runtime_constraints():
     catalogue = CompatibilityCatalogueProvider().load()
 

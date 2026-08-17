@@ -41,6 +41,19 @@ class CompatibilityArtifact(CompatibilityModel):
     checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class RuntimeProofProfile(CompatibilityModel):
+    """Exact empirical target evidence; never an official range or certification."""
+
+    source_angular_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    target_angular_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    target_cli_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    node_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    npm_exact: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    proof_source: str = Field(min_length=1)
+    proof_status: Literal["observed", "replayed", "certified"]
+    proved_at: datetime | None = None
+
+
 class CompatibilityCatalogueEntry(CompatibilityModel):
     stage_id: str = Field(min_length=1)
     source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
@@ -69,6 +82,7 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     source_node_ranges: tuple[str, ...] = ()
     target_node_ranges: tuple[str, ...] = ()
     proven_runtime_profiles: tuple[tuple[str, str], ...] = ()
+    proven_runtime_evidence: tuple[RuntimeProofProfile, ...] = ()
     proven_runtime_source: str | None = None
     certification_status: str | None = None
     certification_source: str | None = None
@@ -84,6 +98,13 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
             raise ValueError("historical_validated requires a passed fixture suite")
         if self.support_level == "blocked" and not self.blockers:
             raise ValueError("blocked compatibility entries require a blocker")
+        for proof in self.proven_runtime_evidence:
+            source_major = self.source_family.removeprefix("angular-").removesuffix(".x") + "."
+            target_major = self.target_family.removeprefix("angular-").removesuffix(".x") + "."
+            if not proof.source_angular_exact.startswith(source_major):
+                raise ValueError("runtime proof source exact does not match the catalogue source family")
+            if not proof.target_angular_exact.startswith(target_major) or not proof.target_cli_exact.startswith(target_major):
+                raise ValueError("runtime proof target exact does not match the catalogue target family")
         return self
 
 

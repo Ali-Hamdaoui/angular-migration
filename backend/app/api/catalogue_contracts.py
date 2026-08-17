@@ -28,6 +28,7 @@ class CatalogueEntryDto(ContractModel):
     blockers: list[str]
     validated_runtime_profiles: list[list[str]]
     proven_runtime_profiles: list[list[str]] = Field(default_factory=list)
+    proven_runtime_evidence: list[dict] = Field(default_factory=list)
     proven_runtime_source: str | None = None
     source_node_ranges: list[str] = Field(default_factory=list)
     target_node_ranges: list[str] = Field(default_factory=list)

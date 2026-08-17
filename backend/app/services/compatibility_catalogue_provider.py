@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.domain.compatibility import CompatibilityCatalogue, CompatibilityCatalogueEntry
+from app.domain.compatibility import CompatibilityCatalogue, CompatibilityCatalogueEntry, RuntimeProofProfile
 
 #: Node.js minimum per target Angular major (official Angular compatibility).
 _NODE_MINIMUMS: dict[int, str] = {
@@ -103,6 +103,19 @@ DEV_RUNTIMES_PROVEN_PROFILES: dict[tuple[int, int], tuple[tuple[str, str], ...]]
 #: Fixed certification timestamp so the catalogue is byte-identical across loads
 #: (immutable authority; a per-load datetime would break checksum equality).
 CERTIFIED_AT = datetime(2026, 8, 16, tzinfo=UTC)
+
+DEV_RUNTIMES_PROVEN_EVIDENCE: dict[tuple[int, int], RuntimeProofProfile] = {
+    (11, 12): RuntimeProofProfile(source_angular_exact="11.0.4", target_angular_exact="12.2.17", target_cli_exact="12.2.18", node_exact="12.22.12", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (12, 13): RuntimeProofProfile(source_angular_exact="12.2.17", target_angular_exact="13.3.12", target_cli_exact="13.3.11", node_exact="16.20.2", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (13, 14): RuntimeProofProfile(source_angular_exact="13.3.12", target_angular_exact="14.3.0", target_cli_exact="14.2.13", node_exact="16.20.2", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (14, 15): RuntimeProofProfile(source_angular_exact="14.3.0", target_angular_exact="15.2.10", target_cli_exact="15.2.11", node_exact="16.20.2", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (15, 16): RuntimeProofProfile(source_angular_exact="15.2.10", target_angular_exact="16.2.12", target_cli_exact="16.2.16", node_exact="16.20.2", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (16, 17): RuntimeProofProfile(source_angular_exact="16.2.12", target_angular_exact="17.3.12", target_cli_exact="17.3.17", node_exact="20.11.1", npm_exact="10.2.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (17, 18): RuntimeProofProfile(source_angular_exact="17.3.12", target_angular_exact="18.2.14", target_cli_exact="18.2.21", node_exact="22.23.1", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (18, 19): RuntimeProofProfile(source_angular_exact="18.2.14", target_angular_exact="19.2.25", target_cli_exact="19.2.27", node_exact="22.23.1", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (19, 20): RuntimeProofProfile(source_angular_exact="19.2.25", target_angular_exact="20.3.27", target_cli_exact="20.3.34", node_exact="22.23.1", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+    (20, 21): RuntimeProofProfile(source_angular_exact="20.3.27", target_angular_exact="21.2.19", target_cli_exact="21.2.20", node_exact="22.23.1", npm_exact="8.19.4", proof_source="dev-runtimes-real-e2e", proof_status="observed", proved_at=CERTIFIED_AT),
+}
 
 
 class CompatibilityCatalogueProvider:
@@ -200,6 +213,7 @@ class CompatibilityCatalogueProvider:
             source_node_ranges=_NODE_RANGES.get(major, ()),
             target_node_ranges=_NODE_RANGES.get(target, ()),
             proven_runtime_profiles=DEV_RUNTIMES_PROVEN_PROFILES.get((major, target), ()),
+            proven_runtime_evidence=(DEV_RUNTIMES_PROVEN_EVIDENCE[(major, target)],),
             proven_runtime_source="dev-runtimes-real-e2e",
             certification_status="certified" if certified else "seeded_official",
             certification_source="angular.dev/reference/versions" if not certified else "bridge-certification",

@@ -38,6 +38,7 @@ def _entry_dto(entry) -> CatalogueEntryDto:
         blockers=list(entry.blockers),
         validated_runtime_profiles=[list(profile) for profile in entry.validated_runtime_profiles],
         proven_runtime_profiles=[list(profile) for profile in entry.proven_runtime_profiles],
+        proven_runtime_evidence=[profile.model_dump(mode="json") for profile in entry.proven_runtime_evidence],
         proven_runtime_source=entry.proven_runtime_source,
         source_node_ranges=list(entry.source_node_ranges),
         target_node_ranges=list(entry.target_node_ranges),
