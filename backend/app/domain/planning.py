@@ -175,8 +175,11 @@ class StageExecutionPlan(ContractModel):
     @model_validator(mode="after")
     def validate_commands(self) -> "StageExecutionPlan":
         required = {"bootstrap_install", "angular_update", "target_version_check", "lockfile_generation", "final_install", "builds", "tests", "lint"}
-        if set(self.commands) != required:
+        optional = {"installed_migration_fallback"}
+        if set(self.commands) - required - optional or not required.issubset(self.commands):
             raise ValueError("stage plan commands must contain the complete standard command set")
+        if self.commands.get("installed_migration_fallback") and len(self.commands["installed_migration_fallback"]) != 1:
+            raise ValueError("installed migration fallback must contain one governed command")
         if any(not refs for name, refs in self.commands.items() if name != "lint"):
             raise ValueError("required stage plan command groups cannot be empty")
         if self.build_system_decision.action == "blocked":
@@ -212,6 +215,7 @@ class PlanGenerationRequest(ContractModel):
     validation_policy_id: str = "angular-stage-standard-v2"
     recovery_policy_id: str = "safe-boundary-v1"
     repair_policy_id: str = "proposer-reviewer-human-v1"
+    installed_migration_fallback: bool = False
 
     @model_validator(mode="after")
     def validate_route(self) -> "PlanGenerationRequest":

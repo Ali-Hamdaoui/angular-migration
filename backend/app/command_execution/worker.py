@@ -27,6 +27,7 @@ from app.artifact_store import LocalFilesystemArtifactStore, StoredArtifact
 from app.domain.command import (
     ANGULAR_UPDATE_V2_RENDERER,
     ANGULAR_UPDATE_V3_RENDERER,
+    ANGULAR_INSTALLED_MIGRATION_RENDERER,
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
     TRANSFORMATION_COMMAND_CATALOGUE,
     command_arguments_match,
@@ -187,6 +188,12 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
             ANGULAR_UPDATE_V3_RENDERER.executable,
             ANGULAR_UPDATE_V3_RENDERER.argument_patterns,
             ANGULAR_UPDATE_V3_RENDERER.executable_aliases,
+        ),
+        CommandDefinition(
+            ANGULAR_INSTALLED_MIGRATION_RENDERER.command_id,
+            ANGULAR_INSTALLED_MIGRATION_RENDERER.executable,
+            ANGULAR_INSTALLED_MIGRATION_RENDERER.argument_patterns,
+            ANGULAR_INSTALLED_MIGRATION_RENDERER.executable_aliases,
         ),
         CommandDefinition(
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,

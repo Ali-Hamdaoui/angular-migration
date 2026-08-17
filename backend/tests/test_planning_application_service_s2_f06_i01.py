@@ -36,6 +36,7 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     assert result.plan.checksum.startswith("sha256:")
     assert result.first_stage_plan.checksum.startswith("sha256:")
     assert result.first_stage_plan.commands["lint"] == ()
+    assert "installed_migration_fallback" not in result.first_stage_plan.commands
     assert {
         command.runtime_profile_checksum
         for commands in result.first_stage_plan.commands.values()
@@ -46,6 +47,31 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
 def test_accepts_current_catalogue_version():
     result = PlanningApplicationService().generate(request(catalogue_version="catalog-v3"))
     assert result.status == "generated"
+
+
+def test_fallback_is_opt_in_and_uses_bounded_installed_migration_command():
+    result = PlanningApplicationService().generate(
+        request(installed_migration_fallback=True)
+    )
+    fallback = result.first_stage_plan.commands["installed_migration_fallback"][0]
+    assert fallback.command_id == "angular-migrate-installed"
+    assert fallback.executable == "node"
+    assert fallback.arguments == (
+        "backend/app/command_execution/run_installed_migrations.cjs",
+        "@angular/core",
+        "18.2.13",
+        "19.2.0",
+    )
+    assert fallback.shell is False
+
+
+def test_fallback_rejects_unbounded_bindings():
+    from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER
+
+    with pytest.raises(ValueError):
+        ANGULAR_INSTALLED_MIGRATION_RENDERER.render_arguments(
+            {"package": "../../package.json", "from_version": "18.2.13", "to_version": "19.2.0"}
+        )
 
 
 def test_generates_checksum_bound_lockfile_generation_authority():

@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 
-from app.domain.command import ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -87,6 +87,18 @@ class StageExecutionPlanService:
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
         }
+        if request.installed_migration_fallback:
+            commands["installed_migration_fallback"] = (
+                self._command(
+                    "angular-migrate-installed",
+                    request,
+                    {
+                        "package": "@angular/core",
+                        "from_version": request.source_exact,
+                        "to_version": target_exact,
+                    },
+                ),
+            )
         draft = StageExecutionPlan(stage_plan_id=f"stage-plan-{request.run_id}-{stage_id}-v{plan_version}", stage_id=stage_id, plan_version=plan_version, input_fingerprint=request.input_fingerprint, evidence_set_checksum=request.evidence_set_checksum, input_workspace_fingerprint=request.input_workspace_fingerprint, source_family=source_family, source_exact=request.source_exact, target_family=target_family, target_exact=target_exact, target_cli_exact=target_cli_exact, execution_profile_id=request.execution_profile_id, package_manager=request.package_manager, resolved_scripts=dict(request.resolved_scripts), project_targets=dict(request.project_targets), commands=commands, build_system_decision=decision, validation_policy=validation, recovery_policy=recovery, repair_policy=repair, forbidden_change_policy=forbidden, checksum="sha256:" + "0" * 64)
         return draft.model_copy(update={"checksum": checksum_model(draft)})
 
@@ -95,6 +107,9 @@ class StageExecutionPlanService:
         if command_id == "angular-update-exact":
             definition = ANGULAR_UPDATE_V3_RENDERER
             template_version = 3
+        elif command_id == "angular-migrate-installed":
+            definition = ANGULAR_INSTALLED_MIGRATION_RENDERER
+            template_version = 1
         else:
             definition = TRANSFORMATION_COMMAND_CATALOGUE[command_id]
             template_version = 1

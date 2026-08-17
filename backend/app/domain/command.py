@@ -42,6 +42,7 @@ class CommandClass(str, Enum):
 
 _COMMAND_CLASSES: dict[str, CommandClass] = {
     "angular-update-exact": CommandClass.ANGULAR_UPDATE,
+    "angular-migrate-installed": CommandClass.ANGULAR_UPDATE,
     "npm-ci-bootstrap": CommandClass.NPM_OPERATION,
     "npm-ci-final": CommandClass.NPM_OPERATION,
     "npm-lockfile-generate": CommandClass.LOCKFILE,
@@ -151,6 +152,8 @@ class TransformationCommandDefinition:
 
     def render_arguments(self, bindings: Mapping[str, str] | None = None) -> tuple[str, ...]:
         values = dict(bindings or {})
+        if self.command_id == "angular-migrate-installed":
+            _validate_installed_migration_bindings(values)
         rendered: list[str] = []
         for pattern in self.argument_patterns:
             rendered.append(
@@ -196,6 +199,23 @@ def command_arguments_match(patterns: tuple[str, ...], arguments: tuple[str, ...
         if re.fullmatch(expression, argument) is None:
             return False
     return True
+
+
+_NPM_PACKAGE_NAME = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+_EXACT_SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+def _validate_installed_migration_bindings(bindings: Mapping[str, str]) -> None:
+    """Validate the bounded inputs accepted by the installed-migration helper."""
+    if set(bindings) != {"package", "from_version", "to_version"}:
+        raise ValueError("installed migration requires package, from_version, and to_version")
+    package = bindings["package"]
+    from_version = bindings["from_version"]
+    to_version = bindings["to_version"]
+    if not isinstance(package, str) or _NPM_PACKAGE_NAME.fullmatch(package) is None:
+        raise ValueError("installed migration package must be an npm package name")
+    if any(_EXACT_SEMVER.fullmatch(value) is None for value in (from_version, to_version)):
+        raise ValueError("installed migration versions must be exact semantic versions")
 
 
 @dataclass(frozen=True)
@@ -321,6 +341,24 @@ ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute an approved exact Angular update in the isolated stage workspace (v3)",
 )
 
+ANGULAR_INSTALLED_MIGRATION_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-migrate-installed",
+    template_id="tpl-angular-migrate-installed-v1",
+    executable="node",
+    argument_patterns=(
+        "backend/app/command_execution/run_installed_migrations.cjs",
+        "{package}",
+        "{from_version}",
+        "{to_version}",
+    ),
+    executable_aliases=("node.exe",),
+    timeout_seconds=1800,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute approved installed Angular migrations as a governed fallback",
+)
+
 # Immutable detach/reattach steps of the dependency-transition repair: the
 # blocking peer dependency is uninstalled, the Angular update retried, and the
 # dependency reinstalled at the approved target version.
@@ -386,6 +424,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
         allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"), max_output_bytes=5_000_000,
         description="Execute an approved exact Angular update",
     ),
+    "angular-migrate-installed": ANGULAR_INSTALLED_MIGRATION_RENDERER,
     "angular-version-verify": TransformationCommandDefinition(
         command_id="angular-version-verify", template_id="tpl-angular-version-verify", executable="npx",
         argument_patterns=("ng", "version"), executable_aliases=("npx.cmd",), timeout_seconds=300,
