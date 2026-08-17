@@ -16,6 +16,7 @@ from app.services.compatibility_application_service import (
     CompatibilityResolver,
 )
 from app.services.compatibility_catalogue_provider import CompatibilityCatalogueProvider
+from app.services.migration_route_service import MigrationRouteService
 
 
 CHECKSUM = "sha256:" + "a" * 64
@@ -212,6 +213,81 @@ def test_unsupported_family_and_unavailable_runtime_fail_closed():
     unavailable = resolver.resolve(_request(runtime_candidates=(_candidate(available=False),)))
     assert unavailable.status == "blocked"
     assert "NO_COMPATIBLE_STAGE1_PROFILE" in unavailable.package.blockers
+
+
+def test_g05_uses_generic_adjacent_route_for_arbitrary_target():
+    catalogue = CompatibilityCatalogueProvider().load()
+    result = CompatibilityResolver(catalogue).resolve(
+        _request(source_angular_exact="13.2.7", target_family="18.x", catalogue_version=catalogue.version)
+    )
+
+    assert [stage.stage_id for stage in result.route] == [
+        "angular-13-to-14",
+        "angular-14-to-15",
+        "angular-15-to-16",
+        "angular-16-to-17",
+        "angular-17-to-18",
+    ]
+    assert result.target_family == "angular-18.x"
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "count"),
+    [("11.2.14", "angular-21.x", 10), ("20.3.27", "angular-21.x", 1)],
+)
+def test_g05_route_matches_migration_route_authority(source, target, count):
+    catalogue = CompatibilityCatalogueProvider().load()
+    result = CompatibilityResolver(catalogue).resolve(
+        _request(source_angular_exact=source, target_family=target, catalogue_version=catalogue.version)
+    )
+    authority = MigrationRouteService().compute(
+        int(source.split(".")[0]),
+        int(target.removeprefix("angular-").removesuffix(".x")),
+        catalogue=catalogue,
+    )
+
+    assert len(result.route) == count
+    assert [(stage.source_family, stage.target_family) for stage in result.route] == [
+        (stage.source_family, stage.target_family) for stage in authority.stages
+    ]
+
+
+def test_g05_canonicalizes_short_target_family():
+    request = _request(target_family="21.x", catalogue_version="catalog-v3")
+    assert request.target_family == "angular-21.x"
+    result = CompatibilityResolver(CompatibilityCatalogueProvider().load()).resolve(request)
+    assert len(result.route) == 3
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "blocker"),
+    [
+        ("10.0.0", "angular-21.x", "SOURCE_FAMILY_UNSUPPORTED"),
+        ("11.0.0", "angular-11.x", "TARGET_MUST_BE_GREATER_THAN_SOURCE"),
+        ("18.0.0", "angular-17.x", "TARGET_MUST_BE_GREATER_THAN_SOURCE"),
+        ("not-a-version", "angular-21.x", "SOURCE_FAMILY_UNSUPPORTED"),
+    ],
+)
+def test_g05_rejects_invalid_source_target_pairs(source, target, blocker):
+    result = CompatibilityResolver(CompatibilityCatalogueProvider().load()).resolve(
+        _request(source_angular_exact=source, target_family=target, catalogue_version="catalog-v3")
+    )
+    assert result.status == "blocked"
+    assert blocker in result.package.blockers
+
+
+def test_g05_rejects_malformed_target():
+    with pytest.raises(ValueError):
+        _request(target_family="angular-21")
+
+
+def test_g05_reports_missing_catalogue_transition():
+    catalogue = CompatibilityCatalogue.build("catalog-v1", (_catalogue().entries[0], _catalogue().entries[2]))
+    result = CompatibilityResolver(catalogue).resolve(
+        _request(target_family="angular-21.x", catalogue_version=catalogue.version)
+    )
+    assert result.status == "blocked"
+    assert "CATALOGUE_ROUTE_MISSING_19_20" in result.package.blockers
 
 
 def test_direct_public_registry_without_proxy_is_accepted():

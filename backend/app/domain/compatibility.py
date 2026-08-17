@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -127,7 +128,7 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     actor: str = Field(min_length=1)
     source_angular_exact: str = Field(min_length=1)
-    target_family: str = Field(default="angular-21.x", pattern=r"^angular-21\.x$")
+    target_family: str = Field(default="angular-21.x", pattern=r"^angular-(1[1-9]|2[01])\.x$")
     catalogue_version: str = Field(min_length=1)
     registry_snapshot_id: str = Field(default="registry-snapshot-v1", min_length=1, max_length=128)
     registry_snapshot_checksum: str = Field(default="sha256:" + "0" * 64, pattern=r"^sha256:[0-9a-f]{64}$")
@@ -139,6 +140,17 @@ class CompatibilityResolutionRequest(CompatibilityModel):
     workspace_fingerprint: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     plan_version: str | None = Field(default=None, max_length=128)
     resolved_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize_target_family(cls, values):
+        if isinstance(values, dict) and isinstance(values.get("target_family"), str):
+            target = values["target_family"].strip()
+            if target.startswith("angular-"):
+                values = {**values, "target_family": target}
+            elif re.fullmatch(r"(?:1[1-9]|2[01])\.x", target):
+                values = {**values, "target_family": f"angular-{target}"}
+        return values
 
 
 class Stage1ExecutionProfile(CompatibilityModel):

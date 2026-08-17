@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from app.domain.compatibility import CompatibilityCatalogue
 from app.domain.migration_route import MigrationRoute, RouteStage, validate_envelope
 from app.repositories.models import MigrationRunModel, MigrationRouteModel
 from app.repositories.session import session_scope
@@ -37,7 +38,13 @@ class MigrationRouteService:
         self._session_scope = session_scope_factory or session_scope
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
-    def compute(self, source_major: int, target_major: int, catalogue_version: str | None = None) -> MigrationRoute:
+    def compute(
+        self,
+        source_major: int,
+        target_major: int,
+        catalogue_version: str | None = None,
+        catalogue: CompatibilityCatalogue | None = None,
+    ) -> MigrationRoute:
         """Compute the deterministic route for a source -> target pair (F10-02/03).
 
         The envelope is validated first; the chain is derived only from the
@@ -47,14 +54,21 @@ class MigrationRouteService:
         blocker = validate_envelope(source_major, target_major)
         if blocker:
             raise MigrationRouteError("ENVELOPE_VIOLATION", f"source/target outside the supported envelope: {blocker}", {"blocker": blocker})
-        try:
-            catalogue = self._catalogue_provider.load(catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION)
-        except ValueError as exc:
+        if catalogue is None:
+            try:
+                catalogue = self._catalogue_provider.load(catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION)
+            except ValueError as exc:
+                raise MigrationRouteError(
+                    "UNSUPPORTED_CATALOGUE_VERSION",
+                    f"unsupported catalogue version {catalogue_version!r}",
+                    {"catalogue_version": catalogue_version},
+                ) from exc
+        elif catalogue_version is not None and catalogue.version != catalogue_version:
             raise MigrationRouteError(
                 "UNSUPPORTED_CATALOGUE_VERSION",
-                f"unsupported catalogue version {catalogue_version!r}",
+                f"catalogue version {catalogue.version!r} does not match {catalogue_version!r}",
                 {"catalogue_version": catalogue_version},
-            ) from exc
+            )
         stages = []
         for order, major in enumerate(range(source_major, target_major), start=1):
             source_family = f"angular-{major}.x"

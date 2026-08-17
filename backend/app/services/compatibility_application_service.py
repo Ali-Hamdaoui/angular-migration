@@ -19,6 +19,7 @@ from app.domain.compatibility import (
 from app.domain.execution_profile import RuntimeCandidate, Version
 from app.domain.runtime_compatibility import RuntimeCompatibilityClass, classify_runtime_versions
 from app.services.artifact_binding import canonical_artifact_set_checksum
+from app.services.migration_route_service import MigrationRouteError, MigrationRouteService
 
 
 class CompatibilityApplicationError(ValueError):
@@ -32,24 +33,45 @@ class CompatibilityApplicationError(ValueError):
 class CompatibilityResolver:
     """Resolve only catalogue data and already-observed runtime candidates."""
 
-    def __init__(self, catalogue: CompatibilityCatalogue, *, gate_version: str = "g05-v1") -> None:
+    def __init__(self, catalogue: CompatibilityCatalogue, *, gate_version: str = "g05-v1", route_service: MigrationRouteService | None = None) -> None:
         self.catalogue = catalogue
         self.gate_version = gate_version
+        self._route_service = route_service or MigrationRouteService()
 
     def resolve(self, request: CompatibilityResolutionRequest) -> CompatibilityResolutionResult:
         if request.catalogue_version != self.catalogue.version:
             raise CompatibilityApplicationError("STALE_CATALOGUE", "The requested compatibility catalogue is not current.", 409)
         source = Version.parse(request.source_angular_exact)
-        if source is None or source.major != 18:
+        if source is None:
             return self._blocked(request, "SOURCE_FAMILY_UNSUPPORTED")
         source_family = f"angular-{source.major}.x"
-        families = list(range(source.major, 21))
-        entries = []
-        for major in families:
-            entry = self.catalogue.entry_for(f"angular-{major}.x", f"angular-{major + 1}.x")
-            if entry is None:
-                return self._blocked(request, f"CATALOGUE_ROUTE_MISSING_{major}_{major + 1}", source_family)
-            entries.append(entry)
+        supported_sources = {entry.source_family for entry in self.catalogue.entries}
+        if source_family not in supported_sources:
+            return self._blocked(request, "SOURCE_FAMILY_UNSUPPORTED", source_family)
+        target_major = int(request.target_family.removeprefix("angular-").removesuffix(".x"))
+        try:
+            route_authority = self._route_service.compute(
+                source.major,
+                target_major,
+                catalogue_version=self.catalogue.version,
+                catalogue=self.catalogue,
+            )
+        except MigrationRouteError as error:
+            if error.code == "CATALOGUE_ROUTE_MISSING":
+                major = error.details.get("major")
+                blocker = f"CATALOGUE_ROUTE_MISSING_{major}_{int(major) + 1}" if major is not None else error.code
+            elif error.code == "ENVELOPE_VIOLATION" and str(error.details.get("blocker", "")).startswith("ROUTE_DIRECTION_INVALID"):
+                blocker = "TARGET_MUST_BE_GREATER_THAN_SOURCE"
+            else:
+                blocker = error.code
+            return self._blocked(request, blocker, source_family)
+        entries = tuple(
+            self.catalogue.entry_for(stage.source_family, stage.target_family)
+            for stage in route_authority.stages
+        )
+        if any(entry is None for entry in entries):
+            return self._blocked(request, "CATALOGUE_ROUTE_MISSING", source_family)
+        entries = tuple(entry for entry in entries if entry is not None)
 
         blockers = list(dict.fromkeys([*request.dependency_findings, *(reason for entry in entries for reason in entry.blockers)]))
         warnings = list(dict.fromkeys(risk for entry in entries for risk in entry.known_risks))
