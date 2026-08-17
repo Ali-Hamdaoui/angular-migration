@@ -29,6 +29,7 @@ _NODE_MINIMUMS: dict[int, str] = {
 
 #: TypeScript range per target Angular major (official Angular compatibility).
 _TYPESCRIPT_RANGES: dict[int, tuple[str, str]] = {
+    11: ("4.0.0", "4.2.0"),
     12: ("4.2.3", "4.4.0"),
     13: ("4.4.3", "4.7.0"),
     14: ("4.6.2", "4.9.0"),
@@ -41,10 +42,31 @@ _TYPESCRIPT_RANGES: dict[int, tuple[str, str]] = {
     21: ("5.9.0", "6.0.0"),
 }
 
+_RXJS_RANGES: dict[int, tuple[str, ...]] = {
+    11: ("^6.5.3",),
+    12: ("^6.5.3", "^7.0.0"),
+    13: ("^6.5.3", "^7.4.0"),
+    14: ("^6.5.3", "^7.4.0"),
+    15: ("^6.5.3", "^7.4.0"),
+    16: ("^6.5.3", "^7.4.0"),
+    17: ("^6.5.3", "^7.4.0"),
+    18: ("^6.5.3", "^7.4.0"),
+    19: ("^6.5.3", "^7.4.0"),
+    20: ("^6.5.3", "^7.4.0"),
+    21: ("^6.5.3", "^7.4.0"),
+}
+
 # Official Angular source/target Node ranges.  A stage uses the intersection
 # of its two adjacent Angular-family rows; npm has no equivalent official
 # Angular-major range and is governed by executable/probe policy instead.
 _NODE_RANGES: dict[int, tuple[str, ...]] = {
+    11: ("^10.13.0", "^12.11.0"),
+    12: ("^12.14.0", "^14.15.0"),
+    13: ("^12.20.0", "^14.15.0", "^16.10.0"),
+    14: ("^14.15.0", "^16.10.0"),
+    15: ("^14.20.0", "^16.13.0", "^18.10.0"),
+    16: ("^16.14.0", "^18.10.0"),
+    17: ("^18.13.0", "^20.9.0"),
     18: ("^18.19.1", "^20.11.1", "^22.0.0"),
     19: ("^18.19.1", "^20.11.1", "^22.0.0"),
     20: ("^20.19.0", "^22.12.0", "^24.0.0"),
@@ -63,6 +85,19 @@ CERTIFIED_RUNTIME_PROFILES: dict[tuple[int, int], tuple[tuple[str, str], ...]] =
     (18, 19): (("18.20.8", "10.8.2"),),
     (19, 20): (("20.20.2", "10.8.2"),),
     (20, 21): (("22.23.2", "10.9.8"),),
+}
+
+DEV_RUNTIMES_PROVEN_PROFILES: dict[tuple[int, int], tuple[tuple[str, str], ...]] = {
+    (11, 12): (("12.22.12", "8.19.4"),),
+    (12, 13): (("16.20.2", "8.19.4"),),
+    (13, 14): (("16.20.2", "8.19.4"),),
+    (14, 15): (("16.20.2", "8.19.4"),),
+    (15, 16): (("16.20.2", "8.19.4"),),
+    (16, 17): (("20.11.1", "8.19.4"),),
+    (17, 18): (("22.23.1", "8.19.4"),),
+    (18, 19): (("22.23.1", "8.19.4"),),
+    (19, 20): (("22.23.1", "8.19.4"),),
+    (20, 21): (("22.23.1", "8.19.4"),),
 }
 
 #: Fixed certification timestamp so the catalogue is byte-identical across loads
@@ -138,6 +173,7 @@ class CompatibilityCatalogueProvider:
             typescript_minimum=ts_minimum,
             typescript_exclusive_maximum=ts_maximum,
             rxjs_minimum="6.5.3",
+            rxjs_ranges=_RXJS_RANGES[target],
             node_major=node_major,
             npm_major=10,
             node_minimum=node_minimum,
@@ -151,6 +187,8 @@ class CompatibilityCatalogueProvider:
             validated_runtime_profiles=validated,
             source_node_ranges=_NODE_RANGES.get(major, ()),
             target_node_ranges=_NODE_RANGES.get(target, ()),
+            proven_runtime_profiles=DEV_RUNTIMES_PROVEN_PROFILES.get((major, target), ()),
+            proven_runtime_source="dev-runtimes-real-e2e",
             certification_status="certified" if certified else "seeded_official",
             certification_source="angular.dev/reference/versions" if not certified else "bridge-certification",
             certified_at=CERTIFIED_AT if certified else None,

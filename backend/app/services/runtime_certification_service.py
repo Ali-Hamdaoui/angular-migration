@@ -47,7 +47,7 @@ class RuntimeCertificationService:
         entry = catalogue.entry_for(families[0], families[1])
         if entry is None:
             raise RuntimeCertificationError("CATALOGUE_ENTRY_MISSING", f"No catalogue entry for {families[0]} -> {families[1]}")
-        if not entry.validated_runtime_profiles and not entry.source_node_ranges and not entry.target_node_ranges:
+        if not entry.validated_runtime_profiles:
             decision = RuntimeCertificationDecision(
                 run_id=self._stage_run_id(stage_id), stage_id=stage_id,
                 source_family=families[0], target_family=families[1],

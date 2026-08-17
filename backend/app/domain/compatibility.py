@@ -52,6 +52,7 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     typescript_exclusive_maximum: str | None = None
     rxjs_exact: str | None = None
     rxjs_minimum: str | None = None
+    rxjs_ranges: tuple[str, ...] = ()
     zone_js_exact: str | None = None
     node_major: int = Field(ge=0)
     npm_major: int = Field(ge=0)
@@ -67,6 +68,8 @@ class CompatibilityCatalogueEntry(CompatibilityModel):
     validated_runtime_profiles: tuple[tuple[str, str], ...] = ()
     source_node_ranges: tuple[str, ...] = ()
     target_node_ranges: tuple[str, ...] = ()
+    proven_runtime_profiles: tuple[tuple[str, str], ...] = ()
+    proven_runtime_source: str | None = None
     certification_status: str | None = None
     certification_source: str | None = None
     certified_at: datetime | None = None
@@ -100,6 +103,10 @@ class CompatibilityCatalogue(CompatibilityModel):
                 serialized.pop("source_node_ranges", None)
             if not entry.target_node_ranges:
                 serialized.pop("target_node_ranges", None)
+            if not entry.rxjs_ranges:
+                serialized.pop("rxjs_ranges", None)
+            if not entry.proven_runtime_profiles:
+                serialized.pop("proven_runtime_profiles", None)
             # Drop None-valued fields so the checksum is stable across schema
             # evolution and legacy versions checksum identically to their
             # original contracts.
