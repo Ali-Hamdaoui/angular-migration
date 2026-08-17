@@ -251,6 +251,33 @@ def test_source_intake_retry_preserves_failed_attempt_and_queues_new_job(tmp_pat
         assert jobs[1].attempt == 2
 
 
+def test_source_intake_retry_accepts_retryable_baseline_diagnostic_hold(tmp_path: Path):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("retry-baseline-hold-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.DIAGNOSTIC_HOLD.value
+        session.add(SourceIntakeJobModel(
+            id="intake-baseline-hold", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="failed", actor="operator", idempotency_key="baseline-hold-attempt", attempt=1,
+            queued_at=datetime.now(UTC), finished_at=datetime.now(UTC),
+            last_error_code="BASELINE_PREQUALIFICATION_BLOCKED", last_error_message="lockfile blocked",
+            state_version=run.state_version,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(
+        run_id=created.run_id,
+        expected_state_version=expected_version,
+        idempotency_key="retry-baseline-hold-1",
+        actor="operator",
+    )
+
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+
+
 def test_source_intake_attempt_identity_does_not_change_when_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     service, scope, _ = _service(tmp_path)
     created = service.create(_request("stable-attempt-create"))

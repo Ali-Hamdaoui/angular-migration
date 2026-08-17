@@ -241,9 +241,9 @@ class MigrationRunService:
             if existing is not None:
                 self._replay_or_reject(session, existing, self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
                 return self._result_from_event(session, existing, replay=True)
-            if run.status != RunStatus.FAILED.value:
-                raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed run.")
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError"}
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "BASELINE_PREQUALIFICATION_BLOCKED"}
+            if run.status not in {RunStatus.FAILED.value, RunStatus.DIAGNOSTIC_HOLD.value}:
+                raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed or retryable diagnostic hold.")
             if previous is None or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
             self._validate_start_boundary(session, run)
