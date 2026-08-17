@@ -341,6 +341,27 @@ ANGULAR_UPDATE_V3_RENDERER: Final[TransformationCommandDefinition] = Transformat
     description="Execute an approved exact Angular update in the isolated stage workspace (v3)",
 )
 
+# v4 is the strict renderer for new V2.1 plans. v1-v3 remain immutable history.
+ANGULAR_UPDATE_V4_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="angular-update-exact",
+    template_id="tpl-angular-update-exact-v4",
+    executable="npx",
+    argument_patterns=(
+        "--yes",
+        "-p",
+        "@angular/cli@{target_cli_exact}",
+        "ng",
+        "update",
+        "@angular/cli@{target_cli_exact}",
+        "@angular/core@{target_exact}",
+    ),
+    executable_aliases=("npx.cmd",),
+    timeout_seconds=1800,
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Execute a strict exact Angular update in the isolated stage workspace (v4)",
+)
+
 ANGULAR_INSTALLED_MIGRATION_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="angular-migrate-installed",
     template_id="tpl-angular-migrate-installed-v1",
@@ -500,6 +521,17 @@ _TRANSFORMATION_COMMAND_TEMPLATES: tuple[CommandTemplate, ...] = tuple(
         version=3,
         allowed_env_vars=ANGULAR_UPDATE_V3_RENDERER.allowed_env_vars,
         max_output_bytes=ANGULAR_UPDATE_V3_RENDERER.max_output_bytes,
+    ),
+    CommandTemplate(
+        template_id=ANGULAR_UPDATE_V4_RENDERER.template_id,
+        command_id=ANGULAR_UPDATE_V4_RENDERER.command_id,
+        executable=ANGULAR_UPDATE_V4_RENDERER.executable,
+        arguments=ANGULAR_UPDATE_V4_RENDERER.argument_patterns,
+        executable_aliases=ANGULAR_UPDATE_V4_RENDERER.executable_aliases,
+        description=ANGULAR_UPDATE_V4_RENDERER.description,
+        version=4,
+        allowed_env_vars=ANGULAR_UPDATE_V4_RENDERER.allowed_env_vars,
+        max_output_bytes=ANGULAR_UPDATE_V4_RENDERER.max_output_bytes,
     ),
 )
 

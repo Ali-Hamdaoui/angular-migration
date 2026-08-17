@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 
-from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V3_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
+from app.domain.command import ANGULAR_INSTALLED_MIGRATION_RENDERER, ANGULAR_UPDATE_V4_RENDERER, TRANSFORMATION_COMMAND_CATALOGUE
 from app.domain.planning import (
     BuildSystemDecision,
     CommandTemplateReference,
@@ -105,8 +105,8 @@ class StageExecutionPlanService:
     @staticmethod
     def _command(command_id, request, parameter_bindings=None):
         if command_id == "angular-update-exact":
-            definition = ANGULAR_UPDATE_V3_RENDERER
-            template_version = 3
+            definition = ANGULAR_UPDATE_V4_RENDERER
+            template_version = 4
         elif command_id == "angular-migrate-installed":
             definition = ANGULAR_INSTALLED_MIGRATION_RENDERER
             template_version = 1
