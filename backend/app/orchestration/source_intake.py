@@ -92,7 +92,22 @@ class SourceIntakeDispatcher:
                     approved = session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == job.run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value))
                     job.status = "waiting_g03" if approved is not None else "queued"
                     job.started_at = None
-        dispatchable = [job for job in jobs if job.status != "waiting_retry"]
+        dispatchable = []
+        for job in jobs:
+            if job.status == "waiting_retry":
+                continue
+            # ``waiting_g03`` is also the durable pre-approval boundary. It
+            # must remain parked across a backend restart until the human
+            # approval event exists; only the G03 approval callback may
+            # dispatch the post-G03 continuation.
+            if job.status == "waiting_g03":
+                approved = session.scalar(select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == job.run_id,
+                    WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value,
+                ))
+                if approved is None:
+                    continue
+            dispatchable.append(job)
         for job in dispatchable:
             self.start(run_id=job.run_id, thread_id=job.thread_id)
         return len(dispatchable)

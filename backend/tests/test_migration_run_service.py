@@ -308,6 +308,69 @@ def test_source_intake_retry_accepts_recoverable_baseline_validation_hold(tmp_pa
     assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
 
 
+def test_source_intake_retry_recovers_restart_hold_after_g03_approval(tmp_path: Path):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("retry-g03-restart-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.DIAGNOSTIC_HOLD.value
+        session.add(SourceIntakeJobModel(
+            id="intake-g03-restart-hold", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="failed", actor="operator", idempotency_key="g03-restart-attempt", attempt=1,
+            queued_at=datetime.now(UTC), finished_at=datetime.now(UTC),
+            last_error_code="G03_APPROVAL_REQUIRED", last_error_message="restart misclassified the waiting G03 boundary",
+            state_version=run.state_version,
+        ))
+        session.add(WorkflowEventModel(
+            id="event-g03-approved-for-restart", run_id=created.run_id,
+            event_type=WorkflowEventType.G03_APPROVED.value, idempotency_key="g03-approved-for-restart",
+            actor="operator", reason="G03 approved before restart", sequence=999,
+            payload={"decision": "approved"}, occurred_at=datetime.now(UTC),
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(
+        run_id=created.run_id,
+        expected_state_version=expected_version,
+        idempotency_key="retry-g03-restart-1",
+        actor="operator",
+    )
+
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+    with scope() as session:
+        jobs = list(session.scalars(select(SourceIntakeJobModel).where(SourceIntakeJobModel.run_id == created.run_id).order_by(SourceIntakeJobModel.attempt)))
+        assert jobs[-1].status == "waiting_g03"
+
+
+def test_source_intake_recovery_leaves_unapproved_g03_boundary_parked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("waiting-g03-recovery-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        session.add(SourceIntakeJobModel(
+            id="intake-waiting-g03", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="waiting_g03", actor="operator", idempotency_key="waiting-g03-attempt", attempt=1,
+            queued_at=datetime.now(UTC), state_version=run.state_version,
+        ))
+
+    monkeypatch.setattr(source_intake_module, "session_scope", scope)
+    dispatcher = SourceIntakeDispatcher(Settings(
+        _env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces",
+        snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes",
+    ))
+    started = []
+    dispatcher.start = lambda **kwargs: started.append(kwargs)
+    try:
+        assert dispatcher.recover() == 0
+    finally:
+        dispatcher._executor.shutdown(wait=True)
+
+    assert started == []
+
+
 def test_source_intake_retry_recovers_expired_bound_reservation(tmp_path: Path):
     service, scope, graph = _service(tmp_path)
     created = service.create(_request("retry-expired-reservation-create"))

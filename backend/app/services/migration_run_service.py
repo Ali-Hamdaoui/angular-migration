@@ -243,7 +243,7 @@ class MigrationRunService:
             if existing is not None:
                 self._replay_or_reject(session, existing, self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
                 return self._result_from_event(session, existing, replay=True)
-            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "BASELINE_PREQUALIFICATION_BLOCKED", "BaselineValidationApplicationError", "BaselineApplicationError", "IdempotencyPayloadMismatchError"}
+            retryable_codes = {"GRAPH_HANDOFF_FAILED", "SNAPSHOT_CREATION_FAILED", "SOURCE_CHANGED_DURING_COPY", "SNAPSHOT_LAYOUT_MISSING", "ExecutionProfileApplicationError", "BASELINE_PREQUALIFICATION_BLOCKED", "BaselineValidationApplicationError", "BaselineApplicationError", "IdempotencyPayloadMismatchError", "G03_APPROVAL_REQUIRED"}
             if run.status not in {RunStatus.FAILED.value, RunStatus.DIAGNOSTIC_HOLD.value}:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed or retryable diagnostic hold.")
             if previous is None or previous.last_error_code not in retryable_codes:
@@ -256,7 +256,7 @@ class MigrationRunService:
             if active_job is not None:
                 raise MigrationRunError("SOURCE_INTAKE_ALREADY_ACTIVE", "A source-intake job is already active for this run.")
             thread_id = previous.thread_id
-            post_g03 = previous.last_error_code == "ExecutionProfileApplicationError" and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
+            post_g03 = previous.last_error_code in {"ExecutionProfileApplicationError", "G03_APPROVAL_REQUIRED"} and session.scalar(select(WorkflowEventModel).where(WorkflowEventModel.run_id == run_id, WorkflowEventModel.event_type == WorkflowEventType.G03_APPROVED.value)) is not None
             accepted = StateTransitionService(session).apply_transition(self._retry_request(run_id, expected_state_version, idempotency_key, actor, previous))
             queued = SourceIntakeJobModel(
                 id=f"intake-{uuid4().hex[:12]}", run_id=run_id, thread_id=thread_id,
