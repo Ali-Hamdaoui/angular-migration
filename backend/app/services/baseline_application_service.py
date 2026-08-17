@@ -17,7 +17,7 @@ from app.repositories.baseline_models import BaselineQualificationModel
 from app.repositories.models import ArtifactMetadataModel, ExecutionProfileModel, MigrationRunModel, SourceSnapshotModel
 from app.repositories.session import session_scope
 from app.state.transition_service import StateTransitionService, TransitionRequest, StaleStateVersionError
-from app.workspaces.baseline import BaselineSandboxService
+from app.workspaces.baseline import BaselineSandboxRecord, BaselineSandboxService, baseline_tree_fingerprint
 
 
 class BaselineApplicationError(ValueError):
@@ -87,8 +87,31 @@ class BaselineApplicationService:
                     snapshot_root.relative_to(run_root)
             except ValueError as error:
                 raise BaselineApplicationError("BASELINE_LAYOUT_INVALID", "The approved snapshot must remain inside the registered workspace boundaries.", 422) from error
+            existing_workspace = self._latest(session, run_id)
+            if (
+                existing_workspace is not None
+                and Path(existing_workspace.sandbox_path).resolve() == baseline_path.resolve()
+                and baseline_path.is_dir()
+                and existing_workspace.input_fingerprint == package.snapshot_fingerprint
+            ):
+                try:
+                    fingerprint = baseline_tree_fingerprint(baseline_path)
+                except (OSError, ValueError, TypeError):
+                    fingerprint = None
+                if fingerprint == existing_workspace.sandbox_fingerprint:
+                    workspace = BaselineSandboxRecord(
+                        run_id=run_id,
+                        sandbox_path=baseline_path.resolve(),
+                        input_fingerprint=existing_workspace.input_fingerprint,
+                        fingerprint=fingerprint,
+                    )
+                else:
+                    workspace = None
+            else:
+                workspace = None
             try:
-                workspace = self._sandbox.create(run_id=run_id, snapshot_root=snapshot_root, baseline_path=baseline_path, approved_snapshot_fingerprint=package.snapshot_fingerprint, registered_run_root=run_root)
+                if workspace is None:
+                    workspace = self._sandbox.create(run_id=run_id, snapshot_root=snapshot_root, baseline_path=baseline_path, approved_snapshot_fingerprint=package.snapshot_fingerprint, registered_run_root=run_root)
             except (OSError, ValueError, TypeError) as error:
                 raise BaselineApplicationError("BASELINE_WORKSPACE_FAILED", str(error), 422) from error
             artifacts = self._write_artifact(session, run, "baseline_workspace_manifest.json", {"run_id": run_id, "snapshot_id": package.snapshot_id, "input_fingerprint": workspace.input_fingerprint, "sandbox_fingerprint": workspace.fingerprint, "sandbox_path": str(workspace.sandbox_path), "excluded_paths": list(workspace.excluded_paths)}, request.idempotency_key, now)

@@ -444,7 +444,8 @@ def test_cancel_replay_rejects_different_request_payload(tmp_path: Path):
         service.cancel(run_id=created.run_id, expected_state_version=cancelled.state_version + 1, idempotency_key="cancel-1", actor="operator")
 
 
-def test_retry_source_intake_replay_rejects_different_request_payload(tmp_path: Path):
+@pytest.mark.parametrize("error_code", ["SNAPSHOT_CREATION_FAILED", "BaselineApplicationError"])
+def test_retry_source_intake_replay_rejects_different_request_payload(tmp_path: Path, error_code: str):
     service, scope, _ = _service(tmp_path)
     created = service.create(_request("replay-retry-create"))
     with scope() as session:
@@ -461,7 +462,7 @@ def test_retry_source_intake_replay_rejects_different_request_payload(tmp_path: 
             attempt=1,
             queued_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
-            last_error_code="SNAPSHOT_CREATION_FAILED",
+            last_error_code=error_code,
             last_error_message="source disappeared",
             state_version=run.state_version,
         ))
