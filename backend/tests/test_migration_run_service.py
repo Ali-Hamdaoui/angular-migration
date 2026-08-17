@@ -258,6 +258,9 @@ def test_source_intake_retry_accepts_retryable_baseline_diagnostic_hold(tmp_path
         run = session.get(MigrationRunModel, created.run_id)
         assert run is not None
         run.status = RunStatus.DIAGNOSTIC_HOLD.value
+        claim = session.scalar(select(ActiveRunClaimModel).where(ActiveRunClaimModel.run_id == created.run_id))
+        assert claim is not None
+        claim.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         session.add(SourceIntakeJobModel(
             id="intake-baseline-hold", run_id=created.run_id, thread_id=created.graph_thread_id,
             status="failed", actor="operator", idempotency_key="baseline-hold-attempt", attempt=1,

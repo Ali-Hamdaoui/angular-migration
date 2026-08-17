@@ -246,6 +246,7 @@ class MigrationRunService:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "Source-intake retry is only available after a failed or retryable diagnostic hold.")
             if previous is None or previous.last_error_code not in retryable_codes:
                 raise MigrationRunError("SOURCE_INTAKE_RETRY_NOT_ALLOWED", "The failed run does not have a retryable source-intake failure.")
+            self._renew_retry_claim_if_reservation_is_live(session, run)
             self._validate_start_boundary(session, run)
             if run.state_version != expected_state_version:
                 raise MigrationRunError("STALE_STATE_VERSION", "The run state changed. Refresh the authoritative state and retry.")
@@ -311,6 +312,22 @@ class MigrationRunService:
             reservation = session.get(TargetReservationModel, snapshot.target_reservation_id)
             if reservation is None or reservation.target_path != run.target_output_path or reservation.status not in {"claimed", "consumed"}:
                 raise MigrationRunError("TARGET_RESERVATION_INVALID", "The transferred target reservation is missing or does not match the run boundary.")
+
+    def _renew_retry_claim_if_reservation_is_live(self, session, run: MigrationRunModel) -> None:
+        """Renew a stale lease only when the durable target reservation remains valid."""
+        claim = session.scalar(select(ActiveRunClaimModel).where(
+            ActiveRunClaimModel.run_id == run.id,
+            ActiveRunClaimModel.target_output_path == run.target_output_path,
+        ))
+        if claim is None or self._utc(claim.expires_at) > self._utc(self._now()):
+            return
+        preflight = session.get(PreflightModel, run.preflight_id) if run.preflight_id else None
+        snapshot = PreflightSnapshot.model_validate(preflight.snapshot) if preflight is not None else None
+        reservation = session.get(TargetReservationModel, snapshot.target_reservation_id) if snapshot and snapshot.target_reservation_id else None
+        if reservation is None or self._utc(reservation.expires_at) <= self._utc(self._now()):
+            return
+        if reservation.status in {"claimed", "consumed"} and reservation.target_path == run.target_output_path:
+            claim.expires_at = self._now() + timedelta(seconds=self._lease_seconds)
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
