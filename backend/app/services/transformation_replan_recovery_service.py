@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -27,6 +26,9 @@ from app.repositories.models import (
     TransformationReplanRecoveryModel,
 )
 from app.repositories.session import session_scope
+from app.domain.planning import PlanGenerationRequest
+from app.services.planning_application_service import PlanningApplicationService
+from app.services.project_capability_service import ProjectCapabilityService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
@@ -137,8 +139,15 @@ class TransformationReplanRecoveryService:
             recovery_hash = hashlib.sha256(f"{request.run_id}:{request.idempotency_key}".encode()).hexdigest()[:20]
             new_plan_id = f"plan-{request.run_id}-replan-{recovery_hash}"
             new_stage_plan_id = f"stage-plan-{request.run_id}-replan-{recovery_hash}"
-            new_plan = _replan_payload(plan.plan, new_plan_id, new_version)
-            new_stage_plan = _replan_payload(stage_plan.stage_plan, new_stage_plan_id, new_version)
+            new_plan, new_stage_plan = self._deterministic_replan(
+                run_id=request.run_id,
+                plan=plan,
+                stage_plan=stage_plan,
+                request=request,
+                version=new_version,
+                plan_id=new_plan_id,
+                stage_plan_id=new_stage_plan_id,
+            )
             state_version = run.state_version + 1
             new_g06_id = f"g06-replan-{recovery_hash}"
             artifact_ids = list(plan.artifact_ids or [])
@@ -215,6 +224,72 @@ class TransformationReplanRecoveryService:
             session.flush()
             return result
 
+    def _deterministic_replan(
+        self,
+        *,
+        run_id: str,
+        plan: MigrationPlanModel,
+        stage_plan: StageExecutionPlanModel,
+        request: TransformationReplanRecoveryRequest,
+        version: int,
+        plan_id: str,
+        stage_plan_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Rebuild semantic plan content through the normal planner authority."""
+        current = stage_plan.stage_plan
+        required = (
+            "source_family", "source_exact", "target_family", "target_exact",
+            "target_cli_exact", "execution_profile_id", "builder",
+        )
+        if any(not current.get(key) for key in required):
+            raise TransformationReplanRecoveryError(
+                "REPLAN_INPUT_UNAVAILABLE",
+                "The durable stage plan lacks the context required for deterministic replanning",
+            )
+        capabilities: tuple[dict[str, str], ...] = ()
+        snapshot_id = current.get("capability_snapshot_id")
+        if snapshot_id:
+            snapshot = ProjectCapabilityService().get_snapshot(run_id, snapshot_id)
+            capabilities = tuple(item.model_dump(mode="json") for item in snapshot.capabilities)
+        capabilities = (*capabilities, {"key": "policy:installed-migration-fallback", "value": "approved"})
+        request_payload = PlanGenerationRequest(
+            run_id=run_id,
+            expected_state_version=1,
+            idempotency_key=f"replan:{request.idempotency_key}",
+            actor="transformation-recovery",
+            source_exact=current["source_exact"],
+            source_family=current["source_family"],
+            target_family=current["target_family"],
+            catalogue_version=plan.plan.get("catalogue_version", request.catalogue_version),
+            input_fingerprint=current.get("input_fingerprint", request.safe_checkpoint_fingerprint),
+            input_workspace_fingerprint=request.workspace_fingerprint,
+            execution_profile_id=current["execution_profile_id"],
+            execution_profile_checksum=current.get("execution_profile_checksum", "sha256:" + "0" * 64),
+            resolved_scripts=current.get("resolved_scripts") or {"build": "build", "test": "test"},
+            project_targets=current.get("project_targets") or {},
+            stage_route=(
+                (
+                    current["source_family"], current["target_family"], request.stage_id,
+                    current["target_exact"], current["target_cli_exact"],
+                ),
+            ),
+            target_cli_exact=current["target_cli_exact"],
+            builder=current["builder"],
+            prerequisite_artifacts=(),
+            capability_facts=capabilities,
+            capability_snapshot_id=snapshot_id,
+            capability_snapshot_checksum=current.get("capability_snapshot_checksum"),
+            installed_migration_fallback=True,
+        )
+        generated = PlanningApplicationService().generate(request_payload)
+        new_plan = generated.plan.model_dump(mode="json")
+        new_stage_plan = generated.first_stage_plan.model_dump(mode="json")
+        new_plan.update({"plan_id": plan_id, "version": version})
+        new_stage_plan.update({"stage_plan_id": stage_plan_id, "stage_id": request.stage_id, "plan_version": version})
+        new_plan["checksum"] = _checksum({key: value for key, value in new_plan.items() if key != "checksum"})
+        new_stage_plan["checksum"] = _checksum({key: value for key, value in new_stage_plan.items() if key != "checksum"})
+        return new_plan, new_stage_plan
+
     def _validate_bindings(self, session, request):
         run = session.get(MigrationRunModel, request.run_id)
         continuation = session.scalar(select(TransformationContinuationModel).where(TransformationContinuationModel.run_id == request.run_id))
@@ -280,14 +355,3 @@ class TransformationReplanRecoveryService:
 
 def _checksum(value: object) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
-
-
-def _replan_payload(value: dict[str, Any], identifier: str, version: int) -> dict[str, Any]:
-    payload = copy.deepcopy(value)
-    payload["plan_id"] = identifier
-    payload["stage_plan_id"] = identifier
-    payload["version"] = version
-    payload["plan_version"] = version
-    payload.pop("checksum", None)
-    payload["checksum"] = _checksum(payload)
-    return payload

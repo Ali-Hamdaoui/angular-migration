@@ -51,13 +51,26 @@ def _seed(tmp_path: Path, *, taxonomy: str = "dependency") -> TransformationRepl
     (checkpoint_root / "package.json").write_text("{}")
     fingerprint = StageSandboxCopier.fingerprint(workspace)
     checkpoint_fingerprint = StageSandboxCopier.fingerprint(checkpoint_root)
-    catalogue_version = f"test-catalogue-{run_id}"
+    catalogue_version = "catalog-v1"
     catalogue_checksum = "sha256:" + "1" * 64
     plan_id = f"plan-current-{run_id}"
     stage_plan_id = f"stage-plan-current-{run_id}"
-    plan_payload = {"plan_id": plan_id, "version": 1, "route": [stage_id]}
+    plan_payload = {
+        "plan_id": plan_id, "version": 1, "source_family": "angular-18.x",
+        "source_exact": "18.2.13", "target_family": "angular-19.x",
+        "catalogue_version": catalogue_version, "route": [stage_id],
+        "repair_policy": {"policy_id": "repair"},
+    }
     plan_payload["checksum"] = _checksum(plan_payload)
-    stage_payload = {"stage_plan_id": stage_plan_id, "plan_version": 1, "stage_id": stage_id, "commands": {}}
+    stage_payload = {
+        "stage_plan_id": stage_plan_id, "plan_version": 1, "stage_id": stage_id,
+        "input_fingerprint": fingerprint, "source_family": "angular-18.x",
+        "source_exact": "18.2.13", "target_family": "angular-19.x",
+        "target_exact": "19.2.0", "target_cli_exact": "19.2.0",
+        "execution_profile_id": "profile-replan", "execution_profile_checksum": "sha256:" + "e" * 64,
+        "builder": "@angular-devkit/build-angular:application",
+        "resolved_scripts": {"build": "build", "test": "test"},
+    }
     stage_payload["checksum"] = _checksum(stage_payload)
     execution = CommandExecutionModel(
         id=f"exec-{run_id}", run_id=run_id, stage_id=stage_id, executable="npx",
@@ -87,6 +100,9 @@ def _seed(tmp_path: Path, *, taxonomy: str = "dependency") -> TransformationRepl
     )
     group_key = f"fg-{run_id}"
     with session_scope() as session:
+        existing_catalogue = session.query(CompatibilityCatalogueModel).filter_by(version=catalogue_version).first()
+        if existing_catalogue is not None:
+            catalogue_checksum = existing_catalogue.checksum
         session.add(MigrationRunModel(
             id=run_id, status="FAILED", run_phase="transforming", state_version=5,
             created_at=NOW, updated_at=NOW,
@@ -133,10 +149,11 @@ def _seed(tmp_path: Path, *, taxonomy: str = "dependency") -> TransformationRepl
             idempotency_key=f"cont-{run_id}", request_checksum="sha256:" + "b" * 64,
             state_version=3, created_at=NOW, updated_at=NOW,
         ))
-        session.add(CompatibilityCatalogueModel(
-            id=f"catalogue-{run_id}", version=catalogue_version, checksum=catalogue_checksum,
-            metadata_json={}, created_at=NOW,
-        ))
+        if existing_catalogue is None:
+            session.add(CompatibilityCatalogueModel(
+                id=f"catalogue-{run_id}", version=catalogue_version, checksum=catalogue_checksum,
+                metadata_json={}, created_at=NOW,
+            ))
         session.add(resolution)
         session.add(FailureIntelligenceModel(
             id=f"fi-{run_id}", run_id=run_id,
@@ -175,6 +192,9 @@ def test_generic_replan_creates_new_pending_plan_and_g06(tmp_path: Path):
         assert old_plan.status == "stale"
         assert old_gate.status == "stale"
         assert new_gate.status == "pending"
+        replanned_stage = session.get(StageExecutionPlanModel, result.new_stage_plan_id)
+        assert replanned_stage.stage_plan["commands"].get("installed_migration_fallback")
+        assert replanned_stage.checksum != request.current_stage_plan_checksum
 
 
 def test_replan_replay_is_durable_and_idempotent(tmp_path: Path):
