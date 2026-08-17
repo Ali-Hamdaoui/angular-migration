@@ -134,15 +134,16 @@ class MigrationPlan(ContractModel):
     plan_id: str = Field(min_length=1, max_length=128)
     run_id: str = Field(min_length=1, max_length=128)
     version: int = Field(ge=1)
-    source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
-    target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
+    target_family: str = Field(pattern=r"^angular-(1[2-9]|2[01])\.x$")
     route: tuple[str, ...] = Field(min_length=1)
     mode: Literal["strict_compatibility"] = "strict_compatibility"
     catalogue_version: str = Field(min_length=1, max_length=128)
     stage_plan_strategy: Literal["resolve_exact_before_each_stage"] = "resolve_exact_before_each_stage"
     approval_policy: str = "mandatory-human-v1"
     repair_policy: RepairPolicy
+    stage_dependency_dispositions: dict[str, tuple[dict[str, str], ...]] = Field(default_factory=dict)
     command_policy: str = "structured-registry-v1"
     artifact_policy: str = "immutable-stage-scoped-v1"
     checksum: str = Field(pattern=_CHECKSUM)
@@ -155,12 +156,13 @@ class StageExecutionPlan(ContractModel):
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
     input_workspace_fingerprint: str | None = Field(default=None, pattern=_CHECKSUM)
-    source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
     source_exact: str = Field(min_length=1, max_length=64)
-    target_family: str = Field(pattern=r"^angular-(19|20|21)\.x$")
+    target_family: str = Field(pattern=r"^angular-(1[2-9]|2[01])\.x$")
     target_exact: str = Field(min_length=1, max_length=64)
     target_cli_exact: str | None = Field(default=None, max_length=64)
     execution_profile_id: str = Field(min_length=1, max_length=128)
+    expected_dependency_changes: tuple[dict[str, str], ...] = Field(default_factory=tuple)
     package_manager: str = Field(default="npm", min_length=1, max_length=32)
     resolved_scripts: dict[str, str] = Field(default_factory=dict)
     project_targets: dict[str, str] = Field(default_factory=dict)
@@ -194,8 +196,8 @@ class PlanGenerationRequest(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
     correlation_id: str | None = Field(default=None, max_length=128)
     source_exact: str = Field(min_length=1, max_length=64)
-    source_family: str = Field(pattern=r"^angular-(18|19|20)\.x$")
-    target_family: str = Field(default="angular-21.x", pattern=r"^angular-(19|20|21)\.x$")
+    source_family: str = Field(pattern=r"^angular-(1[1-9]|2[01])\.x$")
+    target_family: str = Field(default="angular-21.x", pattern=r"^angular-(1[2-9]|2[01])\.x$")
     catalogue_version: str = Field(min_length=1, max_length=128)
     input_fingerprint: str = Field(pattern=_CHECKSUM)
     evidence_set_checksum: str | None = Field(default=None, pattern=_CHECKSUM)
@@ -215,6 +217,7 @@ class PlanGenerationRequest(ContractModel):
     validation_policy_id: str = "angular-stage-standard-v2"
     recovery_policy_id: str = "safe-boundary-v1"
     repair_policy_id: str = "proposer-reviewer-human-v1"
+    capability_facts: tuple[dict[str, str], ...] = ()
     installed_migration_fallback: bool = False
 
     @model_validator(mode="after")

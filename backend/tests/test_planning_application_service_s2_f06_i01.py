@@ -50,6 +50,34 @@ def test_generates_immutable_plan_and_exact_first_stage_contract():
     } == {"sha256:" + "4" * 64}
 
 
+def test_stage_knowledge_changes_only_capability_applicable_dispositions():
+    legacy = PlanningApplicationService().generate(
+        request(
+            run_id="run-capabilities-legacy",
+            idempotency_key="plan-capabilities-legacy",
+            capability_facts=(
+                {"key": "package:tslint", "value": "present"},
+                {"key": "package:codelyzer", "value": "present"},
+                {"key": "lockfile_format:v1", "value": "present"},
+            ),
+        )
+    )
+    clean = PlanningApplicationService().generate(
+        request(
+            run_id="run-capabilities-clean",
+            idempotency_key="plan-capabilities-clean",
+            capability_facts=({"key": "lockfile_format:v3", "value": "present"},),
+        )
+    )
+
+    legacy_changes = legacy.first_stage_plan.expected_dependency_changes
+    clean_changes = clean.first_stage_plan.expected_dependency_changes
+    assert {item["package"] for item in legacy_changes} >= {"tslint", "codelyzer", "package-lock"}
+    assert not {"tslint", "codelyzer", "package-lock"} & {item["package"] for item in clean_changes}
+    assert legacy.plan.stage_dependency_dispositions
+    assert legacy.plan.checksum != clean.plan.checksum
+
+
 def test_accepts_current_catalogue_version():
     result = PlanningApplicationService().generate(request(catalogue_version="catalog-v3"))
     assert result.status == "generated"
