@@ -24,7 +24,7 @@ class AngularTransformationEvidenceError(ValueError):
 
 class AngularTransformationEvidenceService:
     _semver = re.compile(r"(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)")
-    _excluded = frozenset({"node_modules", ".angular", "dist", "build", ".cache"})
+    _excluded = frozenset({"node_modules", ".angular", ".git", "dist", "build", ".cache"})
 
     def build(
         self,
@@ -35,6 +35,8 @@ class AngularTransformationEvidenceService:
         target_cli: str,
         ng_version_output: str,
         angular_execution_id: str,
+        expected_pre_fingerprint: str | None = None,
+        expected_post_fingerprint: str | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
         workspace = Path(workspace_path).resolve(strict=True)
         checkpoint = Path(checkpoint_path).resolve(strict=True)
@@ -84,6 +86,26 @@ class AngularTransformationEvidenceService:
             "core_sources": core_sources,
             "cli_sources": cli_sources,
         }
+        ledger = self.migration_ledger(
+            checkpoint,
+            workspace,
+            angular_execution_id=angular_execution_id,
+            expected_pre_fingerprint=expected_pre_fingerprint,
+            expected_post_fingerprint=expected_post_fingerprint,
+        )
+        return version_evidence, ledger
+
+    def migration_ledger(
+        self,
+        checkpoint_path: str | Path,
+        workspace_path: str | Path,
+        *,
+        angular_execution_id: str,
+        expected_pre_fingerprint: str | None = None,
+        expected_post_fingerprint: str | None = None,
+    ) -> dict[str, object]:
+        checkpoint = Path(checkpoint_path).resolve(strict=True)
+        workspace = Path(workspace_path).resolve(strict=True)
         before = self._manifest(checkpoint)
         after = self._manifest(workspace)
         paths = sorted(set(before) | set(after))
@@ -98,13 +120,25 @@ class AngularTransformationEvidenceService:
             for path in paths
             if before.get(path) != after.get(path)
         ]
+        if (
+            not changed
+            and expected_pre_fingerprint
+            and expected_post_fingerprint
+            and expected_pre_fingerprint != expected_post_fingerprint
+        ):
+            raise AngularTransformationEvidenceError(
+                "MIGRATION_LEDGER_ZERO_CHANGE_CONTRADICTION",
+                "Pre/post workspace fingerprints differ but the migration ledger is empty.",
+            )
         ledger = {
             "status": "recorded",
             "changed_file_count": len(changed),
             "changed_files": changed,
             "unattributed_files": [],
+            "before_fingerprint": self._manifest_fingerprint(before),
+            "after_fingerprint": self._manifest_fingerprint(after),
         }
-        return version_evidence, ledger
+        return ledger
 
     def write(
         self,
@@ -190,3 +224,9 @@ class AngularTransformationEvidenceService:
                 continue
             result[relative.as_posix()] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         return result
+
+    @staticmethod
+    def _manifest_fingerprint(manifest: dict[str, str]) -> str:
+        return "sha256:" + hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
