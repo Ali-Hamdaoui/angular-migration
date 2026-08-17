@@ -21,6 +21,7 @@ from app.services.planning_application_service import (
     run_scoped_stage_id,
 )
 from app.services.lockfile_compatibility_service import LockfileCompatibilityService
+from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
 class NextStageMaterializerError(ValueError):
@@ -102,7 +103,13 @@ class NextStageMaterializerService:
         }
 
     def materialize(self, context: dict[str, object]) -> StageExecutionPlan | None:
-        observed = self._sealed_source_exact(Path(str(context["sealed_path"])))
+        sealed_root = Path(str(context["sealed_path"])).resolve(strict=True)
+        if StageSandboxCopier.fingerprint(sealed_root) != str(context["sealed_fingerprint"]):
+            raise NextStageMaterializerError(
+                "SEALED_SOURCE_FINGERPRINT_MISMATCH",
+                "The sealed predecessor changed before successor materialization",
+            )
+        observed = self._sealed_source_exact(sealed_root)
         expected = self._version(context["current_target_exact"])
         if (
             not expected

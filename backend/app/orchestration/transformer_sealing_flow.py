@@ -404,6 +404,7 @@ class TransformerSealingFlow:
             run = session.get(MigrationRunModel, continuation.run_id)
             aliases = dict(run.workspace_aliases or {})
             aliases["BASELINE_SANDBOX"] = str(context["sealed_path"])
+            aliases["BASELINE_SANDBOX_FINGERPRINT"] = str(context["sealed_fingerprint"])
             run.workspace_aliases = aliases
             continuation.current_stage_id = stage_plan.stage_id
             continuation.stage_plan_id = existing.id

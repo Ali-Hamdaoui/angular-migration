@@ -58,8 +58,13 @@ def test_successor_reconstruction_uses_sealed_output_and_is_idempotent(tmp_path:
     target.mkdir()
     (target / "package.json").write_text('{"version":"mutated"}', encoding="utf-8")
 
-    first = StageSealingService.reconstruct_successor(str(sealed), str(target), str(tmp_path / "stages"), fingerprint)
-    second = StageSealingService.reconstruct_successor(str(sealed), str(target), str(tmp_path / "stages"), fingerprint)
+    aliases = {
+        "BASELINE_SANDBOX": str(sealed),
+        "STAGE_SANDBOX": str(tmp_path / "stages"),
+    }
+    service = StagePreparationApplicationService()
+    first = service.prepare(aliases, "stage-2", expected_fingerprint=fingerprint).fingerprint
+    second = service.prepare(aliases, "stage-2", expected_fingerprint=fingerprint).fingerprint
 
     assert first == second == fingerprint
     assert (target / "package.json").read_text(encoding="utf-8") == '{"version":1}'
@@ -72,4 +77,12 @@ def test_successor_reconstruction_rejects_corrupt_sealed_output(tmp_path: Path):
     target = tmp_path / "stages" / "stage-2"
     target.mkdir()
     with pytest.raises(Exception, match="fingerprint"):
-        StageSealingService.reconstruct_successor(str(sealed), str(target), str(tmp_path / "stages"), "sha256:" + "0" * 64)
+        StagePreparationApplicationService().prepare(
+            {
+                "BASELINE_SANDBOX": str(sealed),
+                "STAGE_SANDBOX": str(tmp_path / "stages"),
+            },
+            "stage-2",
+            expected_fingerprint="sha256:" + "0" * 64,
+            expected_source_fingerprint="sha256:" + "0" * 64,
+        )

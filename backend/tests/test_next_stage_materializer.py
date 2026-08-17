@@ -7,13 +7,14 @@ from app.services.next_stage_materializer_service import (
     NextStageMaterializerError,
     NextStageMaterializerService,
 )
+from app.services.stage_preparation_primitives import StageSandboxCopier
 
 
 def _context(sealed: Path):
     return {
         "run_id": "run-1",
         "sealed_path": str(sealed),
-        "sealed_fingerprint": "sha256:" + "1" * 64,
+        "sealed_fingerprint": StageSandboxCopier.fingerprint(sealed),
         "current_target_exact": "19.2.0",
         "remaining_route": [
             {
@@ -56,7 +57,7 @@ def test_next_stage_is_derived_from_sealed_exact_version_without_agents(tmp_path
 
     assert plan.source_exact == "19.2.0"
     assert plan.target_exact == "20.3.0"
-    assert plan.input_workspace_fingerprint == "sha256:" + "1" * 64
+    assert plan.input_workspace_fingerprint == StageSandboxCopier.fingerprint(tmp_path)
 
 
 def test_next_stage_blocks_when_sealed_package_and_lock_disagree(tmp_path: Path):

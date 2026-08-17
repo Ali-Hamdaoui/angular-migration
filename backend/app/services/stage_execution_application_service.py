@@ -217,6 +217,7 @@ class StageExecutionApplicationService:
                 validated.aliases,
                 validated.stage_id,
                 expected_fingerprint=expected_fingerprint,
+                expected_source_fingerprint=validated.aliases.get("BASELINE_SANDBOX_FINGERPRINT"),
             )
         except StagePreparationError as error:
             raise StageExecutionError(error.code, error.message, 409) from error
