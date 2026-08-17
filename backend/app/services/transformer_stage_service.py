@@ -827,6 +827,49 @@ class TransformerStageService:
             return None
         return current
 
+    def baseline_reconstruction_source(
+        self,
+        session,
+        continuation: TransformationContinuationModel,
+        checkpoint: StageCheckpointModel,
+    ) -> str | None:
+        """The physical immutable source that can reconstruct a stage-start checkpoint.
+
+        ``snapshot_workspace`` persists a lightweight checkpoint: it keeps
+        ``workspace_path`` pointing at the mutable live stage workspace and
+        records only the fingerprint.  Once the stage has legitimately changed
+        (package updates, installs), that live tree no longer reproduces the
+        checkpoint's persisted fingerprint, so the checkpoint cannot serve as
+        its own recovery authority.
+
+        For a successor stage the immutable stage-start source is the previous
+        stage's sealed output (``BASELINE_SANDBOX``), which the successor
+        workspace was copied from.  Return its resolved path only when it is
+        contained under the registered stage root and still reproduces the
+        checkpoint's persisted fingerprint; otherwise return ``None`` so
+        callers fail closed.
+        """
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None:
+            return None
+        aliases = dict(run.workspace_aliases or {})
+        baseline = aliases.get("BASELINE_SANDBOX")
+        stage_root = aliases.get("STAGE_SANDBOX")
+        if not baseline or not stage_root:
+            return None
+        try:
+            baseline_path = Path(baseline).resolve(strict=True)
+            root = Path(stage_root).resolve(strict=True)
+            baseline_path.relative_to(root)
+        except (OSError, ValueError):
+            return None
+        try:
+            if StageSandboxCopier.fingerprint(baseline_path) != checkpoint.workspace_fingerprint:
+                return None
+        except OSError:
+            return None
+        return str(baseline_path)
+
     def begin_reconstruction(
         self,
         session,

@@ -3985,13 +3985,39 @@ class TransformerOrchestrator:
         checkpoint_fingerprint = self._stage.authoritative_checkpoint_fingerprint(
             session, checkpoint
         )
+        reconstruction_source = checkpoint.workspace_path
         if checkpoint_fingerprint is None:
-            raise TransformerStageError(
-                "POST_REPAIR_CHECKPOINT_STALE"
-                if checkpoint.kind == "post_repair"
-                else "CHECKPOINT_INTEGRITY_FAILED",
-                "Recovery checkpoint is not authoritative",
+            # The checkpoint's persisted tree no longer reproduces its
+            # fingerprint.  A lightweight checkpoint (snapshot_workspace) keeps
+            # workspace_path at the mutable live workspace, so a successor
+            # stage must reconstruct from its immutable stage-start source: the
+            # previous stage's sealed output (BASELINE_SANDBOX).  Fail closed
+            # when that source is missing or tampered.
+            reconstruction_source = self._stage.baseline_reconstruction_source(
+                session, continuation, checkpoint
             )
+            if reconstruction_source is None:
+                raise TransformerStageError(
+                    "POST_REPAIR_CHECKPOINT_STALE"
+                    if checkpoint.kind == "post_repair"
+                    else "CHECKPOINT_INTEGRITY_FAILED",
+                    "Recovery checkpoint is not authoritative",
+                )
+            checkpoint_fingerprint = checkpoint.workspace_fingerprint
+        else:
+            try:
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError:
+                live = None
+            if (
+                live is not None
+                and live == checkpoint_fingerprint
+                and binding.workspace_fingerprint == checkpoint_fingerprint
+            ):
+                # Already reconstructed (idempotent replay of a completed
+                # recovery): do not swap the workspace again or write a second
+                # reconstruction ledger row.
+                return checkpoint.id, checkpoint_fingerprint
         self._stage.begin_reconstruction(
             session,
             continuation,
@@ -3999,7 +4025,7 @@ class TransformerOrchestrator:
             reason="angular_update_recovery",
         )
         new_fingerprint = self._stage.reconstruct_workspace(
-            checkpoint.workspace_path,
+            reconstruction_source,
             binding.workspace_path,
             (run.workspace_aliases or {})["STAGE_SANDBOX"],
             checkpoint_fingerprint,

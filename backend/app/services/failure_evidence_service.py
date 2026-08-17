@@ -85,6 +85,14 @@ def _installed_version_of(message: str, package: str) -> str | None:
     return match.group(1) if match else None
 
 
+_NPM_INSTALL_COMMAND_IDS = frozenset(
+    {"npm-ci-final", "npm-ci-bootstrap", "npm-install", "npm-ci"}
+)
+# ponytail: bounded stderr tail retained for install-transient classification;
+# npm emits cleanup/ENOENT errors at the tail, so 32 KiB covers realistic logs.
+_NPM_INSTALL_TRANSIENT_STDERR_TAIL = 32000
+
+
 class FailureEvidenceService:
     transient_codes: ClassVar[set[str]] = {
         "COMMAND_WORKER_LOST_REQUEUED",
@@ -265,6 +273,7 @@ class FailureEvidenceService:
 
         from app.repositories.models import (
             CommandExecutionModel,
+            CommandLogChunkModel,
             MigrationRunModel,
             StageExecutionPlanModel,
             StageWorkspaceBindingModel,
@@ -310,6 +319,25 @@ class FailureEvidenceService:
         failure_fingerprint = "sha256:" + hashlib.sha256(
             json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        stderr_tail = ""
+        if (
+            normalized["command_id"] in _NPM_INSTALL_COMMAND_IDS
+            and normalized.get("failure_code") == "COMMAND_EXIT_NONZERO"
+            and execution is not None
+        ):
+            stderr_tail = _ANSI_ESCAPE.sub(
+                "",
+                "".join(
+                    session.scalars(
+                        select(CommandLogChunkModel.text)
+                        .where(
+                            CommandLogChunkModel.execution_id == execution.id,
+                            CommandLogChunkModel.stream == "stderr",
+                        )
+                        .order_by(CommandLogChunkModel.sequence)
+                    )
+                ),
+            )[-_NPM_INSTALL_TRANSIENT_STDERR_TAIL:]
         return {
             "schema_version": "transformer-failure-evidence-v1",
             "run_id": continuation.run_id,
@@ -322,6 +350,7 @@ class FailureEvidenceService:
             "command_log_artifact_id": execution.command_log_artifact_id if execution else None,
             "result_artifact_id": execution.result_artifact_id if execution else None,
             "normalized_failure": normalized,
+            "stderr_tail": stderr_tail,
             "failure_fingerprint": failure_fingerprint,
             "prior_fingerprints": prior_fingerprints,
             "repair_policy": (stage_plan.stage_plan or {}).get("repair_policy") or {},
@@ -331,10 +360,34 @@ class FailureEvidenceService:
             or {},
         }
 
+    @staticmethod
+    def is_npm_install_transient(normalized: dict[str, object], stderr: str) -> bool:
+        """Deterministic bounded environment/install transient signature.
+
+        True only when a known npm clean/install command's stderr shows BOTH
+        npm's node_modules cleanup lock failure (EBUSY/EPERM) AND a
+        subsequently missing native package executable (spawnSync ... ENOENT).
+        The narrow conjunction avoids classifying application errors as
+        transient environment failures.
+        """
+        if normalized.get("command_id") not in _NPM_INSTALL_COMMAND_IDS:
+            return False
+        text = _ANSI_ESCAPE.sub("", stderr or "").lower()
+        cleanup_locked = "cleanup" in text and ("ebusy" in text or "eperm" in text)
+        native_binary_missing = "enoent" in text and (
+            "spawnsync" in text or ".exe" in text or "esbuild" in text
+        )
+        return cleanup_locked and native_binary_missing
+
     def classify(self, evidence: dict[str, object]) -> FailureRoute:
         code = str((evidence["normalized_failure"] or {}).get("error_code") or "")
         if evidence["failure_fingerprint"] in evidence["prior_fingerprints"]:
             return FailureRoute.NO_PROGRESS
+        if self.is_npm_install_transient(
+            evidence.get("normalized_failure") or {},
+            str(evidence.get("stderr_tail") or ""),
+        ):
+            return FailureRoute.ENVIRONMENT_TRANSIENT
         if self.is_angular_update_dirty_workspace(evidence):
             return FailureRoute.ANGULAR_UPDATE_COMMAND_POLICY
         if self.is_angular_update_peer_dependency_conflict(evidence):

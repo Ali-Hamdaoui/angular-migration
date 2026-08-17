@@ -101,26 +101,48 @@ Use [docs/developer-setup.md](docs/developer-setup.md) for PowerShell-compatible
 
 ## Run The Solution Locally
 
-Start the backend and frontend in two separate PowerShell terminals:
+The local launchers target Windows PowerShell. Install Python 3.12+, Node.js/npm,
+and Git first. Then install the project dependencies once from the repository
+root:
+
+```powershell
+cd backend
+python -m venv .venv
+. .\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+python -m pip install pytest httpx
+
+cd ..\frontend
+npm install
+cd ..
+```
+
+Start the backend and frontend in two separate PowerShell terminals. Run these
+commands from the repository root:
+
+Terminal 1 — backend:
 
 ```powershell
 .\scripts\dev-backend.ps1
 ```
 
+This applies the database migrations, starts FastAPI at
+`http://127.0.0.1:8000`, and starts the Transformer/command worker. The default
+allowed migration target is `C:\amd`; provide a different non-root directory
+when needed:
+
+```powershell
+.\scripts\dev-backend.ps1 -TargetRoot 'C:\path\to\migration-target'
+```
+
+Terminal 2 — frontend:
+
 ```powershell
 .\scripts\dev-frontend.ps1
 ```
 
-The scripts launch:
-
-- Backend: database migrations, FastAPI/Uvicorn, and the separate Transformer/command worker
-- Frontend: $env:NEXT_PUBLIC_BACKEND_URL="http://127.0.0.1:8000"
-            npm run dev
-
-The backend launcher sets `ALLOWED_TARGET_ROOTS` to
-`C:\Users\hamdaoui.ali\Downloads\MSA-COMMON-STG1` by default. Override it when
-needed with `-TargetRoot`; the API and Transformer remain separate processes
-under the single backend launcher.
+This starts the Next.js Control Tower, configured to use the backend at
+`http://127.0.0.1:8000`.
 
 If you want to validate the full workspace after startup, run:
 
