@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.preflight import PreflightSnapshot
-from app.domain.contracts import RunStatus
+from app.domain.contracts import RunStatus, WorkflowEventType
 from app.repositories.models import ActiveRunClaimModel, ArtifactMetadataModel, Base, MigrationRunModel, PathValidationModel, SourceIntakeJobModel, TargetReservationModel, WorkflowEventModel
 from app.repositories.preflight_models import ApprovalGateModel, PreflightModel
 from app.services.migration_run_service import CreateRunRequest, MigrationRunError, MigrationRunService
@@ -361,6 +361,40 @@ def test_source_intake_attempt_identity_does_not_change_when_reclaimed(tmp_path:
     finally:
         dispatcher._executor.shutdown(wait=True)
     assert claimed is not None and claimed.attempt == 2
+
+
+def test_source_intake_recovery_reuses_existing_started_event(tmp_path: Path):
+    service, scope, _ = _service(tmp_path)
+    created = service.create(_request("started-event-recovery"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        job = SourceIntakeJobModel(
+            id="intake-started-event", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="running", actor="operator", idempotency_key="started-event-job", attempt=2,
+            queued_at=datetime.now(UTC), started_at=datetime.now(UTC), state_version=run.state_version,
+        )
+        session.add(job)
+        session.add(WorkflowEventModel(
+            id="event-existing-started", run_id=created.run_id,
+            event_type=WorkflowEventType.SOURCE_INTAKE_STARTED.value,
+            idempotency_key="started-event-job:started", actor="operator",
+            reason="durable source-intake worker started", sequence=999,
+            payload={"worker_id": "previous-worker"}, occurred_at=datetime.now(UTC),
+        ))
+        session.flush()
+        dispatcher = SourceIntakeDispatcher(Settings(
+            _env_file=None, artifact_root=tmp_path / "artifacts", workspace_root=tmp_path / "workspaces",
+            snapshot_root=tmp_path / "snapshots", delivery_root=tmp_path / "delivery", sandbox_root=tmp_path / "sandboxes",
+        ))
+        try:
+            dispatcher._record_started_event(session, created.run_id, job)
+        finally:
+            dispatcher._executor.shutdown(wait=True)
+        assert len(list(session.scalars(select(WorkflowEventModel).where(
+            WorkflowEventModel.run_id == created.run_id,
+            WorkflowEventModel.idempotency_key == "started-event-job:started",
+        )))) == 1
 
 
 def test_start_replay_rejects_different_request_payload(tmp_path: Path):

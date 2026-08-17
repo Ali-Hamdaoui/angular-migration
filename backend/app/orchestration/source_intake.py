@@ -109,15 +109,7 @@ class SourceIntakeDispatcher:
                 run = session.get(MigrationRunModel, run_id)
                 if run is None:
                     return
-                StateTransitionService(session).append_audit_event(
-                    run_id=run_id,
-                    idempotency_key=f"{job.idempotency_key}:started",
-                    event_type=WorkflowEventType.SOURCE_INTAKE_STARTED,
-                    actor=job.actor,
-                    reason="durable source-intake worker started",
-                    occurred_at=datetime.now(UTC),
-                    payload={"job_id": job.id, "worker_id": self._worker_id, "attempt": job.attempt},
-                )
+                self._record_started_event(session, run_id, job)
                 expected_version = run.state_version
 
             snapshot = SourceSnapshotApplicationService(self._settings).create(
@@ -502,6 +494,23 @@ class SourceIntakeDispatcher:
             job.worker_id = self._worker_id
             job.started_at = datetime.now(UTC)
             return job
+
+    def _record_started_event(self, session, run_id: str, job: SourceIntakeJobModel) -> None:
+        started_key = f"{job.idempotency_key}:started"
+        if session.scalar(select(WorkflowEventModel).where(
+            WorkflowEventModel.run_id == run_id,
+            WorkflowEventModel.idempotency_key == started_key,
+        )) is not None:
+            return
+        StateTransitionService(session).append_audit_event(
+            run_id=run_id,
+            idempotency_key=started_key,
+            event_type=WorkflowEventType.SOURCE_INTAKE_STARTED,
+            actor=job.actor,
+            reason="durable source-intake worker started",
+            occurred_at=datetime.now(UTC),
+            payload={"job_id": job.id, "worker_id": self._worker_id, "attempt": job.attempt},
+        )
 
     def _set_status(self, job_id: str, status: str) -> None:
         with session_scope() as session:
