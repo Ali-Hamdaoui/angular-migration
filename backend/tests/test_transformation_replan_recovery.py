@@ -9,6 +9,7 @@ import pytest
 
 from app.repositories.models import (
     CommandExecutionModel,
+    ActivePlanVersionModel,
     CompatibilityCatalogueModel,
     CompatibilityResolutionModel,
     FailureIntelligenceModel,
@@ -21,6 +22,7 @@ from app.repositories.models import (
     StageWorkspaceBindingModel,
     TransformationContinuationModel,
     TransformationReplanRecoveryModel,
+    WorkflowEventModel,
 )
 from app.repositories.session import session_scope
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -149,6 +151,16 @@ def _seed(tmp_path: Path, *, taxonomy: str = "dependency") -> TransformationRepl
             idempotency_key=f"cont-{run_id}", request_checksum="sha256:" + "b" * 64,
             state_version=3, created_at=NOW, updated_at=NOW,
         ))
+        session.add(ActivePlanVersionModel(
+            id=f"active-plan-{run_id}", run_id=run_id, scope="migration",
+            migration_plan_id=plan_id, stage_plan_id=None, version=1,
+            state_version=3, updated_at=NOW,
+        ))
+        session.add(ActivePlanVersionModel(
+            id=f"active-stage-{run_id}", run_id=run_id, scope=stage_id,
+            migration_plan_id=plan_id, stage_plan_id=stage_plan_id, version=1,
+            state_version=3, updated_at=NOW,
+        ))
         if existing_catalogue is None:
             session.add(CompatibilityCatalogueModel(
                 id=f"catalogue-{run_id}", version=catalogue_version, checksum=catalogue_checksum,
@@ -189,12 +201,20 @@ def test_generic_replan_creates_new_pending_plan_and_g06(tmp_path: Path):
         old_gate = session.query(G06ApprovalModel).filter_by(run_id=request.run_id, gate_id="G06").order_by(G06ApprovalModel.created_at).first()
         new_gate = session.get(G06ApprovalModel, result.new_g06_id)
         assert continuation.plan_id == result.new_plan_id
+        migration_pointer = session.query(ActivePlanVersionModel).filter_by(run_id=request.run_id, scope="migration").one()
+        stage_pointer = session.query(ActivePlanVersionModel).filter_by(run_id=request.run_id, scope=request.stage_id).one()
+        assert migration_pointer.migration_plan_id == result.new_plan_id
+        assert stage_pointer.stage_plan_id == result.new_stage_plan_id
         assert old_plan.status == "stale"
         assert old_gate.status == "stale"
         assert new_gate.status == "pending"
         replanned_stage = session.get(StageExecutionPlanModel, result.new_stage_plan_id)
         assert replanned_stage.stage_plan["commands"].get("installed_migration_fallback")
         assert replanned_stage.checksum != request.current_stage_plan_checksum
+        assert result.plan_diff["semantic_change"] == "deterministic-stage-replan"
+        assert session.query(WorkflowEventModel).filter_by(
+            run_id=request.run_id, event_type="TRANSFORMATION_REPLAN_CREATED"
+        ).count() == 1
 
 
 def test_replan_replay_is_durable_and_idempotent(tmp_path: Path):

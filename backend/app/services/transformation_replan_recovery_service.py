@@ -22,11 +22,13 @@ from app.repositories.models import (
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageWorkspaceBindingModel,
+    ActivePlanVersionModel,
     TransformationContinuationModel,
     TransformationReplanRecoveryModel,
 )
 from app.repositories.session import session_scope
 from app.domain.planning import PlanGenerationRequest
+from app.state.event_sequencer import append_workflow_event
 from app.services.planning_application_service import PlanningApplicationService
 from app.services.project_capability_service import ProjectCapabilityService
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -78,6 +80,7 @@ class TransformationReplanRecoveryResult(BaseModel):
     old_plan_stale: bool = True
     old_g06_stale: bool = True
     human_approval_required: bool = True
+    plan_diff: dict[str, Any] = Field(default_factory=dict)
     idempotent_replay: bool = False
 
 
@@ -157,6 +160,15 @@ class TransformationReplanRecoveryService:
                 "artifacts": artifact_checksums,
             })
             artifact_set_checksum = _checksum({"ids": sorted(artifact_ids), "checksums": dict(sorted(artifact_checksums.items()))})
+            plan_diff = {
+                "from_plan_id": plan.id,
+                "from_plan_checksum": plan.checksum,
+                "to_plan_id": new_plan_id,
+                "to_plan_checksum": new_plan["checksum"],
+                "from_stage_plan_checksum": stage_plan.checksum,
+                "to_stage_plan_checksum": new_stage_plan["checksum"],
+                "semantic_change": "deterministic-stage-replan",
+            }
 
             plan.status = "stale"
             stage_plan.status = "stale"
@@ -191,6 +203,16 @@ class TransformationReplanRecoveryService:
                 comment=None, stale_reason=None, state_version=state_version,
                 event_sequence=stage_plan.event_sequence + 1, created_at=now, updated_at=now,
             ))
+            self._activate_replan_pointers(
+                session,
+                run_id=request.run_id,
+                stage_id=request.stage_id,
+                plan_id=new_plan_id,
+                stage_plan_id=new_stage_plan_id,
+                version=new_version,
+                state_version=state_version,
+                now=now,
+            )
             continuation.status = "waiting_gate"
             continuation.current_node = "wait_g06"
             continuation.worker_id = None
@@ -209,6 +231,18 @@ class TransformationReplanRecoveryService:
                 recovery_id=f"recovery-{recovery_hash}", new_plan_id=new_plan_id,
                 new_plan_checksum=new_plan["checksum"], new_stage_plan_id=new_stage_plan_id,
                 new_stage_plan_checksum=new_stage_plan["checksum"], new_g06_id=new_g06_id,
+                plan_diff=plan_diff,
+            )
+            append_workflow_event(
+                session,
+                run_id=request.run_id,
+                stage_id=request.stage_id,
+                event_type="TRANSFORMATION_REPLAN_CREATED",
+                idempotency_key=f"replan:event:{request.idempotency_key}",
+                actor="transformation-recovery",
+                reason="deterministic transformation replan created",
+                payload=plan_diff | {"recovery_id": result.recovery_id},
+                occurred_at=now,
             )
             session.add(TransformationReplanRecoveryModel(
                 id=result.recovery_id, run_id=request.run_id, stage_id=request.stage_id,
@@ -223,6 +257,48 @@ class TransformationReplanRecoveryService:
             ))
             session.flush()
             return result
+
+    @staticmethod
+    def _activate_replan_pointers(
+        session,
+        *,
+        run_id: str,
+        stage_id: str,
+        plan_id: str,
+        stage_plan_id: str,
+        version: int,
+        state_version: int,
+        now: datetime,
+    ) -> None:
+        values = (
+            ("migration", None),
+            (stage_id, stage_plan_id),
+        )
+        for scope, scoped_stage_plan_id in values:
+            pointer = session.scalar(
+                select(ActivePlanVersionModel).where(
+                    ActivePlanVersionModel.run_id == run_id,
+                    ActivePlanVersionModel.scope == scope,
+                )
+            )
+            if pointer is None:
+                pointer = ActivePlanVersionModel(
+                    id=f"active-replan-{hashlib.sha256(f'{run_id}:{scope}:{version}'.encode()).hexdigest()[:20]}",
+                    run_id=run_id,
+                    scope=scope,
+                    migration_plan_id=plan_id,
+                    stage_plan_id=scoped_stage_plan_id,
+                    version=version,
+                    state_version=state_version,
+                    updated_at=now,
+                )
+                session.add(pointer)
+            else:
+                pointer.migration_plan_id = plan_id
+                pointer.stage_plan_id = scoped_stage_plan_id
+                pointer.version = version
+                pointer.state_version = state_version
+                pointer.updated_at = now
 
     def _deterministic_replan(
         self,
