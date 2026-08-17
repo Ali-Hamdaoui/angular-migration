@@ -39,7 +39,10 @@ def test_dependency_rules_are_capability_driven():
     modern = StageKnowledgeRegistry.dependency_dispositions(entry, [])
     assert {item["package"] for item in legacy} >= {"tslint", "package-lock"}
     assert not any(item["package"] == "tslint" for item in modern)
-    assert entry.migration_actions == ({"action": "run-official-angular-migrations", "package": "@angular/core"},)
+    assert {item["action"] for item in entry.migration_actions} == {
+        "run-official-angular-migrations",
+        "authorize-installed-migration-fallback",
+    }
 
 
 def test_registry_entries_cover_envelope():

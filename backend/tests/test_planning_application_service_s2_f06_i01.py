@@ -85,7 +85,10 @@ def test_accepts_current_catalogue_version():
 
 def test_fallback_is_opt_in_and_uses_bounded_installed_migration_command():
     result = PlanningApplicationService().generate(
-        request(installed_migration_fallback=True)
+        request(
+            installed_migration_fallback=True,
+            capability_facts=({"key": "policy:installed-migration-fallback", "value": "approved"},),
+        )
     )
     fallback = result.first_stage_plan.commands["installed_migration_fallback"][0]
     assert fallback.command_id == "angular-migrate-installed"
@@ -97,6 +100,11 @@ def test_fallback_is_opt_in_and_uses_bounded_installed_migration_command():
         "19.2.0",
     )
     assert fallback.shell is False
+
+
+def test_fallback_requires_an_approved_stage_policy():
+    with pytest.raises(PlanningApplicationError, match="approved stage-plan policy"):
+        PlanningApplicationService().generate(request(installed_migration_fallback=True))
 
 
 def test_fallback_rejects_unbounded_bindings():

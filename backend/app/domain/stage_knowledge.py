@@ -42,7 +42,10 @@ def knowledge_entry_for(
         "validate": ("build", "test"),
         "dependencies": _dependency_changes(source_major),
         "rules": _dependency_rules(source_major, target_major),
-        "actions": ({"action": "run-official-angular-migrations", "package": "@angular/core"},),
+        "actions": (
+            {"action": "run-official-angular-migrations", "package": "@angular/core"},
+            {"action": "authorize-installed-migration-fallback", "package": "@angular/core"},
+        ),
         "risks": _risks(source_major),
     }
     return StageKnowledgeEntry(

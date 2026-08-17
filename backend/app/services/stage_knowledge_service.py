@@ -69,6 +69,24 @@ class StageKnowledgeRegistry:
             )
         return tuple(changes)
 
+    @staticmethod
+    def allows_installed_migration_fallback(
+        entry: StageKnowledgeEntry,
+        capabilities: list | tuple = (),
+    ) -> bool:
+        observed = {
+            capability["key"] if isinstance(capability, dict) else capability.key:
+            capability["value"] if isinstance(capability, dict) else capability.value
+            for capability in capabilities
+        }
+        return (
+            observed.get("policy:installed-migration-fallback") == "approved"
+            and any(
+                action.get("action") == "authorize-installed-migration-fallback"
+                for action in entry.migration_actions
+            )
+        )
+
     def persist(self, entry: StageKnowledgeEntry, *, actor: str | None = None, reason: str | None = None) -> StageKnowledgeEntryModel:
         """Persist a knowledge entry version with an audit record (F17-03)."""
         with self._session_scope() as session:

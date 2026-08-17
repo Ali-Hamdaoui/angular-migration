@@ -88,6 +88,15 @@ class StageExecutionPlanService:
             "tests": (self._command("npm-script-test-ci", request, {"test_script": request.resolved_scripts["test"], "test_watch_flag": "--watch=false"}),),
             "lint": (self._command("npm-script-lint", request, {"lint_script": request.resolved_scripts["lint"]}),) if "lint" in request.resolved_scripts else (),
         }
+        if request.installed_migration_fallback and not StageKnowledgeRegistry.allows_installed_migration_fallback(
+            StageKnowledgeRegistry().entry(_major(source_family), _major(target_family)),
+            request.capability_facts,
+        ):
+            raise PlanningApplicationError(
+                "INSTALLED_MIGRATION_FALLBACK_NOT_AUTHORIZED",
+                "Installed Angular migrations require an approved stage-plan policy.",
+                409,
+            )
         if request.installed_migration_fallback:
             commands["installed_migration_fallback"] = (
                 self._command(

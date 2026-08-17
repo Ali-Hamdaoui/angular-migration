@@ -50,6 +50,8 @@ _WILDCARD_EXECUTABLE: Final = "*"
 
 _DEFAULT_RUNTIME_PROFILE: Final = "source-runtime-profile"
 _DEFAULT_NETWORK_PROFILE: Final = "none"
+_INSTALLED_MIGRATION_HELPER: Final = (Path(__file__).resolve().parent / "run_installed_migrations.cjs").resolve()
+_LEGACY_INSTALLED_MIGRATION_HELPER: Final = "backend/app/command_execution/run_installed_migrations.cjs"
 _LIVE_LOG_FIXTURE_ARGUMENTS: Final = (
     "-c",
     "import sys,time; [print(f'MT-003 live line {i}', flush=True) or time.sleep(0.7) for i in range(1,13)]",
@@ -197,12 +199,6 @@ def _transformation_command_definitions() -> tuple[CommandDefinition, ...]:
             ANGULAR_UPDATE_V4_RENDERER.executable_aliases,
         ),
         CommandDefinition(
-            ANGULAR_INSTALLED_MIGRATION_RENDERER.command_id,
-            ANGULAR_INSTALLED_MIGRATION_RENDERER.executable,
-            ANGULAR_INSTALLED_MIGRATION_RENDERER.argument_patterns,
-            ANGULAR_INSTALLED_MIGRATION_RENDERER.executable_aliases,
-        ),
-        CommandDefinition(
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.command_id,
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.executable,
             NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER.argument_patterns,
@@ -327,23 +323,34 @@ class CommandPolicy:
         if request.cancellation_policy is not CancellationPolicy.TERMINATE_PROCESS_TREE:
             raise CommandPolicyViolation("Cancellation policy is not supported by the Sprint 0 supervisor")
 
-        definition = self.registry.find(request.command_id, tuple(request.arguments))
-        executable = self._resolve_executable(definition, request)
-        working_directory = self._resolve_working_directory(request)
+        lookup_arguments = tuple(request.arguments)
+        normalized_arguments = lookup_arguments
+        if request.command_id == "angular-migrate-installed":
+            normalized_arguments, lookup_arguments = self._installed_migration_arguments(lookup_arguments)
+        definition = self.registry.find(request.command_id, lookup_arguments)
+        normalized_request = request.model_copy(update={"arguments": list(normalized_arguments)})
+        executable = self._resolve_executable(definition, normalized_request, argument_lookup=lookup_arguments)
+        working_directory = self._resolve_working_directory(normalized_request)
         if not working_directory.is_dir():
             raise CommandPolicyViolation("Working directory must exist inside the sandbox root")
 
         return StructuredCommandRequest(
-            dto=request,
+            dto=normalized_request,
             definition=definition,
-            command=(executable, *request.arguments),
+            command=(executable, *normalized_arguments),
             working_directory=working_directory,
             environment_allowlist=self.environment_allowlist,
-            environment_overrides={**self.environment_overrides, **request.environment_overrides},
+            environment_overrides={**self.environment_overrides, **normalized_request.environment_overrides},
             runtime_bindings=dict(self.runtime_bindings),
         )
 
-    def _resolve_executable(self, definition: CommandDefinition, request: CommandRequestDto) -> str:
+    def _resolve_executable(
+        self,
+        definition: CommandDefinition,
+        request: CommandRequestDto,
+        *,
+        argument_lookup: tuple[str, ...] | None = None,
+    ) -> str:
         """Resolve the concrete executable path, fail-closed on descriptor mismatch."""
         if definition.command_id == _RUNTIME_PROBE_COMMAND_ID:
             return self._resolve_runtime_probe(request)
@@ -352,7 +359,7 @@ class CommandPolicy:
             raise CommandPolicyViolation("Executable does not match the registered command definition")
         if binding is not None and binding.kind.value not in definition.allowed_executables:
             raise CommandPolicyViolation("Bound runtime kind does not match the registered command definition")
-        if not definition.matches_arguments(tuple(request.arguments)):
+        if not definition.matches_arguments(argument_lookup or tuple(request.arguments)):
             raise CommandPolicyViolation("Arguments do not match the registered command definition")
         if binding is None:
             return request.executable
@@ -368,6 +375,13 @@ class CommandPolicy:
                 f"{resolved} but its sha256 {actual} does not match the expected {binding.sha256}"
             )
         return str(resolved)
+
+    @staticmethod
+    def _installed_migration_arguments(arguments: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        if not arguments or arguments[0] not in {_LEGACY_INSTALLED_MIGRATION_HELPER, str(_INSTALLED_MIGRATION_HELPER)}:
+            raise CommandPolicyViolation("Installed migration helper must be the Factory-owned asset")
+        normalized = (str(_INSTALLED_MIGRATION_HELPER), *arguments[1:])
+        return normalized, (_LEGACY_INSTALLED_MIGRATION_HELPER, *arguments[1:])
 
     def _resolve_runtime_probe(self, request: CommandRequestDto) -> str:
         """PATH-independent probe: executable must be an absolute path under a runtime root."""
