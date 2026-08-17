@@ -445,7 +445,11 @@ class TransformerOrchestrator:
                 if execution.status == "succeeded":
                     step.status = "PASSED"
                     step.completed_at = datetime.now(UTC)
-                    attempt = self._latest_repair(session, continuation)
+                    # A first-pass Angular update has no repair attempt. The
+                    # successful command path must continue without requiring
+                    # repair lineage; repair lineage is only mandatory for
+                    # repair-specific nodes.
+                    attempt = self._latest_repair(session, continuation, required=False)
                     if attempt is not None and attempt.status == "applied_verified":
                         attempt.status = "migration_retried"
                         attempt.updated_at = datetime.now(UTC)
@@ -3779,7 +3783,7 @@ class TransformerOrchestrator:
         return checkpoint.id, new_fingerprint
 
     @staticmethod
-    def _latest_repair(session, continuation, *, statuses=None, exclude_statuses=None):
+    def _latest_repair(session, continuation, *, statuses=None, exclude_statuses=None, required=True):
         query = session.query(RepairAttemptModel).filter_by(
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
@@ -3791,7 +3795,7 @@ class TransformerOrchestrator:
         if exclude_statuses:
             query = query.filter(~RepairAttemptModel.status.in_(exclude_statuses))
         attempt = query.order_by(RepairAttemptModel.attempt_number.desc()).first()
-        if attempt is None:
+        if attempt is None and required:
             raise TransformerStageError("REPAIR_ATTEMPT_MISSING", "Repair attempt is missing")
         return attempt
 
