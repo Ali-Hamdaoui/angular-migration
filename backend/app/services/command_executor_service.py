@@ -275,6 +275,14 @@ def _command_environment_overrides(
     exact and governed by the stage plan.
     """
     overrides = _runtime_path_overrides(bindings)
+    # Chrome is intentionally not part of the general environment allowlist:
+    # it is a governed executable dependency for Karma/browser tests.  Forward
+    # only an explicitly configured, existing binary path so stage commands
+    # receive the same browser configuration as baseline validation without
+    # opening the sanitized command environment to arbitrary variables.
+    chrome_bin = os.environ.get("CHROME_BIN")
+    if chrome_bin and Path(chrome_bin).is_file():
+        overrides["CHROME_BIN"] = str(Path(chrome_bin).resolve())
     if command_id == "angular-update-exact":
         overrides["NG_DISABLE_VERSION_CHECK"] = "true"
     return overrides

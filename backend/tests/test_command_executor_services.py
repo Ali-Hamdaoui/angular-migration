@@ -114,7 +114,18 @@ def make_mock_supervisor(status: CommandStatus = CommandStatus.SUCCEEDED) -> Mag
     return mock
 
 
-def test_angular_update_environment_disables_only_cli_latest_redirect() -> None:
+def test_angular_update_environment_forwards_configured_chrome_binary(tmp_path: Path, monkeypatch) -> None:
+    chrome = tmp_path / "chrome.exe"
+    chrome.write_bytes(b"chrome")
+    monkeypatch.setenv("CHROME_BIN", str(chrome))
+
+    assert _command_environment_overrides("npm-script-test-ci", {}) == {
+        "CHROME_BIN": str(chrome.resolve()),
+    }
+
+
+def test_angular_update_environment_disables_only_cli_latest_redirect(monkeypatch) -> None:
+    monkeypatch.delenv("CHROME_BIN", raising=False)
     assert _command_environment_overrides("angular-update-exact", {}) == {
         "NG_DISABLE_VERSION_CHECK": "true",
     }
