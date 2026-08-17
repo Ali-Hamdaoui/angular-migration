@@ -62,7 +62,7 @@ from app.domain.runtime_execution import (
     RuntimeExecutableKind,
     RuntimeRequirement,
 )
-from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel
+from app.repositories.models import ExecutionProfileModel, StageExecutionPlanModel, StageRuntimeBindingModel
 from app.repositories.models.workflow import (
     ArtifactMetadataModel,
     CommandAuthorizationAuditModel,
@@ -201,6 +201,45 @@ def _runtime_bindings_from_profile(profile: dict) -> dict[str, RuntimeExecutable
             "Declared runtime versions of the execution profile cannot be bound in the runtime matrix: "
             + ", ".join(missing),
         )
+    return bindings
+
+
+def _runtime_bindings_from_stage(session, stage_id: str | None) -> dict[str, RuntimeExecutableDescriptor]:
+    """Load the exact, checksum-bound runtime selected for one stage."""
+    if not stage_id:
+        return {}
+    rows = list(
+        session.scalars(
+            select(StageRuntimeBindingModel)
+            .where(StageRuntimeBindingModel.stage_id == stage_id)
+        ).all()
+    )
+    if not rows:
+        return {}
+    expected = {kind.value for kind in RuntimeExecutableKind}
+    if {row.kind for row in rows} != expected or any(row.status != "bound" for row in rows):
+        raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "The stage runtime binding is incomplete or blocked")
+    if len({row.runtime_id for row in rows}) != 1:
+        raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "Stage Node/npm/npx bindings do not share one installation")
+    bindings: dict[str, RuntimeExecutableDescriptor] = {}
+    for row in rows:
+        if not row.resolved_path or not row.version_exact or not row.sha256 or not row.runtime_id:
+            raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "The stage runtime binding is incomplete")
+        try:
+            kind = RuntimeExecutableKind(row.kind)
+            bindings[row.kind] = RuntimeExecutableDescriptor(
+                kind=kind,
+                executable_name=Path(row.resolved_path).name,
+                resolved_path=row.resolved_path,
+                version_exact=row.version_exact,
+                sha256=row.sha256,
+                installation_root=str(Path(row.resolved_path).parent),
+                source=row.source or "stage-runtime-binding",
+                runtime_id=row.runtime_id,
+                probed_at=row.created_at,
+            )
+        except (TypeError, ValueError) as error:
+            raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "The stage runtime binding is invalid") from error
     return bindings
 
 
@@ -1242,13 +1281,16 @@ class CommandExecutorService:
             # Fail-closed runtime binding: resolve the profile's executables to
             # PATH-independent, checksum-bound descriptors.  Probing runs
             # outside the database session (no transaction across processes).
-            runtime_bindings = _runtime_bindings_from_profile(selected_profile)
+            runtime_bindings = _runtime_bindings_from_stage(session, stage_id)
+            runtime_profile_id = f"stage-runtime:{stage_id}" if runtime_bindings else execution_profile_id
+            if not runtime_bindings:
+                runtime_bindings = _runtime_bindings_from_profile(selected_profile)
             if runtime_bindings:
                 policy = CommandPolicy(
                     sandbox_root=root,
                     registry=CommandRegistry(),
                     working_directory_aliases=worker_workspace_aliases(aliases, workspace_alias),
-                    runtime_profiles=frozenset({execution_profile_id}),
+                    runtime_profiles=frozenset({execution_profile_id, runtime_profile_id}),
                     network_profiles=frozenset({network_profile}),
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
                     environment_overrides=_runtime_path_overrides(runtime_bindings),

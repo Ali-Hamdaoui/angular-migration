@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.artifact_store import LocalFilesystemArtifactStore
 from app.domain.command import ANGULAR_UPDATE_V2_RENDERER, ANGULAR_UPDATE_V3_RENDERER
+from app.domain.runtime_execution import RuntimeExecutableKind, RuntimeExecutableDescriptor
 from app.domain.contracts import ArtifactType, RunStatus, WorkflowEventType
 from app.repositories.models import (
     ArtifactMetadataModel,
@@ -23,12 +24,14 @@ from app.repositories.models import (
     G06ApprovalModel,
     MigrationPlanModel,
     MigrationRunModel,
+    MigrationStageModel,
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
     StageReconstructionRecordModel,
     StageStepModel,
     StageWorkspaceBindingModel,
+    StageRuntimeBindingModel,
     TransformationContinuationModel,
 )
 from app.repositories.session import session_scope
@@ -43,6 +46,7 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.stage_runtime_service import StageRuntimeApplicationService, StageRuntimeError
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
@@ -76,11 +80,13 @@ class TransformerStageService:
         scope=session_scope,
         stage_execution=None,
         command_executor=None,
+        stage_runtime_service=None,
         now_provider=None,
     ) -> None:
         self._scope = scope
         self._stage_execution = stage_execution or StageExecutionApplicationService(scope=scope)
         self._command_executor = command_executor or CommandExecutorService()
+        self._stage_runtime = stage_runtime_service or StageRuntimeApplicationService()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
     def prepare(self, continuation_id: str, worker_id: str) -> str:
@@ -182,6 +188,9 @@ class TransformerStageService:
             return preparation.fingerprint
 
     def runtime_binding(self, session, continuation: TransformationContinuationModel) -> dict[str, object]:
+        stage_runtime = self._stage_runtime_rows(session, continuation)
+        if stage_runtime is not None:
+            return stage_runtime
         evidence, selected = self.runtime_binding_evidence(session, continuation)
         if evidence["mismatches"]:
             raise TransformerStageError(
@@ -194,6 +203,82 @@ class TransformerStageService:
             "checksum": evidence["actual"]["checksum"],
             "node_executable": selected.get("node_executable"),
             "package_manager_executable": selected.get("package_manager_executable", "npm"),
+        }
+
+    def resolve_stage_runtime(self, session, continuation: TransformationContinuationModel) -> dict[str, object]:
+        """Resolve and persist the exact runtime binding for this stage."""
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        if stage is None:
+            raise TransformerStageError("STAGE_NOT_FOUND", "The transformation stage is unavailable")
+        try:
+            binding = self._stage_runtime.resolve_stage(
+                stage.id,
+                stage.source_version_family or "",
+                stage.target_version_family or "",
+            )
+            self._stage_runtime.record_binding(continuation.run_id, binding, actor="transformer")
+        except StageRuntimeError as error:
+            raise TransformerStageError(error.code, error.message) from error
+        if binding.status != "bound":
+            raise TransformerStageError(
+                "STAGE_RUNTIME_UNAVAILABLE",
+                binding.blocked_reason or "No governed runtime satisfies this stage",
+            )
+        return self.runtime_binding(session, continuation)
+
+    @staticmethod
+    def _stage_runtime_rows(session, continuation: TransformationContinuationModel) -> dict[str, object] | None:
+        """Read one complete durable stage binding; return None for legacy callers."""
+        if not hasattr(session, "scalars") or not getattr(continuation, "current_stage_id", None):
+            return None
+        rows = list(
+            session.scalars(
+                select(StageRuntimeBindingModel)
+                .where(StageRuntimeBindingModel.stage_id == continuation.current_stage_id)
+                .order_by(StageRuntimeBindingModel.kind.asc())
+            ).all()
+        )
+        if not rows:
+            return None
+        expected = {kind.value for kind in RuntimeExecutableKind}
+        if {row.kind for row in rows} != expected or any(row.status != "bound" for row in rows):
+            raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "The durable stage runtime binding is incomplete or blocked")
+        if len({row.runtime_id for row in rows}) != 1:
+            raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "Stage Node/npm/npx bindings do not share one installation")
+        descriptors: dict[str, RuntimeExecutableDescriptor] = {}
+        for row in rows:
+            if not row.resolved_path or not row.version_exact or not row.sha256 or not row.runtime_id:
+                raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "The durable stage runtime binding is incomplete")
+            try:
+                kind = RuntimeExecutableKind(row.kind)
+                descriptors[row.kind] = RuntimeExecutableDescriptor(
+                    kind=kind,
+                    executable_name=Path(row.resolved_path).name,
+                    resolved_path=row.resolved_path,
+                    version_exact=row.version_exact,
+                    sha256=row.sha256,
+                    installation_root=str(Path(row.resolved_path).parent),
+                    source=row.source or "stage-runtime-binding",
+                    runtime_id=row.runtime_id,
+                    probed_at=row.created_at,
+                )
+            except (TypeError, ValueError) as error:
+                raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "The durable stage runtime binding is invalid") from error
+        checksum = "sha256:" + hashlib.sha256(
+            json.dumps(
+                {key: value.model_dump(mode="json") for key, value in sorted(descriptors.items())},
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode()
+        ).hexdigest()
+        return {
+            "profile_id": f"stage-runtime:{continuation.current_stage_id}",
+            "checksum": checksum,
+            "node_executable": descriptors[RuntimeExecutableKind.NODE.value].resolved_path,
+            "package_manager_executable": descriptors[RuntimeExecutableKind.NPM.value].resolved_path,
+            "npx_executable": descriptors[RuntimeExecutableKind.NPX.value].resolved_path,
+            "runtime_bindings": descriptors,
         }
 
     @staticmethod

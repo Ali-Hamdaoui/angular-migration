@@ -286,7 +286,7 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             try:
-                self._stage.runtime_binding(session, continuation)
+                self._stage.resolve_stage_runtime(session, continuation)
             except TransformerStageError as error:
                 self._block(session, continuation, error.code, error.message)
                 return
