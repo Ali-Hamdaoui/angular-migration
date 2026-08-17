@@ -14,6 +14,7 @@ from app.domain.runtime_execution import (
     RuntimeRequirement,
     RuntimeRequirementBinding,
 )
+from app.domain.execution_profile import Version
 from app.domain.stage_runtime import StageRuntimeBinding, StageRuntimeRequirement
 from app.repositories.models import ExecutionProfileModel, MigrationRunModel, MigrationStageModel, StageRuntimeBindingModel
 from app.repositories.session import session_scope
@@ -99,12 +100,13 @@ class StageRuntimeApplicationService:
             kind=RuntimeExecutableKind.NODE,
             runtime_id=runtime_id,
             minimum_version=entry.node_minimum or entry.node_exact or f"{entry.node_major}.0.0",
+            allowed_major_versions=tuple(sorted(_range_majors(entry.source_node_ranges) & _range_majors(entry.target_node_ranges))),
         )
         npm_minimum = f"{entry.npm_major}.0.0"
         requirements = (
             node_requirement,
-            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, minimum_version=npm_minimum),
-            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, minimum_version=npm_minimum),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, minimum_version=npm_minimum, allowed_major_versions=(entry.npm_major,)),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, minimum_version=npm_minimum, allowed_major_versions=(entry.npm_major,)),
         )
         return StageRuntimeRequirement(
             stage_id=stage_id,
@@ -126,11 +128,10 @@ class StageRuntimeApplicationService:
             if session.get(MigrationStageModel, stage_id) is None:
                 raise StageRuntimeError("STAGE_NOT_FOUND", f"Migration stage {stage_id} not found")
         requirement = self.derive_requirement(stage_id, source_family, target_family, catalogue_version)
-        selected_profile = self._selected_profile(stage_id)
-        if selected_profile is not None:
-            requirement = self._requirement_from_profile(requirement, selected_profile)
-        resolved = self._authority.resolve(list(requirement.requirements))
-        bound = all(item.descriptor is not None for item in resolved)
+        catalogue = self._catalogue_provider.load(catalogue_version or CompatibilityCatalogueProvider.CURRENT_VERSION)
+        entry = catalogue.entry_for(source_family, target_family)
+        resolved = self._resolve_stage_policy(requirement, entry, stage_id)
+        bound = self._is_bound(resolved)
         if not bound:
             missing = [item.requirement.kind.value for item in resolved if item.descriptor is None]
             binding = StageRuntimeBinding(
@@ -150,6 +151,49 @@ class StageRuntimeApplicationService:
             resolved_at=self._now_provider(),
         )
         return binding.bind_checksum()
+
+    def _resolve_stage_policy(self, requirement, entry, stage_id):
+        trusted = (*entry.validated_runtime_profiles, *entry.proven_runtime_profiles)
+        for node_exact, npm_exact in trusted:
+            resolved = self._authority.resolve(self._exact_requirements(node_exact, npm_exact))
+            if self._is_bound(resolved):
+                return resolved
+        baseline = self._selected_profile(stage_id)
+        if baseline is not None and self._profile_allowed(baseline, entry):
+            resolved = self._authority.resolve(list(self._requirement_from_profile(requirement, baseline).requirements))
+            if self._is_bound(resolved):
+                return resolved
+        return self._authority.resolve(list(requirement.requirements))
+
+    @staticmethod
+    def _exact_requirements(node_exact: str, npm_exact: str):
+        runtime_id = f"node{node_exact.lstrip('vV').split('.', 1)[0]}"
+        return (
+            RuntimeRequirement(kind=RuntimeExecutableKind.NODE, runtime_id=runtime_id, version_exact=node_exact),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPM, runtime_id=runtime_id, version_exact=npm_exact),
+            RuntimeRequirement(kind=RuntimeExecutableKind.NPX, runtime_id=runtime_id, version_exact=npm_exact),
+        )
+
+    @staticmethod
+    def _is_bound(bindings) -> bool:
+        descriptors = [item.descriptor for item in bindings]
+        return bool(descriptors) and all(
+            item is not None and binding.requirement.satisfied_by(item)
+            for binding, item in zip(bindings, descriptors)
+        ) and len({item.runtime_id for item in descriptors}) == 1
+
+    @staticmethod
+    def _profile_allowed(profile: dict, entry: CompatibilityCatalogueEntry) -> bool:
+        node = Version.parse(str(profile.get("node_exact") or ""))
+        npm = Version.parse(str(profile.get("package_manager_exact") or profile.get("npm_exact") or ""))
+        npx = Version.parse(str(profile.get("npx_exact") or ""))
+        if not node or not npm or not npx or str(npm) != str(npx):
+            return False
+        pair = (str(node), str(npm))
+        if pair in (*entry.validated_runtime_profiles, *entry.proven_runtime_profiles):
+            return True
+        node_majors = _range_majors(entry.source_node_ranges) & _range_majors(entry.target_node_ranges)
+        return npm.major == entry.npm_major and node.major in node_majors and node.at_least(Version.parse(entry.node_minimum or "0.0.0"))
 
     def _selected_profile(self, stage_id: str) -> dict | None:
         with self._session_scope() as session:
@@ -268,3 +312,13 @@ def _binding_id(stage_id: str, kind: str) -> str:
     import hashlib
 
     return "srb-" + hashlib.sha256(f"{stage_id}:{kind}".encode()).hexdigest()[:24]
+
+
+def _range_majors(ranges: tuple[str, ...]) -> set[int]:
+    majors = set()
+    for value in ranges:
+        try:
+            majors.add(int(value.removeprefix("^").split(".", 1)[0]))
+        except (AttributeError, ValueError):
+            continue
+    return majors

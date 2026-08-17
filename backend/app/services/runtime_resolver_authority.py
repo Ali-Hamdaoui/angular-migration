@@ -104,21 +104,39 @@ class RuntimeResolverAuthority:
         """Resolve each requirement deterministically to a binding."""
         descriptors = self.discover()
         bindings: list[RuntimeRequirementBinding] = []
+        grouped: dict[str, list[RuntimeRequirement]] = {}
         for requirement in requirements:
-            match = self._best_match(requirement, descriptors)
-            if match is None:
-                bindings.append(
-                    RuntimeRequirementBinding(
-                        requirement=requirement,
-                        blocked_reason=f"no {requirement.kind.value} candidate satisfies the requirement",
-                        resolved_at=self._now_provider(),
+            grouped.setdefault(requirement.runtime_id, []).append(requirement)
+        for group in grouped.values():
+            paired = self._best_paired_install(group, descriptors) if len(group) > 1 else None
+            for requirement in group:
+                match = paired.get(requirement.kind) if paired is not None else self._best_match(requirement, descriptors)
+                if match is None:
+                    bindings.append(
+                        RuntimeRequirementBinding(
+                            requirement=requirement,
+                            blocked_reason=f"no {requirement.kind.value} candidate satisfies the requirement",
+                            resolved_at=self._now_provider(),
+                        )
                     )
-                )
-                continue
-            bindings.append(
-                RuntimeRequirementBinding(requirement=requirement, descriptor=match, resolved_at=self._now_provider())
-            )
+                    continue
+                bindings.append(RuntimeRequirementBinding(requirement=requirement, descriptor=match, resolved_at=self._now_provider()))
         return bindings
+
+    def _best_paired_install(self, requirements, descriptors):
+        candidates = []
+        for runtime_id in sorted({item.runtime_id for item in descriptors if item.runtime_id}):
+            matches = {
+                requirement.kind: next(
+                    (item for item in descriptors if item.runtime_id == runtime_id and requirement.satisfied_by(item)),
+                    None,
+                )
+                for requirement in requirements
+            }
+            if all(matches.values()):
+                node = matches.get(RuntimeExecutableKind.NODE)
+                candidates.append((node.version_exact if node else "", runtime_id, matches))
+        return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else {}
 
     def _build_descriptor(
         self,
