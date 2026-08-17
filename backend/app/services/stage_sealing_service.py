@@ -246,6 +246,38 @@ class StageSealingService:
         return target, report_fingerprint, chain_hash, output, seal
 
     @staticmethod
+    def reconstruct_successor(
+        sealed_path: str,
+        workspace_path: str,
+        stage_root: str,
+        sealed_fingerprint: str,
+    ) -> str:
+        """Rebuild successor workspace only from a verified sealed output."""
+        source = Path(sealed_path).resolve(strict=True)
+        target = Path(workspace_path).resolve(strict=False)
+        root = Path(stage_root).resolve(strict=True)
+        source.relative_to(root)
+        target.relative_to(root)
+        if source == target:
+            raise StageSealingError("SUCCESSOR_WORKSPACE_INVALID", "Sealed source and successor workspace must differ")
+        if StageSandboxCopier.fingerprint(source) != sealed_fingerprint:
+            raise StageSealingError("SEALED_CHECKPOINT_INVALID", "Sealed output fingerprint changed")
+        temporary = root / f".{target.name}.reconstructing-{uuid4().hex[:12]}"
+        quarantine = root / f".{target.name}.quarantined-{uuid4().hex[:12]}"
+        try:
+            report = StageSandboxCopier().copy(source, temporary, registered_root=root)
+            if target.exists():
+                target.replace(quarantine)
+            temporary.replace(target)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            if not target.exists() and quarantine.exists():
+                quarantine.replace(target)
+            raise
+        shutil.rmtree(quarantine, ignore_errors=True)
+        return report.fingerprint
+
+    @staticmethod
     def _validation_checksum(session, stage_id: str) -> str:
         gate = session.scalar(
             select(StageGatePackageModel)
