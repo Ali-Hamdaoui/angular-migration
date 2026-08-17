@@ -122,7 +122,11 @@ class BaselineValidationApplicationService:
                 if directory not in directories:
                     directories.append(directory)
         current_path = os.environ.get("PATH", "")
-        return {"PATH": os.pathsep.join([*directories, current_path]) if current_path else os.pathsep.join(directories)}
+        environment = {"PATH": os.pathsep.join([*directories, current_path]) if current_path else os.pathsep.join(directories)}
+        chrome_bin = os.environ.get("CHROME_BIN")
+        if chrome_bin and Path(chrome_bin).is_file():
+            environment["CHROME_BIN"] = str(Path(chrome_bin).resolve())
+        return environment
     @staticmethod
     def _bind_runtime_target(target, profile):
         """Replace PATH-resolved npm/npx shims with the selected profile paths."""

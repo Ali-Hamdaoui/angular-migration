@@ -3,6 +3,7 @@ import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from app.api.baseline_matrix_contracts import BaselineValidationRequest
@@ -10,6 +11,27 @@ from app.domain.baseline_matrix import BaselineTargetStatus
 from app.repositories.models import Base, BaselineQualificationModel, BaselineValidationModel, MigrationRunModel, WorkflowEventModel
 from app.services.baseline_validation_application_service import BaselineValidationApplicationService
 NOW = datetime(2026, 7, 16, tzinfo=UTC)
+
+def test_runtime_environment_forwards_configured_chrome_binary(monkeypatch, tmp_path):
+    chrome = tmp_path / "chrome.exe"
+    chrome.write_bytes(b"chrome")
+    monkeypatch.setenv("CHROME_BIN", str(chrome))
+    profile = SimpleNamespace(
+        profiles=[{
+            "profile_id": "profile-1",
+            "checksum": "sha256:profile",
+            "node_executable": "C:/node/node.exe",
+            "package_manager_executable": "C:/node/npm.cmd",
+            "npx_executable": "C:/node/npx.cmd",
+        }],
+        selected_profile_id="profile-1",
+        selected_checksum="sha256:profile",
+    )
+
+    environment = BaselineValidationApplicationService._runtime_environment(profile)
+
+    assert environment["CHROME_BIN"] == str(chrome.resolve())
+
 def fixture(tmp_path: Path, scripts=None, angular=None):
     sandbox = tmp_path / "baseline"; sandbox.mkdir()
     (sandbox / "package.json").write_text(json.dumps({"scripts": scripts or {"build": "node --version", "test": "node --version"}}), encoding="utf-8")
