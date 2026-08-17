@@ -725,6 +725,33 @@ class TransformerStageService:
         snapshot: StagePreparationResult,
         kind: str,
     ) -> StageCheckpointModel:
+        # A checkpoint used by Angular update evidence must outlive mutations
+        # to the active stage workspace. Keep the checkpoint tree under the
+        # run's governed artifact root so the pre/post manifest comparison is
+        # against an immutable pre-command copy rather than the same mutable
+        # directory after `ng update`.
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None or not run.artifact_root:
+            raise TransformerStageError(
+                "CHECKPOINT_ROOT_MISSING",
+                "The run artifact root is required for an immutable checkpoint",
+            )
+        artifact_root = Path(run.artifact_root).resolve(strict=True)
+        checkpoint_parent = artifact_root / "checkpoints" / continuation.current_stage_id
+        checkpoint_parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_target = checkpoint_parent / f"{kind}-{uuid4().hex[:12]}"
+        report = StageSandboxCopier().copy_atomically(
+            Path(snapshot.workspace_path),
+            checkpoint_target,
+            registered_root=artifact_root,
+        )
+        snapshot = StagePreparationResult(
+            snapshot.workspace_alias,
+            report.target,
+            report.fingerprint,
+            report.copied_files,
+            True,
+        )
         return self._checkpoint(
             session,
             continuation,

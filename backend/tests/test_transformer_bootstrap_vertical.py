@@ -118,6 +118,33 @@ def test_stage_runtime_binding_payload_is_json_serializable():
     assert payload["runtime_bindings"]["node"]["version_exact"] == "12.22.12"
 
 
+def test_angular_update_checkpoint_is_immutable_copy(tmp_path: Path):
+    engine, session = _session(tmp_path)
+    artifacts = tmp_path / "artifacts" / "run-1"
+    artifacts.mkdir(parents=True)
+    run = session.get(MigrationRunModel, "run-1")
+    run.artifact_root = str(artifacts)
+    continuation = _create(TransformationContinuationService(), session)
+    workspace = tmp_path / "stage-workspace"
+    workspace.mkdir()
+    package = workspace / "package.json"
+    package.write_text('{"angular":"11"}', encoding="utf-8")
+
+    service = TransformerStageService()
+    snapshot = service.snapshot_workspace(str(workspace), str(tmp_path), "stage-1")
+    checkpoint = service.persist_snapshot_checkpoint(
+        session, continuation, snapshot, "pre_angular_update"
+    )
+    session.commit()
+
+    assert Path(checkpoint.workspace_path) != workspace.resolve()
+    assert Path(checkpoint.workspace_path).is_relative_to(artifacts.resolve())
+    package.write_text('{"angular":"12"}', encoding="utf-8")
+    assert (Path(checkpoint.workspace_path) / "package.json").read_text(encoding="utf-8") == '{"angular":"11"}'
+    session.close()
+    engine.dispose()
+
+
 def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_update(tmp_path: Path):
     engine, seed = _session(tmp_path)
     baseline = tmp_path / "baseline"
