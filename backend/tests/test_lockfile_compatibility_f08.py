@@ -174,6 +174,24 @@ def test_inspect_v1_lockfile_format(tmp_path: Path):
     assert dependency_set.resolved_version("@angular/core") == "19.0.0"
     assert dependency_set.resolved_version("rxjs") == "7.8.1"
     assert dependency_set.lockfile_version == 1
+    assert service.detect_lockfile_format(v1) == "v1"
+    assert service.resolve_package_version(v1, "@angular/core") == "19.0.0"
+    assert service.resolve_package_version(v1, "rxjs") == "7.8.1"
+
+
+@pytest.mark.parametrize("version", (1, 2, 3))
+def test_supported_lockfile_formats_are_detected(version):
+    assert LockfileCompatibilityService.detect_lockfile_format({"lockfileVersion": version}) == f"v{version}"
+    assert LockfileCompatibilityService.detect_lockfile_format({"lockfileVersion": 99}) is None
+
+
+def test_unsupported_lockfile_version_fails_closed(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "package-lock.json").write_text('{"lockfileVersion":99}', encoding="utf-8")
+    verdict = LockfileCompatibilityService().validate_stage_lockfile(workspace, "angular-18.x", "angular-19.x")
+    assert verdict.status == "blocked"
+    assert verdict.blockers == ("LOCKFILE_FORMAT_UNSUPPORTED",)
 
 
 def test_inspect_malformed_lockfile_hashes_raw_bytes(tmp_path: Path):

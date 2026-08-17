@@ -89,6 +89,31 @@ def test_four_source_version_proof_rejects_one_mismatch(tmp_path: Path):
         )
 
 
+def test_four_source_version_proof_reads_v1_lockfile_dependencies(tmp_path: Path):
+    before = tmp_path / "before"
+    workspace = tmp_path / "workspace"
+    before.mkdir()
+    workspace.mkdir()
+    _write_json(before / "package.json", {"dependencies": {"@angular/core": "10.2.0"}})
+    _write_json(workspace / "package.json", {"dependencies": {"@angular/core": "11.2.0", "@angular/cli": "11.2.0"}})
+    _write_json(workspace / "package-lock.json", {
+        "lockfileVersion": 1,
+        "dependencies": {
+            "@angular/core": {"version": "11.2.0"},
+            "@angular/cli": {"version": "11.2.0"},
+        },
+    })
+    _write_json(workspace / "node_modules/@angular/core/package.json", {"version": "11.2.0"})
+    _write_json(workspace / "node_modules/@angular/cli/package.json", {"version": "11.2.0"})
+
+    versions, _ = AngularTransformationEvidenceService().build(
+        str(workspace), str(before), target_core="11.2.0", target_cli="11.2.0",
+        ng_version_output="Angular CLI: 11.2.0\nAngular: 11.2.0\n", angular_execution_id="execution-v1",
+    )
+    assert versions["core_sources"]["package_lock"] == "11.2.0"
+    assert versions["cli_sources"]["package_lock"] == "11.2.0"
+
+
 def test_ng_version_output_with_aligned_columns_parses_cli_and_core(tmp_path: Path):
     before = tmp_path / "before"
     workspace = tmp_path / "workspace"

@@ -20,6 +20,7 @@ from app.services.planning_application_service import (
     StageExecutionPlanService,
     run_scoped_stage_id,
 )
+from app.services.lockfile_compatibility_service import LockfileCompatibilityService
 
 
 class NextStageMaterializerError(ValueError):
@@ -158,19 +159,17 @@ class NextStageMaterializerService:
     def _sealed_source_exact(self, root: Path) -> str:
         package = json.loads((root / "package.json").read_text(encoding="utf-8"))
         lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
-        declared = self._version(
+        declared_value = (
             ((package.get("dependencies") or {}).get("@angular/core"))
             or ((package.get("devDependencies") or {}).get("@angular/core"))
         )
-        locked = self._version(
-            ((lock.get("packages") or {}).get("node_modules/@angular/core") or {}).get(
-                "version"
-            )
-        )
+        declared = self._version(declared_value)
+        locked = self._version(LockfileCompatibilityService.resolve_package_version(lock, "@angular/core"))
         if (
             not declared
             or not locked
-            or declared.split(".", 1)[0] != locked.split(".", 1)[0]
+            or (str(declared_value).startswith(("^", "~")) and declared.split(".", 1)[0] != locked.split(".", 1)[0])
+            or (not str(declared_value).startswith(("^", "~")) and declared != locked)
         ):
             raise NextStageMaterializerError(
                 "SEALED_VERSION_EVIDENCE_INVALID",
