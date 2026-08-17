@@ -261,6 +261,25 @@ def _runtime_path_overrides(bindings: dict[str, RuntimeExecutableDescriptor]) ->
     return {"PATH": os.pathsep.join([*bin_dirs, os.environ.get("PATH", "")])}
 
 
+def _command_environment_overrides(
+    command_id: str,
+    bindings: dict[str, RuntimeExecutableDescriptor],
+) -> dict[str, str]:
+    """Return deterministic, command-specific environment overrides.
+
+    Angular's older local CLI performs a network-backed "latest stable"
+    self-upgrade check before processing an exact adjacent-major update. That
+    redirect can select a CLI requiring a newer Node runtime than the stage
+    binding. The registered exact-update command is therefore explicitly
+    allowed to disable only that redirect; its target package arguments remain
+    exact and governed by the stage plan.
+    """
+    overrides = _runtime_path_overrides(bindings)
+    if command_id == "angular-update-exact":
+        overrides["NG_DISABLE_VERSION_CHECK"] = "true"
+    return overrides
+
+
 @dataclass(frozen=True)
 class CommandExecutionResponse:
     """Result from the command executor service."""
@@ -1293,7 +1312,7 @@ class CommandExecutorService:
                     runtime_profiles=frozenset({execution_profile_id, runtime_profile_id}),
                     network_profiles=frozenset({network_profile}),
                     environment_allowlist=tuple(selected_profile.get("environment_allowlist") or ("PATH",)),
-                    environment_overrides=_runtime_path_overrides(runtime_bindings),
+                    environment_overrides=_command_environment_overrides(command_id, runtime_bindings),
                     runtime_bindings=runtime_bindings,
                 )
                 worker = ExecutionWorker(policy, CommandLogWriter(store, max_output_bytes=1_000_000), supervisor=self._supervisor)

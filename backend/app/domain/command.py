@@ -377,7 +377,11 @@ ANGULAR_UPDATE_V5_RENDERER: Final[TransformationCommandDefinition] = Transformat
     ),
     executable_aliases=("npx.cmd",),
     timeout_seconds=1800,
-    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    # Angular CLI 11 otherwise redirects `ng update` to the latest stable
+    # CLI, which can require a newer Node than the governed stage runtime.
+    # The exact target package arguments remain the authority; this only
+    # disables that unrelated latest-version redirect.
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE", "NG_DISABLE_VERSION_CHECK"),
     max_output_bytes=5_000_000,
     description="Execute an exact Angular update through the workspace-local CLI (v5)",
 )
