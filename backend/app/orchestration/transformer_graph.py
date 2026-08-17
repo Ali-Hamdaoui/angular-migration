@@ -642,12 +642,14 @@ class TransformerOrchestrator:
                 "artifact_root": run.artifact_root,
                 "plan_version": plan.version,
                 "stage_plan_checksum": continuation.stage_plan_checksum,
+                "expected_pre_fingerprint": checkpoint.workspace_fingerprint,
                 "workspace_fingerprint": binding.workspace_fingerprint,
             }
         try:
             context["workspace_fingerprint"] = StageSandboxCopier.fingerprint(
                 Path(context["workspace_path"])
             )
+            context["expected_post_fingerprint"] = context["workspace_fingerprint"]
             versions, ledger = self._evidence.build(
                 context["workspace_path"],
                 context["checkpoint_path"],
@@ -655,6 +657,8 @@ class TransformerOrchestrator:
                 target_cli=context["target_cli"],
                 ng_version_output=context["ng_version_output"],
                 angular_execution_id=context["angular_execution_id"],
+                expected_pre_fingerprint=context["expected_pre_fingerprint"],
+                expected_post_fingerprint=context["expected_post_fingerprint"],
             )
         except AngularTransformationEvidenceError as error:
             with self._scope() as session:
@@ -673,6 +677,8 @@ class TransformerOrchestrator:
             "stage_id": context["stage_id"],
             "plan_version": context["plan_version"],
             "stage_plan_checksum": context["stage_plan_checksum"],
+            "expected_pre_fingerprint": context["expected_pre_fingerprint"],
+            "expected_post_fingerprint": context["expected_post_fingerprint"],
             "workspace_fingerprint": context["workspace_fingerprint"],
             "version_evidence_artifact_id": version_artifact.ref.artifact_id,
             "version_evidence_checksum": version_artifact.ref.checksum,
