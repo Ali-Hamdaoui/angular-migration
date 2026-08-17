@@ -278,7 +278,9 @@ class TransformerStageService:
             "node_executable": descriptors[RuntimeExecutableKind.NODE.value].resolved_path,
             "package_manager_executable": descriptors[RuntimeExecutableKind.NPM.value].resolved_path,
             "npx_executable": descriptors[RuntimeExecutableKind.NPX.value].resolved_path,
-            "runtime_bindings": descriptors,
+            "runtime_bindings": {
+                key: value.model_dump(mode="json") for key, value in descriptors.items()
+            },
         }
 
     @staticmethod

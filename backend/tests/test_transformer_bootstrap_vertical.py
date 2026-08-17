@@ -87,6 +87,37 @@ def test_runtime_binding_blocks_frozen_command_checksum_mismatch():
     assert '"checksum":"sha256:runtime"' in raised.value.message
 
 
+def test_stage_runtime_binding_payload_is_json_serializable():
+    rows = [
+        SimpleNamespace(
+            kind=kind,
+            resolved_path=f"C:/nvm/{kind}.exe",
+            version_exact="12.22.12" if kind == "node" else "6.14.16",
+            sha256="a" * 64,
+            source="nvm",
+            runtime_id="node-12.22.12",
+            status="bound",
+            created_at=NOW,
+        )
+        for kind in ("node", "npm", "npx")
+    ]
+
+    class Result:
+        def all(self):
+            return rows
+
+    class Session:
+        def scalars(self, _query):
+            return Result()
+
+    payload = TransformerStageService._stage_runtime_rows(
+        Session(), SimpleNamespace(current_stage_id="stage-1")
+    )
+
+    json.dumps(payload)
+    assert payload["runtime_bindings"]["node"]["version_exact"] == "12.22.12"
+
+
 def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_update(tmp_path: Path):
     engine, seed = _session(tmp_path)
     baseline = tmp_path / "baseline"
@@ -195,6 +226,10 @@ def test_approved_g06_reaches_g07_then_bootstrap_checkpoint_without_angular_upda
 
     continuations = TransformationContinuationService()
     stage_service = TransformerStageService(scope=scope, now_provider=lambda: NOW)
+    stage_service._stage_runtime.resolve_stage = lambda *_args, **_kwargs: SimpleNamespace(
+        status="bound", blocked_reason=None
+    )
+    stage_service._stage_runtime.record_binding = lambda *_args, **_kwargs: None
     workflow = TransformerWorkflow(
         TransformerOrchestrator(scope=scope, stage_service=stage_service)
     )
