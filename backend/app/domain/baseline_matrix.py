@@ -116,7 +116,9 @@ class BaselineTargetDiscoveryService:
             if isinstance(script, str) and script.strip():
                 target_id = f"script:{script_name}"
                 if not any(item.target_id == target_id for item in targets):
-                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", ("run", script_name)))
+                    non_watching = kind is BaselineTargetKind.TEST and self._is_angular_test_script(script)
+                    arguments = ("run", script_name, "--", "--watch=false") if non_watching else ("run", script_name)
+                    targets.append(BaselineTarget(target_id, kind, None, None, target_id.replace(":", "__"), "npm", arguments))
 
         # Keep the matrix honest: absent test/lint configuration is represented
         # explicitly and never interpreted as a successful command.
@@ -145,6 +147,8 @@ class BaselineTargetDiscoveryService:
             arguments = ["ng", kind.value, project]
             if configuration:
                 arguments.extend(("--configuration", configuration))
+            if kind is BaselineTargetKind.TEST:
+                arguments.append("--watch=false")
             yield BaselineTarget(target_id, kind, project, configuration, target_id.replace(":", "__"), "npx", tuple(arguments), builder=builder)
 
     @staticmethod
@@ -160,6 +164,11 @@ class BaselineTargetDiscoveryService:
             return False
         options = definition.get("options", {})
         return not options or isinstance(options, dict) and not any(key in options for key in ("config", "jestConfig", "runInBand", "watch", "coverage"))
+
+    @staticmethod
+    def _is_angular_test_script(script: str) -> bool:
+        normalized = script.strip().lower()
+        return normalized.startswith(("ng test", "ng.cmd test", "npx ng test", "npx.cmd ng test"))
 
     @staticmethod
     def _supported_builder(kind: BaselineTargetKind, builder: str) -> bool:
