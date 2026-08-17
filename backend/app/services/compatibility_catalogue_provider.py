@@ -110,6 +110,18 @@ class CompatibilityCatalogueProvider:
 
     CURRENT_VERSION = "catalog-v3"
 
+    @staticmethod
+    def source_runtime_constraints() -> dict[str, dict[int, tuple[str, ...]] | dict[int, tuple[str, str]]]:
+        """Return source-family constraints shared by baseline resolution."""
+        node_ranges = {major: tuple(ranges) for major, ranges in _NODE_RANGES.items()}
+        typescript_ranges = {major: tuple(ranges) for major, ranges in _TYPESCRIPT_RANGES.items()}
+        rxjs_ranges = {major: tuple(ranges) for major, ranges in _RXJS_RANGES.items()}
+        return {
+            "node_ranges": node_ranges,
+            "typescript_ranges": typescript_ranges,
+            "rxjs_ranges": rxjs_ranges,
+        }
+
     def load(self, version: str = CURRENT_VERSION) -> CompatibilityCatalogue:
         if version not in {"catalog-v1", "catalog-v2", self.CURRENT_VERSION}:
             raise ValueError("unsupported compatibility catalogue version")
