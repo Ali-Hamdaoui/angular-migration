@@ -165,13 +165,39 @@ def _evidence_error(
 
 
 def installed_dependency_version(workspace: Path, package: str) -> str:
-    """Resolve the exact installed package version from backend-owned state."""
+    """Resolve the exact installed package version from backend-owned state.
+
+    npm lockfile v1 stores dependency records under ``dependencies`` rather
+    than the npm v2+ ``packages`` map.  Check that authoritative lockfile
+    shape before consulting ``node_modules``; recovery checkpoints deliberately
+    omit the mutable install tree.
+    """
     lock = _read_json(Path(workspace) / "package-lock.json") or {}
     lock_packages = lock.get("packages")
     lock_entry = lock_packages.get(f"node_modules/{package}") if isinstance(lock_packages, dict) else None
     lock_version = lock_entry.get("version") if isinstance(lock_entry, dict) else None
     if is_exact_version(lock_version):
         return lock_version
+
+    def find_legacy_entry(dependencies: object) -> dict | None:
+        if not isinstance(dependencies, dict):
+            return None
+        direct = dependencies.get(package)
+        if isinstance(direct, dict):
+            return direct
+        for entry in dependencies.values():
+            if not isinstance(entry, dict):
+                continue
+            nested = find_legacy_entry(entry.get("dependencies"))
+            if nested is not None:
+                return nested
+        return None
+
+    legacy_entry = find_legacy_entry(lock.get("dependencies"))
+    legacy_version = legacy_entry.get("version") if legacy_entry else None
+    if is_exact_version(legacy_version):
+        return legacy_version
+
     installed = _read_json(Path(workspace) / "node_modules" / package / "package.json")
     installed_version = installed.get("version") if installed is not None else None
     if is_exact_version(installed_version):
