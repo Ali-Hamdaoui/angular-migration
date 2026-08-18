@@ -27,6 +27,7 @@ from app.services.stage_execution_application_service import (
     StageExecutionError,
     validation_execution_key,
 )
+from app.services.baseline_aware_validation_service import BaselineAwareValidationService
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import (
@@ -48,6 +49,7 @@ class ValidationRunner:
     def __init__(self, *, stage_execution=None, now_provider=None) -> None:
         self._stage_execution = stage_execution or StageExecutionApplicationService()
         self._now = now_provider or (lambda: datetime.now(UTC))
+        self._baseline = BaselineAwareValidationService()
 
     def advance_group(
         self,
@@ -74,9 +76,14 @@ class ValidationRunner:
             if step.status == "PASSED":
                 if (
                     execution is None
-                    or execution.status != "succeeded"
                     or not execution.command_log_artifact_id
                     or not execution.result_artifact_id
+                    or (
+                        execution.status != "succeeded"
+                        and not self._is_known_baseline_failure(
+                            session, continuation, execution
+                        )
+                    )
                 ):
                     raise ValidationRunnerError(
                         "VALIDATION_EVIDENCE_MISSING",
@@ -120,6 +127,13 @@ class ValidationRunner:
                 self._wait(session, continuation, next_node=continuation.current_node, execution_id=execution.id)
                 return "waiting"
             if execution.status != "succeeded" or execution.exit_code != 0:
+                if group == "lint" and self._is_known_baseline_failure(
+                    session, continuation, execution
+                ):
+                    self._mark_known_baseline_step(
+                        session, continuation, step, execution
+                    )
+                    continue
                 step.status = "FAILED"
                 step.completed_at = self._now()
                 expected_state_version = continuation.state_version
@@ -173,6 +187,39 @@ class ValidationRunner:
         continuation.updated_at = self._now()
         return "passed"
 
+    def resume_known_baseline_failures(self, session, continuation) -> bool:
+        """Reconcile failed validation steps that exactly reproduce G03 evidence.
+
+        A qualified baseline may intentionally carry legacy lint failures.  A
+        later repair validation must preserve that boundary instead of opening
+        a new repair loop, while still rejecting any mixed or new failure.
+        """
+        failed: list[tuple[StageStepModel, CommandExecutionModel]] = []
+        for step in session.scalars(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.status == "FAILED",
+                StageStepModel.name.like("lint-%"),
+            )
+        ):
+            execution = (
+                session.get(CommandExecutionModel, step.execution_id)
+                if step.execution_id
+                else None
+            )
+            if execution is None:
+                return False
+            failed.append((step, execution))
+        if not failed or any(
+            not self._is_known_baseline_failure(session, continuation, execution)
+            for _step, execution in failed
+        ):
+            return False
+        for step, execution in failed:
+            self._mark_known_baseline_step(session, continuation, step, execution)
+        return True
+
     def aggregate(self, session, continuation: TransformationContinuationModel):
         run = session.get(MigrationRunModel, continuation.run_id)
         stage_plan = session.get(StageExecutionPlanModel, continuation.stage_plan_id)
@@ -203,6 +250,17 @@ class ValidationRunner:
                     raise ValidationRunnerError(
                         "VALIDATION_EVIDENCE_MISSING", f"{group}-{index} evidence is incomplete"
                     )
+                known_baseline_failure = self._is_known_baseline_failure(
+                    session, continuation, execution
+                )
+                if (
+                    execution.status != "succeeded"
+                    and not known_baseline_failure
+                ):
+                    raise ValidationRunnerError(
+                        "VALIDATION_COMMAND_FAILED",
+                        f"{group}-{index} has nonzero execution evidence",
+                    )
                 checks.append(
                     {
                         "group": group,
@@ -210,6 +268,11 @@ class ValidationRunner:
                         "execution_id": execution.id,
                         "runtime_checksum": execution.runtime_checksum,
                         "artifact_ids": list(execution.artifact_ids or []),
+                        "status": (
+                            "passed_with_known_baseline_failure"
+                            if known_baseline_failure
+                            else "passed"
+                        ),
                     }
                 )
         fingerprint = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
@@ -225,6 +288,11 @@ class ValidationRunner:
             "workspace_fingerprint": fingerprint,
             "required_groups": required,
             "checks": checks,
+            "known_baseline_failures": [
+                f"{check['group']}-{check['index']}"
+                for check in checks
+                if check["status"] == "passed_with_known_baseline_failure"
+            ],
             "status": "passed",
         }
         return payload, run.artifact_root
@@ -273,6 +341,35 @@ class ValidationRunner:
             if group not in groups:
                 groups.append(group)
         return groups
+
+    def _is_known_baseline_failure(self, session, continuation, execution) -> bool:
+        return self._baseline.classify(
+            session,
+            run_id=continuation.run_id,
+            validation_group="lint",
+            execution=execution,
+        ).is_accepted
+
+    @staticmethod
+    def _mark_known_baseline_step(
+        session, continuation, step, execution
+    ) -> None:
+        now = datetime.now(UTC)
+        binding = ValidationRunner._binding(session, continuation)
+        observed = ValidationRunner.source_fingerprint(Path(binding.workspace_path))
+        execution.end_fingerprint = {"source_config": observed}
+        step.status = "PASSED"
+        step.completed_at = step.completed_at or now
+        step.workspace_fingerprint = observed
+        step.output_checksum = execution.runtime_checksum
+        step.artifact_ids = list(execution.artifact_ids or [])
+        step.updated_at = now
+        binding.workspace_fingerprint = StageSandboxCopier.fingerprint(
+            Path(binding.workspace_path)
+        )
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+        binding.last_verified_fingerprint = binding.workspace_fingerprint
+        binding.last_verified_at = now
 
     @staticmethod
     def source_fingerprint(root: Path) -> str:

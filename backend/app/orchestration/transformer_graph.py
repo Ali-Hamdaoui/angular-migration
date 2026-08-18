@@ -1087,6 +1087,8 @@ class TransformerOrchestrator:
                 return
             if self._recover_pre_materialization_revalidation(session, continuation):
                 return
+            if self._resume_known_baseline_validation(session, continuation):
+                return
             prior = [
                 item.failure_fingerprint
                 for item in session.query(RepairAttemptModel)
@@ -1578,6 +1580,7 @@ class TransformerOrchestrator:
             if not all((attempt, checkpoint, stage_plan, plan, binding, execution, root, resolution, catalogue)):
                 self._queue(continuation, "propose_repair")
                 return
+
             request = TransformationReplanRecoveryRequest(
                 run_id=continuation.run_id,
                 stage_id=continuation.current_stage_id,
@@ -1607,6 +1610,38 @@ class TransformerOrchestrator:
             with self._scope() as session:
                 continuation = self._owned(session, continuation_id, worker_id)
                 self._queue(continuation, "propose_repair")
+
+    def _resume_known_baseline_validation(self, session, continuation) -> bool:
+        """Resume repair validation when lint exactly matches approved G03 evidence."""
+        if not self._validation.resume_known_baseline_failures(
+            session, continuation
+        ):
+            return False
+        attempt = self._latest_repair(session, continuation, required=False)
+        if attempt is not None and attempt.status not in {
+            "superseded",
+            "completed",
+            "rejected",
+        }:
+            attempt.status = "revalidating_affected"
+            attempt.updated_at = datetime.now(UTC)
+        expected_state_version = continuation.state_version
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "repair_revalidate")
+        session.flush()
+        append_continuation_event(
+            session,
+            continuation,
+            event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_WAITING,
+            key=f"known-baseline-validation:{expected_state_version}",
+            reason="Approved baseline lint failures preserved during repair validation",
+            payload={
+                "expected_state_version": expected_state_version,
+                "validation_status": "passed_with_known_baseline_failure",
+            },
+        )
+        return True
 
     @staticmethod
     def _deterministic_failure_code(error: Exception) -> str:
