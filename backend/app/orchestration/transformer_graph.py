@@ -2622,7 +2622,12 @@ class TransformerOrchestrator:
             )
             if (
                 checkpoint_fingerprint is None
-                or checkpoint_fingerprint != live
+                or (
+                    checkpoint_fingerprint != live
+                    and not self._rebind_child_authority_recovered(
+                        session, current_attempt, checkpoint, live
+                    )
+                )
                 or (
                     current_attempt.pre_fingerprint != live
                     and not self._legacy_authority_recovered(session, current_attempt, checkpoint)
@@ -2753,11 +2758,21 @@ class TransformerOrchestrator:
                 )
                 if (
                     checkpoint_fingerprint is None
-                    or checkpoint_fingerprint != live
+                    or (
+                        checkpoint_fingerprint != live
+                        and not self._rebind_child_authority_recovered(
+                            session, current_attempt, checkpoint, live
+                        )
+                    )
                     or (
                         current_attempt.pre_fingerprint != live
-                        and not self._legacy_authority_recovered(
-                            session, current_attempt, checkpoint
+                        and not (
+                            self._legacy_authority_recovered(
+                                session, current_attempt, checkpoint
+                            )
+                            or self._rebind_child_authority_recovered(
+                                session, current_attempt, checkpoint, live
+                            )
                         )
                     )
                 ):
@@ -4072,6 +4087,30 @@ class TransformerOrchestrator:
             )
             is not None
         )
+
+    @staticmethod
+    def _rebind_child_authority_recovered(session, attempt, checkpoint, live) -> bool:
+        """Accept a deterministic child on its parent's verified post-repair tree."""
+        if not str(attempt.diagnosis or "").startswith("deterministic "):
+            return False
+        seen: set[str] = set()
+        parent_id = attempt.parent_attempt_id
+        for _ in range(32):
+            if not isinstance(parent_id, str) or parent_id in seen:
+                return False
+            seen.add(parent_id)
+            parent = session.get(RepairAttemptModel, parent_id)
+            if parent is None:
+                return False
+            if (
+                parent.checkpoint_id == checkpoint.id
+                and parent.post_fingerprint == live
+                and parent.apply_ledger_artifact_id
+                and parent.status in {"applied", "applied_verified", "superseded"}
+            ):
+                return True
+            parent_id = parent.parent_attempt_id
+        return False
 
     @staticmethod
     def _validation_failure(
