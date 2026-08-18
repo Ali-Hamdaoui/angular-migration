@@ -5963,15 +5963,7 @@ class RepairApplicationService:
                     role=role,
                     prompt_name=schema_name,
                     system_policy=policy,
-                    context=[
-                        LlmContextSegment(
-                            segment_id=f"evidence-{index}",
-                            label="untrusted repair evidence",
-                            content=content,
-                            untrusted=True,
-                        )
-                        for index, content in enumerate(context["segments"])
-                    ],
+                    context=self._llm_context_segments(context, role),
                     response_schema=schema_name,
                     max_output_tokens=16384,
                 )
@@ -5986,6 +5978,44 @@ class RepairApplicationService:
                     "Repair provider transport started without a response",
                 ) from exc
             raise translated from exc
+
+    @staticmethod
+    def _llm_context_segments(context, role):
+        segments = [
+            LlmContextSegment(
+                segment_id=f"evidence-{index}",
+                label="untrusted repair evidence",
+                content=content,
+                untrusted=True,
+            )
+            for index, content in enumerate(context["segments"])
+        ]
+        if role == LlmRole.REPAIR_PROPOSER:
+            for content in context["segments"]:
+                try:
+                    payload = json.loads(str(content))
+                except (TypeError, ValueError):
+                    continue
+                revision = payload.get("human_revision") if isinstance(payload, dict) else None
+                instruction = (
+                    str(revision.get("instruction") or "").strip()
+                    if isinstance(revision, dict)
+                    else ""
+                )
+                if instruction:
+                    # Keep operator intent explicit and bounded; it constrains
+                    # the proposer but never becomes authoritative workspace data.
+                    segments.insert(
+                        0,
+                        LlmContextSegment(
+                            segment_id="operator-revision-instruction",
+                            label="binding operator repair revision instruction",
+                            content=instruction[:4000],
+                            untrusted=False,
+                        ),
+                    )
+                    break
+        return segments
 
     def _retrieve_provider_response(
         self,
@@ -6009,15 +6039,7 @@ class RepairApplicationService:
             role=role,
             prompt_name=schema_name,
             system_policy="Retrieve and validate the already-created provider response.",
-            context=[
-                LlmContextSegment(
-                    segment_id=f"evidence-{index}",
-                    label="untrusted repair evidence",
-                    content=content,
-                    untrusted=True,
-                )
-                for index, content in enumerate(context["segments"])
-            ],
+            context=self._llm_context_segments(context, role),
             response_schema=schema_name,
             max_output_tokens=16384,
         )
