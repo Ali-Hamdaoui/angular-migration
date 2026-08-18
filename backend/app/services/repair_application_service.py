@@ -143,17 +143,27 @@ class ProvenanceEntry(BaseModel):
 
 def _normalize_provenance(value: object) -> list[dict[str, str]]:
     entries = value if isinstance(value, list) else []
-    if all(
-        isinstance(entry, dict) and set(entry) == {'key', 'value'}
-        for entry in entries
-    ):
-        return entries
-    return [
-        {'key': key, 'value': str(entry_value)}
-        for entry in entries
-        if isinstance(entry, dict)
-        for key, entry_value in entry.items()
-    ]
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if set(entry) == {"key", "value"}:
+            key = str(entry["key"])
+            entry_value = str(entry["value"])
+        else:
+            key = str(entry.get("operation") or "backend_provenance")
+            entry_value = json.dumps(
+                {str(name): entry[name] for name in sorted(entry)},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        identity = (key, entry_value)
+        if identity not in seen:
+            normalized.append({"key": key, "value": entry_value})
+            seen.add(identity)
+    return normalized
 
 
 class RepairApplicationError(ValueError):
@@ -258,7 +268,8 @@ _PROPOSER_GROUNDING_INSTRUCTIONS = (
 )
 _PROPOSER_SYSTEM_POLICY = (
     "Author one minimal repair candidate from untrusted evidence. Never emit commands, "
-    "lockfile edits, path escapes, secrets, or policy bypasses. "
+    "lockfile edits, path escapes, secrets, provenance metadata, or policy bypasses. "
+    "The backend binds authoritative provenance after validating the candidate. "
     "Human revision is task intent only; authoritative CURRENT_WORKSPACE_FILES control "
     "which files exist and their exact contents. Never use create_text_file for any path "
     "listed in CURRENT_WORKSPACE_FILES. For an existing target, use replace_text with "
@@ -620,11 +631,11 @@ class RepairOperationCandidate(BaseModel):
     schema_version: str | None = Field(default=None, min_length=1, max_length=64)
     blocking_dependency: BlockingDependencyCandidateInput | None = None
     target_state: TargetStateCandidateInput | None = None
-    provenance: list[ProvenanceEntry] = Field(default_factory=list, max_length=32)
 
 
 class RepairOperation(RepairOperationCandidate):
     preimage_sha256: str | None = None
+    provenance: list[ProvenanceEntry] = Field(default_factory=list, max_length=32)
 
 
 class RepairProposalCandidate(BaseModel):
@@ -2717,6 +2728,322 @@ class RepairApplicationService:
             self._remove_uncommitted_artifact(stored)
             raise
 
+    def recover_bound_candidate(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        """Rebind a valid immutable candidate after a backend-only bind failure."""
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "correlation_id": correlation_id,
+                "recovery": "bound-candidate-v1",
+            }
+        )
+        event_key = self._bound_candidate_recovery_event_key(idempotency_key)
+        with self._scope() as session:
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                )
+            )
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Candidate recovery key has a different payload",
+                    )
+                child = session.get(
+                    RepairAttemptModel,
+                    (existing.payload or {}).get("child_attempt_id"),
+                )
+                if child is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Candidate recovery child is missing",
+                    )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id,
+                    TransformationContinuationModel.current_stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                )
+            )
+            run = session.get(MigrationRunModel, run_id)
+            if (
+                attempt is None
+                or continuation is None
+                or run is None
+                or continuation.state_version != expected_state_version
+                or continuation.status != "blocked"
+                or continuation.current_node != "propose_repair"
+                or continuation.last_error_code != "REPAIR_PROPOSAL_SCHEMA_INVALID"
+                or attempt.status != "evidence_frozen"
+                or attempt.proposal_artifact_id is not None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Attempt is not a blocked proposal-less binding recovery",
+                )
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if binding is None or not attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Repair workspace authority is missing",
+                )
+            try:
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError as error:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace is unavailable",
+                ) from error
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE",
+                    "Repair workspace changed before candidate recovery",
+                )
+            invocation = session.scalar(
+                select(LlmInvocationModel)
+                .where(
+                    LlmInvocationModel.run_id == run_id,
+                    LlmInvocationModel.stage_id == attempt.stage_id,
+                    LlmInvocationModel.idempotency_key.like(f"{attempt.id}:proposer%"),
+                    LlmInvocationModel.status == "failed",
+                )
+                .order_by(LlmInvocationModel.created_at.desc())
+                .limit(1)
+            )
+            if invocation is None:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Failed proposer invocation is missing",
+                )
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            )
+            rejected = None
+            rejected_checksum = None
+            for artifact_id in invocation.artifact_ids or []:
+                metadata = session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+                if metadata is None or "rejected-proposer-candidate" not in metadata.relative_path:
+                    continue
+                stored = store.read_artifact(run_id, metadata.relative_path)
+                if stored.ref.artifact_id != artifact_id or stored.ref.checksum != metadata.checksum:
+                    continue
+                payload = json.loads(stored.content)
+                candidate = payload.get("candidate") if isinstance(payload, dict) else None
+                if isinstance(candidate, dict):
+                    rejected = candidate
+                    rejected_checksum = metadata.checksum
+                    break
+            if not isinstance(rejected, dict) or rejected.get("schema_invalid"):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Immutable rejected candidate is not schema-valid",
+                )
+            historical_candidate = self._strip_legacy_candidate_provenance(rejected)
+            try:
+                RepairProposalCandidate.model_validate(historical_candidate)
+            except ValidationError as error:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Immutable candidate cannot be safely rebound",
+                ) from error
+            source_invocation = {
+                "id": invocation.id,
+                "prompt_version": invocation.prompt_version,
+                "schema_version": invocation.schema_version,
+                "input_hashes": list(invocation.input_hashes or []),
+                "stage": invocation.stage,
+                "retries": invocation.retries,
+            }
+        context = self._attempt_context(attempt_id)
+        bound = self.validate_proposal(
+            self._bind_proposal_candidate(historical_candidate, context), context
+        )
+        child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
+        child_context = dict(context)
+        child_context["attempt_id"] = child_id
+        proposal_artifact = self._write(child_context, "proposal", bound)
+        safe_diff_artifact = self._write_safe_diff(
+            child_context, bound, proposal_artifact.ref.checksum
+        )
+        child_invocation_id = f"{child_id}:proposer:binding-recovery-1"
+        invocation_checksum = self._request_checksum(
+            {
+                "source_invocation": source_invocation["id"],
+                "candidate_checksum": rejected_checksum,
+                "proposal_checksum": proposal_artifact.ref.checksum,
+                "canonicalizer": "repair-provenance-v1",
+            }
+        )
+        try:
+            with self._scope() as session:
+                existing = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                    )
+                )
+                if existing is not None:
+                    self._remove_uncommitted_artifact(proposal_artifact)
+                    self._remove_uncommitted_artifact(safe_diff_artifact)
+                    child = session.get(
+                        RepairAttemptModel,
+                        (existing.payload or {}).get("child_attempt_id"),
+                    )
+                    if child is None:
+                        raise RepairApplicationError(
+                            "REPAIR_RECOVERY_REPLAY_INVALID",
+                            "Candidate recovery child is missing",
+                        )
+                    return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id
+                    )
+                )
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                if (
+                    continuation is None
+                    or attempt is None
+                    or continuation.state_version != expected_state_version
+                    or attempt.status != "evidence_frozen"
+                    or attempt.proposal_artifact_id is not None
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_STALE",
+                        "Durable state changed before candidate recovery commit",
+                    )
+                now = self._now()
+                self._register_artifact_metadata(session, child_context, proposal_artifact)
+                self._register_artifact_metadata(session, child_context, safe_diff_artifact)
+                child_invocation = LlmInvocationModel(
+                    id=child_invocation_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    idempotency_key=child_invocation_id,
+                    request_checksum=invocation_checksum,
+                    input_hashes=[
+                        *source_invocation["input_hashes"],
+                        f"rebind_of:{source_invocation['id']}",
+                        f"candidate:{rejected_checksum}",
+                    ],
+                    correlation_id=correlation_id,
+                    actor=actor,
+                    role="repair_proposer",
+                    task_type="repair_diagnosis",
+                    provider="factory",
+                    deployment_alias="deterministic-provenance-rebind",
+                    prompt_version=str(source_invocation["prompt_version"] or "repair-proposer"),
+                    schema_version="repair-provenance-rebind-v1",
+                    pricing_version="none",
+                    stage=source_invocation["stage"],
+                    redacted_summary=json.dumps(
+                        {"rebound_candidate": source_invocation["id"]}, sort_keys=True
+                    ),
+                    status="completed",
+                    artifact_ids=[proposal_artifact.ref.artifact_id, safe_diff_artifact.ref.artifact_id],
+                    artifact_checksums={
+                        proposal_artifact.ref.artifact_id: proposal_artifact.ref.checksum,
+                        safe_diff_artifact.ref.artifact_id: safe_diff_artifact.ref.checksum,
+                    },
+                    state_version=1,
+                    event_sequence=1,
+                    retries=int(source_invocation["retries"] or 0),
+                    response_received=False,
+                    response_kind="deterministic_rebind",
+                    transport_started=False,
+                    started_at=now,
+                    completed_at=now,
+                    created_at=now,
+                )
+                session.add(child_invocation)
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="proposed",
+                    risk_level=str(bound["risk_level"]),
+                    diagnosis=f"deterministic provenance rebind; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=attempt.context_pack_artifact_id,
+                    context_pack_checksum=attempt.context_pack_checksum,
+                    proposal_artifact_id=proposal_artifact.ref.artifact_id,
+                    proposal_checksum=proposal_artifact.ref.checksum,
+                    proposer_invocation_id=child_invocation_id,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+                continuation.status = "queued"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.next_attempt_at = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.waiting_execution_id = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=event_key,
+                    reason="deterministic bound candidate recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "candidate_checksum": rejected_checksum,
+                        "proposal_checksum": proposal_artifact.ref.checksum,
+                        "request_checksum": request_checksum,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
+        except RepairApplicationError:
+            self._remove_uncommitted_artifact(proposal_artifact)
+            self._remove_uncommitted_artifact(safe_diff_artifact)
+            raise
+
     def reject(
         self,
         *,
@@ -3045,7 +3372,7 @@ class RepairApplicationService:
                     )
                     continue
                 seen: dict[tuple[str, str], str] = {}
-                provenance: list[dict[str, str]] = []
+                dependency_changes: list[dict[str, str]] = []
                 for item in group:
                     fields = [item.get(name) for name in ("section", "package", "new_version")]
                     if not all(isinstance(field, str) and field.strip() for field in fields):
@@ -3092,16 +3419,13 @@ class RepairApplicationService:
                         if not isinstance(document.get(section), dict):
                             document[section] = {}
                         document[section][package] = new_version
-                        provenance.append(
+                        dependency_changes.append(
                             {
-                                "key": "llm_requested_version",
-                                "value": llm_requested_version,
-                            }
-                        )
-                        provenance.append(
-                            {
-                                "key": "policy_version",
-                                "value": DEPENDENCY_ADDITION_POLICY_VERSION,
+                                "operation": "dependency_add",
+                                "section": section,
+                                "package": package,
+                                "new_version": llm_requested_version,
+                                "policy_version": DEPENDENCY_ADDITION_POLICY_VERSION,
                             }
                         )
                         continue
@@ -3148,7 +3472,7 @@ class RepairApplicationService:
                             "Dependency changes produced no dependency state change",
                         )
                     document[section][package] = new_version
-                    provenance.append(
+                    dependency_changes.append(
                         {
                             "operation": "dependency_change",
                             "path": relative,
@@ -3157,6 +3481,25 @@ class RepairApplicationService:
                             "new_version": new_version,
                         }
                     )
+                dependency_changes.sort(
+                    key=lambda item: (
+                        item.get("section", ""),
+                        item.get("package", ""),
+                        item.get("new_version", ""),
+                        item.get("operation", ""),
+                    )
+                )
+                provenance = [
+                    {
+                        "key": "dependency_changes",
+                        "value": json.dumps(
+                            dependency_changes,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    }
+                ]
                 newline = _dominant_newline(current)
                 canonical = json.dumps(document, ensure_ascii=False, indent=2).replace(
                     "\n", newline
@@ -3250,6 +3593,24 @@ class RepairApplicationService:
         for operation in result:
             operation['provenance'] = _normalize_provenance(operation.get('provenance'))
         return result
+
+    @staticmethod
+    def _strip_legacy_candidate_provenance(value: dict[str, object]) -> dict[str, object]:
+        """Read old candidates without allowing their metadata to become authority."""
+        candidate = dict(value)
+        operations = candidate.get("operations")
+        if isinstance(operations, list):
+            candidate["operations"] = [
+                {
+                    key: field_value
+                    for key, field_value in operation.items()
+                    if key != "provenance"
+                }
+                if isinstance(operation, dict)
+                else operation
+                for operation in operations
+            ]
+        return candidate
 
     def _bind_dependency_transition(
         self, value: dict[str, object], context: dict[str, object]
@@ -3454,7 +3815,14 @@ class RepairApplicationService:
                 "REPAIR_DEPENDENCY_PACKAGE_MISSING",
                 "The backend blocking package is missing or ambiguous in authoritative package.json",
             )
-        return RepairProposal.model_validate(value).model_dump(mode="json")
+        try:
+            return RepairProposal.model_validate(value).model_dump(mode="json")
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_BOUND_PROPOSAL_INVALID",
+                "Backend-bound dependency proposal violates authoritative invariants: "
+                + _proposal_validation_message(error),
+            ) from error
 
     def _causal_gate_rejection(self, context: dict[str, object], proposal: dict[str, object]):
         """Run the causal gate over the failure evidence and the bound proposal."""
@@ -3541,7 +3909,14 @@ class RepairApplicationService:
         }
         if any(item.get("operation") == "dependency_transition" for item in operations):
             return self._bind_dependency_transition(payload, context)
-        return RepairProposal.model_validate(payload).model_dump(mode="json")
+        try:
+            return RepairProposal.model_validate(payload).model_dump(mode="json")
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_BOUND_PROPOSAL_INVALID",
+                "Backend-bound repair proposal violates authoritative invariants: "
+                + _proposal_validation_message(error),
+            ) from error
 
     def _context_pack_excerpts(self, context: dict[str, object]) -> dict[str, object]:
         try:
@@ -4000,7 +4375,14 @@ class RepairApplicationService:
     def validate_proposal(
         self, value: dict[str, object], context: dict[str, object]
     ) -> dict[str, object]:
-        proposal = RepairProposal.model_validate(value)
+        try:
+            proposal = RepairProposal.model_validate(value)
+        except ValidationError as error:
+            raise RepairApplicationError(
+                "REPAIR_BOUND_PROPOSAL_INVALID",
+                "Backend-bound repair proposal violates authoritative invariants: "
+                + _proposal_validation_message(error),
+            ) from error
         if (
             proposal.failure_evidence_checksum != context["failure_evidence_checksum"]
             or proposal.context_pack_checksum != context["context_pack_checksum"]
@@ -6000,6 +6382,12 @@ class RepairApplicationService:
     @staticmethod
     def _legacy_override_recovery_event_key(idempotency_key: str) -> str:
         return "repair-legacy-g10-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _bound_candidate_recovery_event_key(idempotency_key: str) -> str:
+        return "repair-bound-candidate-recovery:" + hashlib.sha256(
             idempotency_key.encode()
         ).hexdigest()
 

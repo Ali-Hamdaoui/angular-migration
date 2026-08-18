@@ -813,6 +813,42 @@ def recover_exhausted_semantic_retry(
         )
 
 
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-bound-candidate")
+def recover_bound_candidate(
+    run_id: str,
+    attempt_id: str,
+    body: TransformationRestartRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).recover_bound_candidate(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
 @router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-invalid-g10-override")
 def recover_invalid_g10_override(
     run_id: str,

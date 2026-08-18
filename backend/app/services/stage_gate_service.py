@@ -65,6 +65,7 @@ _NEXT_NODE = {
 }
 
 _SEMANTIC_RECOVERY_REASON = "semantic retry exhausted recovery requested"
+_BOUND_CANDIDATE_RECOVERY_REASON = "deterministic bound candidate recovery requested"
 
 
 def _canonical_revision_payload(value: object, *, review: bool) -> dict | None:
@@ -453,6 +454,33 @@ class StageGateService:
                 == WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED.value,
             )
         ).all()
+        bound_event = next(
+            (
+                event
+                for event in recovery_event
+                if event.reason == _BOUND_CANDIDATE_RECOVERY_REASON
+                and isinstance(event.payload, dict)
+                and event.payload.get("attempt_id") == parent.id
+                and event.payload.get("child_attempt_id") == attempt.id
+            ),
+            None,
+        )
+        if bound_event is not None:
+            invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
+            if (
+                invocation is None
+                or invocation.status != "completed"
+                or invocation.role != "repair_proposer"
+                or invocation.task_type != "repair_diagnosis"
+                or invocation.deployment_alias != "deterministic-provenance-rebind"
+                or (invocation.artifact_checksums or {}).get(attempt.proposal_artifact_id)
+                != attempt.proposal_checksum
+            ):
+                raise StageGateError(
+                    "REPAIR_PARENT_LINEAGE_INVALID",
+                    "G10 deterministic candidate recovery evidence is stale",
+                )
+            return
         if not any(
             event.reason == _SEMANTIC_RECOVERY_REASON
             and isinstance(event.payload, dict)
