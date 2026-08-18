@@ -1241,6 +1241,10 @@ class TransformerOrchestrator:
                 for artifact in (failure, route_artifact, context):
                     if artifact is not None:
                         self._stage.register_artifact(session, artifact, continuation)
+                attempt = session.query(RepairAttemptModel).filter_by(
+                    run_id=continuation.run_id,
+                    stage_id=continuation.current_stage_id,
+                ).order_by(RepairAttemptModel.attempt_number.desc()).first()
                 if self._is_angular_update_failure(session, continuation):
                     if route.value == "angular_update_command_policy":
                         attempt = session.query(RepairAttemptModel).filter(
