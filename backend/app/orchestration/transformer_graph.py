@@ -1406,6 +1406,22 @@ class TransformerOrchestrator:
                         StageStepModel.name == "lockfile_generation-0",
                     )
                 )
+                lockfile_execution = (
+                    session.get(CommandExecutionModel, lockfile_step.execution_id)
+                    if lockfile_step is not None and lockfile_step.execution_id
+                    else None
+                )
+                lockfile_failed = (
+                    lockfile_step is not None
+                    and (
+                        lockfile_step.status == "FAILED"
+                        or (
+                            lockfile_execution is not None
+                            and lockfile_execution.status
+                            in {"failed", "timed_out", "cancelled", "interrupted"}
+                        )
+                    )
+                )
                 validation_correction = (
                     attempt is not None
                     and attempt.apply_ledger_artifact_id is not None
@@ -1415,8 +1431,7 @@ class TransformerOrchestrator:
                         in {"revalidating", "revalidating_affected", "validation_failed"}
                         or (
                             attempt.status in {"applied", "applied_verified"}
-                            and lockfile_step is not None
-                            and lockfile_step.status == "FAILED"
+                            and lockfile_failed
                             and correction_depth > 0
                         )
                     )
