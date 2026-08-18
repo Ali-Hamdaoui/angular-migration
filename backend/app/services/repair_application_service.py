@@ -251,6 +251,13 @@ _SEMANTIC_RETRY_CODES = frozenset(
         _CREATE_TARGET_EXISTS,
     }
 )
+_BOUND_CANDIDATE_RECOVERY_CODES = frozenset(
+    {
+        "REPAIR_PROPOSAL_SCHEMA_INVALID",
+        "REPAIR_BOUND_PROPOSAL_INVALID",
+        "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+    }
+)
 _LEGACY_SEMANTIC_RECOVERY_CODES = frozenset({"REPAIR_OPERATION_AMBIGUOUS"})
 _RECOVERABLE_PROPOSER_RETRY_CODES = frozenset(
     _SEMANTIC_RETRY_CODES
@@ -2790,7 +2797,7 @@ class RepairApplicationService:
                 or continuation.state_version != expected_state_version
                 or continuation.status != "blocked"
                 or continuation.current_node != "propose_repair"
-                or continuation.last_error_code != "REPAIR_PROPOSAL_SCHEMA_INVALID"
+                or continuation.last_error_code not in _BOUND_CANDIDATE_RECOVERY_CODES
                 or attempt.status != "evidence_frozen"
                 or attempt.proposal_artifact_id is not None
             ):
