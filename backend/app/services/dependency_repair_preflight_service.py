@@ -69,7 +69,7 @@ class DependencyRepairPreflightService:
             })
         rxjs = dependencies.get("rxjs")
         if rxjs is not None and not any(
-            self._range_overlaps_target(rxjs, self._range_minimum(rng), None)
+            self._ranges_overlap(rxjs, rng)
             for rng in entry.rxjs_ranges
         ):
             findings.append({
@@ -190,16 +190,31 @@ class DependencyRepairPreflightService:
 
     @classmethod
     def _range_overlaps_target(cls, spec: str, minimum: str | None, exclusive_maximum: str | None) -> bool:
-        lower = cls._version_tuple(cls._range_minimum(spec))
+        lower, upper = cls._range_interval(spec)
         if lower is None:
             return False
-        if minimum is not None and lower < cls._version_tuple(minimum):
-            upper = cls._range_upper(spec)
-            if upper is None or upper <= cls._version_tuple(minimum):
-                return False
+        minimum_value = cls._version_tuple(minimum) if minimum else None
+        if minimum_value is not None and (upper is not None and upper <= minimum_value):
+            return False
         if exclusive_maximum is not None and lower >= cls._version_tuple(exclusive_maximum):
             return False
         return True
+
+    @classmethod
+    def _ranges_overlap(cls, left: str, right: str) -> bool:
+        for left_branch in left.split("||"):
+            left_lower, left_upper = cls._range_interval(left_branch)
+            if left_lower is None:
+                continue
+            for right_branch in right.split("||"):
+                right_lower, right_upper = cls._range_interval(right_branch)
+                if right_lower is None:
+                    return True
+                if (left_upper is None or right_lower < left_upper) and (
+                    right_upper is None or left_lower < right_upper
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _range_minimum(value: str) -> str:
@@ -216,6 +231,42 @@ class DependencyRepairPreflightService:
         if value.lstrip().startswith("^"):
             return (lower[0] + 1, 0, 0) if lower[0] else (0, lower[1] + 1, 0)
         return lower
+
+    @classmethod
+    def _range_interval(
+        cls, value: str
+    ) -> tuple[tuple[int, int, int] | None, tuple[int, int, int] | None]:
+        value = value.strip()
+        if not value or value in {"*", "x", "X"}:
+            return None, None
+        if value.startswith("^") or value.startswith("~"):
+            lower = cls._version_tuple(cls._range_minimum(value))
+            return lower, cls._range_upper(value)
+        tokens = value.split()
+        if len(tokens) == 1 and re.fullmatch(r"\d+(?:\.\d+){0,2}", value):
+            lower = cls._version_tuple(value)
+            return lower, cls._next_patch(lower)
+        lower_bound = None
+        upper_bound = None
+        for token in tokens:
+            match = re.match(r"(>=|>|<=|<)?(\d+(?:\.\d+){0,2})$", token)
+            if match is None:
+                return None, None
+            version = cls._version_tuple(match.group(2))
+            operator = match.group(1) or "="
+            if operator in {">=", ">", "="}:
+                candidate = cls._next_patch(version) if operator == ">" else version
+                lower_bound = max(lower_bound, candidate) if lower_bound else candidate
+                if operator == "=":
+                    upper_bound = cls._next_patch(version)
+            else:
+                candidate = cls._next_patch(version) if operator == "<=" else version
+                upper_bound = min(upper_bound, candidate) if upper_bound else candidate
+        return lower_bound, upper_bound
+
+    @staticmethod
+    def _next_patch(value: tuple[int, int, int] | None) -> tuple[int, int, int] | None:
+        return (value[0], value[1], value[2] + 1) if value is not None else None
 
     @staticmethod
     def _version_tuple(value: str) -> tuple[int, int, int] | None:
@@ -243,9 +294,13 @@ class DependencyRepairPreflightService:
             if not isinstance(peers, dict):
                 continue
             for peer, peer_spec in peers.items():
-                if peer in dependencies and cls._angular_package(peer) and cls._spec_major(dependencies[peer]) != target_major:
+                if (
+                    peer in dependencies
+                    and isinstance(peer_spec, str)
+                    and not cls._ranges_overlap(dependencies[peer], peer_spec)
+                ):
                     findings.append({
-                        "code": "ANGULAR_PEER_MAJOR_MISMATCH",
+                        "code": "PEER_DEPENDENCY_RANGE_MISMATCH",
                         "package": package,
                         "peer": peer,
                         "peer_range": peer_spec,
