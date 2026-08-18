@@ -37,6 +37,7 @@ from app.services.repair_application_service import (
     _LEGACY_SEMANTIC_RECOVERY_CODES,
     _SEMANTIC_RETRY_CODES,
 )
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.dependency_repair_preflight_service import (
     DependencyRepairPreflightError,
@@ -302,8 +303,14 @@ class StageGateService:
                     raise StageGateError(
                         "G10_LINEAGE_STALE", "G10 repair attempt binding is missing"
                     )
-                attempt.status = "approved_pending_execution"
-                attempt.updated_at = decided_at
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "approved_pending_execution",
+                    reason="human G10 approval released reviewed repair for execution",
+                    actor=actor,
+                    now=decided_at,
+                )
             elif gate_id == StageGateId.G11.value:
                 attempt = session.scalar(
                     select(RepairAttemptModel)
@@ -314,9 +321,15 @@ class StageGateService:
                     .order_by(RepairAttemptModel.attempt_number.desc())
                 )
                 if attempt is not None:
-                    attempt.status = "validation_passed"
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "validation_passed",
+                        reason="human G11 approval accepted validated stage",
+                        actor=actor,
+                        now=decided_at,
+                    )
                     attempt.completed_at = decided_at
-                    attempt.updated_at = decided_at
             continuation.status = "queued"
             continuation.current_node = _NEXT_NODE[gate_id]
             continuation.wake_sequence += 1
@@ -331,9 +344,15 @@ class StageGateService:
                     .order_by(RepairAttemptModel.attempt_number.desc())
                 )
                 if attempt is not None:
-                    attempt.status = "validation_failed"
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "validation_failed",
+                        reason="human G11 rejection blocked stage validation",
+                        actor=actor,
+                        now=decided_at,
+                    )
                     attempt.completed_at = decided_at
-                    attempt.updated_at = decided_at
             continuation.status = "blocked"
             continuation.last_error_code = f"{gate_id}_{request.decision.upper()}"
             continuation.last_error_message = request.comment or f"{gate_id} was not approved"

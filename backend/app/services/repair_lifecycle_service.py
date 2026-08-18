@@ -11,6 +11,8 @@ from app.repositories.models import (
     RepairAttemptModel,
     StageGatePackageModel,
 )
+from app.services.repair_lifecycle_reliability_service import RepairLifecycleError
+from app.state.event_sequencer import append_workflow_event
 
 
 ACTIVE_REPAIR_STATUSES = frozenset(
@@ -29,6 +31,73 @@ ACTIVE_REPAIR_STATUSES = frozenset(
 
 class RepairLifecycleService:
     """Own fail-closed lifecycle reconciliation for historical repairs."""
+
+    @staticmethod
+    def transition_in_session(
+        session,
+        attempt: RepairAttemptModel,
+        to_status: str,
+        *,
+        expected_state_version: int | None = None,
+        reason: str = "repair lifecycle transition",
+        actor: str = "factory",
+        now: datetime | None = None,
+    ) -> RepairAttemptModel:
+        """Apply one audited repair transition inside the caller's transaction.
+
+        The caller keeps ownership of the transaction so status, evidence, and
+        continuation changes cannot commit independently.  This is the common
+        authority for new writes; the legacy reconciliation paths remain
+        readable while they are migrated.
+        """
+        from app.domain.repair_lifecycle import evaluate_transition
+
+        current_version = int(attempt.state_version or 1)
+        if expected_state_version is not None and current_version != expected_state_version:
+            raise RepairLifecycleError(
+                "REPAIR_STATE_VERSION_CONFLICT",
+                "repair lifecycle state changed concurrently",
+                {
+                    "attempt_id": attempt.id,
+                    "expected": expected_state_version,
+                    "actual": current_version,
+                },
+            )
+        if attempt.status == to_status:
+            return attempt
+        decision = evaluate_transition(attempt.id, attempt.status, to_status)
+        if not decision.allowed:
+            raise RepairLifecycleError(
+                "REPAIR_TRANSITION_ILLEGAL",
+                decision.reason or "illegal repair lifecycle transition",
+                {
+                    "attempt_id": attempt.id,
+                    "from_status": attempt.status,
+                    "to_status": to_status,
+                },
+            )
+        occurred_at = now or datetime.now(UTC)
+        next_version = current_version + 1
+        attempt.status = to_status
+        attempt.state_version = next_version
+        attempt.updated_at = occurred_at
+        append_workflow_event(
+            session,
+            run_id=attempt.run_id,
+            stage_id=attempt.stage_id,
+            event_type="REPAIR_LIFECYCLE_TRANSITION",
+            idempotency_key=f"repair-transition:{attempt.id}:{next_version}",
+            actor=actor,
+            reason=reason,
+            occurred_at=occurred_at,
+            payload={
+                "attempt_id": attempt.id,
+                "from_status": decision.from_status,
+                "to_status": to_status,
+                "state_version": next_version,
+            },
+        )
+        return attempt
 
     @classmethod
     def reconcile_superseded_attempts(

@@ -302,6 +302,7 @@ class WorkflowEventType(str, Enum):
     VALIDATION_GATE_CHANGED = "validation_gate_changed"
     ARTIFACT_CREATED = "artifact_created"
     APPROVAL_REQUIRED = "approval_required"
+    REPAIR_LIFECYCLE_TRANSITION = "REPAIR_LIFECYCLE_TRANSITION"
     WORKFLOW_COMPLETED = "workflow_completed"
     RUN_CREATED = "RUN_CREATED"
     RUN_START_ACCEPTED = "RUN_START_ACCEPTED"

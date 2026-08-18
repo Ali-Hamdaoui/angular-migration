@@ -83,6 +83,7 @@ from app.services.repair_application_service import (
     RepairLlmError,
     RepairProposal,
 )
+from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.stage_execution_application_service import validation_execution_key
 from app.services.stage_preparation_primitives import StageSandboxCopier
@@ -451,8 +452,12 @@ class TransformerOrchestrator:
                     # repair-specific nodes.
                     attempt = self._latest_repair(session, continuation, required=False)
                     if attempt is not None and attempt.status == "applied_verified":
-                        attempt.status = "migration_retried"
-                        attempt.updated_at = datetime.now(UTC)
+                        RepairLifecycleService.transition_in_session(
+                            session,
+                            attempt,
+                            "migration_retried",
+                            reason="post-repair Angular update retry succeeded",
+                        )
                     if self._pending_dependency_transition(session, continuation):
                         self._queue(continuation, "dependency_transition")
                     else:
@@ -1428,6 +1433,22 @@ class TransformerOrchestrator:
                         )
                     )
                 )
+                post_apply_command_failed = bool(
+                    attempt is not None
+                    and attempt.apply_ledger_artifact_id is not None
+                    and attempt.created_at is not None
+                    and session.scalar(
+                        select(CommandExecutionModel.id).where(
+                            CommandExecutionModel.run_id == continuation.run_id,
+                            CommandExecutionModel.stage_id == continuation.current_stage_id,
+                            CommandExecutionModel.requested_at >= attempt.created_at,
+                            CommandExecutionModel.status.in_(
+                                {"failed", "timed_out", "cancelled", "interrupted"}
+                            ),
+                        )
+                    )
+                    is not None
+                )
                 validation_correction = (
                     attempt is not None
                     and attempt.apply_ledger_artifact_id is not None
@@ -1435,6 +1456,7 @@ class TransformerOrchestrator:
                     and (
                         attempt.status
                         in {"revalidating", "revalidating_affected", "validation_failed"}
+                        or attempt.status == "executing" and post_apply_command_failed
                         or (
                             attempt.status in {"applied", "applied_verified", "blocked"}
                             and lockfile_failed
@@ -1626,8 +1648,12 @@ class TransformerOrchestrator:
             "completed",
             "rejected",
         }:
-            attempt.status = "revalidating_affected"
-            attempt.updated_at = datetime.now(UTC)
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "revalidating_affected",
+                reason="known baseline validation resumed",
+            )
         expected_state_version = continuation.state_version
         continuation.last_error_code = None
         continuation.last_error_message = None
@@ -1968,9 +1994,13 @@ class TransformerOrchestrator:
         version_step.updated_at = now
         attempt = self._latest_repair(session, continuation)
         if attempt is not None and attempt.status == "evidence_frozen" and not attempt.proposal_artifact_id:
-            attempt.status = "superseded"
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "superseded",
+                reason="empty repair evidence attempt superseded",
+            )
             attempt.completed_at = now
-            attempt.updated_at = now
         continuation.last_error_code = None
         continuation.last_error_message = None
         self._queue(continuation, "final_install")
@@ -2026,7 +2056,13 @@ class TransformerOrchestrator:
                         "Persisted request-changes review is missing",
                     )
                     return
-                self._queue(continuation, "create_g10")
+                continuation.status = "waiting_repair_revision"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
                 return
             attempt_id = attempt.id
         try:
@@ -2056,7 +2092,13 @@ class TransformerOrchestrator:
                 self._queue(continuation, "create_g10")
                 return
             if review["decision"] == "request_changes":
-                self._queue(continuation, "create_g10")
+                continuation.status = "waiting_repair_revision"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = datetime.now(UTC)
                 return
             self._block(
                 session,
@@ -2103,8 +2145,12 @@ class TransformerOrchestrator:
                         return
                 if gate_id == "G10":
                     attempt.g10_gate_package_id = existing.id
-                    attempt.status = "waiting_g10"
-                    attempt.updated_at = datetime.now(UTC)
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "waiting_g10",
+                        reason="repair G10 package reused after accepted review",
+                    )
                 continuation.status = "waiting_gate"
                 continuation.current_node = f"wait_{gate_id.lower()}"
                 continuation.worker_id = None
@@ -2299,8 +2345,12 @@ class TransformerOrchestrator:
             )
             if gate_id == "G10":
                 attempt.g10_gate_package_id = package.id
-                attempt.status = "waiting_g10"
-                attempt.updated_at = datetime.now(UTC)
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "waiting_g10",
+                    reason="repair G10 package created after accepted review",
+                )
 
     def _apply_repair(self, continuation_id: str, worker_id: str) -> None:
         mutation_state = {"started": False, "claimed": False}
@@ -2435,10 +2485,14 @@ class TransformerOrchestrator:
                         "Recovery attempt belongs to a different run or stage",
                     )
                 if attempt is not None:
-                    attempt.status = "apply_recovery_required"
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "apply_recovery_required",
+                        reason=reason or "repair apply requires durable recovery",
+                    )
                     if fingerprint is not None:
                         attempt.post_fingerprint = fingerprint
-                    attempt.updated_at = datetime.now(UTC)
                 if continuation is not None:
                     if fingerprint is not None:
                         binding = session.scalar(
@@ -2833,8 +2887,12 @@ class TransformerOrchestrator:
             error = apply_error
             with self._scope() as session:
                 attempt = session.get(RepairAttemptModel, context["attempt_id"])
-                attempt.status = "apply_failed"
-                attempt.updated_at = datetime.now(UTC)
+                RepairLifecycleService.transition_in_session(
+                    session,
+                    attempt,
+                    "apply_failed",
+                    reason=f"repair application failed: {error.code}",
+                )
                 self._block(
                     session,
                     self._owned(session, continuation_id, worker_id),
@@ -2875,8 +2933,12 @@ class TransformerOrchestrator:
                 apply_ledger_checksum=ledger.ref.checksum,
                 post_fingerprint=fingerprint,
             )
-            attempt.status = "executing" if is_dependency_transition else "applied_verified"
-            attempt.updated_at = datetime.now(UTC)
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "executing" if is_dependency_transition else "applied_verified",
+                reason="repair application committed immutable apply ledger",
+            )
             post_apply_node = self._post_apply_node(
                 proposal,
                 angular_update_retry_eligible=self._angular_update_retry_eligible(
@@ -3050,8 +3112,12 @@ class TransformerOrchestrator:
                             step.status = "PENDING"
                             step.execution_id = None
                             step.completed_at = None
-                    attempt.status = "revalidating_affected"
-                    attempt.updated_at = datetime.now(UTC)
+                    RepairLifecycleService.transition_in_session(
+                        session,
+                        attempt,
+                        "revalidating_affected",
+                        reason="repair validation restarted affected checks",
+                    )
                 if dependency_repair and attempt.status == "revalidating_affected":
                     if not self._successful_materialization_exists(
                         session, continuation, attempt
@@ -3116,8 +3182,12 @@ class TransformerOrchestrator:
                 step.status = "PENDING"
                 step.execution_id = None
                 step.completed_at = None
-            attempt.status = "revalidating"
-            attempt.updated_at = datetime.now(UTC)
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "revalidating",
+                reason="repair validation restarted complete check set",
+            )
             self._queue(continuation, "final_install")
 
     @staticmethod
@@ -3486,8 +3556,12 @@ class TransformerOrchestrator:
                 if error.code == "COMMAND_EXIT_NONZERO":
                     attempt = self._latest_repair(session, continuation)
                     if attempt is not None and attempt.apply_ledger_artifact_id:
-                        attempt.status = "validation_failed"
-                        attempt.updated_at = datetime.now(UTC)
+                        RepairLifecycleService.transition_in_session(
+                            session,
+                            attempt,
+                            "validation_failed",
+                            reason="dependency-transition command failed after repair application",
+                        )
                     self._validation_failure(
                         session,
                         continuation,
@@ -3519,8 +3593,12 @@ class TransformerOrchestrator:
                     "Applied repair post-state is incomplete or no longer canonical",
                 )
                 return
-            attempt.status = "migration_retried"
-            attempt.updated_at = datetime.now(UTC)
+            RepairLifecycleService.transition_in_session(
+                session,
+                attempt,
+                "migration_retried",
+                reason="applied repair verification succeeded",
+            )
             self._queue(continuation, "target_inspection")
 
     @staticmethod
