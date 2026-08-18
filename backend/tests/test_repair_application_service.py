@@ -1633,6 +1633,7 @@ def _seed_exhausted_semantic_retry(
     *,
     human_revision: dict | None = None,
     retry_failure_code: str = "REPAIR_REPLACEMENT_MISSING",
+    recovered_proposer: bool = False,
 ):
     store, attempt_id, app_ts, artifacts = _seed_service(
         factory, tmp_path, human_revision=human_revision
@@ -1664,7 +1665,8 @@ def _seed_exhausted_semantic_retry(
     continuation.worker_id = None
     continuation.lease_expires_at = None
 
-    for retry_number, suffix in enumerate(("", ":semantic-retry-1")):
+    suffixes = ("", ":recovery-1") if recovered_proposer else ("", ":semantic-retry-1")
+    for retry_number, suffix in enumerate(suffixes):
         invocation_id = f"{attempt_id}:proposer{suffix}"
         session.add(
             LlmInvocationModel(
@@ -1693,13 +1695,19 @@ def _seed_exhausted_semantic_retry(
                 artifact_checksums={},
                 state_version=1,
                 event_sequence=0,
-                retries=retry_number,
+                retries=0 if recovered_proposer else retry_number,
                 failure_stage="repair_semantics",
                 started_at=NOW,
                 completed_at=NOW,
                 created_at=NOW,
             )
         )
+    if recovered_proposer:
+        session.flush()
+        session.get(
+            LlmInvocationModel, f"{attempt_id}:proposer"
+        ).status = "uncertain_abandoned"
+        attempt.proposer_invocation_id = f"{attempt_id}:proposer:recovery-1"
     session.add(checkpoint)
     session.commit()
     session.close()
@@ -1824,6 +1832,28 @@ def test_recovery_accepts_exhausted_protocol_retry_failure(tmp_path: Path):
         attempt_id=attempt_id,
         expected_state_version=3,
         idempotency_key="semantic-recovery-protocol-failure",
+        actor="operator",
+    )
+
+    assert result["attempt_id"] == "repair-stage-1-2"
+    assert result["status"] == "evidence_frozen"
+    engine.dispose()
+
+
+def test_recovery_accepts_exhausted_retry_after_uncertain_proposer_recovery(tmp_path: Path):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_exhausted_semantic_retry(
+        factory,
+        tmp_path,
+        retry_failure_code="REPAIR_PROPOSAL_SCHEMA_INVALID",
+        recovered_proposer=True,
+    )
+
+    result = _recovery_service(factory).recover_exhausted_semantic_retry(
+        run_id="run-1",
+        attempt_id=attempt_id,
+        expected_state_version=3,
+        idempotency_key="semantic-recovery-after-uncertain-proposer",
         actor="operator",
     )
 

@@ -1967,7 +1967,8 @@ class RepairApplicationService:
             and retry_invocation.failure_code in _RECOVERABLE_PROPOSER_RETRY_CODES
             and (
                 (
-                    retry_invocation.retries >= 1
+                    retry_invocation.failure_stage == "repair_semantics"
+                    and retry_invocation.retries >= 0
                     if recovered_proposer_id
                     else retry_invocation.retries == 1
                     and retry_invocation.failure_stage == "repair_semantics"
@@ -1979,7 +1980,17 @@ class RepairApplicationService:
                 )
             )
         )
-        if base_invocation is None or base_invocation.status != "failed" or not retry_valid:
+        base_valid = (
+            base_invocation is not None
+            and (
+                base_invocation.status == "failed"
+                or (
+                    recovered_proposer_id is not None
+                    and base_invocation.status == "uncertain_abandoned"
+                )
+            )
+        )
+        if not base_valid or not retry_valid:
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Persisted semantic retry evidence is missing or invalid",
