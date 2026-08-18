@@ -292,7 +292,7 @@ def validate_dependency_transition_evidence(
         and (
             normalized.get("command_id") == "angular-update-exact"
             or (
-                normalized.get("command_id") == "npm-lockfile-generate"
+                str(normalized.get("command_id") or "").startswith("npm-")
                 and isinstance(diagnosis, dict)
                 and diagnosis.get("source") == "npm_eresolve_peer_conflict"
             )
