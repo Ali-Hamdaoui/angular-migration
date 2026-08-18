@@ -149,6 +149,29 @@ class DependencyRepairPreflightService:
                     )
                 proposed = value
                 continue
+            if operation.get("operation") == "dependency_transition":
+                target_state = operation.get("target_state")
+                package = target_state.get("package") if isinstance(target_state, dict) else None
+                version = (
+                    target_state.get("target_version")
+                    if isinstance(target_state, dict)
+                    else None
+                )
+                sections = [
+                    section
+                    for section in ("dependencies", "devDependencies")
+                    if isinstance(proposed.get(section), dict)
+                    and isinstance(package, str)
+                    and package in proposed[section]
+                ]
+                if len(sections) != 1 or not isinstance(version, str):
+                    raise DependencyRepairPreflightError(
+                        "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                        "Dependency transition target is missing or ambiguous in package.json",
+                        {"package": package, "target_version": version, "sections": sections},
+                    )
+                proposed[sections[0]][package] = version
+                continue
             package = operation.get("package")
             section = operation.get("section")
             version = operation.get("new_version")
