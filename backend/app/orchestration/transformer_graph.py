@@ -1385,10 +1385,18 @@ class TransformerOrchestrator:
                     continuation.current_stage_id,
                     repair_policy,
                 )
+                validation_correction = (
+                    attempt is not None
+                    and attempt.status in {"revalidating", "revalidating_affected", "validation_failed"}
+                    and attempt.apply_ledger_artifact_id is not None
+                    and not str(attempt.diagnosis or "").startswith(
+                        "validation correction;"
+                    )
+                )
                 if (
                     budget["consumed_attempts"] >= budget["max_attempts"]
                     or budget["consumed_applied"] >= budget["max_applied"]
-                ):
+                ) and not validation_correction:
                     self._block(
                         session,
                         continuation,
@@ -1421,7 +1429,11 @@ class TransformerOrchestrator:
                     attempt_number=attempts + 1,
                     status="evidence_frozen",
                     risk_level="unknown",
-                    diagnosis=f"{route.value}; checkpoint={checkpoint.id}",
+                    diagnosis=(
+                        f"validation correction; {route.value}; checkpoint={checkpoint.id}"
+                        if validation_correction
+                        else f"{route.value}; checkpoint={checkpoint.id}"
+                    ),
                     checkpoint_id=checkpoint.id,
                     failure_evidence_artifact_id=failure.ref.artifact_id,
                     failure_evidence_checksum=failure.ref.checksum,
@@ -1431,6 +1443,7 @@ class TransformerOrchestrator:
                     context_pack_checksum=context.ref.checksum,
                     pre_fingerprint=str(evidence["workspace_fingerprint"]),
                     failure_fingerprint=str(evidence["failure_fingerprint"]),
+                    parent_attempt_id=attempt.id if validation_correction else None,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
