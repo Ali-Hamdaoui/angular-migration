@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -913,8 +914,21 @@ class TransformerStageService:
         quarantine = workspace.parent / f".{workspace.name}.interrupted-{uuid4().hex[:12]}"
         shutil.copytree(snapshot, temporary)
         try:
-            workspace.replace(quarantine)
-            temporary.replace(workspace)
+            last_error = None
+            for delay in (0.0, 0.25, 0.5, 1.0):
+                if delay:
+                    time.sleep(delay)
+                try:
+                    workspace.replace(quarantine)
+                    temporary.replace(workspace)
+                    last_error = None
+                    break
+                except PermissionError as error:
+                    last_error = error
+                    if not workspace.exists() and quarantine.exists():
+                        quarantine.replace(workspace)
+            if last_error is not None:
+                raise last_error
         except Exception:
             if not workspace.exists() and quarantine.exists():
                 quarantine.replace(workspace)
