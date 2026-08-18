@@ -378,13 +378,25 @@ def verify_dependency_transition_evidence_for_source(
         package=package,
         installed_version=installed_version,
         peer_ranges=peer_ranges,
+        allow_missing_installed_metadata=diagnosis.get("source") is None,
     )
 
 
 def verify_dependency_transition_state(
-    workspace: Path, *, package: str, installed_version: str, peer_ranges: dict[str, str]
+    workspace: Path,
+    *,
+    package: str,
+    installed_version: str,
+    peer_ranges: dict[str, str],
+    allow_missing_installed_metadata: bool = False,
 ) -> None:
-    """Prove the package was present in the authoritative pre-transition state."""
+    """Prove the package was present in the authoritative pre-transition state.
+
+    Immutable recovery checkpoints may omit ``node_modules``. In that case
+    the exact lockfile version is authoritative; installed metadata is still
+    checked whenever it is present. Both npm v1 and npm v2+ lockfile layouts
+    are supported.
+    """
     manifest = _read_json(Path(workspace) / "package.json")
     if manifest is None:
         raise ValueError("authoritative package.json is missing or invalid")
@@ -403,13 +415,25 @@ def verify_dependency_transition_state(
         else None
     )
     lock_root = lock_packages.get("") if isinstance(lock_packages, dict) else None
-    lock_present = [
-        section
-        for section in ("dependencies", "devDependencies")
-        if isinstance(lock_root, dict)
-        and isinstance(lock_root.get(section), dict)
-        and package in lock_root[section]
-    ]
+    if isinstance(lock_root, dict):
+        lock_present = [
+            section
+            for section in ("dependencies", "devDependencies")
+            if isinstance(lock_root.get(section), dict) and package in lock_root[section]
+        ]
+    else:
+        legacy_dependencies = lock.get("dependencies") if isinstance(lock, dict) else None
+        lock_present = [
+            "dependencies"
+            if isinstance(legacy_dependencies, dict) and package in legacy_dependencies
+            else ""
+        ]
+        lock_present = [item for item in lock_present if item]
+        lock_entry = (
+            legacy_dependencies.get(package)
+            if isinstance(legacy_dependencies, dict)
+            else None
+        )
     if (
         not isinstance(lock_entry, dict)
         or lock_entry.get("version") != installed_version
@@ -417,6 +441,8 @@ def verify_dependency_transition_state(
     ):
         raise ValueError("package-lock.json blocking package state does not match backend evidence")
     installed = _read_json(Path(workspace) / "node_modules" / package / "package.json")
+    if installed is None and allow_missing_installed_metadata:
+        return
     if installed is None or installed.get("version") != installed_version:
         raise ValueError("installed blocking package version does not match backend evidence")
     if not peer_ranges:

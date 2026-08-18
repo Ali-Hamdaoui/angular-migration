@@ -5,6 +5,7 @@ from app.services.dependency_closure_service import (
     compatible_reinstall_bundle,
     compatible_reinstall_version,
     installed_dependency_version,
+    verify_dependency_transition_evidence_for_source,
 )
 
 
@@ -61,3 +62,32 @@ def test_angular_13_build_tool_transition_binds_peer_compatible_versions(
         ("typescript", "4.4.4"),
         ("@angular-devkit/build-angular", "13.0.4"),
     ]
+
+
+def test_angular_update_peer_evidence_accepts_npm_v1_checkpoint_without_node_modules(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = "@angular-devkit/build-angular"
+    (workspace / "package.json").write_text(
+        json.dumps({"devDependencies": {package: "~12.0.0"}}),
+        encoding="utf-8",
+    )
+    (workspace / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 1,
+                "dependencies": {package: {"version": "12.0.5"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    verify_dependency_transition_evidence_for_source(
+        workspace,
+        diagnosis={"kind": "peer_dependency_conflict", "source": None},
+        package=package,
+        installed_version="12.0.5",
+        peer_ranges={"typescript": "~4.4.3"},
+    )
