@@ -3483,7 +3483,18 @@ class TransformerOrchestrator:
             try:
                 self._dependency_transitions.advance(session, continuation)
             except DependencyTransitionError as error:
-                self._block(session, continuation, error.code, error.message)
+                if error.code == "COMMAND_EXIT_NONZERO":
+                    self._validation_failure(
+                        session,
+                        continuation,
+                        error,
+                        event_reason=(
+                            "dependency-transition command failed; "
+                            "failure classification queued"
+                        ),
+                    )
+                else:
+                    self._block(session, continuation, error.code, error.message)
 
     def _verify_repair(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
