@@ -606,11 +606,13 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
 
     Schema/semantic/duplicate-path/causal rejections, reviewer rejections,
     reconstruction-only states, command supersession retries, and warning-only
-    conditions never consume either count: an attempt consumes the budget only
-    when a valid proposal was persisted, the reviewer accepted, G10 approved
-    and operations executed (apply ledger), and the failed migration boundary
-    was re-executed after the apply (angular-update stages only).  Read-only;
-    never raises.
+    conditions never consume either count.  Once a reviewer-approved G10
+    repair has executed and produced an apply ledger, it consumes the bounded
+    repair budget immediately.  Waiting for a later boundary retry to finish
+    before counting it allows a second repair to be admitted while the command
+    retry budget is already exhausted, leaving an approved repair stranded at
+    the retry boundary.  Completion evidence is still tracked separately by
+    ``_repair_completed``.  Read-only; never raises.
     """
     try:
         max_attempts = int((repair_policy or {}).get("max_attempts") or 3)
@@ -630,11 +632,18 @@ def repair_budget(session, run_id: str, stage_id: str, repair_policy: dict) -> d
             .order_by(RepairAttemptModel.attempt_number)
         ).all()
         run = session.get(MigrationRunModel, run_id)
-        successors = _angular_update_successors(session, run_id, stage_id)
-        completed = [row for row in rows if _repair_completed(session, run, row, successors)]
-        consumed_applied = len(completed)
+        # Budget consumption is based on the irreversible governed apply, not
+        # on a later command result.  In particular, ``applied_verified`` and
+        # dependency-transition ``executing`` are durable post-apply states.
+        applied = [
+            row
+            for row in rows
+            if row.apply_ledger_artifact_id is not None
+            and row.status in _REVIEWER_ACCEPTED_STATUSES
+        ]
+        consumed_applied = len(applied)
         consumed_attempts = 0
-        for row in completed:
+        for row in applied:
             if not row.proposal_artifact_id or not row.proposal_checksum:
                 continue
             if row.review_artifact_id is None or row.status not in _REVIEWER_ACCEPTED_STATUSES:

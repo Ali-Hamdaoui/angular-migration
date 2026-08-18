@@ -25,6 +25,7 @@ from app.repositories.models import (
 )
 from app.repositories.models.base import Base
 from app.services.failure_evidence_service import FailureEvidenceService
+from app.services.causal_review import repair_budget
 from app.services.stage_preparation_primitives import StageSandboxCopier
 from app.services.transformation_continuation_service import TransformationContinuationService
 from app.services.transformer_stage_service import TransformerStageService
@@ -904,6 +905,40 @@ def test_classify_failure_repair_limit_reads_plan_max_applied(tmp_path: Path):
     assert cont.status == "blocked"
     assert cont.last_error_code == "REPAIR_ATTEMPT_LIMIT"
     assert session.query(RepairAttemptModel).count() == 1
+    session.close()
+    engine.dispose()
+
+
+def test_repair_budget_counts_applied_repairs_before_boundary_retry(tmp_path: Path):
+    """An applied repair must consume budget before its retry can finish."""
+    engine, factory = _database(tmp_path)
+    _seed(factory, tmp_path, repair_policy={"max_attempts": 3, "max_applied": 2})
+    session = factory()
+    for number in (1, 2):
+        session.add(
+            RepairAttemptModel(
+                id=f"repair-stage-1-applied-verified-{number}",
+                run_id="run-1",
+                stage_id="stage-1",
+                attempt_number=number,
+                status="applied_verified",
+                risk_level="low",
+                diagnosis="reviewed repair applied; boundary retry pending",
+                apply_ledger_artifact_id=f"artifact-applied-{number}",
+                apply_ledger_checksum=f"sha256:applied-{number}",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    session.commit()
+    budget = repair_budget(
+        session,
+        "run-1",
+        "stage-1",
+        {"max_attempts": 3, "max_applied": 2},
+    )
+    assert budget["consumed_attempts"] == 0
+    assert budget["consumed_applied"] == 2
     session.close()
     engine.dispose()
 
