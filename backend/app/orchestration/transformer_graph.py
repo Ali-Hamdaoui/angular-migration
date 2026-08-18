@@ -1459,7 +1459,7 @@ class TransformerOrchestrator:
                         or attempt.status == "executing" and post_apply_command_failed
                         or (
                             attempt.status in {"applied", "applied_verified", "blocked"}
-                            and lockfile_failed
+                            and (lockfile_failed or post_apply_command_failed)
                         )
                     )
                 )
