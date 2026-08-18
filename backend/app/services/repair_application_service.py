@@ -1839,12 +1839,17 @@ class RepairApplicationService:
             )
         if (
             latest.id != attempt.id
-            or attempt.status != "evidence_frozen"
+            or attempt.status not in {"evidence_frozen", "blocked"}
             or attempt.completed_at is not None
             or continuation.current_stage_id != attempt.stage_id
             or continuation.status != "blocked"
             or continuation.current_node != "propose_repair"
-            or continuation.last_error_code != "REPAIR_SEMANTIC_RETRY_EXHAUSTED"
+            or continuation.last_error_code
+            not in {
+                "REPAIR_SEMANTIC_RETRY_EXHAUSTED",
+                "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+                "REPAIR_PROPOSAL_SCHEMA_INVALID",
+            }
             or continuation.state_version != expected_state_version
         ):
             raise RepairApplicationError(
@@ -1901,22 +1906,19 @@ class RepairApplicationService:
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Repair stage-plan authority is missing or stale",
             )
-        repair_policy = (stage_plan.stage_plan or {}).get("repair_policy") or {}
-        budget = repair_budget(session, run_id, attempt.stage_id, repair_policy)
-        try:
-            budget_exhausted = (
-                int(budget["consumed_attempts"]) >= int(budget["max_attempts"])
-                or int(budget["consumed_applied"]) >= int(budget["max_applied"])
+        semantic_recovery_count = session.scalar(
+            select(RepairAttemptModel.id)
+            .where(
+                RepairAttemptModel.run_id == run_id,
+                RepairAttemptModel.stage_id == attempt.stage_id,
+                RepairAttemptModel.diagnosis.like("semantic retry recovery;%"),
             )
-        except (KeyError, TypeError, ValueError) as error:
-            raise RepairApplicationError(
-                "REPAIR_RECOVERY_NOT_ELIGIBLE",
-                "Repair budget authority is invalid",
-            ) from error
-        if budget_exhausted:
+            .limit(1)
+        )
+        if semantic_recovery_count is not None:
             raise RepairApplicationError(
                 "REPAIR_LOOP_EXHAUSTED",
-                "Repair recovery limit has been reached",
+                "One semantic recovery is already present for this stage lineage",
             )
         binding = session.scalar(
             select(StageWorkspaceBindingModel).where(
