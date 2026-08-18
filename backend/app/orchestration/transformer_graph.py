@@ -3756,6 +3756,7 @@ class TransformerOrchestrator:
             continuation,
             checkpoint=checkpoint,
             reason="angular_update_recovery",
+            attempt_id=attempt.id if attempt is not None else None,
         )
         new_fingerprint = self._stage.reconstruct_workspace(
             checkpoint.workspace_path,

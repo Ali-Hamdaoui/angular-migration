@@ -25,6 +25,7 @@ from app.repositories.models import (
     MigrationPlanModel,
     MigrationRunModel,
     MigrationStageModel,
+    RepairAttemptModel,
     RepairFingerprintRecoveryModel,
     StageCheckpointModel,
     StageExecutionPlanModel,
@@ -988,9 +989,33 @@ class TransformerStageService:
                 StageWorkspaceBindingModel.active.is_(True),
             )
         )
+        pre_repair_fallback_authorized = False
         if binding is not None and binding.workspace_fingerprint != checkpoint.workspace_fingerprint:
             authoritative = self.authoritative_checkpoint_fingerprint(session, checkpoint)
-            if authoritative is None or binding.workspace_fingerprint != authoritative:
+            if attempt_id is not None and checkpoint.kind == "pre_repair":
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                pre_repair_fallback_authorized = bool(
+                    attempt is not None
+                    and attempt.run_id == continuation.run_id
+                    and attempt.stage_id == continuation.current_stage_id
+                    and attempt.checkpoint_id == checkpoint.id
+                    and attempt.status
+                    in {
+                        "approved_pending_execution",
+                        "executing",
+                        "uninstall",
+                        "angular_update",
+                        "reinstall",
+                        "npm_ci",
+                        "dependency_closure",
+                    }
+                    and attempt.pre_fingerprint == checkpoint.workspace_fingerprint
+                    and authoritative == checkpoint.workspace_fingerprint
+                )
+            if (
+                not pre_repair_fallback_authorized
+                and (authoritative is None or binding.workspace_fingerprint != authoritative)
+            ):
                 transitions.append_audit_event(
                     run_id=continuation.run_id,
                     idempotency_key=(
