@@ -373,7 +373,7 @@ class TransformationContinuationService:
             "attempt_id": attempt.id if attempt else None,
             "attempt_number": attempt.attempt_number if attempt else None,
             "waiting_execution_id": waiting_execution_id,
-            "current_command_id": current.id if current else None,
+            "current_command_id": current_command.id if current_command else None,
             "workspace_binding_id": binding.id if binding else None,
             "persisted_workspace_fingerprint": persisted_fingerprint,
             "live_workspace_fingerprint": live_fingerprint,

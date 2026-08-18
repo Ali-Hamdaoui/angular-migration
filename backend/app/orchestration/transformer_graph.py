@@ -4184,6 +4184,7 @@ class TransformerOrchestrator:
             restored_fingerprint=restored,
             execution_id=authority_execution_id,
             attempt_id=attempt.id,
+            mode=ReconstructionMode.AUTHORIZED_ROLLBACK,
         )
         binding.workspace_fingerprint = restored
         binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id

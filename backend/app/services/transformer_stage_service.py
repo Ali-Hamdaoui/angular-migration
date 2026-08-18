@@ -953,6 +953,42 @@ class TransformerStageService:
             return None
         return current
 
+    @staticmethod
+    def _reconstruction_request(
+        continuation: TransformationContinuationModel,
+        checkpoint: StageCheckpointModel,
+        binding: StageWorkspaceBindingModel | None,
+        *,
+        checkpoint_authoritative_fingerprint: str | None,
+        mode: ReconstructionMode,
+        reason: str,
+        execution_id: str | None,
+        attempt_id: str | None,
+    ) -> dict[str, object]:
+        return {
+            "run_id": continuation.run_id,
+            "stage_id": continuation.current_stage_id,
+            "continuation_id": continuation.id,
+            "checkpoint_id": checkpoint.id,
+            "checkpoint_authoritative_fingerprint": checkpoint_authoritative_fingerprint,
+            "reconstruction_mode": mode.value,
+            "reason": reason,
+            "repair_attempt_id": attempt_id,
+            "authority_execution_id": execution_id,
+            "current_binding_fingerprint": (
+                binding.workspace_fingerprint if binding is not None else None
+            ),
+            "source_generation_identity": {
+                "binding_id": binding.id if binding is not None else None,
+                "source_checkpoint_id": (
+                    binding.source_checkpoint_id if binding is not None else None
+                ),
+                "input_fingerprint": (
+                    binding.input_fingerprint if binding is not None else None
+                ),
+            },
+        }
+
     def begin_reconstruction(
         self,
         session,
@@ -963,7 +999,7 @@ class TransformerStageService:
         execution_id: str | None = None,
         attempt_id: str | None = None,
         mode: ReconstructionMode = ReconstructionMode.SAME_STATE,
-    ) -> None:
+    ) -> str:
         """Record governed reconstruction intent before the filesystem swap.
 
         Verifies the durable binding still agrees with the immutable source
@@ -1075,7 +1111,33 @@ class TransformerStageService:
                     and authoritative is not None
                 ):
                     pre_repair_fallback_authorized = True
-            if (
+        checkpoint_authoritative_fingerprint = authoritative or self.authoritative_checkpoint_fingerprint(
+            session, checkpoint
+        )
+        request = self._reconstruction_request(
+            continuation,
+            checkpoint,
+            binding,
+            checkpoint_authoritative_fingerprint=checkpoint_authoritative_fingerprint,
+            mode=mode,
+            reason=reason,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+        )
+        reconstruction_request_checksum = self.checksum(request)
+        event_payload = {
+            **request,
+            "reconstruction_request_checksum": reconstruction_request_checksum,
+            "mode": mode.value,
+            "attempt_id": attempt_id,
+            "execution_id": execution_id,
+            "from_binding_fingerprint": (
+                binding.workspace_fingerprint if binding is not None else None
+            ),
+            "live_workspace_fingerprint": live_workspace_fingerprint,
+            "target_checkpoint_fingerprint": checkpoint.workspace_fingerprint,
+        }
+        if (
                 not pre_repair_fallback_authorized
                 and mode is not ReconstructionMode.AUTHORIZED_ROLLBACK
                 and (authoritative is None or binding.workspace_fingerprint != authoritative)
@@ -1083,24 +1145,16 @@ class TransformerStageService:
                 transitions.append_audit_event(
                     run_id=continuation.run_id,
                     idempotency_key=(
-                        f"{continuation.current_stage_id}:reconstruct:{reason}:{checkpoint.id}:mismatch"
+                        f"reconstruct:v2:{reconstruction_request_checksum.removeprefix('sha256:')}:mismatch"
                     ),
                     event_type=WorkflowEventType.STAGE_WORKSPACE_FINGERPRINT_MISMATCH,
                     actor="transformer",
                     reason="workspace binding fingerprint no longer matches the reconstruction checkpoint",
                     occurred_at=self._now(),
                     payload={
-                        "stage_id": continuation.current_stage_id,
-                        "checkpoint_id": checkpoint.id,
+                        **event_payload,
                         "binding_workspace_fingerprint": binding.workspace_fingerprint,
                         "checkpoint_workspace_fingerprint": checkpoint.workspace_fingerprint,
-                        "mode": mode.value,
-                        "from_binding_fingerprint": binding.workspace_fingerprint,
-                        "live_workspace_fingerprint": live_workspace_fingerprint,
-                        "target_checkpoint_fingerprint": checkpoint.workspace_fingerprint,
-                        "attempt_id": attempt_id,
-                        "execution_id": execution_id,
-                        "reason": reason,
                     },
                 )
                 session.commit()
@@ -1111,27 +1165,15 @@ class TransformerStageService:
         transitions.append_audit_event(
             run_id=continuation.run_id,
             idempotency_key=(
-                f"{continuation.current_stage_id}:reconstruct:{reason}:{checkpoint.id}:started"
+                f"reconstruct:v2:{reconstruction_request_checksum.removeprefix('sha256:')}:started"
             ),
             event_type=WorkflowEventType.STAGE_WORKSPACE_RECONSTRUCTION_STARTED,
             actor="transformer",
             reason=f"workspace reconstruction started ({reason})",
             occurred_at=self._now(),
-            payload={
-                "stage_id": continuation.current_stage_id,
-                "checkpoint_id": checkpoint.id,
-                "checkpoint_fingerprint": checkpoint.workspace_fingerprint,
-                "mode": mode.value,
-                "from_binding_fingerprint": (
-                    binding.workspace_fingerprint if binding is not None else None
-                ),
-                "live_workspace_fingerprint": live_workspace_fingerprint,
-                "target_checkpoint_fingerprint": checkpoint.workspace_fingerprint,
-                "reason": reason,
-                "execution_id": execution_id,
-                "attempt_id": attempt_id,
-            },
+            payload=event_payload,
         )
+        return reconstruction_request_checksum
 
     @staticmethod
     def _execution_in_lineage(
@@ -1163,6 +1205,7 @@ class TransformerStageService:
         restored_fingerprint: str,
         execution_id: str | None = None,
         attempt_id: str | None = None,
+        mode: ReconstructionMode = ReconstructionMode.SAME_STATE,
     ) -> StageReconstructionRecordModel:
         """Write the durable ledger row and the RECONSTRUCTED event.
 
@@ -1170,37 +1213,80 @@ class TransformerStageService:
         checkpoint state change so the binding is never updated while the
         ledger row is absent.
         """
-        record = StageReconstructionRecordModel(
-            id=f"reconstruction-{uuid4().hex[:12]}",
-            run_id=continuation.run_id,
-            stage_id=continuation.current_stage_id,
-            checkpoint_id=checkpoint.id,
-            reason=reason,
-            source_workspace_fingerprint=checkpoint.workspace_fingerprint,
-            restored_workspace_fingerprint=restored_fingerprint,
-            created_from_execution_id=execution_id,
-            attempt_id=attempt_id,
-            state_version=continuation.state_version,
-            created_at=self._now(),
+        mode = ReconstructionMode(mode)
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
         )
-        session.add(record)
+        request = self._reconstruction_request(
+            continuation,
+            checkpoint,
+            binding,
+            checkpoint_authoritative_fingerprint=self.authoritative_checkpoint_fingerprint(
+                session, checkpoint
+            ),
+            mode=mode,
+            reason=reason,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+        )
+        reconstruction_request_checksum = self.checksum(request)
+        record_id = (
+            f"reconstruction-{reconstruction_request_checksum.removeprefix('sha256:')[:32]}"
+        )
+        record = session.get(StageReconstructionRecordModel, record_id)
+        if record is None:
+            record = StageReconstructionRecordModel(
+                id=record_id,
+                run_id=continuation.run_id,
+                stage_id=continuation.current_stage_id,
+                checkpoint_id=checkpoint.id,
+                reason=reason,
+                source_workspace_fingerprint=checkpoint.workspace_fingerprint,
+                restored_workspace_fingerprint=restored_fingerprint,
+                created_from_execution_id=execution_id,
+                attempt_id=attempt_id,
+                state_version=continuation.state_version,
+                created_at=self._now(),
+            )
+            session.add(record)
+        elif (
+            record.run_id != continuation.run_id
+            or record.stage_id != continuation.current_stage_id
+            or record.checkpoint_id != checkpoint.id
+            or record.reason != reason
+            or record.restored_workspace_fingerprint != restored_fingerprint
+            or record.created_from_execution_id != execution_id
+            or record.attempt_id != attempt_id
+        ):
+            raise TransformerStageError(
+                "RECONSTRUCTION_IDENTITY_MISMATCH",
+                "A reconstruction record checksum is bound to different durable evidence",
+            )
+        event_payload = {
+            **request,
+            "reconstruction_request_checksum": reconstruction_request_checksum,
+            "mode": mode.value,
+            "source_workspace_fingerprint": checkpoint.workspace_fingerprint,
+            "from_binding_fingerprint": request["current_binding_fingerprint"],
+            "restored_workspace_fingerprint": restored_fingerprint,
+            "execution_id": execution_id,
+            "attempt_id": attempt_id,
+            "ledger_record_id": record.id,
+        }
         StateTransitionService(session).append_audit_event(
             run_id=continuation.run_id,
-            idempotency_key=f"{record.id}:reconstructed",
+            idempotency_key=(
+                f"reconstruct:v2:{reconstruction_request_checksum.removeprefix('sha256:')}:completed"
+            ),
             event_type=WorkflowEventType.STAGE_WORKSPACE_RECONSTRUCTED,
             actor="transformer",
             reason=f"workspace reconstructed from immutable checkpoint ({reason})",
             occurred_at=self._now(),
-            payload={
-                "stage_id": continuation.current_stage_id,
-                "checkpoint_id": checkpoint.id,
-                "source_workspace_fingerprint": checkpoint.workspace_fingerprint,
-                "restored_workspace_fingerprint": restored_fingerprint,
-                "reason": reason,
-                "execution_id": execution_id,
-                "attempt_id": attempt_id,
-                "ledger_record_id": record.id,
-            },
+            payload=event_payload,
         )
         session.flush()
         return record
