@@ -2099,6 +2099,48 @@ def test_propose_persists_failed_row_for_schema_failure_after_transport(tmp_path
     engine.dispose()
 
 
+def test_proposer_bounds_post_bind_schema_failure_with_semantic_retry(tmp_path: Path, monkeypatch):
+    engine, factory = _database(tmp_path)
+    _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
+    transport = _RecordingTransport(
+        [
+            _responses_body(json.dumps(_proposal_candidate())),
+            _responses_body(json.dumps(_proposal_candidate())),
+        ]
+    )
+    service = RepairApplicationService(
+        scope=_scope(factory), gateway=_gateway(transport, _azure_settings(tmp_path))
+    )
+
+    original = service._coalesce_operations
+    calls = 0
+
+    def overflow_once(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        if calls == 0:
+            result[0]["provenance"] = [
+                {"key": f"evidence-{index}", "value": "x"} for index in range(33)
+            ]
+        calls += 1
+        return result
+
+    monkeypatch.setattr(service, "_coalesce_operations", overflow_once)
+
+    proposal = service.propose(attempt_id)
+
+    assert proposal["touched_files"] == ["src/app.ts"]
+    assert len(transport.calls) == 2
+    session = factory()
+    invocations = session.query(LlmInvocationModel).all()
+    assert {row.idempotency_key for row in invocations} == {
+        f"{attempt_id}:proposer",
+        f"{attempt_id}:proposer:semantic-retry-1",
+    }
+    session.close()
+    engine.dispose()
+
+
 def test_repair_runtime_uses_v2_candidates_and_binds_authority_fields(tmp_path: Path):
     engine, factory = _database(tmp_path)
     _store, attempt_id, app_ts, _artifacts = _seed_service(factory, tmp_path)

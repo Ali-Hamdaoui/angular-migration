@@ -232,6 +232,7 @@ _SEMANTIC_RETRY_CODES = frozenset(
         # correction opportunity before the attempt becomes recoverably
         # exhausted.
         "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
+        "REPAIR_PROPOSAL_SCHEMA_INVALID",
         _DEPENDENCY_SECTION_MISMATCH,
         "REPAIR_PATH_INVALID",
         _REPLACEMENT_CONTEXT_MISSING,
@@ -355,6 +356,15 @@ def _semantic_retry_feedback(error_code: str | None, error_message: str | None =
             "blocking package and incompatible peer ranges. Otherwise, propose the smallest "
             "causal source or configuration repair supported by the current workspace evidence. "
             "Do not fabricate package, lockfile, or node_modules state."
+        )
+    if error_code == "REPAIR_PROPOSAL_SCHEMA_INVALID":
+        return (
+            "The previous repair candidate became invalid while the backend bound its "
+            "authoritative operation evidence. Regenerate one minimal proposal from the "
+            "immutable failure and current workspace evidence. Keep every bounded list, "
+            "including operation provenance, within the declared schema limits. Do not "
+            "fabricate package, lockfile, node_modules, or prior-proposal state.\n"
+            f"Backend schema rejection: {error_message or 'the proposal failed schema validation.'}"
         )
     return _SEMANTIC_RETRY_FEEDBACK
 
@@ -529,6 +539,15 @@ def _review_validation_message(error: ValidationError) -> str:
     return (
         _bounded_text(f"{loc} {first.get('type', '')}".strip())
         or "Repair review failed schema validation"
+    )
+
+
+def _proposal_validation_message(error: ValidationError) -> str:
+    first = error.errors()[0] if error.errors() else {}
+    loc = ".".join(str(part) for part in first.get("loc", ()))
+    return (
+        _bounded_text(f"{loc} {first.get('type', '')}".strip())
+        or "Repair proposal failed schema validation"
     )
 
 
@@ -761,11 +780,18 @@ class RepairApplicationService:
             try:
                 context = self._assert_fresh_authority(context, role="proposer")
                 proposal = self.validate_proposal(self._bind_proposal_candidate(output, context), context)
-            except RepairApplicationError as error:
-                retry_error = error
+            except (RepairApplicationError, ValidationError) as error:
+                retry_error = (
+                    error
+                    if isinstance(error, RepairApplicationError)
+                    else RepairApplicationError(
+                        "REPAIR_PROPOSAL_SCHEMA_INVALID",
+                        _proposal_validation_message(error),
+                    )
+                )
                 hydrated_retry_context = None
                 if (
-                    error.code
+                    retry_error.code
                     in {
                         "REPAIR_REPLACEMENT_MISSING",
                         _REPLACEMENT_PREIMAGE_REQUIRED,
@@ -5477,7 +5503,21 @@ class RepairApplicationService:
         )
         rejected_stored = None
         if rejected_candidate is not None and role == LlmRole.REPAIR_PROPOSER:
-            parsed_candidate = RepairProposalCandidate.model_validate(rejected_candidate).model_dump(mode="json")
+            try:
+                parsed_candidate = RepairProposalCandidate.model_validate(
+                    rejected_candidate
+                ).model_dump(mode="json")
+            except ValidationError as validation_error:
+                parsed_candidate = {
+                    "schema_invalid": True,
+                    "validation_error": _proposal_validation_message(validation_error),
+                    "candidate_keys": sorted(
+                        str(key)
+                        for key in rejected_candidate
+                    )
+                    if isinstance(rejected_candidate, dict)
+                    else [],
+                }
             rejected_payload = {
                 "attempt_id": context["attempt_id"],
                 "candidate": parsed_candidate,
