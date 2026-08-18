@@ -2221,9 +2221,8 @@ class RepairApplicationService:
                 )
                 g10_modification_revision = (
                     attempt.status == "waiting_g10"
-                    and continuation.status == "blocked"
+                    and continuation.status in {"waiting_gate", "blocked"}
                     and continuation.current_node == "wait_g10"
-                    and continuation.last_error_code == "G10_REQUEST_MODIFICATION"
                 )
                 if (
                     budget["consumed_attempts"] >= budget["max_attempts"]
