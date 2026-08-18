@@ -469,6 +469,13 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 recovery ancestry event is missing or stale",
             )
+        recovered_proposer_id = parent.proposer_invocation_id
+        retry_invocation_id = (
+            recovered_proposer_id
+            if isinstance(recovered_proposer_id, str)
+            and ":recovery-" in recovered_proposer_id
+            else f"{parent.id}:proposer:semantic-retry-1"
+        )
         base_invocation = session.scalar(
             select(LlmInvocationModel).where(
                 LlmInvocationModel.run_id == attempt.run_id,
@@ -481,20 +488,45 @@ class StageGateService:
             select(LlmInvocationModel).where(
                 LlmInvocationModel.run_id == attempt.run_id,
                 LlmInvocationModel.stage_id == attempt.stage_id,
-                LlmInvocationModel.id == f"{parent.id}:proposer:semantic-retry-1",
+                LlmInvocationModel.id == retry_invocation_id,
                 LlmInvocationModel.idempotency_key
-                == f"{parent.id}:proposer:semantic-retry-1",
+                == retry_invocation_id,
+            )
+        )
+        base_valid = (
+            base_invocation is not None
+            and (
+                base_invocation.status == "failed"
+                or (
+                    isinstance(recovered_proposer_id, str)
+                    and ":recovery-" in recovered_proposer_id
+                    and base_invocation.status == "uncertain_abandoned"
+                )
+            )
+        )
+        retry_valid = (
+            retry_invocation is not None
+            and retry_invocation.status == "failed"
+            and retry_invocation.failure_code
+            in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
+            and (
+                (
+                    isinstance(recovered_proposer_id, str)
+                    and ":recovery-" in recovered_proposer_id
+                    and retry_invocation.failure_stage == "repair_semantics"
+                    and retry_invocation.retries >= 0
+                )
+                or (
+                    not isinstance(recovered_proposer_id, str)
+                    or ":recovery-" not in recovered_proposer_id
+                )
+                and retry_invocation.retries == 1
+                and retry_invocation.failure_stage == "repair_semantics"
             )
         )
         if (
-            base_invocation is None
-            or retry_invocation is None
-            or base_invocation.status != "failed"
-            or retry_invocation.status != "failed"
-            or retry_invocation.retries != 1
-            or retry_invocation.failure_stage != "repair_semantics"
-            or retry_invocation.failure_code
-            not in (_SEMANTIC_RETRY_CODES | _LEGACY_SEMANTIC_RECOVERY_CODES)
+            not base_valid
+            or not retry_valid
         ):
             raise StageGateError(
                 "REPAIR_PARENT_LINEAGE_INVALID",

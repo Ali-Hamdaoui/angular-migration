@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import json
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -35,6 +36,7 @@ from app.repositories.models import (
 from app.services.artifact_binding import canonical_artifact_set_checksum
 from app.services.repair_application_service import RepairProposal, RepairReview
 from app.services.stage_gate_service import (
+    _SEMANTIC_RECOVERY_REASON,
     StageGateError,
     StageGateService,
     _canonical_revision_payload,
@@ -120,6 +122,69 @@ def test_revision_proposal_canonicalization_rejects_semantic_version_drift():
     drifted = _padded_with_nulls(_dependency_add_proposal(version="^2.0.0"))
     assert _canonical_revision_payload(drifted, review=False) != _canonical_revision_payload(
         raw, review=False
+    )
+
+
+def test_g10_accepts_recovered_proposer_semantic_retry_lineage():
+    parent_id = "repair-parent"
+    child_id = "repair-child"
+    recovered_id = f"{parent_id}:proposer:recovery-1"
+    evidence_fields = {
+        name: None
+        for name in (
+            "proposal_artifact_id",
+            "proposal_checksum",
+            "review_artifact_id",
+            "review_checksum",
+            "reviewer_invocation_id",
+            "g10_gate_package_id",
+            "apply_ledger_artifact_id",
+            "apply_ledger_checksum",
+            "validation_summary_artifact_id",
+            "validation_summary_checksum",
+            "post_fingerprint",
+        )
+    }
+    parent = SimpleNamespace(
+        id=parent_id,
+        run_id="run-1",
+        stage_id="stage-1",
+        attempt_number=3,
+        status="superseded",
+        completed_at=NOW_UTC,
+        proposer_invocation_id=recovered_id,
+        **evidence_fields,
+    )
+    attempt = SimpleNamespace(
+        id=child_id,
+        run_id="run-1",
+        stage_id="stage-1",
+        attempt_number=4,
+        parent_review_artifact_id=None,
+        parent_review_checksum=None,
+    )
+    continuation = SimpleNamespace(run_id="run-1")
+    base = SimpleNamespace(status="uncertain_abandoned")
+    retry = SimpleNamespace(
+        status="failed",
+        retries=0,
+        failure_stage="repair_semantics",
+        failure_code="REPAIR_PROPOSAL_SCHEMA_INVALID",
+    )
+    event = SimpleNamespace(
+        reason=_SEMANTIC_RECOVERY_REASON,
+        payload={"attempt_id": parent_id, "child_attempt_id": child_id},
+    )
+    session = MagicMock()
+    session.scalars.return_value.all.return_value = [event]
+    session.scalar.side_effect = [base, retry]
+
+    StageGateService._validate_recovery_parent_lineage(
+        session,
+        continuation,
+        attempt,
+        parent,
+        {"parent_attempt_id": parent_id, "parent_review_artifact_id": None, "parent_review_checksum": None},
     )
 
 
