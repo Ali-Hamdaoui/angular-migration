@@ -667,8 +667,9 @@ class WorkerSupervisor:
 
         def read_stream(name: str, stream) -> None:
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            read_chunk = getattr(stream, "read1", stream.read)
             while True:
-                raw = stream.read(4096)
+                raw = read_chunk(4096)
                 if not raw:
                     break
                 text = decoder.decode(raw, final=False)
