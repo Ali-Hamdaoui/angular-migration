@@ -884,9 +884,15 @@ class StageGateService:
             ):
                 revision = payload.get("human_revision")
                 if recovery_parent:
+                    revision_valid = (
+                        revision is None
+                        or (
+                            isinstance(revision, dict)
+                            and bool(str(revision.get("instruction") or "").strip())
+                        )
+                    )
                     if (
-                        not isinstance(revision, dict)
-                        or not str(revision.get("instruction") or "").strip()
+                        not revision_valid
                         or not envelope.input_hashes
                         or envelope.input_hashes.get("recovered_from")
                         != parent.context_pack_checksum
@@ -934,9 +940,14 @@ class StageGateService:
                             "REPAIR_PARENT_LINEAGE_INVALID",
                             "G10 recovery parent context cannot be verified",
                         ) from error
+                    parent_revision = (
+                        parent_context_payload.get("human_revision")
+                        if isinstance(parent_context_payload, dict)
+                        else None
+                    )
                     if (
                         not isinstance(parent_context_payload, dict)
-                        or parent_context_payload.get("human_revision") != revision
+                        or parent_revision != revision
                     ):
                         raise StageGateError(
                             "REPAIR_PARENT_LINEAGE_INVALID",
