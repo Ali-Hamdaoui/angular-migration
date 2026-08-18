@@ -1385,12 +1385,40 @@ class TransformerOrchestrator:
                     continuation.current_stage_id,
                     repair_policy,
                 )
+                correction_depth = 0
+                lineage_cursor = attempt
+                while lineage_cursor is not None:
+                    if str(lineage_cursor.diagnosis or "").startswith(
+                        "validation correction;"
+                    ):
+                        correction_depth += 1
+                    lineage_cursor = (
+                        session.get(
+                            RepairAttemptModel, lineage_cursor.parent_attempt_id
+                        )
+                        if lineage_cursor.parent_attempt_id
+                        else None
+                    )
+                lockfile_step = session.scalar(
+                    select(StageStepModel).where(
+                        StageStepModel.run_id == continuation.run_id,
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name == "lockfile_generation-0",
+                    )
+                )
                 validation_correction = (
                     attempt is not None
-                    and attempt.status in {"revalidating", "revalidating_affected", "validation_failed"}
                     and attempt.apply_ledger_artifact_id is not None
-                    and not str(attempt.diagnosis or "").startswith(
-                        "validation correction;"
+                    and correction_depth < 2
+                    and (
+                        attempt.status
+                        in {"revalidating", "revalidating_affected", "validation_failed"}
+                        or (
+                            attempt.status in {"applied", "applied_verified"}
+                            and lockfile_step is not None
+                            and lockfile_step.status == "FAILED"
+                            and correction_depth > 0
+                        )
                     )
                 )
                 if (
