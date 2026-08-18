@@ -3077,6 +3077,20 @@ class TransformerOrchestrator:
                 | StageStepModel.name.like("tests-%")
                 | StageStepModel.name.like("lint-%"),
             ):
+                execution = (
+                    session.get(CommandExecutionModel, step.execution_id)
+                    if step.execution_id
+                    else None
+                )
+                if (
+                    step.name.startswith("lint-")
+                    and step.status == "PASSED"
+                    and execution is not None
+                    and self._validation._is_known_baseline_failure(
+                        session, continuation, execution
+                    )
+                ):
+                    continue
                 step.status = "PENDING"
                 step.execution_id = None
                 step.completed_at = None

@@ -275,6 +275,51 @@ class ValidationRunner:
                         ),
                     }
                 )
+        if "lint" not in required:
+            lint_references = (value.get("commands") or {}).get("lint") or []
+            lint_steps = [
+                session.scalar(
+                    select(StageStepModel).where(
+                        StageStepModel.stage_id == continuation.current_stage_id,
+                        StageStepModel.name == f"lint-{index}",
+                    )
+                )
+                for index in range(len(lint_references))
+            ]
+            if lint_steps and all(step is not None and step.status == "PASSED" for step in lint_steps):
+                for index, step in enumerate(lint_steps):
+                    execution = session.get(CommandExecutionModel, step.execution_id)
+                    if (
+                        execution is None
+                        or not execution.command_log_artifact_id
+                        or not execution.result_artifact_id
+                    ):
+                        raise ValidationRunnerError(
+                            "VALIDATION_EVIDENCE_MISSING",
+                            f"lint-{index} evidence is incomplete",
+                        )
+                    known_baseline_failure = self._is_known_baseline_failure(
+                        session, continuation, execution
+                    )
+                    if execution.status != "succeeded" and not known_baseline_failure:
+                        raise ValidationRunnerError(
+                            "VALIDATION_COMMAND_FAILED",
+                            f"lint-{index} has nonzero execution evidence",
+                        )
+                    checks.append(
+                        {
+                            "group": "lint",
+                            "index": index,
+                            "execution_id": execution.id,
+                            "runtime_checksum": execution.runtime_checksum,
+                            "artifact_ids": list(execution.artifact_ids or []),
+                            "status": (
+                                "passed_with_known_baseline_failure"
+                                if known_baseline_failure
+                                else "passed"
+                            ),
+                        }
+                    )
         fingerprint = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
         if fingerprint != binding.workspace_fingerprint:
             raise ValidationRunnerError(
