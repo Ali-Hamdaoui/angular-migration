@@ -2288,7 +2288,7 @@ class RepairApplicationService:
                     and attempt.g10_gate_package_id == pending_g10.id
                 )
                 preflight_revision = (
-                    attempt.status == "blocked"
+                    attempt.status in {"review_accepted", "blocked"}
                     and review["decision"] == "accept"
                     and continuation.current_stage_id == attempt.stage_id
                     and continuation.status == "blocked"
