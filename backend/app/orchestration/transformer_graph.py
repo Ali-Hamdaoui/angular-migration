@@ -1396,20 +1396,28 @@ class TransformerOrchestrator:
                     continuation.current_stage_id,
                     repair_policy,
                 )
+                # A failed post-apply command gets its own bounded correction
+                # window.  Do not charge corrections from superseded ancestor
+                # branches against the newly applied repair: those attempts
+                # are historical lineage, not retries of this post-state.
                 correction_depth = 0
-                lineage_cursor = attempt
-                while lineage_cursor is not None:
-                    if str(lineage_cursor.diagnosis or "").startswith(
-                        "validation correction;"
-                    ):
-                        correction_depth += 1
-                    lineage_cursor = (
-                        session.get(
-                            RepairAttemptModel, lineage_cursor.parent_attempt_id
+                if not (
+                    attempt is not None
+                    and attempt.apply_ledger_artifact_id is not None
+                ):
+                    lineage_cursor = attempt
+                    while lineage_cursor is not None:
+                        if str(lineage_cursor.diagnosis or "").startswith(
+                            "validation correction;"
+                        ):
+                            correction_depth += 1
+                        lineage_cursor = (
+                            session.get(
+                                RepairAttemptModel, lineage_cursor.parent_attempt_id
+                            )
+                            if lineage_cursor.parent_attempt_id
+                            else None
                         )
-                        if lineage_cursor.parent_attempt_id
-                        else None
-                    )
                 lockfile_step = session.scalar(
                     select(StageStepModel).where(
                         StageStepModel.run_id == continuation.run_id,
