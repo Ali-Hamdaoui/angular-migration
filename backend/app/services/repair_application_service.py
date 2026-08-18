@@ -1576,7 +1576,7 @@ class RepairApplicationService:
                     and continuation.last_error_code == "REPAIR_INVOCATION_UNCERTAIN"
                     and continuation.worker_id is None
                     and continuation.lease_expires_at is None
-                    and attempt.status == "evidence_frozen"
+                    and attempt.status in {"evidence_frozen", "proposed"}
                     and attempt.proposal_artifact_id is None
                     and attempt.proposer_invocation_id == successor.id
                     and successor.status == "in_progress"
@@ -1609,7 +1609,7 @@ class RepairApplicationService:
                 or continuation.last_error_code != "REPAIR_INVOCATION_UNCERTAIN"
                 or continuation.worker_id is not None
                 or continuation.lease_expires_at is not None
-                or attempt.status != "evidence_frozen"
+                or attempt.status not in {"evidence_frozen", "proposed"}
                 or attempt.proposal_artifact_id is not None
                 or (old is None and attempt.proposer_invocation_id is not None)
             ):

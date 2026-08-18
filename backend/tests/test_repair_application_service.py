@@ -3714,6 +3714,9 @@ def test_uncertain_proposer_recovery_allocates_next_generation_after_prior_recov
     _store, attempt_id, _app_ts, _artifacts = _seed_service(factory, tmp_path)
     session = factory()
     attempt = session.get(RepairAttemptModel, attempt_id)
+    # A proposer can be marked proposed before its proposal artifact is durable;
+    # uncertain-invocation recovery must still accept this proposal-less state.
+    attempt.status = "proposed"
     binding = session.get(StageWorkspaceBindingModel, "binding-1")
     continuation = session.get(TransformationContinuationModel, "cont-1")
     checkpoint = StageCheckpointModel(
