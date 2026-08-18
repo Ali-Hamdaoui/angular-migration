@@ -3251,7 +3251,7 @@ class RepairApplicationService:
                 or continuation.status != "blocked"
                 or continuation.current_node != "review_repair"
                 or continuation.last_error_code != "REPAIR_ARTIFACT_RECOVERY_FAILED"
-                or attempt.status != "blocked"
+                or attempt.status not in {"proposed", "blocked"}
                 or not attempt.proposal_artifact_id
                 or not attempt.proposal_checksum
                 or attempt.review_artifact_id is not None
