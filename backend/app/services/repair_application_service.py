@@ -226,6 +226,12 @@ _SEMANTIC_RETRY_CODES = frozenset(
         "REPAIR_PREIMAGE_STALE",
         "REPAIR_CAUSAL_REJECTION",
         "REPAIR_DEPENDENCY_INTENT_INVALID",
+        # A proposer may select dependency_transition for a failure whose
+        # immutable evidence does not prove a peer conflict. The backend must
+        # reject that candidate, but the proposer gets one bounded semantic
+        # correction opportunity before the attempt becomes recoverably
+        # exhausted.
+        "REPAIR_DEPENDENCY_EVIDENCE_INVALID",
         _DEPENDENCY_SECTION_MISMATCH,
         "REPAIR_PATH_INVALID",
         _REPLACEMENT_CONTEXT_MISSING,
@@ -339,6 +345,16 @@ def _semantic_retry_feedback(error_code: str | None, error_message: str | None =
             "If the failure is caused by repository source/configuration rather than the "
             "dependency declaration, repair the causal repository file instead.\n"
             "Do not fabricate package state, lockfile state, or node_modules state."
+        )
+    if error_code == "REPAIR_DEPENDENCY_EVIDENCE_INVALID":
+        return (
+            "The previous candidate used dependency_transition, but the immutable failure "
+            "evidence does not prove an Angular peer-dependency conflict.\n"
+            f"{error_message or 'The backend could not bind a proven dependency conflict.'}\n"
+            "Use dependency_transition only when the failure evidence contains a non-empty "
+            "blocking package and incompatible peer ranges. Otherwise, propose the smallest "
+            "causal source or configuration repair supported by the current workspace evidence. "
+            "Do not fabricate package, lockfile, or node_modules state."
         )
     return _SEMANTIC_RETRY_FEEDBACK
 
