@@ -87,7 +87,11 @@ from app.services.repair_lifecycle_service import RepairLifecycleService
 from app.services.stage_gate_service import StageGateError, StageGateService
 from app.services.stage_execution_application_service import validation_execution_key
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.transformer_stage_service import TransformerStageError, TransformerStageService
+from app.services.transformer_stage_service import (
+    ReconstructionMode,
+    TransformerStageError,
+    TransformerStageService,
+)
 from app.services.transformation_replan_recovery_service import (
     TransformationReplanRecoveryError,
     TransformationReplanRecoveryRequest,
@@ -4104,7 +4108,9 @@ class TransformerOrchestrator:
 
     def _restore_dependency_transition_checkpoint(self, session, continuation, attempt):
         """Restore the immutable pre-update tree before dependency materialization."""
-        checkpoint = self._dependency_transition_checkpoint(session, continuation)
+        checkpoint, authority_execution_id = self._dependency_transition_checkpoint(
+            session, continuation
+        )
         if checkpoint is None:
             raise TransformerStageError(
                 "CHECKPOINT_MISSING",
@@ -4129,7 +4135,9 @@ class TransformerOrchestrator:
             continuation,
             checkpoint=checkpoint,
             reason="dependency_transition_materialization",
+            execution_id=authority_execution_id,
             attempt_id=attempt.id,
+            mode=ReconstructionMode.AUTHORIZED_ROLLBACK,
         )
         restored = self._stage.reconstruct_workspace(
             checkpoint.workspace_path,
@@ -4138,7 +4146,10 @@ class TransformerOrchestrator:
             fingerprint,
             run.artifact_root,
         )
-        if StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != restored:
+        if (
+            restored != fingerprint
+            or StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != fingerprint
+        ):
             raise TransformerStageError(
                 "CHECKPOINT_INTEGRITY_FAILED",
                 "Dependency-transition restoration changed before materialization",
@@ -4149,6 +4160,7 @@ class TransformerOrchestrator:
             checkpoint=checkpoint,
             reason="dependency_transition_materialization",
             restored_fingerprint=restored,
+            execution_id=authority_execution_id,
             attempt_id=attempt.id,
         )
         binding.workspace_fingerprint = restored
@@ -4188,13 +4200,13 @@ class TransformerOrchestrator:
                 and self._stage.authoritative_checkpoint_fingerprint(session, checkpoint)
                 is not None
             ):
-                return checkpoint
+                return checkpoint, execution.id
             execution = (
                 session.get(CommandExecutionModel, execution.parent_execution_id)
                 if execution.parent_execution_id
                 else None
             )
-        return None
+        return None, None
 
     def _angular_update_recovery_checkpoint(self, session, continuation, attempt=None):
         """Resolve an authorized checkpoint after a mutating update failure.
