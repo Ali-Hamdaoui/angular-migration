@@ -3173,6 +3173,337 @@ class RepairApplicationService:
                 "idempotent_replay": False,
             }
 
+    def recover_bound_context(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        """Create a child when an earlier deterministic bind used a parent envelope."""
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "correlation_id": correlation_id,
+                "recovery": "bound-context-v1",
+            }
+        )
+        event_key = "repair-bound-context-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
+        with self._scope() as session:
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                )
+            )
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Context recovery key has a different payload",
+                    )
+                child = session.get(
+                    RepairAttemptModel,
+                    (existing.payload or {}).get("child_attempt_id"),
+                )
+                if child is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Context recovery child is missing",
+                    )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            parent = (
+                session.get(RepairAttemptModel, attempt.parent_attempt_id)
+                if attempt is not None and attempt.parent_attempt_id
+                else None
+            )
+            binding = (
+                session.scalar(
+                    select(StageWorkspaceBindingModel).where(
+                        StageWorkspaceBindingModel.run_id == run_id,
+                        StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                        StageWorkspaceBindingModel.active.is_(True),
+                    )
+                )
+                if attempt is not None
+                else None
+            )
+            if (
+                attempt is None
+                or parent is None
+                or continuation is None
+                or binding is None
+                or continuation.state_version != expected_state_version
+                or continuation.status != "blocked"
+                or continuation.current_node != "review_repair"
+                or continuation.last_error_code != "REPAIR_ARTIFACT_RECOVERY_FAILED"
+                or attempt.status != "blocked"
+                or not attempt.proposal_artifact_id
+                or not attempt.proposal_checksum
+                or attempt.review_artifact_id is not None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Attempt is not a blocked stale bound-context lineage",
+                )
+            try:
+                live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+            except OSError as error:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace is unavailable"
+                ) from error
+            if live != binding.workspace_fingerprint or live != attempt.pre_fingerprint:
+                raise RepairApplicationError(
+                    "REPAIR_WORKSPACE_STALE", "Repair workspace changed before context recovery"
+                )
+            metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + attempt.proposal_artifact_id
+            )
+            run = session.get(MigrationRunModel, run_id)
+            if metadata is None or run is None or metadata.checksum != attempt.proposal_checksum:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE", "Bound proposal evidence is missing or stale"
+                )
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent,
+                fixed_run_root=Path(run.artifact_root),
+            )
+            try:
+                stored = store.read_artifact(run_id, metadata.relative_path)
+                self._validate_artifact_envelope(
+                    stored,
+                    expected_run_id=run_id,
+                    expected_stage_id=attempt.stage_id,
+                    expected_attempt_id=attempt.id,
+                    pre_attempt=False,
+                    metadata_checksum=metadata.checksum,
+                )
+                payload = json.loads(stored.content)
+                proposal = RepairProposal.model_validate(payload)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, ValidationError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_PROPOSAL_STALE", "Bound proposal cannot be verified"
+                ) from error
+            if (
+                proposal.failure_evidence_checksum != parent.failure_evidence_checksum
+                or proposal.context_pack_checksum != parent.context_pack_checksum
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Bound proposal is not tied to the parent context",
+                )
+            source_invocation = session.get(
+                LlmInvocationModel, attempt.proposer_invocation_id
+            )
+            if (
+                source_invocation is None
+                or source_invocation.status != "completed"
+                or source_invocation.deployment_alias != "deterministic-provenance-rebind"
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Deterministic source invocation is missing",
+                )
+        parent_context = self._attempt_context(parent.id)
+        child_id = f"repair-{parent_context['stage_id']}-{int(attempt.attempt_number) + 1}"
+        child_context = dict(parent_context)
+        child_context["attempt_id"] = child_id
+        child_context_pack = None
+        proposal_artifact = None
+        safe_diff_artifact = None
+        try:
+            root = Path(str(parent_context["artifact_root"]))
+            child_context_pack = LocalFilesystemArtifactStore(
+                root.parent, fixed_run_root=root
+            ).write_text_artifact(
+                str(run_id),
+                f"05_repairs/attempt-{child_id}/recovery-context.json",
+                str(parent_context["segments"][1]),
+                ArtifactType.JSON,
+                stage_id=str(parent_context["stage_id"]),
+                attempt_id=child_id,
+                created_by="repair-bound-context-recovery",
+                created_at=self._now(),
+                input_hashes={"parent_context": str(parent_context["context_pack_checksum"])},
+                policy_version="repair-bound-context-v1",
+            )
+            child_context["context_pack_artifact_id"] = child_context_pack.ref.artifact_id
+            child_context["context_pack_checksum"] = child_context_pack.ref.checksum
+            rebound = proposal.model_dump(mode="json")
+            rebound["failure_evidence_checksum"] = child_context["failure_evidence_checksum"]
+            rebound["context_pack_checksum"] = child_context["context_pack_checksum"]
+            bound = RepairProposal.model_validate(rebound).model_dump(mode="json")
+            proposal_artifact = self._write(child_context, "proposal", bound)
+            safe_diff_artifact = self._write_safe_diff(
+                child_context, bound, proposal_artifact.ref.checksum
+            )
+            invocation_checksum = self._request_checksum(
+                {
+                    "source_invocation": source_invocation.id,
+                    "source_proposal": attempt.proposal_checksum,
+                    "proposal": proposal_artifact.ref.checksum,
+                    "canonicalizer": "repair-bound-context-v1",
+                }
+            )
+            with self._scope() as session:
+                existing = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                    )
+                )
+                if existing is not None:
+                    for artifact in (child_context_pack, proposal_artifact, safe_diff_artifact):
+                        self._remove_uncommitted_artifact(artifact)
+                    child = session.get(
+                        RepairAttemptModel,
+                        (existing.payload or {}).get("child_attempt_id"),
+                    )
+                    if child is None:
+                        raise RepairApplicationError(
+                            "REPAIR_RECOVERY_REPLAY_INVALID", "Context recovery child is missing"
+                        )
+                    return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id
+                    )
+                )
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                if (
+                    continuation is None
+                    or attempt is None
+                    or continuation.state_version != expected_state_version
+                    or attempt.status != "blocked"
+                    or attempt.proposal_checksum != metadata.checksum
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_STALE", "Durable state changed before context recovery"
+                    )
+                now = self._now()
+                self._register_artifact_metadata(session, child_context, child_context_pack)
+                self._register_artifact_metadata(session, child_context, proposal_artifact)
+                self._register_artifact_metadata(session, child_context, safe_diff_artifact)
+                child_invocation_id = f"{child_id}:proposer:context-recovery-1"
+                session.add(
+                    LlmInvocationModel(
+                        id=child_invocation_id,
+                        run_id=run_id,
+                        stage_id=attempt.stage_id,
+                        idempotency_key=child_invocation_id,
+                        request_checksum=invocation_checksum,
+                        input_hashes=[
+                            f"rebind_of:{source_invocation.id}",
+                            f"proposal:{attempt.proposal_checksum}",
+                            f"context:{child_context_pack.ref.checksum}",
+                        ],
+                        correlation_id=correlation_id,
+                        actor=actor,
+                        role="repair_proposer",
+                        task_type="repair_diagnosis",
+                        provider="factory",
+                        deployment_alias="deterministic-provenance-rebind",
+                        prompt_version=str(source_invocation.prompt_version or "repair-proposer"),
+                        schema_version="repair-bound-context-v1",
+                        pricing_version="none",
+                        stage=source_invocation.stage,
+                        redacted_summary=json.dumps(
+                            {"rebound_context_of": source_invocation.id}, sort_keys=True
+                        ),
+                        status="completed",
+                        artifact_ids=[proposal_artifact.ref.artifact_id, safe_diff_artifact.ref.artifact_id],
+                        artifact_checksums={
+                            proposal_artifact.ref.artifact_id: proposal_artifact.ref.checksum,
+                            safe_diff_artifact.ref.artifact_id: safe_diff_artifact.ref.checksum,
+                        },
+                        state_version=1,
+                        event_sequence=1,
+                        retries=source_invocation.retries,
+                        response_received=False,
+                        response_kind="deterministic_rebind",
+                        transport_started=False,
+                        started_at=now,
+                        completed_at=now,
+                        created_at=now,
+                    )
+                )
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="proposed",
+                    risk_level=proposal.risk_level,
+                    diagnosis=f"deterministic context rebind; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=child_context_pack.ref.artifact_id,
+                    context_pack_checksum=child_context_pack.ref.checksum,
+                    proposal_artifact_id=proposal_artifact.ref.artifact_id,
+                    proposal_checksum=proposal_artifact.ref.checksum,
+                    proposer_invocation_id=child_invocation_id,
+                    pre_fingerprint=attempt.pre_fingerprint,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+                continuation.status = "queued"
+                continuation.current_node = "review_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=event_key,
+                    reason="deterministic bound candidate recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "request_checksum": request_checksum,
+                        "source_proposal_checksum": metadata.checksum,
+                        "proposal_checksum": proposal_artifact.ref.checksum,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
+        except Exception:
+            for artifact in (child_context_pack, proposal_artifact, safe_diff_artifact):
+                if artifact is not None:
+                    self._remove_uncommitted_artifact(artifact)
+            raise
+
     @staticmethod
     def _json_object_without_duplicates(pairs):
         value = {}
