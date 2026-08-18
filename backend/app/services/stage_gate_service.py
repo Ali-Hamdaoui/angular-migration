@@ -638,6 +638,7 @@ class StageGateService:
         parent_review_payload = None
         parent = None
         recovery_parent = False
+        correction_parent = False
         if attempt.parent_attempt_id is not None:
             parent = session.get(RepairAttemptModel, attempt.parent_attempt_id)
             if (
@@ -650,7 +651,21 @@ class StageGateService:
                     "REPAIR_PARENT_LINEAGE_INVALID",
                     "G10 child repair parent lineage is invalid",
                 )
-            if not any(
+            if str(attempt.diagnosis or "").startswith("validation correction;"):
+                if (
+                    package.get("parent_attempt_id") != parent.id
+                    or package.get("parent_review_artifact_id") is not None
+                    or package.get("parent_review_checksum") is not None
+                    or parent.apply_ledger_artifact_id is None
+                    or parent.apply_ledger_checksum is None
+                    or parent.post_fingerprint is None
+                ):
+                    raise StageGateError(
+                        "REPAIR_PARENT_LINEAGE_INVALID",
+                        "G10 validation-correction parent lineage is invalid",
+                    )
+                correction_parent = True
+            elif not any(
                 (
                     parent.proposal_artifact_id,
                     parent.proposal_checksum,
@@ -862,7 +877,11 @@ class StageGateService:
                 normalized = list(dict.fromkeys(target.strip().lower() for target in targets))
                 if normalized != targets or normalized != list(package.get("validation_targets") or []) or not normalized or any(target not in SUPPORTED_VALIDATION_TARGETS for target in normalized):
                     raise StageGateError("G10_LINEAGE_STALE", "G10 validation targets are not backend-authorized")
-            elif role == "context_pack" and attempt.parent_attempt_id is not None:
+            elif (
+                role == "context_pack"
+                and attempt.parent_attempt_id is not None
+                and not correction_parent
+            ):
                 revision = payload.get("human_revision")
                 if recovery_parent:
                     if (
