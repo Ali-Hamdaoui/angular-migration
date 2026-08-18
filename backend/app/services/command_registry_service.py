@@ -1020,7 +1020,11 @@ class CommandPolicyEngineService:
                     if binding is None:
                         return False
                     bundle = compatible_reinstall_bundle(
-                        blocking_package, target_major, Path(binding.workspace_path)
+                        blocking_package,
+                        target_major,
+                        Path(binding.workspace_path),
+                        required_ranges=authority["peer_ranges"],
+                        installed_version=blocking_candidate.installed_version,
                     )
                     approved_arguments = {
                         NPM_DEPENDENCY_INSTALL_RENDERER.render_arguments(

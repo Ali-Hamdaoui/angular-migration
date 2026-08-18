@@ -4051,7 +4051,14 @@ class RepairApplicationService:
             evidence, diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
                 evidence
             )
-            backend_package = diagnosis.get("package") if isinstance(diagnosis, dict) else None
+            backend_package = (
+                diagnosis.get("blocking_dependency")
+                if isinstance(diagnosis, dict)
+                and diagnosis.get("source") == "npm_eresolve_peer_conflict"
+                else diagnosis.get("package")
+                if isinstance(diagnosis, dict)
+                else None
+            )
             if not isinstance(backend_package, str) or not backend_package:
                 raise ValueError(
                     "field=normalized_failure.failure_diagnosis.package; "

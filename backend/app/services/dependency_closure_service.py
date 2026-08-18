@@ -65,10 +65,51 @@ _COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool]
 }
 
 
+def _range_lower_bound(value: str) -> str | None:
+    match = re.search(r"\d+\.\d+\.\d+", value or "")
+    return match.group(0) if match else None
+
+
+def _derived_reinstall_authority(
+    package: str,
+    required_ranges: dict[str, str] | None,
+    installed_version: str | None,
+) -> tuple[tuple[str, str, bool], ...] | None:
+    """Derive one exact peer target from immutable peer-range evidence."""
+    if not isinstance(required_ranges, dict):
+        return None
+    range_value = required_ranges.get(package)
+    if not isinstance(range_value, str) or not range_value.strip():
+        return None
+    candidates = [
+        version
+        for branch in range_value.split("||")
+        if (version := _range_lower_bound(branch.strip())) is not None
+    ]
+    if not candidates:
+        return None
+    installed_major = _major(installed_version)
+    same_major = [version for version in candidates if _major(version) == installed_major]
+    selected = max(same_major or candidates, key=_version_key)
+    return ((package, selected, True),)
+
+
+def _version_key(value: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in value.split("."))
+
+
 def _compatible_reinstall_authority(
-    package: str, target_major: int
+    package: str,
+    target_major: int,
+    *,
+    required_ranges: dict[str, str] | None = None,
+    installed_version: str | None = None,
 ) -> tuple[tuple[str, str, bool], ...]:
     authority = _COMPATIBLE_REINSTALL_BUNDLES.get((package, target_major))
+    if authority is None:
+        authority = _derived_reinstall_authority(
+            package, required_ranges, installed_version
+        )
     if authority is None:
         raise ValueError(
             "field=operations.0.target_state.target_version; "
@@ -96,9 +137,20 @@ def is_exact_version(value: object) -> bool:
     return isinstance(value, str) and _EXACT_VERSION.fullmatch(value) is not None
 
 
-def compatible_reinstall_version(package: str, target_major: int) -> str:
+def compatible_reinstall_version(
+    package: str,
+    target_major: int,
+    *,
+    required_ranges: dict[str, str] | None = None,
+    installed_version: str | None = None,
+) -> str:
     """Resolve the backend-approved exact primary reinstall version, or fail closed."""
-    authority = _compatible_reinstall_authority(package, target_major)
+    authority = _compatible_reinstall_authority(
+        package,
+        target_major,
+        required_ranges=required_ranges,
+        installed_version=installed_version,
+    )
     primary = next((entry for entry in authority if entry[0] == package), None)
     if primary is None or not is_exact_version(primary[1]):
         raise ValueError(
@@ -111,7 +163,12 @@ def compatible_reinstall_version(package: str, target_major: int) -> str:
 
 
 def compatible_reinstall_bundle(
-    package: str, target_major: int, workspace: Path
+    package: str,
+    target_major: int,
+    workspace: Path,
+    *,
+    required_ranges: dict[str, str] | None = None,
+    installed_version: str | None = None,
 ) -> DependencyTransitionBundle:
     """Resolve the deterministic backend-owned transition bundle, or fail closed.
 
@@ -120,7 +177,12 @@ def compatible_reinstall_bundle(
     package.json already declares them. Unknown package/Angular-major
     combinations fail closed.
     """
-    authority = _compatible_reinstall_authority(package, target_major)
+    authority = _compatible_reinstall_authority(
+        package,
+        target_major,
+        required_ranges=required_ranges,
+        installed_version=installed_version,
+    )
     manifest = _read_json(Path(workspace) / "package.json")
     if manifest is None:
         raise ValueError("authoritative package.json is missing or invalid")
@@ -245,7 +307,12 @@ def validate_dependency_transition_evidence(
         or diagnosis.get("kind") != "peer_dependency_conflict"
     ):
         raise ValueError("backend evidence does not prove an Angular peer-dependency conflict")
-    authority_package = diagnosis.get("package")
+    source = diagnosis.get("source")
+    authority_package = (
+        diagnosis.get("blocking_dependency")
+        if source == "npm_eresolve_peer_conflict"
+        else diagnosis.get("package")
+    )
     evidence_installed_version = diagnosis.get("installed_version")
     peer_ranges = diagnosis.get("required_ranges")
     if not isinstance(authority_package, str) or not authority_package.strip():
@@ -291,7 +358,12 @@ def validate_dependency_transition_evidence(
     ):
         raise ValueError("backend evidence proposed Angular version is invalid")
     try:
-        target_version = compatible_reinstall_version(authority_package, target_major)
+        target_version = compatible_reinstall_version(
+            authority_package,
+            target_major,
+            required_ranges=peer_ranges,
+            installed_version=installed_version,
+        )
     except ValueError as error:
         raise _evidence_error(
             evidence,

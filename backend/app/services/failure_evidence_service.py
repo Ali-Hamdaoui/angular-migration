@@ -237,7 +237,11 @@ class FailureEvidenceService:
                 or not diagnosis.get("required_ranges")
             )
         ):
-            reparsed = FailureEvidenceService.diagnose_angular_update_failure(normalized)
+            reparsed = (
+                FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
+                if normalized.get("command_id") == "npm-lockfile-generate"
+                else FailureEvidenceService.diagnose_angular_update_failure(normalized)
+            )
             if reparsed is not None:
                 normalized = {**normalized, "failure_diagnosis": reparsed}
                 evidence = {**evidence, "normalized_failure": normalized}

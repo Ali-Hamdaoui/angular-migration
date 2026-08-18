@@ -471,7 +471,10 @@ class DependencyTransitionRunner:
         angular_major = target_state.angular_major if target_state is not None else None
         try:
             approved_target_version = compatible_reinstall_version(
-                str(blocking_package or ""), int(angular_major) if isinstance(angular_major, int) else -1
+                str(blocking_package or ""),
+                int(angular_major) if isinstance(angular_major, int) else -1,
+                required_ranges=peer_ranges,
+                installed_version=installed_version,
             )
         except ValueError as error:
             raise DependencyTransitionError(
@@ -495,7 +498,11 @@ class DependencyTransitionRunner:
             )
         try:
             bundle = compatible_reinstall_bundle(
-                str(blocking_package), int(angular_major), workspace
+                str(blocking_package),
+                int(angular_major),
+                workspace,
+                required_ranges=peer_ranges,
+                installed_version=installed_version,
             )
         except ValueError as error:
             raise DependencyTransitionError(
