@@ -1954,13 +1954,28 @@ class RepairApplicationService:
             if attempt.checkpoint_id
             else None
         )
+        checkpoint_matches_workspace = bool(
+            checkpoint is not None
+            and checkpoint.workspace_fingerprint == binding.workspace_fingerprint
+        )
+        ancestor = attempt
+        for _ in range(32):
+            if checkpoint_matches_workspace or not ancestor.parent_attempt_id:
+                break
+            ancestor = session.get(RepairAttemptModel, ancestor.parent_attempt_id)
+            if ancestor is None:
+                break
+            checkpoint_matches_workspace = bool(
+                ancestor.apply_ledger_artifact_id
+                and ancestor.post_fingerprint == binding.workspace_fingerprint
+            )
         if (
             checkpoint is None
             or checkpoint.run_id != run_id
             or checkpoint.stage_id != attempt.stage_id
             or checkpoint.kind != "pre_repair"
             or not checkpoint.safe_for_resume
-            or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
+            or not checkpoint_matches_workspace
         ):
             raise RepairApplicationError(
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
