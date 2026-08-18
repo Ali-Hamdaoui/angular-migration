@@ -1059,6 +1059,12 @@ class RepairApplicationService:
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Repair context evidence cannot be reconstructed",
             )
+        # Recovery contexts may predate a parser fix. Rehydrate derived npm
+        # diagnosis from the immutable command text before creating the child
+        # lineage; the raw evidence remains unchanged.
+        context_pack, _diagnosis = FailureEvidenceService.normalize_dependency_transition_evidence(
+            context_pack
+        )
         normalized_failure = context_pack.get("normalized_failure")
         forbidden_change_policy = context_pack.get("forbidden_change_policy")
         if not isinstance(normalized_failure, dict) or not isinstance(
