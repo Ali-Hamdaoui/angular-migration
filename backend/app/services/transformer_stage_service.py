@@ -844,12 +844,26 @@ class TransformerStageService:
         workspace_path: str,
         stage_root: str,
         expected_fingerprint: str,
+        snapshot_root: str | None = None,
     ) -> str:
         snapshot = Path(snapshot_path).resolve(strict=False)
         workspace = Path(workspace_path).resolve(strict=False)
         root = Path(stage_root).resolve(strict=True)
-        snapshot.relative_to(root)
-        workspace.relative_to(root)
+        authorized_snapshot_roots = [root]
+        if snapshot_root:
+            authorized_snapshot_roots.append(Path(snapshot_root).resolve(strict=False))
+        try:
+            if not any(
+                snapshot == candidate or candidate in snapshot.parents
+                for candidate in authorized_snapshot_roots
+            ):
+                raise ValueError("snapshot is outside governed roots")
+            workspace.relative_to(root)
+        except ValueError as error:
+            raise TransformerStageError(
+                "WORKSPACE_RECONSTRUCTION_PATH_UNAUTHORIZED",
+                "Checkpoint and workspace paths must remain within their governed roots",
+            ) from error
         if snapshot == workspace:
             try:
                 observed = StageSandboxCopier.fingerprint(workspace)
@@ -1226,6 +1240,12 @@ class TransformerStageService:
         binding, checkpoint, expected, checkpoint_path = self._bootstrap_checkpoint(
             session, continuation, execution
         )
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if run is None:
+            raise TransformerStageError(
+                'BOOTSTRAP_RECONSTRUCTION_FAILED',
+                'The migration run is unavailable for bootstrap recovery.',
+            )
         workspace = Path(binding.workspace_path).resolve(strict=True)
         try:
             live = StageSandboxCopier.fingerprint(workspace)
@@ -1268,6 +1288,9 @@ class TransformerStageService:
                     binding.workspace_path,
                     str(Path(binding.workspace_path).resolve().parent),
                     expected,
+                    str(Path(run.artifact_root).resolve())
+                    if temporary_source is None
+                    else str(Path(binding.workspace_path).resolve().parent),
                 )
             except TransformerStageError as error:
                 code = (

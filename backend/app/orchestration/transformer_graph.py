@@ -499,6 +499,7 @@ class TransformerOrchestrator:
                 binding.workspace_path,
                 (run.workspace_aliases or {})["STAGE_SANDBOX"],
                 checkpoint_fingerprint,
+                run.artifact_root,
             )
             prompt_id = prompt.id
             execution_id = execution.id
@@ -2207,6 +2208,7 @@ class TransformerOrchestrator:
                 workspace_path,
                 stage_root,
                 source_fingerprint,
+                run.artifact_root,
             )
             self._mark_apply_recovery_required(
                 continuation_id,
@@ -2533,6 +2535,7 @@ class TransformerOrchestrator:
                     context["workspace_path"],
                     context["stage_root"],
                     context["checkpoint_fingerprint"],
+                    context["artifact_root"],
                 )
                 session.expire_all()
                 current = session.get(TransformationContinuationModel, continuation_id)
@@ -3762,6 +3765,7 @@ class TransformerOrchestrator:
             binding.workspace_path,
             (run.workspace_aliases or {})["STAGE_SANDBOX"],
             checkpoint_fingerprint,
+            run.artifact_root,
         )
         if StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != new_fingerprint:
             raise TransformerStageError(
