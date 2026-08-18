@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -3733,6 +3734,9 @@ def test_uncertain_proposer_recovery_allocates_next_generation_after_prior_recov
         state_version=1,
         created_at=NOW,
     )
+    checkpoint_snapshot = tmp_path / "checkpoint-snapshot"
+    shutil.copytree(binding.workspace_path, checkpoint_snapshot)
+    checkpoint.workspace_path = str(checkpoint_snapshot)
     old_key = f"{attempt_id}:proposer"
     session.add(checkpoint)
     session.add(

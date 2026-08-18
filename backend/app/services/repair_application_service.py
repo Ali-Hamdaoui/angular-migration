@@ -1389,7 +1389,6 @@ class RepairApplicationService:
                 or checkpoint.stage_id != attempt.stage_id
                 or checkpoint.kind != "pre_repair"
                 or not checkpoint.safe_for_resume
-                or checkpoint.workspace_path != binding.workspace_path
                 or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
             ):
                 raise RepairApplicationError("REPAIR_RECOVERY_NOT_ELIGIBLE", "Pre-repair checkpoint authority is missing or stale")
@@ -1639,7 +1638,6 @@ class RepairApplicationService:
                 or checkpoint is None
                 or checkpoint.kind != "pre_repair"
                 or not checkpoint.safe_for_resume
-                or checkpoint.workspace_path != binding.workspace_path
                 or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
                 or attempt.pre_fingerprint != binding.workspace_fingerprint
                 or StageSandboxCopier.fingerprint(Path(binding.workspace_path))
@@ -1942,7 +1940,6 @@ class RepairApplicationService:
             or checkpoint.stage_id != attempt.stage_id
             or checkpoint.kind != "pre_repair"
             or not checkpoint.safe_for_resume
-            or checkpoint.workspace_path != binding.workspace_path
             or checkpoint.workspace_fingerprint != binding.workspace_fingerprint
         ):
             raise RepairApplicationError(
