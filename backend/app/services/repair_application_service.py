@@ -2894,7 +2894,7 @@ class RepairApplicationService:
             attempt_id=child_id,
             created_by="repair-bound-candidate-context",
             created_at=self._now(),
-            input_hashes={"parent_context": str(context["context_pack_checksum"])},
+            input_hashes={"recovered_from": str(context["context_pack_checksum"])},
             policy_version="repair-bound-candidate-context-v1",
         )
         child_context["context_pack_artifact_id"] = child_context_pack.ref.artifact_id
@@ -3338,7 +3338,7 @@ class RepairApplicationService:
                 attempt_id=child_id,
                 created_by="repair-bound-context-recovery",
                 created_at=self._now(),
-                input_hashes={"parent_context": str(parent_context["context_pack_checksum"])},
+                input_hashes={"recovered_from": str(parent_context["context_pack_checksum"])},
                 policy_version="repair-bound-context-v1",
             )
             child_context["context_pack_artifact_id"] = child_context_pack.ref.artifact_id

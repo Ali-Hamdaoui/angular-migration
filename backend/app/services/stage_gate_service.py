@@ -922,11 +922,14 @@ class StageGateService:
                             and bool(str(revision.get("instruction") or "").strip())
                         )
                     )
+                    recovered_from = (
+                        envelope.input_hashes.get("recovered_from")
+                        or envelope.input_hashes.get("parent_context")
+                    )
                     if (
                         not revision_valid
                         or not envelope.input_hashes
-                        or envelope.input_hashes.get("recovered_from")
-                        != parent.context_pack_checksum
+                        or recovered_from != parent.context_pack_checksum
                     ):
                         raise StageGateError(
                             "REPAIR_PARENT_LINEAGE_INVALID",
