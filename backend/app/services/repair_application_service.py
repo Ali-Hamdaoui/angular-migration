@@ -2222,9 +2222,6 @@ class RepairApplicationService:
                 g10_modification_revision = (
                     continuation.current_node == "wait_g10"
                     and continuation.status in {"waiting_gate", "blocked"}
-                    and attempt.g10_gate_package_id is not None
-                    and attempt.proposal_artifact_id == proposal_id
-                    and attempt.proposal_checksum == base_checksum
                 )
                 if (
                     budget["consumed_attempts"] >= budget["max_attempts"]
