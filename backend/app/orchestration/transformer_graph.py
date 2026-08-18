@@ -2686,12 +2686,12 @@ class TransformerOrchestrator:
             )
             attempt.status = "executing" if is_dependency_transition else "applied_verified"
             attempt.updated_at = datetime.now(UTC)
-            post_apply_node = self._post_apply_node(proposal)
-            if (
-                post_apply_node != "dependency_transition"
-                and self._angular_update_retry_eligible(session, continuation)
-            ):
-                post_apply_node = "angular_update_retry"
+            post_apply_node = self._post_apply_node(
+                proposal,
+                angular_update_retry_eligible=self._angular_update_retry_eligible(
+                    session, continuation
+                ),
+            )
             reset_groups = (
                 StageStepModel.name.like("final_install-%")
                 | StageStepModel.name.like("builds-%")
@@ -2712,13 +2712,15 @@ class TransformerOrchestrator:
             self._queue(continuation, post_apply_node)
 
     @staticmethod
-    def _post_apply_node(proposal: dict[str, object]) -> str:
+    def _post_apply_node(
+        proposal: dict[str, object], *, angular_update_retry_eligible: bool = False
+    ) -> str:
         operations = proposal.get("operations") or []
         if any(
             item.get("operation") == "dependency_transition" for item in operations
         ):
             return "dependency_transition"
-        return (
+        node = (
             "lockfile_generation"
             if any(
                 item.get("operation") in {"dependency_change", "dependency_add"}
@@ -2726,6 +2728,9 @@ class TransformerOrchestrator:
             )
             else "repair_revalidate"
         )
+        if node == "repair_revalidate" and angular_update_retry_eligible:
+            return "angular_update_retry"
+        return node
 
     def _lockfile_generation(self, continuation_id: str, worker_id: str) -> None:
         with self._scope() as session:
