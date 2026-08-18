@@ -543,6 +543,57 @@ def test_angular_failure_checkpoint_lookup_is_run_scoped(tmp_path: Path):
     engine.dispose()
 
 
+def test_angular_update_recovery_falls_back_to_authoritative_pre_repair_checkpoint(
+    tmp_path: Path,
+):
+    engine, factory = _database(tmp_path)
+    workspace, _artifacts = _seed(factory, tmp_path)
+    checkpoint_fingerprint = StageSandboxCopier.fingerprint(workspace)
+    session = factory()
+    session.add(
+        StageCheckpointModel(
+            id="ckpt-pre-repair",
+            run_id="run-1",
+            stage_id="stage-1",
+            kind="pre_repair",
+            sequence=1,
+            workspace_alias="STAGE_SANDBOX",
+            workspace_path=str(workspace),
+            workspace_fingerprint=checkpoint_fingerprint,
+            safe_for_resume=True,
+            sealed=True,
+            state_version=1,
+            created_at=NOW,
+        )
+    )
+    session.add(
+        RepairAttemptModel(
+            id="repair-1",
+            run_id="run-1",
+            stage_id="stage-1",
+            attempt_number=1,
+            status="executing",
+            risk_level="medium",
+            checkpoint_id="ckpt-pre-repair",
+            pre_fingerprint=checkpoint_fingerprint,
+            post_fingerprint="sha256:stale-post-repair",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    session.commit()
+    continuation = session.get(TransformationContinuationModel, "cont-1")
+
+    checkpoint = _orchestrator(factory)._angular_update_recovery_checkpoint(
+        session, continuation
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.id == "ckpt-pre-repair"
+    session.close()
+    engine.dispose()
+
+
 def test_classify_failure_environment_transient_registers_once_and_waits_retry(
     tmp_path: Path,
 ):

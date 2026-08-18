@@ -1125,6 +1125,13 @@ class TransformerOrchestrator:
                 ).order_by(RepairAttemptModel.attempt_number.desc()).first()
                 binding = self._stage._binding(session, continuation)
                 live = StageSandboxCopier.fingerprint(Path(binding.workspace_path))
+                angular_recovery_checkpoint = (
+                    self._angular_update_recovery_checkpoint(
+                        session, continuation, attempt
+                    )
+                    if self._is_angular_update_failure(session, continuation)
+                    else None
+                )
                 if live != binding.workspace_fingerprint:
                     # A workspace that diverged from its governed binding must
                     # never feed failure evidence or a repair attempt: a
@@ -1135,10 +1142,7 @@ class TransformerOrchestrator:
                     # before any evidence is frozen.
                     if (
                         not self._is_angular_update_failure(session, continuation)
-                        or self._angular_update_reconstruction_checkpoint(
-                            session, continuation
-                        )
-                        is None
+                        or angular_recovery_checkpoint is None
                     ):
                         self._block(
                             session,
@@ -1169,11 +1173,7 @@ class TransformerOrchestrator:
                 elif (
                     self._is_angular_update_failure(session, continuation)
                     and (
-                        (
-                            attempt is not None
-                            and attempt.status in {"applied", "applied_verified"}
-                        )
-                        or self._angular_update_reconstruction_checkpoint(session, continuation) is not None
+                        angular_recovery_checkpoint is not None
                     )
                 ):
                     # Restore before freezing failure/context evidence so the
@@ -2667,6 +2667,12 @@ class TransformerOrchestrator:
             binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
             binding.last_verified_fingerprint = fingerprint
             binding.last_verified_at = datetime.now(UTC)
+            attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
+            attempt.apply_ledger_checksum = ledger.ref.checksum
+            attempt.post_fingerprint = fingerprint
+            # The checkpoint manifest is lineage-bound to the attempt's
+            # post-image. Update the attempt first so the immutable manifest
+            # cannot capture the pre-repair fingerprint.
             self._stage.persist_post_repair_checkpoint(
                 session,
                 continuation,
@@ -2678,9 +2684,6 @@ class TransformerOrchestrator:
                 apply_ledger_checksum=ledger.ref.checksum,
                 post_fingerprint=fingerprint,
             )
-            attempt.apply_ledger_artifact_id = ledger.ref.artifact_id
-            attempt.apply_ledger_checksum = ledger.ref.checksum
-            attempt.post_fingerprint = fingerprint
             attempt.status = "executing" if is_dependency_transition else "applied_verified"
             attempt.updated_at = datetime.now(UTC)
             post_apply_node = self._post_apply_node(proposal)
@@ -3723,20 +3726,9 @@ class TransformerOrchestrator:
             run_id=continuation.run_id,
             stage_id=continuation.current_stage_id,
         ).order_by(RepairAttemptModel.attempt_number.desc()).first()
-        if attempt is not None and attempt.status in {
-            "approved_pending_execution",
-            "executing",
-            "uninstall",
-            "angular_update",
-            "reinstall",
-            "npm_ci",
-            "dependency_closure",
-            "applied",
-            "applied_verified",
-        }:
-            checkpoint = self._ensure_post_repair_checkpoint(session, continuation, attempt)
-        else:
-            checkpoint = self._angular_update_reconstruction_checkpoint(session, continuation)
+        checkpoint = self._angular_update_recovery_checkpoint(
+            session, continuation, attempt
+        )
         if checkpoint is None:
             raise TransformerStageError(
                 "CHECKPOINT_MISSING",
@@ -3785,6 +3777,61 @@ class TransformerOrchestrator:
         binding.last_verified_fingerprint = new_fingerprint
         binding.last_verified_at = datetime.now(UTC)
         return checkpoint.id, new_fingerprint
+
+    def _angular_update_recovery_checkpoint(self, session, continuation, attempt=None):
+        """Resolve an authorized checkpoint after a mutating update failure.
+
+        A post-repair checkpoint is preferred when its complete lineage is
+        valid. If a repair attempt has already mutated the workspace but its
+        post-repair checkpoint is stale or incomplete, restart from the
+        attempt's immutable pre-repair checkpoint instead of blocking a
+        recoverable run or trusting a partially mutated workspace.
+        """
+        checkpoint = self._angular_update_reconstruction_checkpoint(
+            session, continuation
+        )
+        if checkpoint is not None:
+            return checkpoint
+        attempt = attempt or self._latest_repair(session, continuation, required=False)
+        active_statuses = {
+            "approved_pending_execution",
+            "executing",
+            "uninstall",
+            "angular_update",
+            "reinstall",
+            "npm_ci",
+            "dependency_closure",
+            "applied",
+            "applied_verified",
+        }
+        if attempt is None or attempt.status not in active_statuses:
+            return None
+        try:
+            return self._ensure_post_repair_checkpoint(session, continuation, attempt)
+        except TransformerStageError as error:
+            if error.code not in {
+                "POST_REPAIR_CHECKPOINT_MISSING",
+                "POST_REPAIR_CHECKPOINT_STALE",
+                "POST_REPAIR_LINEAGE_MISMATCH",
+            }:
+                raise
+        pre_repair = (
+            session.get(StageCheckpointModel, attempt.checkpoint_id)
+            if attempt.checkpoint_id
+            else None
+        )
+        if (
+            pre_repair is None
+            or pre_repair.run_id != continuation.run_id
+            or pre_repair.stage_id != continuation.current_stage_id
+            or pre_repair.kind != "pre_repair"
+            or not pre_repair.safe_for_resume
+            or not attempt.pre_fingerprint
+            or self._stage.authoritative_checkpoint_fingerprint(session, pre_repair)
+            != attempt.pre_fingerprint
+        ):
+            return None
+        return pre_repair
 
     @staticmethod
     def _latest_repair(session, continuation, *, statuses=None, exclude_statuses=None, required=True):
