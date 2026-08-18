@@ -24,8 +24,10 @@ from app.domain.command import (
     ANGULAR_UPDATE_V3_RENDERER,
     DEFAULT_COMMAND_TEMPLATES,
     NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+    NPM_DEPENDENCY_MATERIALIZE_RENDERER,
     NPM_DEPENDENCY_INSTALL_RENDERER,
     NPM_DEPENDENCY_UNINSTALL_RENDERER,
+    TRANSFORMATION_COMMAND_CATALOGUE,
     AuthorizationCheckResult,
     AuthorizationDecision,
     AuthorizationRequest,
@@ -681,6 +683,11 @@ class CommandPolicyEngineService:
                 supersedes_authorization_id=repair_transition_attempt_id,
             )
         )
+        if repair_transition_attempt_id and not repair_transition:
+            return reject(
+                "REPAIR_TRANSITION_NOT_AUTHORIZED",
+                "dependency-transition command prerequisites are not proven",
+            )
         if planned is None:
             if not repair_transition:
                 return reject("COMMAND_NOT_IN_APPROVED_PLAN", "command template is not in the approved plan")
@@ -801,6 +808,7 @@ class CommandPolicyEngineService:
         )
         from app.repositories.models.workflow import (
             ArtifactMetadataModel,
+            CommandExecutionModel,
             MigrationRunModel,
             RepairAttemptModel,
             StageWorkspaceBindingModel,
@@ -949,7 +957,164 @@ class CommandPolicyEngineService:
             return False
         if not isinstance(target_major, int) or not target_exact.startswith(f"{target_major}."):
             return False
+        try:
+            from app.services.workspace_fingerprint import STAGE_FINGERPRINT_PROFILE
+
+            active_binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == request.run_id,
+                    StageWorkspaceBindingModel.stage_id == request.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if (
+                active_binding is None
+                or active_binding.fingerprint_profile_id
+                != STAGE_FINGERPRINT_PROFILE.profile_id
+                or STAGE_FINGERPRINT_PROFILE.fingerprint(
+                    Path(active_binding.workspace_path)
+                )
+                != active_binding.workspace_fingerprint
+            ):
+                return False
+        except (OSError, ValueError):
+            return False
+
+        def transition_execution(suffix: str):
+            return session.scalar(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == request.run_id,
+                    CommandExecutionModel.idempotency_key
+                    == f"{attempt.id}:transition:v2:{suffix}",
+                )
+            )
+
+        def verified(suffix: str, owner_suffix: str, *, failed: bool = False) -> bool:
+            execution = transition_execution(suffix)
+            expected_status = "failed" if failed else "succeeded"
+            return bool(
+                execution is not None
+                and execution.status == expected_status
+                and (failed or execution.exit_code == 0)
+                and session.scalar(
+                    select(ArtifactMetadataModel.id).where(
+                        ArtifactMetadataModel.owner_reference
+                        == f"{execution.id}:{owner_suffix}"
+                    )
+                )
+            )
+
+        if request.command_id == NPM_DEPENDENCY_MATERIALIZE_RENDERER.command_id:
+            key = request.idempotency_key or ""
+            if key.endswith(":materialize:transition") and not verified(
+                "angular-update:fresh", "fresh-angular-update-failure", failed=True
+            ):
+                return False
+            if key.endswith(":materialize:detached") and not verified(
+                "lockfile:detached", "dependency-lockfile"
+            ):
+                return False
+            if not key.endswith((":materialize:initial", ":materialize:transition", ":materialize:detached")):
+                return False
+            return (
+                request.template_id == NPM_DEPENDENCY_MATERIALIZE_RENDERER.template_id
+                and request.template_version == 1
+                and request.executable == "npm"
+                and tuple(request.arguments) == ("ci",)
+            )
+
+        if request.command_id == "npm-lockfile-generate":
+            key = request.idempotency_key or ""
+            if key.endswith(":lockfile:detached") and not verified(
+                "uninstall", "dependency-transition-uninstall"
+            ):
+                return False
+            if key.endswith(":lockfile:final"):
+                fresh = transition_execution("angular-update:fresh")
+                final_ready = bool(
+                    fresh is not None
+                    and fresh.status == "succeeded"
+                    and fresh.exit_code == 0
+                )
+                if not final_ready:
+                    try:
+                        bundle = compatible_reinstall_bundle(
+                            blocking_package,
+                            target_major,
+                            Path(active_binding.workspace_path),
+                            required_ranges=authority["peer_ranges"],
+                            installed_version=blocking_candidate.installed_version,
+                        )
+                        installs = list(
+                            session.scalars(
+                                select(CommandExecutionModel).where(
+                                    CommandExecutionModel.run_id == request.run_id,
+                                    CommandExecutionModel.command_id
+                                    == NPM_DEPENDENCY_INSTALL_RENDERER.command_id,
+                                    CommandExecutionModel.idempotency_key.startswith(
+                                        f"{attempt.id}:transition:v2:install"
+                                    ),
+                                    CommandExecutionModel.status == "succeeded",
+                                )
+                            )
+                        )
+                        verified_packages = {
+                            execution.arguments[-1].rsplit("@", 1)[0]
+                            for execution in installs
+                            if execution.exit_code == 0
+                            and execution.arguments
+                            and session.scalar(
+                                select(ArtifactMetadataModel.id).where(
+                                    ArtifactMetadataModel.owner_reference
+                                    == f"{execution.id}:dependency-transition-install"
+                                )
+                            )
+                        }
+                        final_ready = all(
+                            member.package in verified_packages
+                            for member in bundle.members
+                        )
+                    except (KeyError, TypeError, ValueError, OSError):
+                        return False
+                if not final_ready:
+                    return False
+            if not key.endswith((":lockfile:detached", ":lockfile:final")):
+                return False
+            renderer = TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"]
+            return (
+                request.template_id == renderer.template_id
+                and request.template_version == 1
+                and request.executable == renderer.executable
+                and tuple(request.arguments) == renderer.arguments
+            )
+
+        if request.command_id == "angular-update-exact":
+            key = request.idempotency_key or ""
+            if key.endswith(":angular-update:fresh"):
+                prerequisite = verified(
+                    "materialize:initial", "dependency-materialization"
+                )
+            elif key.endswith(":angular-update:detached"):
+                prerequisite = verified(
+                    "materialize:detached", "dependency-materialization"
+                )
+            else:
+                return False
+            return bool(
+                prerequisite
+                and request.template_id == angular_ref.get("template_id")
+                and request.template_version == angular_ref.get("template_version")
+                and request.executable == angular_ref.get("executable")
+                and list(request.arguments) == list(angular_ref.get("arguments") or [])
+                and not any(
+                    flag in request.arguments
+                    for flag in ("--force", "--legacy-peer-deps", "--allow-dirty")
+                )
+            )
+
         if request.command_id == NPM_DEPENDENCY_UNINSTALL_RENDERER.command_id:
+            if not verified("materialize:transition", "dependency-materialization"):
+                return False
             try:
                 binding = session.scalar(
                     select(StageWorkspaceBindingModel).where(
@@ -1009,6 +1174,13 @@ class CommandPolicyEngineService:
                     )
                 )
             if request.command_id == NPM_DEPENDENCY_INSTALL_RENDERER.command_id:
+                detached_update = transition_execution("angular-update:detached")
+                if (
+                    detached_update is None
+                    or detached_update.status != "succeeded"
+                    or detached_update.exit_code != 0
+                ):
+                    return False
                 try:
                     binding = session.scalar(
                         select(StageWorkspaceBindingModel).where(
@@ -1042,22 +1214,6 @@ class CommandPolicyEngineService:
                     and request.template_version == 1
                     and request.executable == "npm"
                     and tuple(request.arguments) in approved_arguments
-                )
-            if request.command_id == ANGULAR_UPDATE_V3_RENDERER.command_id:
-                if (
-                    angular_ref is None
-                    or angular_ref.get("template_id") != ANGULAR_UPDATE_V3_RENDERER.template_id
-                    or angular_ref.get("template_version") != 3
-                ):
-                    return False
-                expected = ANGULAR_UPDATE_V3_RENDERER.render_arguments(
-                    angular_ref.get("parameter_bindings") or {}
-                )
-                return (
-                    request.template_id == ANGULAR_UPDATE_V3_RENDERER.template_id
-                    and request.template_version == 3
-                    and request.executable == "npx"
-                    and tuple(request.arguments) == expected
                 )
         except (TypeError, ValueError):
             return False

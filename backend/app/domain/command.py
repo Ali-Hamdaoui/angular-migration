@@ -45,6 +45,7 @@ _COMMAND_CLASSES: dict[str, CommandClass] = {
     "angular-migrate-installed": CommandClass.ANGULAR_UPDATE,
     "npm-ci-bootstrap": CommandClass.NPM_OPERATION,
     "npm-ci-final": CommandClass.NPM_OPERATION,
+    "npm-dependency-materialize": CommandClass.NPM_OPERATION,
     "npm-lockfile-generate": CommandClass.LOCKFILE,
     "npm-script-build-production": CommandClass.BUILD_TEST_LINT,
     "npm-script-test-ci": CommandClass.BUILD_TEST_LINT,
@@ -433,6 +434,19 @@ NPM_DEPENDENCY_INSTALL_RENDERER: Final[TransformationCommandDefinition] = Transf
     description="Install the approved target version of the detached dependency (reattach step of the dependency transition repair)",
 )
 
+NPM_DEPENDENCY_MATERIALIZE_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
+    command_id="npm-dependency-materialize",
+    template_id="tpl-npm-dependency-materialize-v1",
+    executable="npm",
+    argument_patterns=("ci",),
+    executable_aliases=("npm.cmd",),
+    timeout_seconds=3600,
+    network_profile="approved-registries-only",
+    allowed_env_vars=("NODE_OPTIONS", "NPM_CONFIG_CACHE"),
+    max_output_bytes=5_000_000,
+    description="Materialize the checkpoint-bound dependency state before transition mutation",
+)
+
 NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER: Final[TransformationCommandDefinition] = TransformationCommandDefinition(
     command_id="npm-angular-lockfile-normalize",
     template_id="tpl-npm-angular-lockfile-normalize-v2",
@@ -507,6 +521,7 @@ TRANSFORMATION_COMMAND_CATALOGUE: Final[dict[str, TransformationCommandDefinitio
     ),
     "npm-dependency-uninstall": NPM_DEPENDENCY_UNINSTALL_RENDERER,
     "npm-dependency-install": NPM_DEPENDENCY_INSTALL_RENDERER,
+    "npm-dependency-materialize": NPM_DEPENDENCY_MATERIALIZE_RENDERER,
 }
 
 

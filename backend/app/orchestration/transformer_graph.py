@@ -3545,23 +3545,30 @@ class TransformerOrchestrator:
         with self._scope() as session:
             continuation = self._owned(session, continuation_id, worker_id)
             attempt = self._latest_repair(session, continuation)
-            uninstall = session.scalar(
-                select(CommandExecutionModel).where(
-                    CommandExecutionModel.run_id == continuation.run_id,
-                    CommandExecutionModel.idempotency_key
-                    == f"{attempt.id}:transition:uninstall",
+            try:
+                restore_required = self._dependency_transitions.requires_safe_restore(
+                    session, continuation
                 )
-            )
-            if uninstall is None and attempt.status == "approved_pending_execution":
+            except DependencyTransitionError as error:
+                self._block(session, continuation, error.code, error.message)
+                return
+            if restore_required:
                 try:
-                    self._restore_angular_update_checkpoint(session, continuation)
+                    self._restore_dependency_transition_checkpoint(
+                        session, continuation, attempt
+                    )
                 except TransformerStageError as error:
                     self._block(session, continuation, error.code, error.message)
                     return
             try:
                 self._dependency_transitions.advance(session, continuation)
             except DependencyTransitionError as error:
-                if error.code == "COMMAND_EXIT_NONZERO":
+                if error.code in {
+                    "COMMAND_EXIT_NONZERO",
+                    "DEPENDENCY_TRANSITION_ANGULAR_UPDATE_FAILED",
+                    "DEPENDENCY_TRANSITION_FRESH_BLOCKER_CHANGED",
+                    "DEPENDENCY_TRANSITION_LOCKFILE_FAILED",
+                }:
                     attempt = self._latest_repair(session, continuation)
                     if attempt is not None and attempt.apply_ledger_artifact_id:
                         RepairLifecycleService.transition_in_session(
@@ -4094,6 +4101,100 @@ class TransformerOrchestrator:
         binding.last_verified_fingerprint = new_fingerprint
         binding.last_verified_at = datetime.now(UTC)
         return checkpoint.id, new_fingerprint
+
+    def _restore_dependency_transition_checkpoint(self, session, continuation, attempt):
+        """Restore the immutable pre-update tree before dependency materialization."""
+        checkpoint = self._dependency_transition_checkpoint(session, continuation)
+        if checkpoint is None:
+            raise TransformerStageError(
+                "CHECKPOINT_MISSING",
+                "No authoritative pre_angular_update checkpoint can materialize the dependency transition",
+            )
+        binding = self._stage._binding(session, continuation)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        fingerprint = self._stage.authoritative_checkpoint_fingerprint(session, checkpoint)
+        if run is None or fingerprint is None:
+            raise TransformerStageError(
+                "CHECKPOINT_INTEGRITY_FAILED",
+                "The dependency-transition pre-update checkpoint is not authoritative",
+            )
+        if (
+            StageSandboxCopier.fingerprint(Path(binding.workspace_path)) == fingerprint
+            and binding.workspace_fingerprint == fingerprint
+            and binding.fingerprint_profile_id == STAGE_FINGERPRINT_PROFILE.profile_id
+        ):
+            return checkpoint.id, fingerprint
+        self._stage.begin_reconstruction(
+            session,
+            continuation,
+            checkpoint=checkpoint,
+            reason="dependency_transition_materialization",
+            attempt_id=attempt.id,
+        )
+        restored = self._stage.reconstruct_workspace(
+            checkpoint.workspace_path,
+            binding.workspace_path,
+            (run.workspace_aliases or {})["STAGE_SANDBOX"],
+            fingerprint,
+            run.artifact_root,
+        )
+        if StageSandboxCopier.fingerprint(Path(binding.workspace_path)) != restored:
+            raise TransformerStageError(
+                "CHECKPOINT_INTEGRITY_FAILED",
+                "Dependency-transition restoration changed before materialization",
+            )
+        self._stage.record_reconstruction(
+            session,
+            continuation,
+            checkpoint=checkpoint,
+            reason="dependency_transition_materialization",
+            restored_fingerprint=restored,
+            attempt_id=attempt.id,
+        )
+        binding.workspace_fingerprint = restored
+        binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+        binding.last_verified_fingerprint = restored
+        binding.last_verified_at = datetime.now(UTC)
+        return checkpoint.id, restored
+
+    def _dependency_transition_checkpoint(self, session, continuation):
+        """Resolve only an execution-bound immutable pre_angular_update checkpoint."""
+        step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "angular_update-0",
+            )
+        )
+        execution = (
+            session.get(CommandExecutionModel, step.execution_id)
+            if step is not None and step.execution_id
+            else None
+        )
+        seen: set[str] = set()
+        while execution is not None and execution.id not in seen:
+            seen.add(execution.id)
+            checkpoint = (
+                session.get(StageCheckpointModel, execution.checkpoint_id)
+                if execution.checkpoint_id
+                else None
+            )
+            if (
+                checkpoint is not None
+                and checkpoint.run_id == continuation.run_id
+                and checkpoint.stage_id == continuation.current_stage_id
+                and checkpoint.kind == "pre_angular_update"
+                and checkpoint.safe_for_resume
+                and self._stage.authoritative_checkpoint_fingerprint(session, checkpoint)
+                is not None
+            ):
+                return checkpoint
+            execution = (
+                session.get(CommandExecutionModel, execution.parent_execution_id)
+                if execution.parent_execution_id
+                else None
+            )
+        return None
 
     def _angular_update_recovery_checkpoint(self, session, continuation, attempt=None):
         """Resolve an authorized checkpoint after a mutating update failure.

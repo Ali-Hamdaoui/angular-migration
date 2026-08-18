@@ -110,6 +110,7 @@ _MUTATING_COMMAND_IDS = frozenset(
         "angular-update-exact",
         "npm-ci-final",
         "npm-lockfile-generate",
+        "npm-dependency-materialize",
         "npm-dependency-uninstall",
         "npm-dependency-install",
     }
@@ -892,6 +893,8 @@ class CommandExecutorService:
         *,
         attempt_id: str,
         command_id: str,
+        template_id: str,
+        template_version: int,
         executable: str,
         arguments: list[str],
         working_directory_alias: str,
@@ -905,8 +908,11 @@ class CommandExecutorService:
     ) -> str:
         """Authorize one detach/reattach command bound to an applied repair proposal."""
         from app.domain.command import (
+            ANGULAR_UPDATE_V2_RENDERER,
             ANGULAR_UPDATE_V3_RENDERER,
-            NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER,
+            ANGULAR_UPDATE_V4_RENDERER,
+            ANGULAR_UPDATE_V5_RENDERER,
+            NPM_DEPENDENCY_MATERIALIZE_RENDERER,
             NPM_DEPENDENCY_INSTALL_RENDERER,
             NPM_DEPENDENCY_UNINSTALL_RENDERER,
             TRANSFORMATION_COMMAND_CATALOGUE,
@@ -922,16 +928,37 @@ class CommandExecutorService:
         renderer_for_command = {
             "npm-dependency-uninstall": (NPM_DEPENDENCY_UNINSTALL_RENDERER, 1),
             "npm-dependency-install": (NPM_DEPENDENCY_INSTALL_RENDERER, 1),
-            "npm-angular-lockfile-normalize": (NPM_ANGULAR_LOCKFILE_NORMALIZE_RENDERER, 2),
-            "angular-update-exact": (ANGULAR_UPDATE_V3_RENDERER, 3),
+            "npm-dependency-materialize": (NPM_DEPENDENCY_MATERIALIZE_RENDERER, 1),
+            "npm-lockfile-generate": (
+                TRANSFORMATION_COMMAND_CATALOGUE["npm-lockfile-generate"],
+                1,
+            ),
         }
-        renderer = renderer_for_command.get(command_id)
+        angular_renderers = {
+            (renderer.template_id, version): renderer
+            for renderer, version in (
+                (ANGULAR_UPDATE_V2_RENDERER, 2),
+                (ANGULAR_UPDATE_V3_RENDERER, 3),
+                (ANGULAR_UPDATE_V4_RENDERER, 4),
+                (ANGULAR_UPDATE_V5_RENDERER, 5),
+            )
+        }
+        renderer = (
+            (angular_renderers.get((template_id, template_version)), template_version)
+            if command_id == "angular-update-exact"
+            else renderer_for_command.get(command_id)
+        )
         if renderer is None:
             raise CommandExecutorError(
                 "COMMAND_TEMPLATE_NOT_FOUND",
                 "command has no dependency-transition renderer",
             )
         template, template_version = renderer
+        if template is None or template.template_id != template_id:
+            raise CommandExecutorError(
+                "COMMAND_TEMPLATE_NOT_FOUND",
+                "command template is not a governed dependency-transition command",
+            )
         self._policy_engine.registry.seed_defaults(session)
         request = CommandPolicyValidateRequestDto(
             run_id=attempt.run_id,

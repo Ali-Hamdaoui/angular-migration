@@ -99,6 +99,25 @@ def _file_checksum(path: Path) -> str:
     )
 
 
+def validate_generated_lockfile(workspace: Path) -> str:
+    """Validate the generic npm lockfile against the current manifest."""
+    try:
+        package = PackageMetadataInspector().inspect(workspace)
+        lock = LockfilePrequalificationService().inspect(workspace, package)
+    except BaselineQualificationError as error:
+        raise LockfileGenerationError(
+            "LOCKFILE_GENERATION_PACKAGE_INVALID", str(error)
+        ) from error
+    if lock.status != "valid":
+        code = (
+            "LOCKFILE_GENERATION_LOCKFILE_INVALID"
+            if "NPM_LOCKFILE_INVALID" in lock.blockers
+            else "LOCKFILE_GENERATION_LOCKFILE_UNSYNCHRONIZED"
+        )
+        raise LockfileGenerationError(code, ", ".join(lock.blockers))
+    return lock.status
+
+
 def _is_governed_volatile_relative(relative: str) -> bool:
     """True when any path part is a governed volatile root (node_modules/** etc.).
 
@@ -477,20 +496,7 @@ class LockfileGenerationRunner:
                 "LOCKFILE_GENERATION_EVIDENCE_INCOMPLETE",
                 "Command execution artifacts or runtime correlation are incomplete",
             )
-        try:
-            package = PackageMetadataInspector().inspect(workspace)
-            lock = LockfilePrequalificationService().inspect(workspace, package)
-        except BaselineQualificationError as error:
-            raise LockfileGenerationError(
-                "LOCKFILE_GENERATION_PACKAGE_INVALID", str(error)
-            ) from error
-        if lock.status != "valid":
-            code = (
-                "LOCKFILE_GENERATION_LOCKFILE_INVALID"
-                if "NPM_LOCKFILE_INVALID" in lock.blockers
-                else "LOCKFILE_GENERATION_LOCKFILE_UNSYNCHRONIZED"
-            )
-            raise LockfileGenerationError(code, ", ".join(lock.blockers))
+        lock_status = validate_generated_lockfile(workspace)
         post_binding = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
         end = {
             "post_command_package_json_sha256": package_checksum,
@@ -513,7 +519,7 @@ class LockfileGenerationRunner:
             },
             "pre_command": start,
             "post_command": end,
-            "lockfile_status": lock.status,
+            "lockfile_status": lock_status,
         }
         stored = self._write_or_recover_verification(run, continuation, execution, payload)
         metadata_id = "metadata-" + stored.ref.artifact_id
