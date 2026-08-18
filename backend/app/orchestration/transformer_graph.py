@@ -1434,7 +1434,6 @@ class TransformerOrchestrator:
                         or (
                             attempt.status in {"applied", "applied_verified", "blocked"}
                             and lockfile_failed
-                            and correction_depth > 0
                         )
                     )
                 )
