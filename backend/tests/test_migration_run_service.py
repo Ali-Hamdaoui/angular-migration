@@ -281,6 +281,33 @@ def test_source_intake_retry_accepts_retryable_baseline_diagnostic_hold(tmp_path
     assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
 
 
+def test_source_intake_retry_accepts_runtime_profile_diagnostic_hold(tmp_path: Path):
+    service, scope, graph = _service(tmp_path)
+    created = service.create(_request("retry-runtime-profile-create"))
+    with scope() as session:
+        run = session.get(MigrationRunModel, created.run_id)
+        assert run is not None
+        run.status = RunStatus.DIAGNOSTIC_HOLD.value
+        session.add(SourceIntakeJobModel(
+            id="intake-runtime-profile-hold", run_id=created.run_id, thread_id=created.graph_thread_id,
+            status="failed", actor="operator", idempotency_key="runtime-profile-attempt", attempt=1,
+            queued_at=datetime.now(UTC), finished_at=datetime.now(UTC),
+            last_error_code="RUNTIME_PROFILE_BLOCKED", last_error_message="no compatible runtime profile",
+            state_version=run.state_version,
+        ))
+        expected_version = run.state_version
+
+    retried = service.retry_source_intake(
+        run_id=created.run_id,
+        expected_state_version=expected_version,
+        idempotency_key="retry-runtime-profile-1",
+        actor="operator",
+    )
+
+    assert retried.status == RunStatus.SOURCE_VALIDATION_RUNNING.value
+    assert graph.calls[-1] == (created.run_id, created.graph_thread_id)
+
+
 def test_source_intake_retry_accepts_recoverable_baseline_validation_hold(tmp_path: Path):
     service, scope, graph = _service(tmp_path)
     created = service.create(_request("retry-baseline-validation-create"))
