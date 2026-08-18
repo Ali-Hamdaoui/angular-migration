@@ -2879,16 +2879,44 @@ class RepairApplicationService:
                 "retries": invocation.retries,
             }
         context = self._attempt_context(attempt_id)
-        bound = self.validate_proposal(
-            self._bind_proposal_candidate(historical_candidate, context), context
-        )
         child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
         child_context = dict(context)
         child_context["attempt_id"] = child_id
-        proposal_artifact = self._write(child_context, "proposal", bound)
-        safe_diff_artifact = self._write_safe_diff(
-            child_context, bound, proposal_artifact.ref.checksum
+        root = Path(str(context["artifact_root"]))
+        child_context_pack = LocalFilesystemArtifactStore(
+            root.parent, fixed_run_root=root
+        ).write_text_artifact(
+            str(context["run_id"]),
+            f"05_repairs/attempt-{child_id}/recovery-context.json",
+            str(context["segments"][1]),
+            ArtifactType.JSON,
+            stage_id=str(context["stage_id"]),
+            attempt_id=child_id,
+            created_by="repair-bound-candidate-context",
+            created_at=self._now(),
+            input_hashes={"parent_context": str(context["context_pack_checksum"])},
+            policy_version="repair-bound-candidate-context-v1",
         )
+        child_context["context_pack_artifact_id"] = child_context_pack.ref.artifact_id
+        child_context["context_pack_checksum"] = child_context_pack.ref.checksum
+        proposal_artifact = None
+        safe_diff_artifact = None
+        try:
+            bound = self.validate_proposal(
+                self._bind_proposal_candidate(historical_candidate, child_context),
+                child_context,
+            )
+            proposal_artifact = self._write(child_context, "proposal", bound)
+            safe_diff_artifact = self._write_safe_diff(
+                child_context, bound, proposal_artifact.ref.checksum
+            )
+        except Exception:
+            self._remove_uncommitted_artifact(child_context_pack)
+            if proposal_artifact is not None:
+                self._remove_uncommitted_artifact(proposal_artifact)
+            if safe_diff_artifact is not None:
+                self._remove_uncommitted_artifact(safe_diff_artifact)
+            raise
         child_invocation_id = f"{child_id}:proposer:binding-recovery-1"
         invocation_checksum = self._request_checksum(
             {
@@ -2907,6 +2935,7 @@ class RepairApplicationService:
                     )
                 )
                 if existing is not None:
+                    self._remove_uncommitted_artifact(child_context_pack)
                     self._remove_uncommitted_artifact(proposal_artifact)
                     self._remove_uncommitted_artifact(safe_diff_artifact)
                     child = session.get(
@@ -2937,6 +2966,7 @@ class RepairApplicationService:
                         "Durable state changed before candidate recovery commit",
                     )
                 now = self._now()
+                self._register_artifact_metadata(session, child_context, child_context_pack)
                 self._register_artifact_metadata(session, child_context, proposal_artifact)
                 self._register_artifact_metadata(session, child_context, safe_diff_artifact)
                 child_invocation = LlmInvocationModel(
@@ -2994,8 +3024,8 @@ class RepairApplicationService:
                     failure_evidence_checksum=attempt.failure_evidence_checksum,
                     failure_route_artifact_id=attempt.failure_route_artifact_id,
                     failure_route_checksum=attempt.failure_route_checksum,
-                    context_pack_artifact_id=attempt.context_pack_artifact_id,
-                    context_pack_checksum=attempt.context_pack_checksum,
+                    context_pack_artifact_id=child_context_pack.ref.artifact_id,
+                    context_pack_checksum=child_context_pack.ref.checksum,
                     proposal_artifact_id=proposal_artifact.ref.artifact_id,
                     proposal_checksum=proposal_artifact.ref.checksum,
                     proposer_invocation_id=child_invocation_id,
@@ -3040,6 +3070,7 @@ class RepairApplicationService:
                 )
                 return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
         except RepairApplicationError:
+            self._remove_uncommitted_artifact(child_context_pack)
             self._remove_uncommitted_artifact(proposal_artifact)
             self._remove_uncommitted_artifact(safe_diff_artifact)
             raise
@@ -5698,13 +5729,19 @@ class RepairApplicationService:
                 "prompt-repair-proposer-v1", "prompt-repair-reviewer-v1",
                 "repair-proposer-v1", "repair-reviewer-v1",
             }
+            deterministic_rebind = (
+                role == "proposer"
+                and invocation.deployment_alias == "deterministic-provenance-rebind"
+                and invocation.response_kind == "deterministic_rebind"
+                and invocation.response_received is False
+            )
             if schema_name and task_type and schema:
                 prompt_version = self._prompt_version(schema_name, task_type)
                 schema_version = get_settings().llm_schema_registry_version
                 expected_request = self._logical_request_checksum(
                     context["segments"], schema_name, prompt_version, schema_version
                 )
-                if not legacy_v1 and (
+                if not legacy_v1 and not deterministic_rebind and (
                     invocation.request_checksum != expected_request
                     or invocation.prompt_version != prompt_version
                     or invocation.schema_version != schema_version
