@@ -3388,7 +3388,7 @@ class RepairApplicationService:
                     continuation is None
                     or attempt is None
                     or continuation.state_version != expected_state_version
-                    or attempt.status != "blocked"
+                    or attempt.status not in {"proposed", "blocked"}
                     or attempt.proposal_checksum != metadata.checksum
                 ):
                     raise RepairApplicationError(
