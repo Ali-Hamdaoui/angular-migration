@@ -3484,6 +3484,10 @@ class TransformerOrchestrator:
                 self._dependency_transitions.advance(session, continuation)
             except DependencyTransitionError as error:
                 if error.code == "COMMAND_EXIT_NONZERO":
+                    attempt = self._latest_repair(session, continuation)
+                    if attempt is not None and attempt.apply_ledger_artifact_id:
+                        attempt.status = "validation_failed"
+                        attempt.updated_at = datetime.now(UTC)
                     self._validation_failure(
                         session,
                         continuation,
