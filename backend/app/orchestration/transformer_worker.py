@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import traceback
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -65,10 +66,46 @@ class TransformerWorker:
             return True
         with self._scope() as session:
             continuation = self.continuations.claim_next(session, self.worker_id, now)
-            continuation_id = continuation.id if continuation else None
+            if continuation is None:
+                continuation_id = None
+                claim_snapshot = None
+            else:
+                continuation_id = continuation.id
+                claim_snapshot = {
+                    "continuation_id": continuation.id,
+                    "run_id": continuation.run_id,
+                    "stage_id": continuation.current_stage_id,
+                    "current_node": continuation.current_node,
+                    "state_version": continuation.state_version,
+                    "worker_id": continuation.worker_id,
+                    "claim_count": continuation.claim_count,
+                    "claimed_at": now.isoformat(),
+                }
         if continuation_id is None:
             return False
-        self.workflow.invoke(continuation_id, self.worker_id)
+        try:
+            self.workflow.invoke(continuation_id, self.worker_id)
+        except Exception as exc:
+            LOGGER.exception(
+                "Transformer workflow invocation failed",
+                extra={"continuation_id": continuation_id, "worker_id": self.worker_id},
+            )
+            try:
+                with self._scope() as session:
+                    self.continuations.record_unhandled_workflow_fault(
+                        session,
+                        continuation_id=continuation_id,
+                        claimed_worker_id=self.worker_id,
+                        claim_snapshot=claim_snapshot or {},
+                        exception_type=type(exc).__name__,
+                        sanitized_message=" ".join(str(exc).split())[:2000],
+                        traceback_text=traceback.format_exc(),
+                    )
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist Transformer workflow fault",
+                    extra={"continuation_id": continuation_id, "worker_id": self.worker_id},
+                )
         return True
 
     def reconcile_stuck_command_waiters(self, session, now: datetime | None = None) -> list[str]:
