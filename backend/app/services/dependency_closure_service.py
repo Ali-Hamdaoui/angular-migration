@@ -46,6 +46,13 @@ class DependencyTransitionBundle:
 # False) are installed only when the authoritative package.json already declares
 # them. Order is the install order: required companions first, primary last.
 _COMPATIBLE_REINSTALL_BUNDLES: dict[tuple[str, int], tuple[tuple[str, str, bool], ...]] = {
+    # Angular 13's build tool declares a TypeScript ~4.4.3 peer.  npm may
+    # select build-angular 13.0.4 for the planned 13.0.x transition, so the
+    # governed detach/update/reattach path binds both exact package versions.
+    ("@angular-devkit/build-angular", 13): (
+        ("typescript", "4.4.4", True),
+        ("@angular-devkit/build-angular", "13.0.4", True),
+    ),
     ("@angular-builders/jest", 19): (("@angular-builders/jest", "19.0.0", True),),
     ("jest-preset-angular", 19): (("jest-preset-angular", "14.4.0", True),),
     ("jest-preset-angular", 20): (("jest-preset-angular", "14.6.2", True),),
