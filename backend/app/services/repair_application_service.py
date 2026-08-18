@@ -2219,17 +2219,11 @@ class RepairApplicationService:
                     continuation.current_stage_id,
                     repair_policy,
                 )
-                if (
-                    continuation.current_node != "wait_g10"
-                    and (
-                        budget["consumed_attempts"] >= budget["max_attempts"]
-                        or budget["consumed_applied"] >= budget["max_applied"]
-                    )
-                ):
-                    raise RepairApplicationError(
-                        "REPAIR_LOOP_EXHAUSTED",
-                        "Repair revision limit has been reached",
-                    )
+                # A revision request is already bounded by its live review or
+                # G10 modification lineage below.  Do not let the apply-count
+                # budget reject a governed correction of an active G10 package;
+                # ordinary new repair attempts remain budget-gated by the
+                # transformer classifier.
                 binding = session.scalar(
                     select(StageWorkspaceBindingModel).where(
                         StageWorkspaceBindingModel.run_id == attempt.run_id,
