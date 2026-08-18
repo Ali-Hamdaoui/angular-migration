@@ -191,7 +191,7 @@ class FailureEvidenceService:
         normalized: dict[str, object],
     ) -> dict[str, object] | None:
         """Parse only npm's persisted ERESOLVE peer-conflict structure."""
-        if normalized.get("command_id") != "npm-lockfile-generate":
+        if not str(normalized.get("command_id") or "").startswith("npm-"):
             return None
         message = _ANSI_ESCAPE.sub(
             "", str(normalized.get("failure_message") or "")
@@ -239,7 +239,7 @@ class FailureEvidenceService:
         ):
             reparsed = (
                 FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
-                if normalized.get("command_id") == "npm-lockfile-generate"
+                if str(normalized.get("command_id") or "").startswith("npm-")
                 else FailureEvidenceService.diagnose_angular_update_failure(normalized)
             )
             if reparsed is not None:
@@ -299,7 +299,9 @@ class FailureEvidenceService:
             "failure_code": execution.failure_code if execution else None,
             "failure_message": (execution.failure_message or "")[:2000] if execution else None,
         }
-        if normalized["command_id"] in {"angular-update-exact", "npm-lockfile-generate"}:
+        if normalized["command_id"] == "angular-update-exact" or str(
+            normalized["command_id"] or ""
+        ).startswith("npm-"):
             if normalized["command_id"] == "angular-update-exact":
                 normalized["command_allows_dirty"] = "--allow-dirty" in (execution.arguments or [])
             diagnosis = self.diagnose_angular_update_failure(normalized)
