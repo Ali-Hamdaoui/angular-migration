@@ -126,7 +126,7 @@ class FailureEvidenceService:
         normalized: dict[str, object],
     ) -> dict[str, object] | None:
         """Deterministic peer-conflict diagnosis for a failed Angular update."""
-        if normalized.get("command_id") == "npm-lockfile-generate":
+        if str(normalized.get("command_id") or "").startswith("npm-"):
             return FailureEvidenceService.diagnose_npm_eresolve_failure(normalized)
         if normalized.get("command_id") != "angular-update-exact":
             return None
