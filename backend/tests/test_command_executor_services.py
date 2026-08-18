@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -35,6 +36,7 @@ from app.services.command_executor_service import (
     CommandExecutorService,
     CommandExecutionResponse,
     _command_environment_overrides,
+    _runtime_path_overrides,
 )
 from app.services.command_log_service import CommandLogService, LogChunkDto
 from app.services.job_supervisor_service import JobSupervisorService, JobSupervisorError
@@ -130,6 +132,24 @@ def test_angular_update_environment_disables_only_cli_latest_redirect(monkeypatc
         "NG_DISABLE_VERSION_CHECK": "true",
     }
     assert _command_environment_overrides("npm-ci-bootstrap", {}) == {}
+
+
+def test_runtime_path_overrides_uses_windows_installation_parent_without_bin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_root = tmp_path / "v16.20.2"
+    runtime_root.mkdir()
+    node = runtime_root / "node.exe"
+    node.write_bytes(b"node")
+    descriptor = MagicMock(
+        installation_root=str(runtime_root),
+        resolved_path=str(node),
+    )
+    monkeypatch.setenv("PATH", "baseline-path")
+
+    result = _runtime_path_overrides({"node": descriptor})
+
+    assert result["PATH"].split(os.pathsep)[:2] == [str(runtime_root), "baseline-path"]
 
 
 # ===========================================================================

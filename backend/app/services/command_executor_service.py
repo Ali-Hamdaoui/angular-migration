@@ -249,11 +249,19 @@ def _runtime_path_overrides(bindings: dict[str, RuntimeExecutableDescriptor]) ->
         return {}
     bin_dirs: list[str] = []
     for descriptor in bindings.values():
-        bin_dir = (
+        executable_parent = Path(descriptor.resolved_path).parent
+        candidate_bin = (
             Path(descriptor.installation_root) / "bin"
             if descriptor.installation_root
-            else Path(descriptor.resolved_path).parent
+            else None
         )
+        # Unix runtime installations conventionally keep executables under
+        # ``<root>/bin``. Windows NVM installations keep node.exe/npm.cmd/
+        # npx.cmd directly under ``<root>`` and do not have a bin directory.
+        # Prefer the governed installation bin when it exists; otherwise use
+        # the bound executable's own parent so child scripts resolve the same
+        # Node runtime instead of falling back to the backend PATH.
+        bin_dir = candidate_bin if candidate_bin is not None and candidate_bin.is_dir() else executable_parent
         text = str(bin_dir)
         if text not in bin_dirs:
             bin_dirs.append(text)
