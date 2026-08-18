@@ -1083,6 +1083,8 @@ class TransformerOrchestrator:
             continuation = self._owned(session, continuation_id, worker_id)
             if self._resume_stale_g08_validation(session, continuation):
                 return
+            if self._recover_unmaterialized_dependency_repair(session, continuation):
+                return
             if self._recover_pre_materialization_revalidation(session, continuation):
                 return
             prior = [
@@ -1655,6 +1657,82 @@ class TransformerOrchestrator:
                         path,
                         error,
                     )
+
+    def _recover_unmaterialized_dependency_repair(self, session, continuation) -> bool:
+        """Resume a dependency repair whose lockfile phase was skipped.
+
+        A dependency repair must materialize its package graph before any
+        Angular-update retry.  Older workers could route directly to the
+        retry node, leaving the approved repair applied while the governed
+        lockfile step remained pending.  Reconcile that durable state before
+        failure classification so it cannot consume another repair attempt.
+        """
+        attempt = (
+            session.query(RepairAttemptModel)
+            .filter(
+                RepairAttemptModel.run_id == continuation.run_id,
+                RepairAttemptModel.stage_id == continuation.current_stage_id,
+                RepairAttemptModel.status.in_(
+                    ("applied", "applied_verified", "migration_retried")
+                ),
+            )
+            .order_by(RepairAttemptModel.attempt_number.desc())
+            .first()
+        )
+        if attempt is None or self._successful_materialization_exists(
+            session, continuation, attempt
+        ):
+            return False
+        try:
+            proposal = self._load_bound_repair_proposal(
+                session,
+                continuation,
+                attempt,
+                session.get(MigrationRunModel, continuation.run_id),
+            )
+        except (
+            ArtifactNotFoundError,
+            ArtifactStoreError,
+            OSError,
+            ValueError,
+            RepairApplicationError,
+        ):
+            return False
+        lockfile_step = session.scalar(
+            select(StageStepModel).where(
+                StageStepModel.run_id == continuation.run_id,
+                StageStepModel.stage_id == continuation.current_stage_id,
+                StageStepModel.name == "lockfile_generation-0",
+            )
+        )
+        if not self._needs_dependency_materialization_recovery(
+            proposal,
+            attempt.status,
+            lockfile_step.status if lockfile_step is not None else None,
+            materialization_succeeded=False,
+        ):
+            return False
+        continuation.last_error_code = None
+        continuation.last_error_message = None
+        self._queue(continuation, "lockfile_generation")
+        return True
+
+    @staticmethod
+    def _needs_dependency_materialization_recovery(
+        proposal: dict[str, object],
+        attempt_status: str,
+        lockfile_step_status: str | None,
+        *,
+        materialization_succeeded: bool,
+    ) -> bool:
+        return (
+            attempt_status in {"applied", "applied_verified", "migration_retried"}
+            and TransformerOrchestrator._proposal_requires_install_materialization(
+                proposal
+            )
+            and lockfile_step_status == "PENDING"
+            and not materialization_succeeded
+        )
 
     def _recover_pre_materialization_revalidation(self, session, continuation) -> bool:
         attempt = (

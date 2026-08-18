@@ -1181,6 +1181,36 @@ def test_dependency_change_keeps_lockfile_materialization_even_when_retry_is_eli
     )
 
 
+def test_applied_dependency_repair_recovers_pending_lockfile_materialization():
+    dependency = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "dependency_change", "path": "package.json"}],
+    }
+    ordinary = {
+        "proposal_format": "operations",
+        "operations": [{"operation": "replace_text", "path": "src/app.ts"}],
+    }
+
+    assert TransformerOrchestrator._needs_dependency_materialization_recovery(
+        dependency,
+        "applied_verified",
+        "PENDING",
+        materialization_succeeded=False,
+    )
+    assert not TransformerOrchestrator._needs_dependency_materialization_recovery(
+        ordinary,
+        "applied_verified",
+        "PENDING",
+        materialization_succeeded=False,
+    )
+    assert not TransformerOrchestrator._needs_dependency_materialization_recovery(
+        dependency,
+        "applied_verified",
+        "PASSED",
+        materialization_succeeded=False,
+    )
+
+
 def test_lockfile_generation_failure_blocks_with_precise_reason():
     continuation = SimpleNamespace()
 
