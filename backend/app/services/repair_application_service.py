@@ -1906,20 +1906,6 @@ class RepairApplicationService:
                 "REPAIR_RECOVERY_NOT_ELIGIBLE",
                 "Repair stage-plan authority is missing or stale",
             )
-        semantic_recovery_count = session.scalar(
-            select(RepairAttemptModel.id)
-            .where(
-                RepairAttemptModel.run_id == run_id,
-                RepairAttemptModel.stage_id == attempt.stage_id,
-                RepairAttemptModel.diagnosis.like("semantic retry recovery;%"),
-            )
-            .limit(1)
-        )
-        if semantic_recovery_count is not None:
-            raise RepairApplicationError(
-                "REPAIR_LOOP_EXHAUSTED",
-                "One semantic recovery is already present for this stage lineage",
-            )
         binding = session.scalar(
             select(StageWorkspaceBindingModel).where(
                 StageWorkspaceBindingModel.run_id == run_id,
