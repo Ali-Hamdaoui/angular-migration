@@ -2274,12 +2274,16 @@ class RepairApplicationService:
                 )
                 g10_override_revision = (
                     attempt.status == "waiting_g10"
-                    and review["decision"] == "request_changes"
+                    and review["decision"] in {"request_changes", "accept"}
                     and continuation.current_stage_id == attempt.stage_id
-                    and continuation.status == "waiting_gate"
+                    and continuation.status in {"waiting_gate", "blocked"}
                     and continuation.current_node == "wait_g10"
                     and pending_g10 is not None
                     and attempt.g10_gate_package_id == pending_g10.id
+                    and (
+                        review["decision"] == "request_changes"
+                        or continuation.last_error_code == "G10_REQUEST_MODIFICATION"
+                    )
                 )
                 if not reviewer_revision and not accepted_revision and not g10_override_revision:
                     raise RepairApplicationError(
