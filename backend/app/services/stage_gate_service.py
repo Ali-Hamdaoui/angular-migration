@@ -20,6 +20,7 @@ from app.repositories.models import (
     ArtifactMetadataModel,
     LlmInvocationModel,
     MigrationPlanModel,
+    MigrationStageModel,
     MigrationRunModel,
     RepairAttemptModel,
     StageExecutionPlanModel,
@@ -37,6 +38,10 @@ from app.services.repair_application_service import (
     _SEMANTIC_RETRY_CODES,
 )
 from app.services.stage_preparation_primitives import StageSandboxCopier
+from app.services.dependency_repair_preflight_service import (
+    DependencyRepairPreflightError,
+    DependencyRepairPreflightService,
+)
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
@@ -110,6 +115,9 @@ class StageGateService:
                 package_artifact_id,
                 package_checksum,
                 artifact_set_checksum=artifact_set_checksum,
+            )
+            self._validate_dependency_repair_preflight(
+                session, continuation, package_artifact_id
             )
         existing = session.scalar(
             select(StageGatePackageModel).where(
@@ -235,22 +243,13 @@ class StageGateService:
             package.stale_at = now or datetime.now(UTC)
             raise StageGateError("STALE_GATE_BINDING", "Gate package is bound to a stale plan version")
         if gate_id == StageGateId.G10.value:
-            review_override_required = self._validate_repair_lineage(
+            self._validate_repair_lineage(
                 session,
                 continuation,
                 package.package_artifact_id,
                 package.package_checksum,
                 artifact_set_checksum=package.artifact_set_checksum,
             )
-            if (
-                review_override_required
-                and request.decision == "approve"
-                and not (request.comment and request.comment.strip())
-            ):
-                raise StageGateError(
-                    "G10_OVERRIDE_COMMENT_REQUIRED",
-                    "Approval despite Reviewer concerns requires an override comment",
-                )
         if (
             continuation.state_version != request.expected_state_version
             or package.expected_state_version != request.expected_state_version
@@ -282,11 +281,7 @@ class StageGateService:
             package_checksum=request.package_checksum,
             workspace_fingerprint=request.workspace_fingerprint,
             accepted=accepted,
-            reason_code=(
-                "REVIEW_OVERRIDE_REQUIRED"
-                if gate_id == StageGateId.G10.value and review_override_required and accepted
-                else None if accepted else request.decision.upper()
-            ),
+            reason_code=None if accepted else request.decision.upper(),
             created_at=decided_at,
         )
         session.add(decision)
@@ -997,12 +992,16 @@ class StageGateService:
                         )
             elif role == "review":
                 decision = payload.get("decision")
-                if (
-                    payload.get("proposal_checksum") != attempt.proposal_checksum
-                    or decision not in {"accept", "request_changes"}
-                    or (decision == "request_changes") != review_override_required
-                ):
-                    raise StageGateError("G10_LINEAGE_STALE", "G10 review lineage is not accepted")
+                if payload.get("proposal_checksum") != attempt.proposal_checksum:
+                    raise StageGateError(
+                        "G10_LINEAGE_STALE",
+                        "G10 review proposal binding is stale",
+                    )
+                if decision != "accept" or review_override_required:
+                    raise StageGateError(
+                        "REPAIR_REVIEW_NOT_ACCEPTED",
+                        "Reviewer request_changes must be resolved before G10",
+                    )
         for invocation_id, role, artifact_id, checksum in (
             (attempt.proposer_invocation_id, "repair_proposer", attempt.proposal_artifact_id, attempt.proposal_checksum),
             (attempt.reviewer_invocation_id, "repair_reviewer", attempt.review_artifact_id, attempt.review_checksum),
@@ -1029,3 +1028,76 @@ class StageGateService:
             ):
                 raise StageGateError("G10_LINEAGE_STALE", "G10 invocation provenance is stale")
         return bool(package.get("review_override_required"))
+
+    @staticmethod
+    def _validate_dependency_repair_preflight(
+        session: Session,
+        continuation: TransformationContinuationModel,
+        package_artifact_id: str,
+    ) -> None:
+        metadata = session.get(ArtifactMetadataModel, "metadata-" + package_artifact_id)
+        run = session.get(MigrationRunModel, continuation.run_id)
+        if metadata is None or run is None or not run.artifact_root:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "G10 dependency preflight authority is missing",
+            )
+        try:
+            store = LocalFilesystemArtifactStore(
+                Path(str(run.artifact_root)).parent,
+                fixed_run_root=Path(str(run.artifact_root)),
+            )
+            package = json.loads(
+                store.read_artifact(continuation.run_id, metadata.relative_path).content
+            )
+        except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError) as error:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "G10 package cannot be read",
+            ) from error
+        attempt = session.get(RepairAttemptModel, package.get("repair_attempt_id"))
+        binding = session.scalar(
+            select(StageWorkspaceBindingModel).where(
+                StageWorkspaceBindingModel.run_id == continuation.run_id,
+                StageWorkspaceBindingModel.stage_id == continuation.current_stage_id,
+                StageWorkspaceBindingModel.active.is_(True),
+            )
+        )
+        stage = session.get(MigrationStageModel, continuation.current_stage_id)
+        plan = session.get(MigrationPlanModel, continuation.plan_id)
+        if attempt is None or binding is None or stage is None or plan is None:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "G10 dependency preflight authority is missing",
+            )
+        proposal_metadata = session.get(
+            ArtifactMetadataModel, "metadata-" + str(attempt.proposal_artifact_id)
+        )
+        try:
+            proposal = json.loads(
+                store.read_artifact(continuation.run_id, proposal_metadata.relative_path).content
+            )
+            operations = proposal.get("operations") if isinstance(proposal, dict) else None
+            if not any(
+                isinstance(operation, dict)
+                and (
+                    operation.get("path") == "package.json"
+                    or str(operation.get("operation") or "").startswith("dependency_")
+                )
+                for operation in (operations if isinstance(operations, list) else [])
+            ):
+                return
+            DependencyRepairPreflightService().validate(
+                workspace=Path(binding.workspace_path),
+                proposal=proposal,
+                source_family=str(stage.source_version_family),
+                target_family=str(stage.target_version_family),
+                catalogue_version=(plan.plan or {}).get("catalogue_version"),
+            )
+        except DependencyRepairPreflightError as error:
+            raise StageGateError(error.code, error.message) from error
+        except (AttributeError, ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError) as error:
+            raise StageGateError(
+                "REPAIR_DEPENDENCY_PREFLIGHT_FAILED",
+                "Dependency proposal evidence is invalid",
+            ) from error

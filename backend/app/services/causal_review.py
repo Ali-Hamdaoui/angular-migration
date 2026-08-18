@@ -467,8 +467,8 @@ def g10_eligibility(session, run_id: str, stage_id: str, attempt_id: str) -> tup
         session, store, attempt, run_id, stage_id,
         "review_artifact_id", "review_checksum", pre_attempt=False,
     )
-    if review is None or review.get("decision") not in {"accept", "request_changes"}:
-        return False, "no accepted review"
+    if review is None or review.get("decision") != "accept":
+        return False, "reviewer request_changes requires a supported revision"
     rejection = causal_rejection(
         evidence, proposal, stage_plan_commands=_stage_plan_commands(session, run_id, stage_id)
     )

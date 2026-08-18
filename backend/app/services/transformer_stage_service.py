@@ -1026,6 +1026,16 @@ class TransformerStageService:
                     and attempt.pre_fingerprint == checkpoint.workspace_fingerprint
                     and authoritative == checkpoint.workspace_fingerprint
                 )
+                if (
+                    not pre_repair_fallback_authorized
+                    and reason == "legacy_g10_override_recovery"
+                    and attempt is not None
+                    and attempt.run_id == continuation.run_id
+                    and attempt.stage_id == continuation.current_stage_id
+                    and attempt.checkpoint_id == checkpoint.id
+                    and authoritative is not None
+                ):
+                    pre_repair_fallback_authorized = True
             if (
                 not pre_repair_fallback_authorized
                 and (authoritative is None or binding.workspace_fingerprint != authoritative)

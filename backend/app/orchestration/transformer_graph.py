@@ -2092,7 +2092,9 @@ class TransformerOrchestrator:
                         self._block(
                             session,
                             continuation,
-                            "REPAIR_CAUSAL_REJECTION",
+                            "REPAIR_REVIEW_NOT_ACCEPTED"
+                            if reason and "request_changes" in reason
+                            else "REPAIR_CAUSAL_REJECTION",
                             reason or "Repair candidate is not causally eligible for G10",
                         )
                         return
@@ -2117,7 +2119,9 @@ class TransformerOrchestrator:
                     self._block(
                         session,
                         continuation,
-                        "REPAIR_CAUSAL_REJECTION",
+                        "REPAIR_REVIEW_NOT_ACCEPTED"
+                        if reason and "request_changes" in reason
+                        else "REPAIR_CAUSAL_REJECTION",
                         reason or "Repair candidate is not causally eligible for G10",
                     )
                     return
@@ -2186,12 +2190,12 @@ class TransformerOrchestrator:
                 review = json.loads(
                     store.read_artifact(continuation.run_id, review_metadata.relative_path).content
                 )
-                if review.get("decision") not in {"accept", "request_changes"}:
+                if review.get("decision") != "accept":
                     raise TransformerStageError(
-                        "REPAIR_REVIEW_INVALID",
-                        "Repair review decision is not eligible for G10",
+                        "REPAIR_REVIEW_NOT_ACCEPTED",
+                        "Reviewer request_changes must be resolved before G10",
                     )
-                payload["review_override_required"] = review["decision"] == "request_changes"
+                payload["review_override_required"] = False
                 diff_metadata = session.scalar(
                     select(ArtifactMetadataModel).where(
                         ArtifactMetadataModel.run_id == continuation.run_id,

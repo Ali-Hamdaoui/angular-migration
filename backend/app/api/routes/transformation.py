@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.api.authentication import authenticated_actor, authorize_run
 from app.api.errors import error_response
 from app.domain.transformation import (
+    LegacyRepairOverrideRecoveryRequest,
     RepairDecisionRequest,
     RepairInvocationRecoveryRequest,
     RepairRevisionRequest,
@@ -802,6 +803,52 @@ def recover_exhausted_semantic_retry(
             expected_state_version=body.expected_state_version,
             idempotency_key=body.idempotency_key,
             actor=actor,
+        )
+    except RepairApplicationError as error:
+        return error_response(
+            request,
+            status_code=409,
+            error_code=error.code,
+            message=error.message,
+        )
+
+
+@router.post("/{run_id}/transformation/repairs/{attempt_id}/recover-invalid-g10-override")
+def recover_invalid_g10_override(
+    run_id: str,
+    attempt_id: str,
+    body: LegacyRepairOverrideRecoveryRequest,
+    request: Request,
+    actor: str = Depends(authenticated_actor),
+):
+    if body.attempt_id != attempt_id:
+        return error_response(
+            request,
+            status_code=409,
+            error_code="REPAIR_ATTEMPT_MISMATCH",
+            message="Repair attempt path and payload do not match",
+        )
+    with session_scope() as session:
+        authorize_run(session, run_id, actor)
+        attempt = session.get(RepairAttemptModel, attempt_id)
+        if attempt is None or attempt.run_id != run_id:
+            return error_response(
+                request,
+                status_code=404,
+                error_code="REPAIR_ATTEMPT_NOT_FOUND",
+                message="Repair attempt is missing",
+            )
+    try:
+        return RepairApplicationService(scope=session_scope).recover_invalid_g10_override(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            proposal_id=body.proposal_id,
+            base_checksum=body.base_checksum,
+            instruction=body.instruction,
+            expected_state_version=body.expected_state_version,
+            idempotency_key=body.idempotency_key,
+            actor=actor,
+            correlation_id=body.correlation_id,
         )
     except RepairApplicationError as error:
         return error_response(

@@ -2357,6 +2357,366 @@ class RepairApplicationService:
             self._remove_uncommitted_artifact(stored)
             raise
 
+    def recover_invalid_g10_override(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        proposal_id: str,
+        base_checksum: str,
+        instruction: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        actor: str,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        """Recover a legacy G10 approval that bypassed reviewer request_changes.
+
+        The old gate, apply ledger, and failure remain immutable history.  The
+        only new repair lineage is a revision child rooted at the safe
+        pre-repair checkpoint.
+        """
+        request_checksum = self._request_checksum(
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "proposal_id": proposal_id,
+                "base_checksum": base_checksum,
+                "instruction": instruction,
+                "expected_state_version": expected_state_version,
+                "actor": actor,
+                "correlation_id": correlation_id,
+            }
+        )
+        event_key = self._legacy_override_recovery_event_key(idempotency_key)
+        from app.services.transformer_stage_service import TransformerStageService
+
+        stage_service = TransformerStageService(scope=self._scope)
+        with self._scope() as session:
+            existing = session.scalar(
+                select(WorkflowEventModel).where(
+                    WorkflowEventModel.run_id == run_id,
+                    WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                )
+            )
+            if existing is not None:
+                if (existing.payload or {}).get("request_checksum") != request_checksum:
+                    raise RepairApplicationError(
+                        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+                        "Recovery key has a different payload",
+                    )
+                child = session.get(
+                    RepairAttemptModel,
+                    (existing.payload or {}).get("child_attempt_id"),
+                )
+                if child is None:
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_REPLAY_INVALID",
+                        "Recovery replay child is missing",
+                    )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id,
+                    TransformationContinuationModel.current_stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                )
+            )
+            run = session.get(MigrationRunModel, run_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            checkpoint = (
+                session.get(StageCheckpointModel, attempt.checkpoint_id)
+                if attempt is not None and attempt.checkpoint_id
+                else None
+            )
+            gate = (
+                session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+                if attempt is not None and attempt.g10_gate_package_id
+                else None
+            )
+            failure = session.scalar(
+                select(CommandExecutionModel)
+                .where(
+                    CommandExecutionModel.run_id == run_id,
+                    CommandExecutionModel.stage_id == (
+                        attempt.stage_id if attempt is not None else ""
+                    ),
+                    CommandExecutionModel.command_id == "npm-lockfile-generate",
+                    CommandExecutionModel.status == "failed",
+                )
+                .order_by(CommandExecutionModel.finished_at.desc())
+                .limit(1)
+            )
+            if (
+                attempt is None
+                or run is None
+                or continuation is None
+                or binding is None
+                or checkpoint is None
+                or gate is None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Legacy G10 recovery authority is incomplete",
+                )
+            if continuation.state_version != expected_state_version:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_STALE",
+                    "Continuation state changed before recovery",
+                )
+            if (
+                continuation.status != "blocked"
+                or continuation.current_node != "classify_failure"
+                or continuation.last_error_code != "REPAIR_ATTEMPT_LIMIT"
+                or attempt.status != "blocked"
+                or attempt.proposal_artifact_id != proposal_id
+                or attempt.proposal_checksum != base_checksum
+                or attempt.review_artifact_id is None
+                or attempt.review_checksum is None
+                or attempt.apply_ledger_artifact_id is None
+                or gate.status != "approved"
+                or failure is None
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Repair is not the blocked legacy G10 override lineage",
+                )
+            if checkpoint.kind != "pre_repair" or not checkpoint.safe_for_resume:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Safe pre-repair checkpoint is missing",
+                )
+            metadata = session.get(
+                ArtifactMetadataModel, "metadata-" + str(attempt.review_artifact_id)
+            )
+            if metadata is None or metadata.checksum != attempt.review_checksum:
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_STALE", "Reviewer evidence is missing or stale"
+                )
+            try:
+                store = LocalFilesystemArtifactStore(
+                    Path(run.artifact_root).parent,
+                    fixed_run_root=Path(run.artifact_root),
+                )
+                review = json.loads(
+                    store.read_artifact(run_id, metadata.relative_path).content
+                )
+                RepairReview.model_validate(review)
+            except (ArtifactNotFoundError, ArtifactStoreError, OSError, ValueError, ValidationError) as error:
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_STALE", "Reviewer evidence cannot be verified"
+                ) from error
+            if review.get("proposal_checksum") != base_checksum or review.get("decision") != "request_changes":
+                raise RepairApplicationError(
+                    "REPAIR_REVIEW_NOT_ACCEPTED",
+                    "Recovery requires the persisted reviewer request_changes decision",
+                )
+            expected_checkpoint = stage_service.authoritative_checkpoint_fingerprint(
+                session, checkpoint
+            )
+            if expected_checkpoint is None:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Pre-repair checkpoint integrity cannot be proven",
+                )
+            if attempt.pre_fingerprint not in {checkpoint.workspace_fingerprint, expected_checkpoint}:
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_NOT_ELIGIBLE",
+                    "Repair pre-fingerprint is not bound to the checkpoint",
+                )
+            stage_service.begin_reconstruction(
+                session,
+                continuation,
+                checkpoint=checkpoint,
+                reason="legacy_g10_override_recovery",
+                attempt_id=attempt.id,
+            )
+            session.commit()
+            source = checkpoint.workspace_path
+            workspace = binding.workspace_path
+            artifact_root = run.artifact_root
+            failure_id = failure.id
+            failure_code = failure.failure_code
+            failure_message = failure.failure_message
+        try:
+            restored = stage_service.reconstruct_workspace(
+                source,
+                workspace,
+                str(Path(workspace).resolve().parent),
+                expected_checkpoint,
+                str(Path(artifact_root).resolve()),
+            )
+        except Exception as error:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_RECONSTRUCTION_FAILED",
+                "Safe pre-repair checkpoint reconstruction failed",
+            ) from error
+        if restored != expected_checkpoint:
+            raise RepairApplicationError(
+                "REPAIR_RECOVERY_RECONSTRUCTION_FAILED",
+                "Reconstructed workspace fingerprint does not match the checkpoint",
+            )
+        with self._scope() as session:
+            continuation = session.scalar(
+                select(TransformationContinuationModel).where(
+                    TransformationContinuationModel.run_id == run_id
+                )
+            )
+            attempt = session.get(RepairAttemptModel, attempt_id)
+            binding = session.scalar(
+                select(StageWorkspaceBindingModel).where(
+                    StageWorkspaceBindingModel.run_id == run_id,
+                    StageWorkspaceBindingModel.stage_id == attempt.stage_id,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+            )
+            if (
+                continuation is None
+                or attempt is None
+                or binding is None
+                or continuation.state_version != expected_state_version
+            ):
+                raise RepairApplicationError(
+                    "REPAIR_RECOVERY_STALE",
+                    "Durable state changed during checkpoint reconstruction",
+                )
+            binding.workspace_fingerprint = restored
+            binding.fingerprint_profile_id = STAGE_FINGERPRINT_PROFILE.profile_id
+            binding.last_verified_fingerprint = restored
+            binding.last_verified_at = self._now()
+            session.flush()
+        context = self._attempt_context(attempt_id, include_proposal=True, include_review=True)
+        proposal = json.loads(str(context["segments"][2]))
+        review = json.loads(str(context["segments"][3]))
+        revision_context = json.loads(str(context["segments"][1]))
+        revision_context["human_revision"] = {
+            "instruction": instruction,
+            "parent_attempt_id": attempt_id,
+            "parent_proposal_id": proposal_id,
+            "parent_proposal_checksum": base_checksum,
+            "previous_proposal": proposal,
+            "reviewer_output": review,
+            "recovery_failure_execution_id": failure_id,
+            "recovery_failure_code": failure_code,
+            "recovery_failure_message": failure_message,
+            "grounding_instructions": _PROPOSER_GROUNDING_INSTRUCTIONS,
+        }
+        child_id = f"repair-{context['stage_id']}-{int(context['attempt_number']) + 1}"
+        stored = self._write_revision_context(
+            context,
+            child_id=child_id,
+            payload=revision_context,
+            instruction=instruction,
+        )
+        try:
+            with self._scope() as session:
+                existing = session.scalar(
+                    select(WorkflowEventModel).where(
+                        WorkflowEventModel.run_id == run_id,
+                        WorkflowEventModel.idempotency_key.like(f"%:{event_key}"),
+                    )
+                )
+                if existing is not None:
+                    self._remove_uncommitted_artifact(stored)
+                    child = session.get(
+                        RepairAttemptModel,
+                        (existing.payload or {}).get("child_attempt_id"),
+                    )
+                    if child is None:
+                        raise RepairApplicationError(
+                            "REPAIR_RECOVERY_REPLAY_INVALID",
+                            "Recovery replay child is missing",
+                        )
+                    return {"attempt_id": child.id, "status": child.status, "idempotent_replay": True}
+                continuation = session.scalar(
+                    select(TransformationContinuationModel).where(
+                        TransformationContinuationModel.run_id == run_id
+                    )
+                )
+                attempt = session.get(RepairAttemptModel, attempt_id)
+                if (
+                    continuation is None
+                    or attempt is None
+                    or continuation.state_version != expected_state_version
+                    or attempt.proposal_checksum != base_checksum
+                ):
+                    raise RepairApplicationError(
+                        "REPAIR_RECOVERY_STALE",
+                        "Durable state changed before recovery commit",
+                    )
+                self._register_artifact_metadata(session, context, stored)
+                now = self._now()
+                child = RepairAttemptModel(
+                    id=child_id,
+                    run_id=run_id,
+                    stage_id=attempt.stage_id,
+                    attempt_number=attempt.attempt_number + 1,
+                    state_version=1,
+                    status="evidence_frozen",
+                    risk_level="unknown",
+                    diagnosis=f"legacy G10 override recovery; parent={attempt.id}",
+                    checkpoint_id=attempt.checkpoint_id,
+                    failure_evidence_artifact_id=attempt.failure_evidence_artifact_id,
+                    failure_evidence_checksum=attempt.failure_evidence_checksum,
+                    failure_route_artifact_id=attempt.failure_route_artifact_id,
+                    failure_route_checksum=attempt.failure_route_checksum,
+                    context_pack_artifact_id=stored.ref.artifact_id,
+                    context_pack_checksum=stored.ref.checksum,
+                    pre_fingerprint=restored,
+                    failure_fingerprint=attempt.failure_fingerprint,
+                    parent_attempt_id=attempt.id,
+                    parent_review_artifact_id=attempt.review_artifact_id,
+                    parent_review_checksum=attempt.review_checksum,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(child)
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
+                continuation.status = "queued"
+                continuation.current_node = "propose_repair"
+                continuation.worker_id = None
+                continuation.lease_expires_at = None
+                continuation.next_attempt_at = None
+                continuation.waiting_execution_id = None
+                continuation.last_error_code = None
+                continuation.last_error_message = None
+                continuation.wake_sequence += 1
+                continuation.state_version += 1
+                continuation.updated_at = now
+                session.flush()
+                append_continuation_event(
+                    session,
+                    continuation,
+                    event_type=WorkflowEventType.TRANSFORMATION_CONTINUATION_RESUMED,
+                    key=event_key,
+                    reason="legacy G10 override recovery requested",
+                    actor=actor,
+                    occurred_at=now,
+                    payload={
+                        "attempt_id": attempt.id,
+                        "child_attempt_id": child.id,
+                        "request_checksum": request_checksum,
+                        "expected_state_version": expected_state_version,
+                        "correlation_id": correlation_id,
+                    },
+                )
+                return {"attempt_id": child.id, "status": child.status, "idempotent_replay": False}
+        except RepairApplicationError:
+            self._remove_uncommitted_artifact(stored)
+            raise
+
     def reject(
         self,
         *,
@@ -5636,6 +5996,12 @@ class RepairApplicationService:
     def _revision_event_key(idempotency_key: str, *, reject: bool = False) -> str:
         prefix = "repair-reject:" if reject else "repair-revision:"
         return prefix + hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+    @staticmethod
+    def _legacy_override_recovery_event_key(idempotency_key: str) -> str:
+        return "repair-legacy-g10-recovery:" + hashlib.sha256(
+            idempotency_key.encode()
+        ).hexdigest()
 
     def _revision_event(self, session, continuation, idempotency_key: str, *, reject=False):
         if continuation is None:
