@@ -2287,6 +2287,15 @@ class RepairApplicationService:
                     and pending_g10 is not None
                     and attempt.g10_gate_package_id == pending_g10.id
                 )
+                preflight_revision = (
+                    attempt.status == "blocked"
+                    and review["decision"] == "accept"
+                    and continuation.current_stage_id == attempt.stage_id
+                    and continuation.status == "blocked"
+                    and continuation.current_node == "create_g10"
+                    and continuation.last_error_code == "REPAIR_DEPENDENCY_PREFLIGHT_FAILED"
+                    and pending_g10 is None
+                )
                 g10_override_revision = (
                     attempt.status == "waiting_g10"
                     and review["decision"] in {"request_changes", "accept"}
@@ -2300,7 +2309,7 @@ class RepairApplicationService:
                         or continuation.last_error_code == "G10_REQUEST_MODIFICATION"
                     )
                 )
-                if not reviewer_revision and not accepted_revision and not g10_override_revision:
+                if not reviewer_revision and not accepted_revision and not preflight_revision and not g10_override_revision:
                     raise RepairApplicationError(
                         "REPAIR_REVISION_NOT_ALLOWED",
                         "Repair attempt is not in its live human revision state",
