@@ -416,37 +416,6 @@ class StageGateService:
                 "REPAIR_PARENT_LINEAGE_INVALID",
                 "G10 recovery parent lineage is invalid",
             )
-        if any(
-            getattr(parent, field)
-            for field in (
-                "proposal_artifact_id",
-                "proposal_checksum",
-                "review_artifact_id",
-                "review_checksum",
-                "reviewer_invocation_id",
-                "g10_gate_package_id",
-                "apply_ledger_artifact_id",
-                "apply_ledger_checksum",
-                "validation_summary_artifact_id",
-                "validation_summary_checksum",
-                "post_fingerprint",
-            )
-        ):
-            raise StageGateError(
-                "REPAIR_PARENT_LINEAGE_INVALID",
-                "G10 recovery parent carries post-proposal evidence",
-            )
-        if (
-            package.get("parent_attempt_id") != parent.id
-            or package.get("parent_review_artifact_id") is not None
-            or package.get("parent_review_checksum") is not None
-            or attempt.parent_review_artifact_id is not None
-            or attempt.parent_review_checksum is not None
-        ):
-            raise StageGateError(
-                "REPAIR_PARENT_LINEAGE_INVALID",
-                "G10 recovery child carries a parent review reference",
-            )
         recovery_event = session.scalars(
             select(WorkflowEventModel).where(
                 WorkflowEventModel.run_id == continuation.run_id,
@@ -465,6 +434,52 @@ class StageGateService:
             ),
             None,
         )
+        parent_has_proposal_only = (
+            parent.proposal_artifact_id is not None
+            and parent.proposal_checksum is not None
+            and parent.review_artifact_id is None
+            and parent.review_checksum is None
+            and bound_event is not None
+        )
+        if any(
+            getattr(parent, field)
+            for field in (
+                "proposal_artifact_id",
+                "proposal_checksum",
+                "review_artifact_id",
+                "review_checksum",
+                "reviewer_invocation_id",
+                "g10_gate_package_id",
+                "apply_ledger_artifact_id",
+                "apply_ledger_checksum",
+                "validation_summary_artifact_id",
+                "validation_summary_checksum",
+                "post_fingerprint",
+            )
+        ) and not parent_has_proposal_only:
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery parent carries post-proposal evidence",
+            )
+        if parent_has_proposal_only and (
+            (bound_event.payload or {}).get("source_proposal_checksum")
+            != parent.proposal_checksum
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 deterministic recovery parent proposal binding is stale",
+            )
+        if (
+            package.get("parent_attempt_id") != parent.id
+            or package.get("parent_review_artifact_id") is not None
+            or package.get("parent_review_checksum") is not None
+            or attempt.parent_review_artifact_id is not None
+            or attempt.parent_review_checksum is not None
+        ):
+            raise StageGateError(
+                "REPAIR_PARENT_LINEAGE_INVALID",
+                "G10 recovery child carries a parent review reference",
+            )
         if bound_event is not None:
             invocation = session.get(LlmInvocationModel, attempt.proposer_invocation_id)
             if (
@@ -688,14 +703,7 @@ class StageGateService:
                         "G10 validation-correction parent lineage is invalid",
                     )
                 correction_parent = True
-            elif not any(
-                (
-                    parent.proposal_artifact_id,
-                    parent.proposal_checksum,
-                    parent.review_artifact_id,
-                    parent.review_checksum,
-                )
-            ):
+            elif parent.review_artifact_id is None and parent.review_checksum is None:
                 cls._validate_recovery_parent_lineage(
                     session, continuation, attempt, parent, package
                 )
