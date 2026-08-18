@@ -2219,10 +2219,16 @@ class RepairApplicationService:
                     continuation.current_stage_id,
                     repair_policy,
                 )
+                g10_modification_revision = (
+                    attempt.status == "waiting_g10"
+                    and continuation.status == "blocked"
+                    and continuation.current_node == "wait_g10"
+                    and continuation.last_error_code == "G10_REQUEST_MODIFICATION"
+                )
                 if (
                     budget["consumed_attempts"] >= budget["max_attempts"]
                     or budget["consumed_applied"] >= budget["max_applied"]
-                ):
+                ) and not g10_modification_revision:
                     raise RepairApplicationError(
                         "REPAIR_LOOP_EXHAUSTED",
                         "Repair revision limit has been reached",
