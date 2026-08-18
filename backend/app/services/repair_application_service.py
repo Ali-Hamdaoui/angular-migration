@@ -2478,7 +2478,7 @@ class RepairApplicationService:
                 continuation.status != "blocked"
                 or continuation.current_node != "classify_failure"
                 or continuation.last_error_code != "REPAIR_ATTEMPT_LIMIT"
-                or attempt.status != "blocked"
+                or attempt.status not in {"applied_verified", "blocked"}
                 or attempt.proposal_artifact_id != proposal_id
                 or attempt.proposal_checksum != base_checksum
                 or attempt.review_artifact_id is None
