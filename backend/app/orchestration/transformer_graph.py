@@ -3396,6 +3396,11 @@ class TransformerOrchestrator:
                 .order_by(StageCheckpointModel.sequence.desc())
             ).all()
             for checkpoint in checkpoints:
+                if Path(checkpoint.workspace_path).resolve() == Path(binding.workspace_path).resolve():
+                    # Legacy post-repair rows pointed at the mutable stage
+                    # workspace. They cannot be used for recovery because a
+                    # later failed command may already have changed it.
+                    continue
                 execution = (
                     session.get(CommandExecutionModel, checkpoint.created_from_execution_id)
                     if checkpoint.created_from_execution_id

@@ -797,6 +797,32 @@ class TransformerStageService:
                 "POST_REPAIR_LINEAGE_MISMATCH",
                 "Post-repair checkpoint run binding is missing",
             )
+        if not run.artifact_root:
+            raise TransformerStageError(
+                "POST_REPAIR_LINEAGE_MISMATCH",
+                "Post-repair checkpoint artifact root is missing",
+            )
+        # The active stage workspace is mutable and may be changed by the
+        # next Angular-update retry. Persist an immutable copy before writing
+        # the checkpoint manifest; pointing the checkpoint at the live
+        # workspace makes later recovery read a different tree than the one
+        # whose fingerprint was recorded.
+        artifact_root = Path(run.artifact_root).resolve(strict=True)
+        checkpoint_parent = artifact_root / "checkpoints" / continuation.current_stage_id
+        checkpoint_parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_target = checkpoint_parent / f"post_repair-{attempt_id}-{uuid4().hex[:12]}"
+        report = StageSandboxCopier().copy_atomically(
+            Path(snapshot.workspace_path),
+            checkpoint_target,
+            registered_root=artifact_root,
+        )
+        snapshot = StagePreparationResult(
+            snapshot.workspace_alias,
+            report.target,
+            report.fingerprint,
+            report.copied_files,
+            True,
+        )
         payload = {
             "kind": "post_repair",
             "run_id": continuation.run_id,
