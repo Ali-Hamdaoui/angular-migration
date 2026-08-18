@@ -4184,7 +4184,9 @@ class TransformerOrchestrator:
     @staticmethod
     def _rebind_child_authority_recovered(session, attempt, checkpoint, live) -> bool:
         """Accept a deterministic child on its parent's verified post-repair tree."""
-        if not str(attempt.diagnosis or "").startswith("deterministic "):
+        if not str(attempt.diagnosis or "").startswith(
+            ("deterministic ", "human revision;", "semantic retry recovery;")
+        ):
             return False
         seen: set[str] = set()
         parent_id = attempt.parent_attempt_id
