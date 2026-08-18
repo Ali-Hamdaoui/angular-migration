@@ -54,7 +54,8 @@ _NPM_NO_MATCHING_VERSION = re.compile(
     rf"(?im)^\s*{_NPM_ERROR_PREFIX}\s+notarget\s+No matching version found for\s+\S+"
 )
 _NPM_ERESOLVE = re.compile(
-    rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}\s+)?(?:code\s+)?ERESOLVE\b"
+    rf"(?im)^\s*(?:{_NPM_ERROR_PREFIX}|npm\s+WARN)\s+ERESOLVE\b"
+    rf"|^\s*(?:{_NPM_ERROR_PREFIX}\s+)?(?:code\s+)?ERESOLVE\b"
 )
 
 
