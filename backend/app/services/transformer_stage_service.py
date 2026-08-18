@@ -49,7 +49,11 @@ from app.services.stage_execution_application_service import (
 )
 from app.services.stage_preparation_application_service import StagePreparationResult
 from app.services.stage_preparation_primitives import StageSandboxCopier
-from app.services.stage_runtime_service import StageRuntimeApplicationService, StageRuntimeError
+from app.services.stage_runtime_service import (
+    StageRuntimeApplicationService,
+    StageRuntimeError,
+    canonical_stage_runtime_identity,
+)
 from app.services.transformation_continuation_service import (
     append_continuation_event,
 )
@@ -242,54 +246,21 @@ class TransformerStageService:
         rows = list(
             session.scalars(
                 select(StageRuntimeBindingModel)
-                .where(StageRuntimeBindingModel.stage_id == continuation.current_stage_id)
+                .where(
+                    StageRuntimeBindingModel.run_id == continuation.run_id,
+                    StageRuntimeBindingModel.stage_id == continuation.current_stage_id,
+                )
                 .order_by(StageRuntimeBindingModel.kind.asc())
             ).all()
         )
         if not rows:
             return None
-        expected = {kind.value for kind in RuntimeExecutableKind}
-        if {row.kind for row in rows} != expected or any(row.status != "bound" for row in rows):
-            raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "The durable stage runtime binding is incomplete or blocked")
-        if len({row.runtime_id for row in rows}) != 1:
-            raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "Stage Node/npm/npx bindings do not share one installation")
-        descriptors: dict[str, RuntimeExecutableDescriptor] = {}
-        for row in rows:
-            if not row.resolved_path or not row.version_exact or not row.sha256 or not row.runtime_id:
-                raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "The durable stage runtime binding is incomplete")
-            try:
-                kind = RuntimeExecutableKind(row.kind)
-                descriptors[row.kind] = RuntimeExecutableDescriptor(
-                    kind=kind,
-                    executable_name=Path(row.resolved_path).name,
-                    resolved_path=row.resolved_path,
-                    version_exact=row.version_exact,
-                    sha256=row.sha256,
-                    installation_root=str(Path(row.resolved_path).parent),
-                    source=row.source or "stage-runtime-binding",
-                    runtime_id=row.runtime_id,
-                    probed_at=row.created_at,
-                )
-            except (TypeError, ValueError) as error:
-                raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", "The durable stage runtime binding is invalid") from error
-        checksum = "sha256:" + hashlib.sha256(
-            json.dumps(
-                {key: value.model_dump(mode="json") for key, value in sorted(descriptors.items())},
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode()
-        ).hexdigest()
-        return {
-            "profile_id": f"stage-runtime:{continuation.current_stage_id}",
-            "checksum": checksum,
-            "node_executable": descriptors[RuntimeExecutableKind.NODE.value].resolved_path,
-            "package_manager_executable": descriptors[RuntimeExecutableKind.NPM.value].resolved_path,
-            "npx_executable": descriptors[RuntimeExecutableKind.NPX.value].resolved_path,
-            "runtime_bindings": {
-                key: value.model_dump(mode="json") for key, value in descriptors.items()
-            },
-        }
+        try:
+            identity = canonical_stage_runtime_identity(rows, continuation.current_stage_id)
+        except ValueError as error:
+            raise TransformerStageError("STAGE_RUNTIME_BINDING_STALE", str(error)) from error
+        identity.pop("descriptors", None)
+        return identity
 
     @staticmethod
     def runtime_binding_evidence(session, continuation: TransformationContinuationModel):

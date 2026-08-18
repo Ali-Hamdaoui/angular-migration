@@ -4124,10 +4124,32 @@ class TransformerOrchestrator:
                 "CHECKPOINT_INTEGRITY_FAILED",
                 "The dependency-transition pre-update checkpoint is not authoritative",
             )
+        materialization_prefix = f"{attempt.id}:transition:v2:materialize:initial"
+        latest_materialization = session.scalar(
+            select(CommandExecutionModel)
+            .where(
+                CommandExecutionModel.run_id == continuation.run_id,
+                CommandExecutionModel.idempotency_key.startswith(materialization_prefix),
+            )
+            .order_by(CommandExecutionModel.requested_at.desc(), CommandExecutionModel.id.desc())
+        )
+        runtime = self._stage.runtime_binding(session, continuation)
+        force_restore = bool(
+            latest_materialization is not None
+            and latest_materialization.status in {"succeeded", "failed", "timed_out", "cancelled"}
+            and (
+                latest_materialization.runtime_checksum != runtime["checksum"]
+                or (latest_materialization.start_fingerprint or {}).get("runtime_checksum")
+                != runtime["checksum"]
+                or (latest_materialization.start_fingerprint or {}).get("runtime_profile_id")
+                != runtime["profile_id"]
+            )
+        )
         if (
             StageSandboxCopier.fingerprint(Path(binding.workspace_path)) == fingerprint
             and binding.workspace_fingerprint == fingerprint
             and binding.fingerprint_profile_id == STAGE_FINGERPRINT_PROFILE.profile_id
+            and not force_restore
         ):
             return checkpoint.id, fingerprint
         self._stage.begin_reconstruction(

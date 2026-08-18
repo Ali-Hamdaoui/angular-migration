@@ -31,7 +31,7 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.artifact_store import LocalFilesystemArtifactStore
+from app.artifact_store import ArtifactNotFoundError, ArtifactStoreError, LocalFilesystemArtifactStore
 from app.command_execution.worker import (
     CommandDefinition,
     CommandLogWriter,
@@ -68,6 +68,8 @@ from app.repositories.models.workflow import (
     CommandAuthorizationAuditModel,
     CommandExecutionModel,
     MigrationRunModel,
+    StageGateDecisionModel,
+    StageGatePackageModel,
     StagePromptRequestModel,
     WorkerLeaseModel,
     WorkflowEventModel,
@@ -80,6 +82,7 @@ from app.services.command_registry_service import (
 from app.services.diagnostics_application_service import DiagnosticsApplicationService
 from app.services.job_supervisor_service import JobSupervisorService
 from app.services.runtime_resolution_application_service import RuntimeResolutionApplicationService
+from app.services.stage_runtime_service import canonical_stage_runtime_identity
 from app.services.transformer_prompt_service import (
     AngularPromptDetector,
     TransformerPromptService,
@@ -205,43 +208,81 @@ def _runtime_bindings_from_profile(profile: dict) -> dict[str, RuntimeExecutable
     return bindings
 
 
-def _runtime_bindings_from_stage(session, stage_id: str | None) -> dict[str, RuntimeExecutableDescriptor]:
-    """Load the exact, checksum-bound runtime selected for one stage."""
+def _stage_runtime_authority(session, run: MigrationRunModel, stage_id: str | None) -> dict[str, object] | None:
+    """Load the G07-approved stage runtime; legacy profiles cannot override it."""
     if not stage_id:
-        return {}
+        return None
     rows = list(
         session.scalars(
             select(StageRuntimeBindingModel)
-            .where(StageRuntimeBindingModel.stage_id == stage_id)
+            .where(
+                StageRuntimeBindingModel.run_id == run.id,
+                StageRuntimeBindingModel.stage_id == stage_id,
+            )
+            .order_by(StageRuntimeBindingModel.kind.asc())
         ).all()
     )
     if not rows:
-        return {}
-    expected = {kind.value for kind in RuntimeExecutableKind}
-    if {row.kind for row in rows} != expected or any(row.status != "bound" for row in rows):
-        raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "The stage runtime binding is incomplete or blocked")
-    if len({row.runtime_id for row in rows}) != 1:
-        raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "Stage Node/npm/npx bindings do not share one installation")
-    bindings: dict[str, RuntimeExecutableDescriptor] = {}
-    for row in rows:
-        if not row.resolved_path or not row.version_exact or not row.sha256 or not row.runtime_id:
-            raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "The stage runtime binding is incomplete")
-        try:
-            kind = RuntimeExecutableKind(row.kind)
-            bindings[row.kind] = RuntimeExecutableDescriptor(
-                kind=kind,
-                executable_name=Path(row.resolved_path).name,
-                resolved_path=row.resolved_path,
-                version_exact=row.version_exact,
-                sha256=row.sha256,
-                installation_root=str(Path(row.resolved_path).parent),
-                source=row.source or "stage-runtime-binding",
-                runtime_id=row.runtime_id,
-                probed_at=row.created_at,
+        return None
+    try:
+        authority = canonical_stage_runtime_identity(rows, stage_id)
+    except ValueError as error:
+        raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", str(error)) from error
+
+    package = session.scalar(
+        select(StageGatePackageModel)
+        .where(
+            StageGatePackageModel.run_id == run.id,
+            StageGatePackageModel.stage_id == stage_id,
+            StageGatePackageModel.gate_id == "G07",
+            StageGatePackageModel.status == "approved",
+        )
+        .order_by(StageGatePackageModel.gate_version.desc())
+    )
+    if package is None:
+        raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_MISSING", "No approved G07 runtime package exists for the stage")
+    decision = session.scalar(
+        select(StageGateDecisionModel).where(
+            StageGateDecisionModel.gate_package_id == package.id,
+            StageGateDecisionModel.run_id == run.id,
+            StageGateDecisionModel.stage_id == stage_id,
+            StageGateDecisionModel.gate_id == "G07",
+            StageGateDecisionModel.accepted.is_(True),
+            StageGateDecisionModel.package_checksum == package.package_checksum,
+        )
+    )
+    if decision is None:
+        raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_MISSING", "G07 approval does not bind the stage runtime")
+    try:
+        store = LocalFilesystemArtifactStore(Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root))
+        stored = store.read_artifact_by_id(package.package_artifact_id)
+        payload = json.loads(stored.content)
+        approved_runtime = payload.get("runtime") or {}
+        if (
+            stored.ref.checksum != package.package_checksum
+            or approved_runtime.get("profile_id") != authority["profile_id"]
+            or approved_runtime.get("checksum") != authority["checksum"]
+        ):
+            raise ValueError("G07 runtime package does not match the current stage binding")
+        for kind, descriptor in authority["runtime_bindings"].items():
+            approved = (approved_runtime.get("runtime_bindings") or {}).get(kind) or {}
+            if any(approved.get(field) != descriptor[field] for field in ("runtime_id", "version_exact", "resolved_path", "sha256")):
+                raise ValueError(f"G07 runtime package does not match the bound {kind} executable")
+    except (ArtifactNotFoundError, ArtifactStoreError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise CommandExecutorError("STAGE_RUNTIME_G07_BINDING_INVALID", "The approved G07 runtime package is invalid") from error
+    return authority
+
+
+def _verify_stage_runtime_files(authority: dict[str, object]) -> None:
+    """Recheck every G07-bound executable immediately before process spawn."""
+    for descriptor in authority["descriptors"].values():
+        path = Path(descriptor.resolved_path).resolve(strict=True)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != descriptor.sha256:
+            raise CommandExecutorError(
+                "STAGE_RUNTIME_BINDING_STALE",
+                f"Bound {descriptor.kind.value} executable changed after G07 approval",
             )
-        except (TypeError, ValueError) as error:
-            raise CommandExecutorError("STAGE_RUNTIME_BINDING_STALE", "The stage runtime binding is invalid") from error
-    return bindings
 
 
 def _runtime_path_overrides(bindings: dict[str, RuntimeExecutableDescriptor]) -> dict[str, str]:
@@ -1220,6 +1261,7 @@ class CommandExecutorService:
     def _run_execution(self, execution_id: str, claimed_worker_id: str | None = None) -> None:
         from app.repositories.session import session_scope
         worker_id = claimed_worker_id or threading.current_thread().name
+        stage_runtime_authority: dict[str, object] | None = None
         with session_scope() as session:
             model = session.get(CommandExecutionModel, execution_id)
             if (
@@ -1340,13 +1382,31 @@ class CommandExecutorService:
                     requested_at=requested_at,
                 )
 
+                # G07 stage binding is the executable authority. The legacy
+                # execution profile remains authorization provenance only.
+                stage_runtime_authority = _stage_runtime_authority(session, run, stage_id)
+                runtime_bindings = (
+                    stage_runtime_authority["descriptors"]
+                    if stage_runtime_authority is not None
+                    else _runtime_bindings_from_profile(selected_profile)
+                )
+                runtime_profile_id = (
+                    stage_runtime_authority["profile_id"]
+                    if stage_runtime_authority is not None
+                    else execution_profile_id
+                )
+                request.runtime_profile_id = runtime_profile_id
+                model.runtime_profile_id = runtime_profile_id
+                session.flush()
+
             # Fail-closed runtime binding: resolve the profile's executables to
             # PATH-independent, checksum-bound descriptors.  Probing runs
             # outside the database session (no transaction across processes).
-            runtime_bindings = _runtime_bindings_from_stage(session, stage_id)
-            runtime_profile_id = f"stage-runtime:{stage_id}" if runtime_bindings else execution_profile_id
-            if not runtime_bindings:
+            if stage_runtime_authority is None:
                 runtime_bindings = _runtime_bindings_from_profile(selected_profile)
+                runtime_profile_id = execution_profile_id
+            else:
+                _verify_stage_runtime_files(stage_runtime_authority)
             if runtime_bindings:
                 policy = CommandPolicy(
                     sandbox_root=root,
@@ -1449,7 +1509,15 @@ class CommandExecutorService:
                 authorization = session.get(CommandAuthorizationAuditModel, model.authorization_id) if model else None
                 if model is None or run is None or authorization is None:
                     return
-                self._finish_execution(session, model, result, run=run, authorization=authorization, profile=selected_profile)
+                self._finish_execution(
+                    session,
+                    model,
+                    result,
+                    run=run,
+                    authorization=authorization,
+                    profile=selected_profile,
+                    runtime_authority=stage_runtime_authority,
+                )
         except Exception as exc:
             causal_traceback = traceback.format_exc()
             with session_scope() as session:
@@ -1490,7 +1558,17 @@ class CommandExecutorService:
         stage = session.get(MigrationStageModel, stage_id)
         return stage is not None and stage.run_id == run_id
 
-    def _finish_execution(self, session: Session, model: CommandExecutionModel, result, *, run, authorization, profile) -> None:
+    def _finish_execution(
+        self,
+        session: Session,
+        model: CommandExecutionModel,
+        result,
+        *,
+        run,
+        authorization,
+        profile,
+        runtime_authority: dict[str, object] | None = None,
+    ) -> None:
         finished = datetime.now(UTC)
         final_status = (
             CommandStatus.FAILED.value
@@ -1599,7 +1677,16 @@ class CommandExecutorService:
             "ended_at": finished.isoformat(), "duration_ms": model.duration_ms, "status": final_status,
             "exit_code": model.exit_code, "artifact_ids": [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id],
             "cancellation": {"requested": model.cancel_requested_at is not None, "cancelled": bool(model.cancelled), "timed_out": bool(model.timed_out), "partial_evidence": bool(model.cancelled or model.timed_out)},
-            "runtime_identity": {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None},
+            "authorization_execution_profile_id": authorization.execution_profile_id,
+            "runtime_identity": (
+                {
+                    "profile_id": runtime_authority["profile_id"],
+                    "profile_checksum": runtime_authority["checksum"],
+                    "bindings": runtime_authority["runtime_bindings"],
+                }
+                if runtime_authority is not None
+                else {"profile_checksum": profile.get("checksum") if isinstance(profile, dict) else None}
+            ),
             "correlation_id": model.correlation_id,
         }
         manifest_artifact = store.write_text_artifact(
@@ -1619,7 +1706,13 @@ class CommandExecutorService:
         model.result_artifact_id = result_artifact.ref.artifact_id
         model.manifest_artifact_id = manifest_artifact.ref.artifact_id
         model.artifact_ids = [ref.artifact_id for ref in output_refs] + [result_artifact.ref.artifact_id, manifest_artifact.ref.artifact_id]
-        model.runtime_checksum = (profile.get("checksum") if isinstance(profile, dict) and profile.get("checksum") else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest())
+        model.runtime_checksum = (
+            runtime_authority["checksum"]
+            if runtime_authority is not None
+            else profile.get("checksum")
+            if isinstance(profile, dict) and profile.get("checksum")
+            else "sha256:" + hashlib.sha256(json.dumps(manifest_payload, sort_keys=True).encode()).hexdigest()
+        )
         session.flush()
         # Command evidence is durable before the terminal transition; a
         # terminal CAS failure must never erase command evidence.

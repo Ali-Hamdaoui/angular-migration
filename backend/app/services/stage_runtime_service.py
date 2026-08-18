@@ -5,11 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+import hashlib
+import json
+from pathlib import Path
 
 from sqlalchemy import select
 
 from app.domain.compatibility import CompatibilityCatalogueEntry
 from app.domain.runtime_execution import (
+    RuntimeExecutableDescriptor,
     RuntimeExecutableKind,
     RuntimeRequirement,
     RuntimeRequirementBinding,
@@ -29,6 +33,53 @@ class StageRuntimeError(ValueError):
         self.code = code
         self.message = message
         self.details = details or {}
+
+
+def canonical_stage_runtime_identity(rows: list[StageRuntimeBindingModel], stage_id: str) -> dict[str, object]:
+    """Build the one checksum-bound executable identity used after G07."""
+    expected = {kind.value for kind in RuntimeExecutableKind}
+    if {row.kind for row in rows} != expected or any(row.status != "bound" for row in rows):
+        raise ValueError("The durable stage runtime binding is incomplete or blocked")
+    if len({row.runtime_id for row in rows}) != 1:
+        raise ValueError("Stage Node/npm/npx bindings do not share one installation")
+    descriptors: dict[str, RuntimeExecutableDescriptor] = {}
+    for row in rows:
+        if not row.resolved_path or not row.version_exact or not row.sha256 or not row.runtime_id:
+            raise ValueError("The durable stage runtime binding is incomplete")
+        try:
+            kind = RuntimeExecutableKind(row.kind)
+            descriptors[row.kind] = RuntimeExecutableDescriptor(
+                kind=kind,
+                executable_name=Path(row.resolved_path).name,
+                resolved_path=row.resolved_path,
+                version_exact=row.version_exact,
+                sha256=row.sha256,
+                installation_root=str(Path(row.resolved_path).parent),
+                source=row.source or "stage-runtime-binding",
+                runtime_id=row.runtime_id,
+                probed_at=row.created_at,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("The durable stage runtime binding is invalid") from error
+    checksum = "sha256:" + hashlib.sha256(
+        json.dumps(
+            {key: value.model_dump(mode="json") for key, value in sorted(descriptors.items())},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+    return {
+        "profile_id": f"stage-runtime:{stage_id}",
+        "checksum": checksum,
+        "node_executable": descriptors[RuntimeExecutableKind.NODE.value].resolved_path,
+        "package_manager_executable": descriptors[RuntimeExecutableKind.NPM.value].resolved_path,
+        "npx_executable": descriptors[RuntimeExecutableKind.NPX.value].resolved_path,
+        "descriptors": descriptors,
+        "runtime_bindings": {
+            key: value.model_dump(mode="json") for key, value in descriptors.items()
+        },
+    }
 
 
 class StageRuntimeApplicationService:

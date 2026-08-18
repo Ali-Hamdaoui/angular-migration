@@ -239,7 +239,7 @@ class DependencyTransitionRunner:
         return "queued"
 
     def _current_phase(self, session, continuation, context) -> str:
-        initial = self._execution(session, context, self._key(context, "materialize:initial"))
+        initial = self._latest_materialization_execution(session, context, "initial")
         if not self._verified(session, initial, "dependency-materialization"):
             return "materialize_initial"
         fresh = self._execution(session, context, self._key(context, "angular-update:fresh"))
@@ -252,9 +252,7 @@ class DependencyTransitionRunner:
             return self._final_phase(session, continuation, context)
         if not self._has_evidence(session, fresh, "fresh-angular-update-failure"):
             return "fresh_angular_update"
-        transition = self._execution(
-            session, context, self._key(context, "materialize:transition")
-        )
+        transition = self._latest_materialization_execution(session, context, "transition")
         if not self._verified(session, transition, "dependency-materialization"):
             return "materialize_transition"
         uninstall = self._execution(session, context, self._key(context, "uninstall"))
@@ -379,9 +377,19 @@ class DependencyTransitionRunner:
                 )
             )
 
-        initial = execution("materialize:initial")
+        context = {"run": session.get(MigrationRunModel, continuation.run_id), "attempt": attempt}
+        initial = self._latest_materialization_execution(session, context, "initial")
         if initial is None:
             return True
+        if initial.status in {"succeeded", "failed", "timed_out", "cancelled"}:
+            runtime = self._stage.runtime_binding(session, continuation)
+            start = initial.start_fingerprint or {}
+            if (
+                initial.runtime_checksum != runtime["checksum"]
+                or start.get("runtime_checksum") != runtime["checksum"]
+                or start.get("runtime_profile_id") != runtime["profile_id"]
+            ):
+                return True
         fresh = execution("angular-update:fresh")
         transition = execution("materialize:transition")
         return bool(
@@ -755,7 +763,7 @@ class DependencyTransitionRunner:
 
     def _phase_materialize(self, session, continuation, context, generation: str) -> str:
         key = self._key(context, f"materialize:{generation}")
-        execution = self._execution(session, context, key)
+        execution = self._latest_materialization_execution(session, context, generation)
         if execution is None:
             try:
                 validate_generated_lockfile(context["workspace"])
@@ -779,7 +787,15 @@ class DependencyTransitionRunner:
                 "DEPENDENCY_MATERIALIZATION_FAILED",
                 execution.failure_message or "Checkpoint dependency state cannot be materialized with npm ci",
             )
-        self._verify_materialization(session, continuation, context, execution)
+        try:
+            self._verify_materialization(session, continuation, context, execution)
+        except DependencyTransitionError as error:
+            if error.code != "DEPENDENCY_MATERIALIZATION_EVIDENCE_INVALID":
+                raise
+            retry_key = self._next_materialization_key(session, context, generation)
+            return self._queue_transition_command(
+                session, continuation, context, "materialize", retry_key
+            )
         return "continue"
 
     def _verify_materialization(self, session, continuation, context, execution) -> None:
@@ -988,6 +1004,32 @@ class DependencyTransitionRunner:
                 for artifact_id in artifact_ids
             )
         )
+
+    def _materialization_executions(self, session, context, generation: str) -> list:
+        prefix = self._key(context, f"materialize:{generation}")
+        executions = list(
+            session.scalars(
+                select(CommandExecutionModel).where(
+                    CommandExecutionModel.run_id == context["run"].id,
+                    CommandExecutionModel.idempotency_key.startswith(prefix),
+                )
+            )
+        )
+        executions.sort(key=lambda execution: (execution.requested_at, execution.id))
+        return executions
+
+    def _latest_materialization_execution(self, session, context, generation: str):
+        executions = self._materialization_executions(session, context, generation)
+        return executions[-1] if executions else None
+
+    def _next_materialization_key(self, session, context, generation: str) -> str:
+        base = self._key(context, f"materialize:{generation}")
+        retry = 1
+        for execution in self._materialization_executions(session, context, generation):
+            match = re.match(re.escape(base) + r":retry-(\d+)$", execution.idempotency_key or "")
+            if match is not None:
+                retry = max(retry, int(match.group(1)) + 1)
+        return f"{base}:retry-{retry}"
 
     def _record_fresh_failure(self, session, continuation, context, execution) -> None:
         normalized = {
