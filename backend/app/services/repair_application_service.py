@@ -2259,7 +2259,7 @@ class RepairApplicationService:
                         StageGatePackageModel.run_id == attempt.run_id,
                         StageGatePackageModel.stage_id == attempt.stage_id,
                         StageGatePackageModel.gate_id == "G10",
-                        StageGatePackageModel.status == "pending",
+                        StageGatePackageModel.status.in_(("pending", "rejected")),
                     )
                 )
                 reviewer_revision = (
