@@ -271,7 +271,9 @@ class LockfileGenerationRunner:
         except Exception:
             return
 
-    def _queue(self, session, continuation, *, generation: int = 1) -> str:
+    def _queue(
+        self, session, continuation, *, generation: int = 1, reconciliation_key: str | None = None
+    ) -> str:
         if generation not in {1, 2, 3}:
             raise LockfileGenerationError(
                 "LOCKFILE_GENERATION_FINGERPRINT_INVALID",
@@ -307,7 +309,9 @@ class LockfileGenerationRunner:
             raise LockfileGenerationError("PACKAGE_JSON_MISSING", "Approved package.json is missing")
         try:
             result = self._stage.queue_lockfile_generation(
-                session, continuation, attempt_key=self._attempt_key(attempt, generation)
+                session,
+                continuation,
+                attempt_key=self._attempt_key(attempt, generation, reconciliation_key),
             )
         except TransformerStageError as error:
             code = (
@@ -325,13 +329,13 @@ class LockfileGenerationRunner:
         return "queued"
 
     @staticmethod
-    def _attempt_key(attempt, generation: int) -> str:
+    def _attempt_key(attempt, generation: int, reconciliation_key: str | None = None) -> str:
         if generation == 1:
             return attempt.id
         marker = (
             LOCKFILE_GENERATION_ATTEMPT_2_MARKER
             if generation == 2
-            else LOCKFILE_RECONCILIATION_MARKER
+            else f"{LOCKFILE_RECONCILIATION_MARKER}:{reconciliation_key}"
         )
         return f"{attempt.id}{marker}"
 
@@ -352,44 +356,154 @@ class LockfileGenerationRunner:
         return diagnosis.get("classification") == "TARGET_MANIFEST_AHEAD"
 
     def _queue_stale_lock_reconciliation(self, session, continuation, execution) -> str:
-        run, attempt, _binding, workspace = self._authority(session, continuation)
+        run, attempt, binding, workspace = self._authority(session, continuation)
         lockfile = workspace / "package-lock.json"
-        if not lockfile.is_file() or lockfile.is_symlink():
+        start = execution.start_fingerprint or {}
+        result = session.get(
+            ArtifactMetadataModel, "metadata-" + str(execution.result_artifact_id)
+        )
+        expected_lock = start.get("post_apply_pre_command_package_lock_sha256")
+        expected_package = start.get("post_apply_pre_command_package_json_sha256")
+        if result is None or not result.immutable or result.execution_id != execution.id:
             raise LockfileGenerationError(
                 "LOCKFILE_RECONCILIATION_EVIDENCE_MISSING",
-                "The stale authoritative package-lock.json is unavailable",
+                "The causal lockfile result evidence is unavailable",
             )
-        store = LocalFilesystemArtifactStore(
-            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        identity_payload = {
+            "run_id": continuation.run_id,
+            "stage_id": continuation.current_stage_id,
+            "repair_attempt_id": attempt.id,
+            "failed_execution_id": execution.id,
+            "failed_execution_result_checksum": result.checksum,
+            "stale_lockfile_checksum": expected_lock,
+            "package_json_checksum": expected_package,
+        }
+        reconciliation_checksum = hashlib.sha256(
+            json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        owner = f"{execution.id}:stale-lock:{reconciliation_checksum[:24]}"
+        preparation = session.scalar(
+            select(ArtifactMetadataModel).where(
+                ArtifactMetadataModel.run_id == continuation.run_id,
+                ArtifactMetadataModel.stage_id == continuation.current_stage_id,
+                ArtifactMetadataModel.owner_reference == owner,
+                ArtifactMetadataModel.immutable.is_(True),
+            )
         )
-        stored = store.write_text_artifact(
-            run.id,
-            f"05_repairs/attempt-{attempt.id}/stale-package-lock.json",
-            lockfile.read_text(encoding="utf-8"),
-            ArtifactType.JSON,
-            stage_id=continuation.current_stage_id,
-            attempt_id=attempt.id,
-            created_by="lockfile-generation-runner",
-            created_at=self._now(),
-            input_hashes={"failed_execution": execution.id, "lockfile": _file_checksum(lockfile)},
-            policy_version="dependency-state-reconciliation-v1",
-        )
-        session.add(
-            ArtifactMetadataModel(
-                id="metadata-" + stored.ref.artifact_id,
-                run_id=run.id,
+        if preparation is None:
+            if (
+                not lockfile.is_file()
+                or lockfile.is_symlink()
+                or _file_checksum(lockfile) != expected_lock
+                or _file_checksum(workspace / "package.json") != expected_package
+                or STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+                != binding.workspace_fingerprint
+            ):
+                raise LockfileGenerationError(
+                    "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                    "The stale lockfile preparation source changed",
+                )
+            store = LocalFilesystemArtifactStore(
+                Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+            )
+            stored = store.write_text_artifact(
+                run.id,
+                f"05_repairs/attempt-{attempt.id}/stale-package-lock.{reconciliation_checksum}.json",
+                lockfile.read_text(encoding="utf-8"),
+                ArtifactType.JSON,
                 stage_id=continuation.current_stage_id,
-                artifact_type=stored.ref.artifact_type.value,
-                relative_path=stored.ref.relative_path,
-                checksum=stored.ref.checksum,
-                created_at=stored.ref.created_at,
-                finalized_at=stored.ref.created_at,
-                immutable=True,
-                owner_reference=f"{execution.id}:stale-lockfile",
+                attempt_id=attempt.id,
+                created_by="lockfile-generation-runner",
+                created_at=self._now(),
+                input_hashes={
+                    "failed_execution": execution.id,
+                    "result": result.checksum,
+                    "lockfile": expected_lock,
+                    "manifest": expected_package,
+                },
+                policy_version="dependency-state-reconciliation-v2",
             )
+            session.add(
+                ArtifactMetadataModel(
+                    id="metadata-" + stored.ref.artifact_id,
+                    run_id=run.id,
+                    stage_id=continuation.current_stage_id,
+                    artifact_type=stored.ref.artifact_type.value,
+                    relative_path=stored.ref.relative_path,
+                    checksum=stored.ref.checksum,
+                    created_at=stored.ref.created_at,
+                    finalized_at=stored.ref.created_at,
+                    immutable=True,
+                    execution_id=execution.id,
+                    owner_reference=owner,
+                    safe_metadata={
+                        **identity_payload,
+                        "reconciliation_checksum": reconciliation_checksum,
+                        "preparation_binding_fingerprint": binding.workspace_fingerprint,
+                        "governed_workspace_fingerprint": start.get(
+                            "post_apply_pre_command_governed_workspace_fingerprint"
+                        ),
+                    },
+                )
+            )
+            self._resume(continuation, "lockfile_generation")
+            return "preparing"
+
+        metadata = preparation.safe_metadata or {}
+        if metadata.get("reconciliation_checksum") != reconciliation_checksum:
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_EVIDENCE_INVALID",
+                "Stale-lock preparation identity does not match causal evidence",
+            )
+        pre_binding = metadata.get("preparation_binding_fingerprint")
+        if lockfile.exists():
+            if lockfile.is_symlink() or _file_checksum(lockfile) != expected_lock:
+                raise LockfileGenerationError(
+                    "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                    "The stale lockfile changed after preparation",
+                )
+            lockfile.unlink()
+        if (
+            _file_checksum(workspace / "package.json") != expected_package
+            or workspace_excluding_governed_volatile_fingerprint(workspace)
+            != metadata.get("governed_workspace_fingerprint")
+        ):
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_WORKSPACE_STALE",
+                "Workspace changed outside the governed stale-lock scope",
+            )
+        prepared_fingerprint = STAGE_FINGERPRINT_PROFILE.fingerprint(workspace)
+        if binding.workspace_fingerprint == pre_binding:
+            cas = session.execute(
+                update(StageWorkspaceBindingModel)
+                .where(
+                    StageWorkspaceBindingModel.id == binding.id,
+                    StageWorkspaceBindingModel.workspace_fingerprint == pre_binding,
+                    StageWorkspaceBindingModel.active.is_(True),
+                )
+                .values(
+                    workspace_fingerprint=prepared_fingerprint,
+                    last_verified_fingerprint=prepared_fingerprint,
+                    last_verified_at=self._now(),
+                )
+            )
+            if cas.rowcount != 1:
+                raise LockfileGenerationError(
+                    "LOCKFILE_RECONCILIATION_BINDING_STALE",
+                    "Workspace authority changed during stale-lock preparation",
+                )
+            binding.workspace_fingerprint = prepared_fingerprint
+        elif binding.workspace_fingerprint != prepared_fingerprint:
+            raise LockfileGenerationError(
+                "LOCKFILE_RECONCILIATION_BINDING_STALE",
+                "Prepared workspace does not match durable binding authority",
+            )
+        return self._queue(
+            session,
+            continuation,
+            generation=3,
+            reconciliation_key=reconciliation_checksum,
         )
-        lockfile.unlink()
-        return self._queue(session, continuation, generation=3)
 
     def _queue_successor(self, session, continuation, stale_execution) -> str:
         """Queue the one durable V1 -> V2 successor for a terminal stale-baseline execution.

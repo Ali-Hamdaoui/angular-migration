@@ -737,15 +737,28 @@ class RepairApplicationService:
                     "idempotent_replay": True,
                 }
             attempt = session.get(RepairAttemptModel, attempt_id)
+            initial_recovery = bool(
+                continuation is not None
+                and continuation.status == "waiting_gate"
+                and continuation.current_node == "wait_g10"
+                and attempt is not None
+                and attempt.status == "waiting_g10"
+            )
+            retry_recovery = bool(
+                continuation is not None
+                and continuation.status == "blocked"
+                and continuation.current_node == "lockfile_generation"
+                and continuation.last_error_code == "IDEMPOTENCY_KEY_REUSED"
+                and attempt is not None
+                and attempt.status == "superseded"
+            )
             if (
                 continuation is None
                 or attempt is None
                 or attempt.run_id != run_id
                 or attempt.stage_id != continuation.current_stage_id
                 or continuation.state_version != expected_state_version
-                or continuation.status != "waiting_gate"
-                or continuation.current_node != "wait_g10"
-                or attempt.status != "waiting_g10"
+                or not (initial_recovery or retry_recovery)
             ):
                 raise RepairApplicationError(
                     "DEPENDENCY_STATE_RECOVERY_STALE",
@@ -781,6 +794,9 @@ class RepairApplicationService:
                     "DEPENDENCY_STATE_RECONCILIATION_NOT_APPLICABLE",
                     f"Current dependency state is {diagnosis.get('classification')}",
                 )
+            causal_execution, result_checksum = self._causal_lockfile_execution(
+                session, run, attempt, workspace
+            )
             proposal = self._recovery_proposal(session, run, attempt)
             operation = next(iter(proposal.get("operations") or []), {})
             if not self._same_failed_transition_exists(session, run, attempt, operation):
@@ -788,17 +804,18 @@ class RepairApplicationService:
                     "REPAIR_STRATEGY_NOT_PREVIOUSLY_FAILED",
                     "The proposed transition has no equivalent applied runtime failure",
                 )
-            gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
-            if gate is None or gate.status != "pending":
-                raise RepairApplicationError(
-                    "DEPENDENCY_STATE_RECOVERY_GATE_STALE", "The G10 package is not pending"
-                )
             now = self._now()
-            gate.status = "stale"
-            gate.stale_at = now
-            attempt.status = "superseded"
-            attempt.completed_at = now
-            attempt.updated_at = now
+            if initial_recovery:
+                gate = session.get(StageGatePackageModel, attempt.g10_gate_package_id)
+                if gate is None or gate.status != "pending":
+                    raise RepairApplicationError(
+                        "DEPENDENCY_STATE_RECOVERY_GATE_STALE", "The G10 package is not pending"
+                    )
+                gate.status = "stale"
+                gate.stale_at = now
+                attempt.status = "superseded"
+                attempt.completed_at = now
+                attempt.updated_at = now
             step = session.scalar(
                 select(StageStepModel).where(
                     StageStepModel.run_id == run_id,
@@ -811,8 +828,8 @@ class RepairApplicationService:
                     "STAGE_PLAN_COMMAND_AUTHORITY_MISSING",
                     "The stage has no governed lockfile-generation step",
                 )
-            step.status = "PENDING"
-            step.execution_id = None
+            step.status = "RUNNING"
+            step.execution_id = causal_execution.id
             step.completed_at = None
             continuation.status = "queued"
             continuation.current_node = "lockfile_generation"
@@ -835,6 +852,8 @@ class RepairApplicationService:
                 occurred_at=now,
                 payload={
                     "attempt_id": attempt.id,
+                    "causal_execution_id": causal_execution.id,
+                    "causal_result_checksum": result_checksum,
                     "classification": diagnosis["classification"],
                     "manifest_checksum": self._request_checksum(
                         json.loads((workspace / "package.json").read_text(encoding="utf-8"))
@@ -851,8 +870,86 @@ class RepairApplicationService:
                 "status": continuation.status,
                 "state_version": continuation.state_version,
                 "classification": diagnosis["classification"],
+                "causal_execution_id": causal_execution.id,
                 "idempotent_replay": False,
             }
+
+    @staticmethod
+    def _causal_lockfile_execution(session, run, attempt, workspace):
+        metadata = session.get(
+            ArtifactMetadataModel,
+            "metadata-" + str(attempt.failure_evidence_artifact_id),
+        )
+        if (
+            metadata is None
+            or not metadata.immutable
+            or metadata.run_id != attempt.run_id
+            or metadata.stage_id != attempt.stage_id
+            or metadata.checksum != attempt.failure_evidence_checksum
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_EVIDENCE_INVALID",
+                "Immutable dependency failure evidence is missing or stale",
+            )
+        stored = LocalFilesystemArtifactStore(
+            Path(run.artifact_root).parent, fixed_run_root=Path(run.artifact_root)
+        ).read_artifact(run.id, metadata.relative_path)
+        payload = json.loads(stored.content)
+        execution = session.get(CommandExecutionModel, payload.get("execution_id"))
+        if (
+            stored.ref.checksum != metadata.checksum
+            or stored.envelope is None
+            or stored.envelope.run_id != attempt.run_id
+            or stored.envelope.stage_id != attempt.stage_id
+            or execution is None
+            or execution.run_id != attempt.run_id
+            or execution.stage_id != attempt.stage_id
+            or execution.command_id != "npm-lockfile-generate"
+            or execution.status != "failed"
+            or execution.exit_code in (None, 0)
+            or not re.search(r"(?im)^\s*npm\s+(?:ERR!|error)\s+(?:code\s+)?ERESOLVE\b", execution.failure_message or "")
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_EXECUTION_INVALID",
+                "Failure evidence does not bind a terminal npm ERESOLVE lockfile execution",
+            )
+        artifacts = (
+            execution.result_artifact_id,
+            execution.command_log_artifact_id,
+            execution.manifest_artifact_id,
+        )
+        artifact_rows = [
+            session.get(ArtifactMetadataModel, "metadata-" + str(artifact_id))
+            for artifact_id in artifacts
+        ]
+        if any(
+            row is None
+            or not row.immutable
+            or row.run_id != attempt.run_id
+            or row.stage_id != attempt.stage_id
+            or row.execution_id != execution.id
+            for row in artifact_rows
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_EVIDENCE_INVALID",
+                "Causal command result, log, or manifest evidence is incomplete",
+            )
+        start = execution.start_fingerprint or {}
+        package_checksum = "sha256:" + hashlib.sha256(
+            (workspace / "package.json").read_bytes()
+        ).hexdigest()
+        lock_checksum = "sha256:" + hashlib.sha256(
+            (workspace / "package-lock.json").read_bytes()
+        ).hexdigest()
+        if (
+            start.get("post_apply_pre_command_package_json_sha256") != package_checksum
+            or start.get("post_apply_pre_command_package_lock_sha256") != lock_checksum
+        ):
+            raise RepairApplicationError(
+                "DEPENDENCY_STATE_CAUSAL_WORKSPACE_MISMATCH",
+                "Current manifest/lockfile state differs from the causal failed execution",
+            )
+        return execution, artifact_rows[0].checksum
 
     @staticmethod
     def _recovery_proposal(session, run, attempt) -> dict[str, object]:
